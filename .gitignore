@@ -1,15 +1,47 @@
-node_modules/
-dist/
+# Python
 __pycache__/
 *.py[cod]
+*.pyc
 .venv/
 venv/
 .deps/
+
+# Node
+node_modules/
+dist/
+frontend/tsconfig.tsbuildinfo
+
+# Env / secrets
 .env
 .env.local
+*.pem
+*.key
+id_rsa
+id_ed25519
+*.pub
+
+# Database / runtime data
 *.db
 *.sqlite
 *.sqlite3
+backend/data/*.db
+backend/data/*.sqlite
+backend/data/artifacts/
+backend/data/tmp/
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+*:Zone.Identifier
+
+# Project-specific
 backend/keys/*
 !backend/keys/.gitkeep
-backend/data/artifacts/
