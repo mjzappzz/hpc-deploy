@@ -19,6 +19,7 @@
     <div v-if="task.error_message" class="task-card__error">{{ task.error_message }}</div>
     <div class="task-card__actions">
       <el-button size="small" @click="$emit('viewLogs', task)">查看日志</el-button>
+      <el-button v-if="isContinuable" size="small" type="primary" @click="$emit('continueTask', task)">继续查看</el-button>
     </div>
   </el-card>
 </template>
@@ -30,6 +31,7 @@ import StatusTag from './StatusTag.vue'
 
 defineEmits<{
   viewLogs: [task: TaskRecord]
+  continueTask: [task: TaskRecord]
 }>()
 
 const props = defineProps<{
@@ -41,6 +43,11 @@ const serverLabel = computed(() => {
     return `${props.task.server_name} (${props.task.server_host})`
   }
   return `Server #${props.task.server_id}`
+})
+
+const isContinuable = computed(() => {
+  const status = props.task.status?.toUpperCase() ?? ''
+  return ['PENDING', 'CONNECTING', 'PREPARING', 'UPLOADING', 'RUNNING'].includes(status)
 })
 
 function formatTime(value: string | null) {

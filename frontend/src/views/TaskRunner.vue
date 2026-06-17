@@ -12,171 +12,332 @@
       </template>
 
       <div class="runner-layout">
+        <!-- ============ LEFT PANEL ============ -->
         <div class="runner-config">
-          <div class="selection-grid">
-            <div class="selection-card">
-              <div class="selection-label">目标服务器</div>
-              <el-select v-model="selectedServerId" placeholder="选择服务器" filterable class="runner-control">
-                <el-option
-                  v-for="server in servers"
-                  :key="server.id"
-                  :label="`${server.name} (${server.host})`"
-                  :value="server.id"
+          <!-- Mode: config (editable new task) -->
+          <template v-if="mode === 'config'">
+            <div class="selection-grid">
+              <div class="selection-card">
+                <div class="selection-label">目标服务器</div>
+                <el-select v-model="selectedServerId" placeholder="选择服务器" filterable class="runner-control" :disabled="isFormDisabled">
+                  <el-option
+                    v-for="server in servers"
+                    :key="server.id"
+                    :label="`${server.name} (${server.host})`"
+                    :value="server.id"
+                  >
+                    <div class="server-option">
+                      <span>{{ server.name }} ({{ server.host }})</span>
+                      <StatusTag :status="server.status || 'unknown'" />
+                    </div>
+                  </el-option>
+                </el-select>
+                <div class="selection-meta">
+                  <StatusTag :status="selectedServer?.status || 'unknown'" />
+                  <span>{{ selectedServer ? `${selectedServer.name} (${selectedServer.host})` : '未选择服务器' }}</span>
+                </div>
+              </div>
+
+              <div class="selection-card">
+                <div class="selection-label">任务类型</div>
+                <el-select v-model="selectedTaskType" placeholder="选择任务类型" class="runner-control" :disabled="isFormDisabled">
+                  <el-option
+                    v-for="taskType in taskTypes"
+                    :key="taskType.value"
+                    :label="taskType.label"
+                    :value="taskType.value"
+                  />
+                </el-select>
+                <div class="selection-meta">
+                  <span>{{ selectedTaskType ? taskTypeLabel(selectedTaskType) : '请先选择任务类型' }}</span>
+                </div>
+              </div>
+
+              <div class="selection-card">
+                <div class="selection-label">知识库文件</div>
+                <el-select
+                  v-model="selectedFilePath"
+                  placeholder="选择知识库文件"
+                  filterable
+                  class="runner-control"
+                  :disabled="!selectedTaskType || isFormDisabled"
                 >
-                  <div class="server-option">
-                    <span>{{ server.name }} ({{ server.host }})</span>
-                    <StatusTag :status="server.status || 'unknown'" />
-                  </div>
-                </el-option>
-              </el-select>
-              <div class="selection-meta">
-                <StatusTag :status="selectedServer?.status || 'unknown'" />
-                <span>{{ selectedServer ? `${selectedServer.name} (${selectedServer.host})` : '未选择服务器' }}</span>
+                  <el-option
+                    v-for="file in filteredFiles"
+                    :key="file.path"
+                    :label="`${file.displayCategory} / ${file.name}`"
+                    :value="file.path"
+                  >
+                    <div class="file-option">
+                      <span>{{ file.displayCategory }} / {{ file.name }}</span>
+                      <span class="file-option-path">{{ file.relative_path }}</span>
+                    </div>
+                  </el-option>
+                </el-select>
+                <div class="selection-meta">
+                  <span>{{ selectedFile ? selectedFile.relative_path : '按任务类型过滤显示知识库文件' }}</span>
+                </div>
               </div>
             </div>
 
-            <div class="selection-card">
-              <div class="selection-label">任务类型</div>
-              <el-select v-model="selectedTaskType" placeholder="选择任务类型" class="runner-control">
-                <el-option
-                  v-for="taskType in taskTypes"
-                  :key="taskType.value"
-                  :label="taskType.label"
-                  :value="taskType.value"
-                />
-              </el-select>
-              <div class="selection-meta">
-                <span>{{ selectedTaskType ? taskTypeLabel(selectedTaskType) : '请先选择任务类型' }}</span>
+            <el-card v-if="selectedFile" shadow="never" class="info-card action-card">
+              <!-- 文件信息 (compact summary) -->
+              <div class="card-title">文件信息</div>
+              <div class="file-info-compact">
+                <div class="file-info-row file-info-name" :title="selectedFile.name">{{ selectedFile.name }}</div>
+                <div class="file-info-row file-info-sub">{{ selectedFile.displayCategory }} · {{ formatSize(selectedFile.size) }}</div>
+                <div class="file-info-row file-info-path" :title="selectedFile.relative_path">{{ selectedFile.relative_path }}</div>
+                <div class="file-info-row file-info-time">更新时间：{{ formatDate(selectedFile.updated_at) }}</div>
               </div>
-            </div>
 
-            <div class="selection-card">
-              <div class="selection-label">知识库文件</div>
-              <el-select
-                v-model="selectedFilePath"
-                placeholder="选择知识库文件"
-                filterable
-                class="runner-control"
-                :disabled="!selectedTaskType"
-              >
-                <el-option
-                  v-for="file in filteredFiles"
-                  :key="file.path"
-                  :label="`${file.displayCategory} / ${file.name}`"
-                  :value="file.path"
+              <!-- 执行参数 -->
+              <div class="card-title" style="margin-top: 18px;">执行参数</div>
+              <el-form label-width="110px" label-position="left">
+                <el-form-item :label="selectedFile.physical_category === 'apptainer' ? '目标目录' : '远程工作目录'">
+                  <el-input
+                    v-if="selectedFile.physical_category === 'apptainer'"
+                    v-model="apptainerTargetDir"
+                    class="runner-control"
+                    :disabled="isFormDisabled"
+                  />
+                  <el-input
+                    v-else
+                    :model-value="remoteWorkDirTemplate"
+                    class="runner-control"
+                    readonly
+                  />
+                </el-form-item>
+
+                <div class="workdir-help">
+                  后续阶段会在远端该目录下执行脚本或存放文件。
+                </div>
+
+                <el-form-item
+                  v-if="selectedFile.physical_category === 'stress'"
+                  label="压测时长"
+                  required
                 >
-                  <div class="file-option">
-                    <span>{{ file.displayCategory }} / {{ file.name }}</span>
-                    <span class="file-option-path">{{ file.relative_path }}</span>
+                  <div class="duration-parts-vertical">
+                    <div class="duration-part">
+                      <el-input-number v-model="durationParts.hours" :min="0" :step="1" controls-position="right" :disabled="isFormDisabled" size="small" />
+                      <span>小时</span>
+                    </div>
+                    <div class="duration-part">
+                      <el-input-number v-model="durationParts.minutes" :min="0" :max="59" :step="1" controls-position="right" :disabled="isFormDisabled" size="small" />
+                      <span>分钟</span>
+                    </div>
+                    <div class="duration-part">
+                      <el-input-number v-model="durationParts.seconds" :min="0" :max="59" :step="1" controls-position="right" :disabled="isFormDisabled" size="small" />
+                      <span>秒</span>
+                    </div>
                   </div>
-                </el-option>
-              </el-select>
-              <div class="selection-meta">
-                <span>{{ selectedFile ? selectedFile.relative_path : '按任务类型过滤显示知识库文件' }}</span>
-              </div>
-            </div>
-          </div>
+                </el-form-item>
 
-          <el-card v-if="selectedFile" shadow="never" class="info-card action-card">
-            <div class="info-grid">
-              <div class="info-pane">
-                <div class="card-title">文件信息</div>
-                <div class="info-list">
-                  <div class="info-item">
-                    <span class="info-key">文件名</span>
-                    <span class="info-value">{{ selectedFile.name }}</span>
+                <el-form-item v-else label="参数">
+                  <el-alert
+                    :title="selectedFile.physical_category === 'apptainer' ? '该类型无需执行参数' : '该类型无需参数'"
+                    type="info"
+                    :closable="false"
+                  />
+                </el-form-item>
+              </el-form>
+
+              <el-alert
+                v-if="selectedTaskType && !['test', 'stress'].includes(selectedTaskType)"
+                title="当前阶段仅 test 和 stress 类型会执行，其他类型只上传不执行。"
+                type="warning"
+                :closable="false"
+              />
+
+              <!-- 命令预览 -->
+              <div class="preview-pane">
+                <div class="preview-label">命令预览</div>
+                <pre class="command-preview">{{ commandPreview }}</pre>
+              </div>
+
+              <!-- 操作按钮 -->
+              <div class="runner-actions sticky-actions">
+                <el-button type="primary" :loading="validating" :disabled="isFormDisabled" @click="validateRunner">校验参数</el-button>
+                <el-tooltip :content="executeTooltip" placement="top">
+                  <span class="disabled-button-wrap">
+                    <el-button :loading="submitting" :disabled="isFormDisabled || submitting" @click="createTask">{{ executeButtonText }}</el-button>
+                  </span>
+                </el-tooltip>
+              </div>
+            </el-card>
+          </template>
+
+          <!-- Mode: config-readonly (recovered task config snapshot) -->
+          <template v-else-if="mode === 'config-readonly'">
+            <div v-if="activeTask" class="readonly-config-card">
+              <div class="readonly-config-header">
+                <span class="readonly-config-title">本次任务配置</span>
+                <el-button size="small" @click="mode = 'summary'">← 返回摘要</el-button>
+              </div>
+              <div class="readonly-config-hint">
+                该任务已创建，配置不可修改。如需创建新任务，请点击"新建任务"。
+              </div>
+
+              <div class="readonly-section">
+                <div class="readonly-section-title">基础信息</div>
+                <div class="readonly-grid">
+                  <div class="ro-field">
+                    <span class="ro-label">目标服务器</span>
+                    <span class="ro-value">{{ activeTask.server_name }} ({{ activeTask.server_host }})</span>
                   </div>
-                  <div class="info-item">
-                    <span class="info-key">分类</span>
-                    <span class="info-value">{{ selectedFile.displayCategory }}</span>
+                  <div class="ro-field">
+                    <span class="ro-label">任务类型</span>
+                    <span class="ro-value">{{ taskTypeLabel(activeTask.task_type) }}</span>
                   </div>
-                  <div class="info-item">
-                    <span class="info-key">知识库路径</span>
-                    <el-tooltip :content="selectedFile.path" placement="top">
-                      <span class="info-value info-path">{{ selectedFile.relative_path }}</span>
+                  <div class="ro-field">
+                    <span class="ro-label">知识库文件</span>
+                    <el-tooltip :content="activeTask.file_name || ''" placement="top">
+                      <span class="ro-value ellipsis">{{ activeTask.file_name }}</span>
                     </el-tooltip>
                   </div>
-                  <div class="info-item">
-                    <span class="info-key">大小</span>
-                    <span class="info-value">{{ formatSize(selectedFile.size) }}</span>
-                  </div>
-                  <div class="info-item">
-                    <span class="info-key">更新时间</span>
-                    <span class="info-value">{{ formatDate(selectedFile.updated_at) }}</span>
+                  <div class="ro-field">
+                    <span class="ro-label">任务状态</span>
+                    <span class="ro-value">{{ statusLabel(activeTask.status) }}</span>
                   </div>
                 </div>
               </div>
 
-              <div class="param-pane">
-                <div class="card-title">执行参数</div>
-                <el-form label-width="110px" label-position="left">
-                  <el-form-item :label="selectedFile.physical_category === 'apptainer' ? '目标目录' : '远程工作目录'">
-                    <el-input
-                      v-if="selectedFile.physical_category === 'apptainer'"
-                      v-model="apptainerTargetDir"
-                      class="runner-control"
-                    />
-                    <el-input
-                      v-else
-                      :model-value="remoteWorkDirTemplate"
-                      class="runner-control"
-                      readonly
-                    />
-                  </el-form-item>
-
-                  <div class="workdir-help">
-                    后续阶段会在远端该目录下执行脚本或存放文件。
+              <div class="readonly-section">
+                <div class="readonly-section-title">执行信息</div>
+                <div class="readonly-grid">
+                  <div class="ro-field">
+                    <span class="ro-label">远程工作目录</span>
+                    <el-tooltip :content="activeTask.remote_work_dir || ''" placement="top">
+                      <span class="ro-value mono ellipsis">{{ activeTask.remote_work_dir }}</span>
+                    </el-tooltip>
                   </div>
-
-                  <el-form-item
-                    v-if="selectedFile.physical_category === 'stress'"
-                    label="压测时长"
-                    required
-                  >
-                    <div class="duration-parts">
-                      <el-input-number v-model="durationParts.hours" :min="0" :step="1" controls-position="right" />
-                      <span>小时</span>
-                      <el-input-number v-model="durationParts.minutes" :min="0" :max="59" :step="1" controls-position="right" />
-                      <span>分钟</span>
-                      <el-input-number v-model="durationParts.seconds" :min="0" :max="59" :step="1" controls-position="right" />
-                      <span>秒</span>
-                    </div>
-                  </el-form-item>
-
-                  <el-form-item v-else label="参数">
-                    <el-alert
-                      :title="selectedFile.physical_category === 'apptainer' ? '该类型无需执行参数' : '该类型无需参数'"
-                      type="info"
-                      :closable="false"
-                    />
-                  </el-form-item>
-                </el-form>
-
-                <el-alert
-                  v-if="selectedTaskType && !['test', 'stress'].includes(selectedTaskType)"
-                  title="当前阶段仅 test 和 stress 类型会执行，其他类型只上传不执行。"
-                  type="warning"
-                  :closable="false"
-                />
+                  <div class="ro-field">
+                    <span class="ro-label">执行命令</span>
+                    <pre class="ro-command">{{ activeTask.command_preview }}</pre>
+                  </div>
+                  <div v-if="activeTask.task_type === 'stress'" class="ro-field">
+                    <span class="ro-label">压测时长</span>
+                    <span class="ro-value">{{ formattedReadonlyDuration }}</span>
+                  </div>
+                  <div v-else class="ro-field">
+                    <span class="ro-label">参数</span>
+                    <span class="ro-value">{{ activeTask.task_type === 'apptainer' ? '目标目录：' + (activeTask.remote_work_dir || '-') : '无额外参数' }}</span>
+                  </div>
+                </div>
               </div>
             </div>
-
-            <div class="preview-pane">
-              <div class="preview-label">命令预览</div>
-              <pre class="command-preview">{{ commandPreview }}</pre>
+            <div v-else class="summary-loading">
+              <el-skeleton :rows="6" animated />
             </div>
+          </template>
 
-            <div class="runner-actions sticky-actions">
-              <el-button type="primary" :loading="validating" @click="validateRunner">校验参数</el-button>
-              <el-tooltip :content="executeTooltip" placement="top">
-                <span class="disabled-button-wrap">
-                  <el-button :loading="submitting" @click="createTask">开始执行</el-button>
-                </span>
-              </el-tooltip>
+          <!-- Mode: summary -->
+          <template v-else>
+            <div v-if="activeTask" class="summary-card">
+              <div class="summary-header">
+                <span class="summary-title">任务执行摘要</span>
+              </div>
+              <div class="summary-body">
+                <div class="summary-group">
+                  <div class="summary-group-title">任务信息</div>
+                  <div class="summary-group-grid">
+                    <div class="summary-field">
+                      <span class="field-key">任务 ID</span>
+                      <span class="field-value mono">{{ activeTask.task_id }}</span>
+                    </div>
+                    <div class="summary-field">
+                      <span class="field-key">目标服务器</span>
+                      <span class="field-value">{{ activeTask.server_name }} ({{ activeTask.server_host }})</span>
+                    </div>
+                    <div class="summary-field">
+                      <span class="field-key">任务类型</span>
+                      <span class="field-value">{{ taskTypeLabel(activeTask.task_type) }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="summary-group">
+                  <div class="summary-group-title">执行信息</div>
+                  <div class="summary-group-grid">
+                    <div class="summary-field">
+                      <span class="field-key">脚本文件</span>
+                      <span class="field-value">{{ activeTask.file_name }}</span>
+                    </div>
+                    <div class="summary-field">
+                      <span class="field-key">远程目录</span>
+                      <el-tooltip :content="activeTask.remote_work_dir || ''" placement="top">
+                        <span class="field-value mono ellipsis">{{ activeTask.remote_work_dir }}</span>
+                      </el-tooltip>
+                    </div>
+                    <div class="summary-field">
+                      <span class="field-key">执行命令</span>
+                      <el-tooltip :content="activeTask.command_preview || ''" placement="top">
+                        <span class="field-value mono ellipsis">{{ activeTask.command_preview }}</span>
+                      </el-tooltip>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="summary-group">
+                  <div class="summary-group-title">结果信息</div>
+                  <div class="summary-group-grid">
+                    <div class="summary-field">
+                      <span class="field-key">开始时间</span>
+                      <span class="field-value">{{ formatDate(activeTask.start_time) }}</span>
+                    </div>
+                    <div class="summary-field">
+                      <span class="field-key">结束时间</span>
+                      <span class="field-value">{{ formatDate(activeTask.end_time) }}</span>
+                    </div>
+                    <div class="summary-field">
+                      <span class="field-key">退出码</span>
+                      <span class="field-value">{{ activeTask.exit_code ?? '-' }}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <el-alert
+                v-if="activeTask.status === 'SUCCESS'"
+                type="success"
+                :closable="false"
+                show-icon
+                class="completion-alert"
+              >
+                <template #title>
+                  <div>任务执行成功</div>
+                  <div class="alert-detail">远程工作目录：{{ activeTask.remote_work_dir }}</div>
+                  <div class="alert-hint">后续阶段将支持自动回收和下载结果文件。</div>
+                </template>
+              </el-alert>
+
+              <el-alert
+                v-if="activeTask.status === 'FAILED'"
+                type="error"
+                :closable="false"
+                show-icon
+                class="completion-alert"
+              >
+                <template #title>
+                  <div>任务执行失败</div>
+                  <div v-if="activeTask.error_message" class="alert-detail">{{ activeTask.error_message }}</div>
+                  <div class="alert-hint">请查看右侧日志了解详情。</div>
+                </template>
+              </el-alert>
+
+              <div class="summary-actions">
+                <el-button size="small" @click="mode = 'config-readonly'">展开配置</el-button>
+                <el-button size="small" type="primary" @click="handleNewTask">新建任务</el-button>
+                <el-button size="small" @click="goToHistory">跳转任务历史</el-button>
+              </div>
             </div>
-          </el-card>
+            <div v-else class="summary-loading">
+              <el-skeleton :rows="6" animated />
+            </div>
+          </template>
         </div>
 
+        <!-- ============ RIGHT PANEL ============ -->
         <el-card shadow="never" class="live-task-card">
           <template #header>
             <div class="live-task-header">
@@ -194,56 +355,47 @@
             </div>
           </template>
 
-          <div class="live-task-meta" v-loading="polling && !!activeTaskId && !activeTask">
-            <div class="info-item">
-              <span class="info-key">任务 ID</span>
-              <span class="info-value">{{ activeTask?.task_id || activeTaskId || '-' }}</span>
+          <div class="live-content-wrapper">
+            <div class="live-task-meta-bar" v-loading="polling && !!activeTaskId && !activeTask">
+              <span class="meta-item mono">{{ activeTask?.task_id || activeTaskId || '-' }}</span>
+              <span class="meta-divider">|</span>
+              <span class="meta-item">{{ statusLabel(activeTask?.status) }}</span>
+              <span class="meta-divider">|</span>
+              <span class="meta-item">{{ activeTask?.start_time ? formatDate(activeTask.start_time) : '-' }} → {{ activeTask?.end_time ? formatDate(activeTask.end_time) : '-' }}</span>
             </div>
-            <div class="info-item">
-              <span class="info-key">状态</span>
-              <span class="info-value">{{ activeTask?.status ?? '-' }}</span>
-            </div>
-            <div class="info-item">
-              <span class="info-key">开始时间</span>
-              <span class="info-value">{{ activeTask?.start_time ? formatDate(activeTask.start_time) : '-' }}</span>
-            </div>
-            <div class="info-item">
-              <span class="info-key">结束时间</span>
-              <span class="info-value">{{ activeTask?.end_time ? formatDate(activeTask.end_time) : '-' }}</span>
-            </div>
-            <div class="info-item">
-              <span class="info-key">退出码</span>
-              <span class="info-value">{{ activeTask?.exit_code ?? '-' }}</span>
+
+            <div class="live-tabs-area">
+              <el-tabs v-model="activePanel" class="monitor-tabs">
+                <el-tab-pane
+                  v-for="panel in visibleMonitorTabs"
+                  :key="panel.name"
+                  :label="panel.label"
+                  :name="panel.name"
+                />
+              </el-tabs>
+
+              <div class="live-content-area">
+                <template v-if="activePanel === 'logs'">
+                  <LogViewer v-if="activeTaskId" :logs="activeLogs" max-height="none" class="log-fill" />
+                  <div v-else class="monitor-terminal-placeholder">尚未开始执行</div>
+                </template>
+                <template v-else>
+                  <div v-if="!activeTaskId" class="monitor-terminal-placeholder">创建任务后可查看远程资源快照。</div>
+                  <div v-else-if="monitorError" class="monitor-terminal-placeholder is-error">{{ monitorError }}</div>
+                  <pre v-else class="monitor-terminal" v-loading="monitorLoading">{{ monitorOutput || '暂无输出' }}</pre>
+                  <div v-if="monitorExecutedAt" class="monitor-meta">最近刷新：{{ formatDate(monitorExecutedAt) }}</div>
+                </template>
+              </div>
             </div>
           </div>
-
-          <el-tabs v-model="activePanel" class="monitor-tabs">
-            <el-tab-pane
-              v-for="panel in visibleMonitorTabs"
-              :key="panel.name"
-              :label="panel.label"
-              :name="panel.name"
-            />
-          </el-tabs>
-
-          <template v-if="activePanel === 'logs'">
-            <LogViewer :logs="activeLogs" max-height="420px" />
-          </template>
-          <template v-else>
-            <div v-if="!activeTaskId" class="monitor-placeholder">创建任务后可查看远程资源快照。</div>
-            <div v-else-if="monitorError" class="monitor-placeholder is-error">{{ monitorError }}</div>
-            <pre v-else class="monitor-terminal" v-loading="monitorLoading">{{ monitorOutput || '暂无输出' }}</pre>
-            <div v-if="monitorExecutedAt" class="monitor-meta">最近刷新：{{ formatDate(monitorExecutedAt) }}</div>
-          </template>
         </el-card>
       </div>
     </el-card>
   </section>
 </template>
-
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { listScriptFiles, type ScriptFileRecord } from '@/api/script'
 import { listServers, type ServerRecord } from '@/api/server'
 import {
@@ -258,7 +410,7 @@ import {
 } from '@/api/task'
 import LogViewer from '@/components/LogViewer.vue'
 import StatusTag from '@/components/StatusTag.vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 type DurationParts = {
   hours: number
@@ -274,12 +426,16 @@ type TaskRunnerFile = ScriptFileRecord & {
 
 type MonitorPanel = 'logs' | 'cpu_mem' | 'disk' | 'gpu'
 
+type PageMode = 'config' | 'summary' | 'config-readonly'
+
 const taskTypes: Array<{ label: string; value: TaskType }> = [
   { label: '编译环境', value: 'mpi' },
   { label: '压测脚本', value: 'stress' },
   { label: 'Apptainer 容器', value: 'apptainer' },
   { label: '测试脚本', value: 'test' }
 ]
+
+const mode = ref<PageMode>('config')
 
 const selectedServerId = ref<number>()
 const selectedTaskType = ref<TaskType | ''>('')
@@ -304,6 +460,7 @@ const durationParts = reactive<DurationParts>({
   seconds: 60
 })
 const router = useRouter()
+const route = useRoute()
 let pollTimer: number | null = null
 
 const filteredFiles = computed(() => {
@@ -383,6 +540,19 @@ const visibleMonitorTabs = computed<Array<{ name: MonitorPanel; label: string; m
   return [{ name: 'logs', label: '执行日志' }]
 })
 
+const isFormDisabled = computed(() => {
+  if (!activeTaskId.value) return false
+  const status = activeTask.value?.status
+  if (!status) return false
+  return ['PENDING', 'CONNECTING', 'PREPARING', 'UPLOADING', 'RUNNING'].includes(status)
+})
+
+const executeButtonText = computed(() => {
+  if (submitting.value) return '创建中...'
+  if (isFormDisabled.value) return '执行中...'
+  return '开始执行'
+})
+
 async function loadOptions() {
   const [serverResp, fileResp] = await Promise.all([listServers(), listScriptFiles()])
   servers.value = serverResp.data
@@ -439,6 +609,10 @@ async function validateRunner() {
 }
 
 async function createTask() {
+  if (isFormDisabled.value) {
+    ElMessage.warning('当前有任务正在执行中')
+    return
+  }
   if (!selectedServerId.value) {
     ElMessage.error('必须选择目标服务器')
     return
@@ -474,6 +648,8 @@ async function createTask() {
     }
     const result = (await runTask(payload)).data
     ElMessage.success(`任务创建成功：${result.task_id}`)
+    localStorage.setItem('hpcdeploy.currentTaskId', result.task_id)
+    mode.value = 'summary'
     startTaskPolling(result.task_id)
   } catch (error) {
     ElMessage.error(getApiErrorMessage(error))
@@ -482,8 +658,69 @@ async function createTask() {
   }
 }
 
+async function handleNewTask() {
+  if (activeTaskId.value) {
+    try {
+      await ElMessageBox.confirm(
+        '当前远程任务不会停止，可在任务历史中继续查看。',
+        '新建任务',
+        { confirmButtonText: '确认', cancelButtonText: '取消', type: 'warning' }
+      )
+    } catch {
+      return
+    }
+  }
+  stopTaskPolling()
+  activeTaskId.value = ''
+  activeTask.value = null
+  activeLogs.value = []
+  monitorOutput.value = ''
+  monitorError.value = ''
+  monitorExecutedAt.value = ''
+  activePanel.value = 'logs'
+  mode.value = 'config'
+  localStorage.removeItem('hpcdeploy.currentTaskId')
+  await router.replace('/task-runner')
+}
+
 function goToHistory() {
   router.push('/history')
+}
+
+async function recoverTask() {
+  const queryTaskId = route.query.task_id
+  if (typeof queryTaskId !== 'string' || !queryTaskId) return
+
+  try {
+    const [taskResp, logsResp] = await Promise.all([getTask(queryTaskId), getTaskLogs(queryTaskId)])
+    activeTask.value = taskResp.data
+    activeLogs.value = logsResp.data
+    activeTaskId.value = queryTaskId
+    mode.value = 'summary'
+
+    const status = taskResp.data.status?.toUpperCase() ?? ''
+    if (['SUCCESS', 'FAILED'].includes(status)) {
+      localStorage.removeItem('hpcdeploy.currentTaskId')
+      return
+    }
+    polling.value = true
+    pollTimer = window.setInterval(() => {
+      void fetchTaskRuntime(queryTaskId)
+    }, 1000)
+  } catch (error: unknown) {
+    localStorage.removeItem('hpcdeploy.currentTaskId')
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'response' in error &&
+      typeof (error as { response: { status?: number } }).response?.status === 'number' &&
+      (error as { response: { status: number } }).response.status === 404
+    ) {
+      ElMessage.warning('任务记录不存在或已被清理')
+    } else {
+      ElMessage.warning(getApiErrorMessage(error) || '恢复任务失败')
+    }
+  }
 }
 
 async function fetchTaskRuntime(taskId: string) {
@@ -560,13 +797,15 @@ function formatSize(size: number) {
   return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`
 }
 
-function formatDate(value: string) {
+function formatDate(value: string | null | undefined) {
+  if (!value) return '-'
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
   return date.toLocaleString('zh-CN', { hour12: false })
 }
 
-function taskTypeLabel(value: TaskType) {
+function taskTypeLabel(value: TaskType | null | undefined) {
+  if (!value) return '-'
   const found = taskTypes.find((item) => item.value === value)
   return found?.label ?? value
 }
@@ -582,6 +821,29 @@ function getApiErrorMessage(error: unknown) {
   }
   if (error instanceof Error) return error.message
   return '任务创建失败'
+}
+
+const formattedReadonlyDuration = computed(() => {
+  const params = activeTask.value?.params
+  if (!params || typeof params.duration_seconds !== 'number') return '-'
+  const total = params.duration_seconds
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = total % 60
+  return `${total} 秒（${h} 小时 ${m} 分钟 ${s} 秒）`
+})
+
+function statusLabel(status: string | null | undefined): string {
+  const labels: Record<string, string> = {
+    PENDING: '等待中',
+    CONNECTING: '连接中',
+    PREPARING: '准备中',
+    UPLOADING: '上传中',
+    RUNNING: '运行中',
+    SUCCESS: '已完成',
+    FAILED: '已失败'
+  }
+  return labels[status ?? ''] ?? status ?? '-'
 }
 
 watch(selectedTaskType, () => {
@@ -612,13 +874,28 @@ watch(visibleMonitorTabs, (tabs) => {
   }
 })
 
-onMounted(loadOptions)
+onMounted(async () => {
+  await loadOptions()
+  await recoverTask()
+})
 onBeforeUnmount(stopTaskPolling)
 </script>
-
 <style scoped>
+.page-section {
+  height: 100%;
+  overflow: hidden;
+}
+
 .runner-card {
   border-radius: 20px;
+}
+
+.runner-card :deep(.el-card__header) {
+  padding: 14px 20px;
+}
+
+.runner-card :deep(.el-card__body) {
+  padding: 16px;
 }
 
 .runner-header {
@@ -642,7 +919,7 @@ onBeforeUnmount(stopTaskPolling)
 .runner-layout {
   display: grid;
   grid-template-columns: minmax(360px, 520px) minmax(0, 1fr);
-  gap: 18px;
+  gap: 14px;
   align-items: start;
 }
 
@@ -653,22 +930,22 @@ onBeforeUnmount(stopTaskPolling)
 .selection-grid {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 14px;
+  gap: 10px;
   align-items: stretch;
 }
 
 .selection-card {
   border: 1px solid var(--el-border-color-light);
   border-radius: 14px;
-  padding: 14px 14px 12px;
+  padding: 12px 12px 10px;
   background: var(--el-fill-color-blank);
-  min-height: 112px;
+  min-height: 96px;
 }
 
 .selection-label {
   font-size: 14px;
   font-weight: 600;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
   color: var(--el-text-color-primary);
 }
 
@@ -677,7 +954,7 @@ onBeforeUnmount(stopTaskPolling)
 }
 
 .selection-meta {
-  margin-top: 10px;
+  margin-top: 8px;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -705,12 +982,25 @@ onBeforeUnmount(stopTaskPolling)
 }
 
 .info-card {
-  margin-top: 16px;
+  margin-top: 12px;
   padding: 2px;
 }
 
 .live-task-card {
   min-width: 0;
+  height: calc(100vh - 270px);
+  min-height: 400px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.live-task-card :deep(.el-card__body) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .card-title {
@@ -724,52 +1014,68 @@ onBeforeUnmount(stopTaskPolling)
   padding: 0;
 }
 
-.info-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 18px;
-  margin-bottom: 16px;
-}
-
-.info-pane,
-.param-pane {
+/* ===== COMPACT FILE INFO (4-row vertical) ===== */
+.file-info-compact {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 14px;
   border: 1px solid var(--el-border-color-lighter);
-  border-radius: 14px;
-  padding: 16px;
-  background: var(--el-fill-color-blank);
+  border-radius: 12px;
+  background: var(--el-fill-color-lighter);
 }
 
-.info-list {
-  display: grid;
-  gap: 12px;
+.file-info-row {
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.info-item {
-  display: grid;
-  grid-template-columns: 88px minmax(0, 1fr);
-  gap: 10px;
-  align-items: start;
-  font-size: 14px;
-}
-
-.info-key {
-  color: var(--el-text-color-secondary);
-}
-
-.info-value {
+.file-info-name {
+  font-size: 15px;
+  font-weight: 600;
   color: var(--el-text-color-primary);
-  word-break: break-word;
 }
 
-.info-path {
+.file-info-sub {
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+}
+
+.file-info-path {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
   font-family: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
 }
 
-.duration-parts {
+.file-info-time {
+  font-size: 12px;
+  color: var(--el-text-color-placeholder);
+}
+
+.duration-parts-vertical {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.duration-part {
   display: flex;
   align-items: center;
   gap: 10px;
-  flex-wrap: wrap;
+}
+
+.duration-part span {
+  font-size: 14px;
+  color: var(--el-text-color-primary);
+  min-width: 32px;
+}
+
+.duration-part .el-input-number {
+  width: 160px;
 }
 
 .workdir-help {
@@ -814,6 +1120,100 @@ onBeforeUnmount(stopTaskPolling)
   display: flex;
   gap: 12px;
   justify-content: flex-end;
+  align-items: center;
+}
+
+/* ===== READONLY CONFIG CARD ===== */
+.readonly-config-card {
+  border: 1px solid var(--el-border-color);
+  border-radius: 16px;
+  padding: 16px;
+  background: var(--el-fill-color-blank);
+}
+
+.readonly-config-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.readonly-config-title {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.readonly-config-hint {
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+  margin-bottom: 14px;
+  line-height: 1.5;
+}
+
+.readonly-section {
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  background: var(--el-fill-color-lighter);
+}
+
+.readonly-section-title {
+  font-size: 14px;
+  font-weight: 700;
+  margin-bottom: 12px;
+  color: var(--el-text-color-primary);
+}
+
+.readonly-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ro-field {
+  display: grid;
+  grid-template-columns: 100px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  font-size: 13px;
+}
+
+.ro-label {
+  color: var(--el-text-color-secondary);
+  line-height: 1.6;
+}
+
+.ro-value {
+  color: var(--el-text-color-primary);
+  word-break: break-word;
+  line-height: 1.6;
+}
+
+.ro-value.ellipsis {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ro-value.mono {
+  font-family: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 12px;
+}
+
+.ro-command {
+  margin: 0;
+  padding: 8px 10px;
+  background: #0f172a;
+  color: #e5eefc;
+  border-radius: 8px;
+  font-size: 12px;
+  font-family: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-x: auto;
+  max-height: 80px;
+  line-height: 1.5;
 }
 
 .live-task-header {
@@ -829,28 +1229,90 @@ onBeforeUnmount(stopTaskPolling)
   gap: 12px;
 }
 
-.live-task-meta {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-  margin-bottom: 14px;
+.live-task-meta-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  margin-bottom: 4px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 10px;
+  background: var(--el-fill-color-blank);
+  flex-wrap: wrap;
+  min-height: 30px;
 }
 
-.live-task-meta .info-item {
-  grid-template-columns: 72px minmax(0, 1fr);
-  padding: 12px 14px;
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 12px;
-  background: var(--el-fill-color-blank);
+.meta-divider {
+  color: var(--el-border-color);
+  font-size: 14px;
+}
+
+.meta-item {
+  font-size: 13px;
+  color: var(--el-text-color-primary);
+  white-space: nowrap;
+}
+
+.meta-item.mono {
+  font-family: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 12px;
+}
+
+/* ===== RIGHT PANEL FLEX LAYOUT ===== */
+.live-content-wrapper {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.live-tabs-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.live-tabs-area :deep(.el-tabs) {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+}
+
+.live-tabs-area :deep(.el-tabs__content) {
+  flex: none;
+  height: 0;
+  overflow: hidden;
+}
+
+.live-tabs-area :deep(.el-tab-pane) {
+  display: none;
 }
 
 .monitor-tabs {
-  margin-bottom: 12px;
+  margin-bottom: 0;
+}
+
+.live-content-area {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.log-fill {
+  flex: 1;
+  min-height: 0;
+  max-height: none !important;
+  overflow: auto;
 }
 
 .monitor-terminal,
-.monitor-placeholder {
-  min-height: 420px;
+.monitor-terminal-placeholder {
+  flex: 1;
+  min-height: 0;
   border-radius: 14px;
   background: #0b1220;
   border: 1px solid rgba(148, 163, 184, 0.24);
@@ -864,21 +1326,22 @@ onBeforeUnmount(stopTaskPolling)
   overflow: auto;
 }
 
-.monitor-placeholder {
+.monitor-terminal-placeholder {
   display: flex;
   align-items: center;
   justify-content: center;
   color: #94a3b8;
 }
 
-.monitor-placeholder.is-error {
+.monitor-terminal-placeholder.is-error {
   color: #fca5a5;
 }
 
 .monitor-meta {
-  margin-top: 10px;
+  margin-top: 8px;
   color: var(--el-text-color-secondary);
   font-size: 13px;
+  flex-shrink: 0;
 }
 
 .sticky-actions {
@@ -893,10 +1356,113 @@ onBeforeUnmount(stopTaskPolling)
   display: inline-flex;
 }
 
+/* ===== SUMMARY CARD ===== */
+.summary-card {
+  border: 1px solid var(--el-border-color);
+  border-radius: 16px;
+  padding: 16px;
+  background: var(--el-fill-color-blank);
+}
+
+.summary-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.summary-title {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.summary-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.summary-group {
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: var(--el-fill-color-lighter);
+}
+
+.summary-group-title {
+  font-size: 14px;
+  font-weight: 700;
+  margin-bottom: 10px;
+  color: var(--el-text-color-primary);
+}
+
+.summary-group-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.summary-field {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.field-key {
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.6;
+}
+
+.field-value {
+  font-size: 14px;
+  color: var(--el-text-color-primary);
+  word-break: break-word;
+  line-height: 1.6;
+}
+
+.field-value.mono {
+  font-family: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 13px;
+}
+
+.field-value.ellipsis {
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+.completion-alert {
+  margin-bottom: 12px;
+}
+
+.completion-alert .alert-detail {
+  margin-top: 4px;
+  font-size: 13px;
+  font-family: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  word-break: break-all;
+}
+
+.completion-alert .alert-hint {
+  margin-top: 2px;
+  font-size: 12px;
+  opacity: 0.85;
+}
+
+.summary-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.summary-loading {
+  padding: 40px 20px;
+}
+
 @media (max-width: 960px) {
-  .runner-layout,
-  .info-grid,
-  .live-task-meta {
+  .runner-layout {
     grid-template-columns: 1fr;
   }
 
@@ -908,6 +1474,11 @@ onBeforeUnmount(stopTaskPolling)
   .live-task-actions {
     width: 100%;
     justify-content: space-between;
+  }
+
+  .live-task-card {
+    height: auto;
+    min-height: 400px;
   }
 }
 </style>
