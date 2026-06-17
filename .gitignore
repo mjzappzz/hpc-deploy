@@ -1,0 +1,14 @@
+node_modules/
+dist/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.deps/
+.env
+.env.local
+*.db
+*.sqlite
+*.sqlite3
+backend/keys/*
+!backend/keys/.gitkeep
