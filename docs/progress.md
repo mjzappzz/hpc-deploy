@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-当前进行到：阶段 7B：任务执行页简化
+当前进行到：阶段 8B：远程目录创建与文件上传
 
 当前主线已从“复杂 params_schema 平台”收敛为：
 
@@ -17,7 +17,7 @@
 当前下一步：
 
 ```text
-阶段 7B：任务执行页简化
+阶段 8B：远程目录创建与文件上传
 ```
 
 ## 已完成阶段
@@ -156,7 +156,7 @@
    ./cpu_mem_stress_report.sh 14400
 6. 基础编译器脚本无需参数
 7. Apptainer 容器后期只复制到远程指定位置，不执行
-8. 执行按钮仍然禁用，真实执行留到阶段 8
+8. 后续阶段再逐步放开真实执行
 ```
 
 当前实现边界：
@@ -170,13 +170,12 @@
    - 参数输入
    - 按类型显示远程工作目录模板
    - 命令预览
-2. 不创建真实任务
-3. 不做 SSH 上传
-4. 不做脚本执行
-5. 不做 WebSocket
-6. 不做 Server Lock
-7. 不做 Timeout
-8. 不做结果回收
+2. 当前页面已经进入任务创建与执行阶段
+3. 执行能力按任务类型分阶段放开
+4. 不做 WebSocket
+5. 不做 Server Lock
+6. 不做 Timeout
+7. 不做结果回收
 ```
 
 当前页面行为：
@@ -192,18 +191,151 @@
    - 压测脚本：~/hpcdeploy/tasks/stress/{datetime}
    - 测试脚本：~/hpcdeploy/tasks/test/{datetime}
    - Apptainer 容器：~/hpcdeploy/apptainer/
-3. 真实执行仍留到阶段 8
+3. 当前只有 test 类型会真实执行，其他类型仍只上传不执行
+```
+
+阶段 7B 状态：
+
+```text
+已完成
+```
+
+## 阶段 8A：任务模型收口与任务创建
+
+当前阶段目标：
+
+```text
+1. 前端点击“开始执行”
+2. POST /api/tasks/run
+3. 后端校验 server_id / task_type / file_path / duration_seconds
+4. 创建 tasks 记录
+5. 状态为 PENDING
+6. 返回 task_id
+7. 前端跳转到任务历史
+8. 任务历史能看到该任务
+```
+
+当前实现边界：
+
+```text
+1. 创建 tasks 记录并返回 task_id
+2. 只定义任务模型和任务历史展示
+3. 真实 SSH 上传与执行在后续阶段实现
+4. 不做 WebSocket
+5. 不做 Server Lock
+6. 不做 Timeout
+7. 不做结果回收
+```
+
+阶段 8A 状态：
+
+```text
+已完成
+```
+
+## 阶段 8B：远程目录创建与文件上传
+
+当前阶段目标：
+
+```text
+1. 创建任务后启动后台 8B 流程
+2. SSH 连接目标服务器
+3. 创建远程工作目录
+4. 上传知识库文件
+5. 对 .sh / .py 执行 chmod +x
+6. 写入 task_logs
+7. 任务状态更新为 SUCCESS 或 FAILED
+```
+
+当前实现边界：
+
+```text
+1. 完成 SSH 连接、远程 HOME 识别、目录创建、上传、chmod
+2. 任务历史可以看到 CONNECTING / PREPARING / UPLOADING / SUCCESS / FAILED
+3. 不执行业务脚本
+4. 不做 WebSocket
+5. 不做 Server Lock
+6. 不做 Timeout
+7. 不做结果回收
+```
+
+阶段 8B 状态：
+
+```text
+已完成
+```
+
+## 阶段 8C：真实执行 test 脚本并保存日志
+
+当前阶段目标：
+
+```text
+1. 在 8B 上传成功后，仅对 test 类型进入执行阶段
+2. 执行命令固定为：bash ./脚本名
+3. 执行目录固定为 remote_work_dir
+4. 保存 stdout / stderr 到 task_logs
+5. 保存 exit_code、end_time、SUCCESS / FAILED
+6. stress / mpi / apptainer 继续只上传不执行
+```
+
+当前实现边界：
+
+```text
+1. 仅开放 test 类型真实执行
+2. stress 仍只上传，不执行
+3. mpi 仍只上传，不执行
+4. apptainer 仍只复制到远程目录，不执行
+5. 不做 WebSocket
+6. 不做 Server Lock
+7. 不做 Timeout
+8. 不做结果回收
+```
+
+阶段 8C 状态：
+
+```text
+已完成
+```
+
+## 阶段 8D：放开 stress 压测脚本短时间执行
+
+当前阶段目标：
+
+```text
+1. 在 8B 上传成功后，允许 stress 类型进入执行阶段
+2. 执行命令固定为：./脚本名 duration_seconds
+3. duration_seconds 仅允许使用后端校验后的任务参数
+4. 第一版限制最大 3600 秒
+5. 保存 stdout / stderr / exit_code 到 task_logs 和 tasks
+6. mpi / apptainer 继续只上传不执行
+```
+
+当前实现边界：
+
+```text
+1. 仅开放 stress 短时执行和 test 执行
+2. stress 最长 3600 秒
+3. mpi 仍只上传，不执行
+4. apptainer 仍只复制到远程目录，不执行
+5. 不做 WebSocket
+6. 不做 Server Lock
+7. 不做 Timeout
+8. 不做结果回收
+```
+
+阶段 8D 状态：
+
+```text
+已完成
 ```
 
 ## 严格禁止
 
 禁止实现：
-- 远程 SSH 上传
-- 真实脚本执行
-- 真实任务创建
 - WebSocket
 - Server Lock
 - Timeout
+- mpi / apptainer 真实执行
 - AI 助手
 - 复杂编排
 
@@ -212,13 +344,13 @@
 下一步优先做：
 
 ```text
-继续完成阶段 7B 页面验证，确认命令预览和本地参数校验稳定
+继续收口阶段 8，补充 stress 执行后的错误展示与日志验证，再决定是否进入阶段 9 结果回收
 ```
 
 后续开发必须遵守：
 
 ```text
-1. 先完成文档定义的新阶段边界
-2. 先做脚本知识库，不先做执行器
-3. 不得绕过阶段 7A / 7B 直接进入阶段 8
+1. 继续按阶段边界推进
+2. 先收好 test / stress 执行链路，再逐步放开 mpi
+3. 结果回收先做最小可用，不提前引入 WebSocket / Server Lock / Timeout
 ```

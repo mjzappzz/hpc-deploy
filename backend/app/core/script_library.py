@@ -39,6 +39,11 @@ def normalize_library_path(file_path: str) -> str:
     return resolve_library_path(file_path).relative_to(BACKEND_ROOT).as_posix()
 
 
+def get_library_file_record(file_path: str) -> dict[str, object]:
+    normalized = normalize_library_path(file_path)
+    return build_library_file_record(resolve_library_path(normalized))
+
+
 def resolve_library_path(file_path: str) -> Path:
     raw_value = file_path.strip()
     if not raw_value:

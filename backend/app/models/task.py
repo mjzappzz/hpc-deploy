@@ -12,7 +12,13 @@ class Task(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     task_id: Mapped[str] = mapped_column(String(100), unique=True, index=True, nullable=False)
     server_id: Mapped[int] = mapped_column(ForeignKey("servers.id"), nullable=False)
-    script_id: Mapped[int] = mapped_column(ForeignKey("scripts.id"), nullable=False)
+    script_id: Mapped[int | None] = mapped_column(ForeignKey("scripts.id"), nullable=True)
+    task_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    file_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    file_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    display_category: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    remote_work_dir: Mapped[str | None] = mapped_column(Text, nullable=True)
+    command_preview: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="PENDING", nullable=False)
     params: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     start_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -26,4 +32,3 @@ class Task(Base):
         onupdate=datetime.utcnow,
         nullable=False,
     )
-

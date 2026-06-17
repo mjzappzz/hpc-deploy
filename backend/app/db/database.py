@@ -41,6 +41,7 @@ def init_db() -> None:
 
     Base.metadata.create_all(bind=engine)
     _ensure_stage5_server_columns()
+    _ensure_stage8_task_columns()
 
 
 def get_db():
@@ -73,3 +74,90 @@ def _ensure_stage5_server_columns() -> None:
     with engine.begin() as connection:
         for name, column_type in missing:
             connection.execute(text(f"ALTER TABLE servers ADD COLUMN {name} {column_type}"))
+
+
+def _ensure_stage8_task_columns() -> None:
+    if not settings.database_url.startswith("sqlite"):
+        return
+
+    inspector = inspect(engine)
+    if "tasks" not in inspector.get_table_names():
+        return
+
+    columns = {column["name"]: column for column in inspector.get_columns("tasks")}
+    required_columns = {
+        "task_type",
+        "file_path",
+        "file_name",
+        "display_category",
+        "remote_work_dir",
+        "command_preview",
+    }
+    script_id_nullable = columns.get("script_id", {}).get("nullable", True)
+    if required_columns.issubset(columns.keys()) and script_id_nullable:
+        return
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS tasks_stage8 (
+                    id INTEGER NOT NULL PRIMARY KEY,
+                    task_id VARCHAR(100) NOT NULL UNIQUE,
+                    server_id INTEGER NOT NULL,
+                    script_id INTEGER,
+                    task_type VARCHAR(20),
+                    file_path VARCHAR(255),
+                    file_name VARCHAR(255),
+                    display_category VARCHAR(50),
+                    remote_work_dir TEXT,
+                    command_preview TEXT,
+                    status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+                    params JSON,
+                    start_time DATETIME,
+                    end_time DATETIME,
+                    exit_code INTEGER,
+                    error_message TEXT,
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL,
+                    FOREIGN KEY(server_id) REFERENCES servers (id),
+                    FOREIGN KEY(script_id) REFERENCES scripts (id)
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO tasks_stage8 (
+                    id, task_id, server_id, script_id, task_type, file_path, file_name,
+                    display_category, remote_work_dir, command_preview, status, params,
+                    start_time, end_time, exit_code, error_message, created_at, updated_at
+                )
+                SELECT
+                    id,
+                    task_id,
+                    server_id,
+                    script_id,
+                    NULL AS task_type,
+                    NULL AS file_path,
+                    NULL AS file_name,
+                    NULL AS display_category,
+                    NULL AS remote_work_dir,
+                    NULL AS command_preview,
+                    status,
+                    params,
+                    start_time,
+                    end_time,
+                    exit_code,
+                    error_message,
+                    created_at,
+                    updated_at
+                FROM tasks
+                """
+            )
+        )
+        connection.execute(text("DROP TABLE tasks"))
+        connection.execute(text("ALTER TABLE tasks_stage8 RENAME TO tasks"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_id ON tasks (id)"))
+        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_tasks_task_id ON tasks (task_id)"))

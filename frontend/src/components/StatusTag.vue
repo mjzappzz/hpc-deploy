@@ -1,5 +1,5 @@
 <template>
-  <el-tag :type="tagType" effect="plain" round>{{ label }}</el-tag>
+  <el-tag class="status-tag" :class="`is-${tagVariant}`" effect="plain" round>{{ label }}</el-tag>
 </template>
 
 <script setup lang="ts">
@@ -18,15 +18,46 @@ const label = computed(() => {
   return String(props.status ?? 'unknown')
 })
 
-const tagType = computed(() => {
+const tagVariant = computed(() => {
   if (typeof props.status === 'boolean') {
     return props.status ? 'success' : 'info'
   }
-  if (['ONLINE', 'SUCCESS', 'RUNNING'].includes(normalized.value)) return 'success'
+  if (['ONLINE', 'SUCCESS'].includes(normalized.value)) return 'success'
   if (['FAILED', 'OFFLINE', 'TIMEOUT'].includes(normalized.value)) return 'danger'
+  if (['RUNNING', 'CONNECTING', 'PREPARING', 'UPLOADING'].includes(normalized.value)) return 'progress'
   if (['PENDING', 'UNKNOWN'].includes(normalized.value)) return 'info'
   if (['CANCELLED', 'WARN', 'WARNING'].includes(normalized.value)) return 'warning'
   return 'info'
 })
 </script>
 
+<style scoped>
+.status-tag {
+  border-color: transparent;
+}
+
+.status-tag.is-success {
+  color: #15803d;
+  background: #dcfce7;
+}
+
+.status-tag.is-danger {
+  color: #b91c1c;
+  background: #fee2e2;
+}
+
+.status-tag.is-info {
+  color: #475569;
+  background: #e2e8f0;
+}
+
+.status-tag.is-warning {
+  color: #b45309;
+  background: #fef3c7;
+}
+
+.status-tag.is-progress {
+  color: #1d4ed8;
+  background: #dbeafe;
+}
+</style>

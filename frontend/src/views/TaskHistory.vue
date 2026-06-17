@@ -16,7 +16,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, onActivated, ref } from 'vue'
 import { getTaskLogs, listTasks, type TaskLogRecord, type TaskRecord } from '@/api/task'
 import LogViewer from '@/components/LogViewer.vue'
 import TaskCard from '@/components/TaskCard.vue'
@@ -50,4 +50,5 @@ async function openLogs(task: TaskRecord) {
 }
 
 onMounted(loadTasks)
+onActivated(loadTasks)
 </script>
