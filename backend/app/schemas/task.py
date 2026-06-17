@@ -55,3 +55,16 @@ class TaskRead(BaseModel):
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class ArtifactFileDetail(BaseModel):
+    name: str
+    size: int
+    type: str
+    local_relative_path: str
+    download_url: str
+
+
+class ArtifactListResponse(BaseModel):
+    artifact_dir: str
+    files: list[ArtifactFileDetail]

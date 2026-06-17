@@ -58,6 +58,19 @@ export interface TaskMonitorResult {
   executed_at: string
 }
 
+export interface ArtifactFileDetail {
+  name: string
+  size: number
+  type: string
+  local_relative_path: string
+  download_url: string
+}
+
+export interface ArtifactListResponse {
+  artifact_dir: string
+  files: ArtifactFileDetail[]
+}
+
 export function runTask(data: RunTaskPayload) {
   return request.post<RunTaskResult>('/tasks/run', data)
 }
@@ -76,4 +89,8 @@ export function getTaskLogs(taskId: string) {
 
 export function monitorTask(taskId: string, data: TaskMonitorPayload) {
   return request.post<TaskMonitorResult>(`/tasks/${taskId}/monitor`, data)
+}
+
+export function listArtifacts(taskId: string) {
+  return request.get<ArtifactListResponse>(`/tasks/${taskId}/artifacts`)
 }

@@ -63,6 +63,13 @@ def run_task_stage8b(task_id: str) -> None:
             _execute_command_task(db, executor, task, task_id, _build_test_command(task.file_name))
         elif task.task_type == "stress":
             _execute_command_task(db, executor, task, task_id, _build_stress_command(task))
+            if task.remote_work_dir:
+                try:
+                    from app.core.artifact_collector import collect_artifacts
+
+                    collect_artifacts(db, task_id, task.remote_work_dir, executor)
+                except Exception:
+                    _add_log(db, task_id, "ERROR", "artifact collection failed")
         else:
             _add_log(db, task_id, "SYSTEM", "stage 8B completed, script was uploaded but not executed")
             task.status = "SUCCESS"

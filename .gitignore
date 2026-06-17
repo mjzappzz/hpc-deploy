@@ -12,3 +12,4 @@ venv/
 *.sqlite3
 backend/keys/*
 !backend/keys/.gitkeep
+backend/data/artifacts/

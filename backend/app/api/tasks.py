@@ -6,13 +6,15 @@ from app.core.script_library import get_library_file_record
 from app.core.ssh_executor import SSHCommandTimeoutError, SSHExecutor, SSHExecutorError
 from app.core.script_validator import ScriptValidationError
 from app.core.task_runner import run_task_stage8b
+from app.core.artifact_collector import ARTIFACTS_DIR
 from app.db.database import get_db
 from app.models.server import Server
 from app.models.task import Task
 from app.models.task_log import TaskLog
 from app.schemas.log import TaskLogRead
-from app.schemas.task import TaskMonitorRequest, TaskMonitorResponse, TaskRead, TaskRunRequest, TaskRunResponse
+from app.schemas.task import ArtifactFileDetail, ArtifactListResponse, TaskMonitorRequest, TaskMonitorResponse, TaskRead, TaskRunRequest, TaskRunResponse
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -191,6 +193,60 @@ def task_monitor(
         )
     finally:
         executor.close()
+
+
+@router.get("/{task_id}/artifacts", response_model=ArtifactListResponse)
+def list_artifacts(task_id: str, db: Session = Depends(get_db)) -> ArtifactListResponse:
+    _get_task_or_404(db, task_id)
+    artifact_rel_dir = f"backend/data/artifacts/{task_id}/"
+    artifacts_dir = ARTIFACTS_DIR / task_id
+
+    files: list[ArtifactFileDetail] = []
+    if artifacts_dir.is_dir():
+        for entry in artifacts_dir.iterdir():
+            if not entry.is_file():
+                continue
+            files.append(
+                ArtifactFileDetail(
+                    name=entry.name,
+                    size=entry.stat().st_size,
+                    type=entry.suffix.lstrip("."),
+                    local_relative_path=f"backend/data/artifacts/{task_id}/{entry.name}",
+                    download_url=f"/api/tasks/{task_id}/artifacts/{entry.name}/download",
+                )
+            )
+
+    return ArtifactListResponse(
+        artifact_dir=artifact_rel_dir,
+        files=files,
+    )
+
+
+@router.get("/{task_id}/artifacts/{filename}/download")
+def download_artifact(
+    task_id: str,
+    filename: str,
+    db: Session = Depends(get_db),
+) -> FileResponse:
+    _get_task_or_404(db, task_id)
+
+    safe_name = Path(filename).name
+    if not safe_name or safe_name != filename:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid filename")
+
+    filepath = (ARTIFACTS_DIR / task_id / safe_name).resolve()
+    expected_prefix = (ARTIFACTS_DIR / task_id).resolve()
+    if not str(filepath).startswith(str(expected_prefix)):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid filename")
+
+    if not filepath.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="file not found")
+
+    return FileResponse(
+        path=str(filepath),
+        media_type="application/octet-stream",
+        filename=safe_name,
+    )
 
 
 def _get_library_file_or_400(file_path: str) -> dict[str, object]:
