@@ -5,6 +5,8 @@ from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from sqlalchemy.orm import Session
 
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
+
 
 class Base(DeclarativeBase):
     pass
@@ -19,17 +21,29 @@ def _sqlite_path(database_url: str) -> Path | None:
     if raw_path in {":memory:", ""}:
         return None
 
-    return Path(raw_path)
+    sqlite_path = Path(raw_path)
+    if not sqlite_path.is_absolute():
+        sqlite_path = (BACKEND_ROOT / sqlite_path).resolve()
+    return sqlite_path
 
 
-sqlite_path = _sqlite_path(settings.database_url)
+def _normalize_database_url(database_url: str) -> str:
+    sqlite_path = _sqlite_path(database_url)
+    if sqlite_path is None:
+        return database_url
+    return f"sqlite:///{sqlite_path.as_posix()}"
+
+
+normalized_database_url = _normalize_database_url(settings.database_url)
+sqlite_path = _sqlite_path(normalized_database_url)
 if sqlite_path is not None:
     sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+    print(f"[HPCDeploy] Using SQLite database: {sqlite_path}")
 
 engine = create_engine(
-    settings.database_url,
+    normalized_database_url,
     connect_args={"check_same_thread": False}
-    if settings.database_url.startswith("sqlite")
+    if normalized_database_url.startswith("sqlite")
     else {},
 )
 
@@ -53,7 +67,7 @@ def get_db():
 
 
 def _ensure_stage5_server_columns() -> None:
-    if not settings.database_url.startswith("sqlite"):
+    if not normalized_database_url.startswith("sqlite"):
         return
 
     inspector = inspect(engine)
@@ -77,7 +91,7 @@ def _ensure_stage5_server_columns() -> None:
 
 
 def _ensure_stage8_task_columns() -> None:
-    if not settings.database_url.startswith("sqlite"):
+    if not normalized_database_url.startswith("sqlite"):
         return
 
     inspector = inspect(engine)

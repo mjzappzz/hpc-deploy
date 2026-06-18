@@ -89,6 +89,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { formatDateTime } from '@/utils/time'
 import ScriptTable from '@/components/ScriptTable.vue'
 import {
   deleteScriptFile,
@@ -203,9 +204,7 @@ function formatSize(size: number) {
 }
 
 function formatDate(value: string) {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleString('zh-CN', { hour12: false })
+  return formatDateTime(value)
 }
 
 function getApiErrorMessage(error: unknown) {

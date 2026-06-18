@@ -204,25 +204,53 @@ curl -s -X POST "http://localhost:8000/api/tasks/{task_id}/cancel"
 
 ---
 
-## 15. 非阻塞问题记录
+## 15. 任务删除（Phase 12A）
+
+- [ ] SUCCESS / FAILED / CANCELED 状态任务显示"删除任务"按钮
+- [ ] PENDING / CONNECTING / PREPARING / UPLOADING / RUNNING / CANCELING 状态不显示删除按钮
+- [ ] 未完成任务（RUNNING 等）显示"取消任务"而非"删除任务"
+- [ ] 删除确认弹窗采用结构化排版：明确列出"将删除"和"不会删除"两组内容
+- [ ] 点击确认后任务从历史列表中消失
+- [ ] 删除后重新查询后端确认任务记录已被清除
+- [ ] 远端工作目录 `~/hpcdeploy/tasks/{type}/{timestamp}/` 已被清理
+- [ ] 本地 artifacts 目录 `backend/data/artifacts/{task_id}/` 已被清理
+- [ ] 任务日志（task_logs 表）已被删除
+- [ ] 服务器配置、脚本知识库文件、已安装到 `/opt`/`/usr` 的软件不受影响
+- [ ] 其他任务记录不受影响
+
+**验证 API 命令：**
+
+```bash
+# 删除任务
+curl -s -X DELETE "http://localhost:8000/api/tasks/{task_id}"
+# 预期：{"task_id": "...", "deleted": true, ...}
+
+# 确认删除后查询不存在
+curl -s "http://localhost:8000/api/tasks/{task_id}"
+# 预期：404
+```
+
+---
+
+## 16. 非阻塞问题记录
 
 以下 3 个问题不影响 MVP 功能完整性，建议记录但不立即修复：
 
-### 15.1 clipboard.writeText 在非 HTTPS 环境降级
+### 16.1 clipboard.writeText 在非 HTTPS 环境降级
 
 `TaskHistory.vue` 中 `copyArtifactDir` 使用 `navigator.clipboard.writeText()`，该 API 需要安全上下文（HTTPS 或 localhost）。开发模式（localhost）下没问题，生产环境需要 HTTPS。影响极小——复制按钮只是便利功能，失败时用户可手动选中路径复制。
 
-### 15.2 旧 PENDING 任务需要人工清理
+### 16.2 旧 PENDING 任务需要人工清理
 
 后端已实现同服务器防重复提交。当前保留风险是历史遗留 `PENDING` 任务会被视为未完成任务，从而阻塞新提交。出现这种情况时，可通过 SQLite 手动将旧 `PENDING` 修正为 `FAILED`。
 
-### 15.3 回收失败未更新 error_message
+### 16.3 回收失败未更新 error_message
 
 `artifact_collector.py` 中回收失败只写 ERROR 日志到 `task_logs`，没有更新 `task.error_message`。按需求描述"可以在任务上记录 artifact_error"，当前省略了，不影响核心验收（任务状态和退出码仍然正确）。
 
 ---
 
-## 16. 当前 MVP 验收通过标准
+## 17. 当前 MVP 验收通过标准
 
 - test/hello.sh 能执行成功
 - stress 60 秒能执行成功

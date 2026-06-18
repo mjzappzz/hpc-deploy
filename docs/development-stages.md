@@ -85,6 +85,7 @@ backend/apptainer
 阶段 10D：部署强化（systemd + PATH 修复）
 阶段 11A：同服务器防重复提交
 阶段 11B-11E：任务取消完整链路（PID→PGID→kill→清理）
+阶段 12A：任务历史删除
 ```
 
 ---
@@ -135,6 +136,14 @@ config（新建）/ summary（执行摘要）/ config-readonly（只读配置快
 
 ### 阶段 11B-11E：任务取消完整链路
 PID 文件（`.hpcdeploy.pid`）→ PGID → 进程组 SIGTERM/SIGKILL，远端工作目录清理，临时目录白名单清理（`/tmp/oneapi_install_2022`、`/tmp/openmpi_aocc_aocl_install`）。
+
+### 阶段 12A：任务历史删除
+- `DELETE /api/tasks/{task_id}` — 完整删除（记录 + 日志 + 本地 artifacts + 远端目录）
+- `POST /api/tasks/{task_id}/cleanup` — 仅清理文件，保留记录和日志
+- 安全校验前置：远端路径格式检查，SSH/安全失败不删数据库
+- 前端确认弹窗结构化为"将删除/不会删除"分组排版
+- 新增 `TaskDeleteResponse` / `TaskCleanupResponse` Pydantic schema
+- 新增 `frontend/src/utils/confirm.ts` 统一确认弹窗工具函数
 
 
 ---
@@ -556,13 +565,19 @@ servers.status
 
 以下阶段在主线收敛后按需推进：
 
-### 阶段 12：部署与安全增强
+### 阶段 12B：任务历史交互优化（已完成 Phase 12A）
+- 任务历史筛选（按状态、按类型、按服务器）
+- 搜索（按 task_id、文件名、服务器名）
+- 分页加载
+- 批量删除（可选）
+
+### 阶段 13（原 Phase 12）：部署与安全增强
 - Docker Compose 容器化部署
 - Nginx 反代配置（前端静态 + API）
 - SSH key 权限自动检查
 - 访问控制、日志保留策略
 
-### 阶段 13：前端体验优化
+### 阶段 14：前端体验优化
 - 仪表盘统计卡片
 - 暗色主题
 - 任务进度显示
@@ -606,6 +621,7 @@ servers.status
 阶段 10D：部署强化（systemd）
 阶段 11A：同服务器防重复提交
 阶段 11B-11E：任务取消完整链路
+阶段 12A：任务历史删除
 ```
 
 ---

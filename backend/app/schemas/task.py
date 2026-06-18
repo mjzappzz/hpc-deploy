@@ -20,6 +20,11 @@ class TaskRunResponse(BaseModel):
     status: str
 
 
+class TaskCancelResponse(BaseModel):
+    task_id: str
+    status: str
+
+
 class TaskMonitorRequest(BaseModel):
     type: MonitorType
 
@@ -68,3 +73,20 @@ class ArtifactFileDetail(BaseModel):
 class ArtifactListResponse(BaseModel):
     artifact_dir: str
     files: list[ArtifactFileDetail]
+
+
+class TaskCleanupResponse(BaseModel):
+    task_id: str
+    local_artifacts_removed: bool
+    remote_work_dir_removed: bool
+    messages: list[str]
+
+
+class TaskDeleteResponse(BaseModel):
+    task_id: str
+    deleted: bool
+    local_artifacts_removed: bool
+    remote_work_dir_removed: bool
+    logs_deleted: bool
+    task_deleted: bool
+    messages: list[str]

@@ -96,6 +96,7 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { formatDateTime } from '@/utils/time'
 import {
   createServer,
   deleteServer,
@@ -146,6 +147,9 @@ async function loadServers() {
   loading.value = true
   try {
     servers.value = (await listServers()).data
+  } catch (error) {
+    servers.value = []
+    ElMessage.error(`加载服务器失败：${getApiErrorMessage(error)}`)
   } finally {
     loading.value = false
   }
@@ -258,8 +262,21 @@ function displayValue(value: string | null | undefined) {
   return value?.trim() || '-'
 }
 
+function getApiErrorMessage(error: unknown) {
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'response' in error &&
+    typeof (error as { response?: { data?: { detail?: unknown } } }).response?.data?.detail === 'string'
+  ) {
+    return (error as { response: { data: { detail: string } } }).response.data.detail
+  }
+  if (error instanceof Error) return error.message
+  return '请求失败'
+}
+
 function formatTime(value: string | null | undefined) {
-  return value ? new Date(value).toLocaleString() : '-'
+  return formatDateTime(value)
 }
 
 onMounted(loadServers)

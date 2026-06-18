@@ -5,9 +5,9 @@
         <div class="runner-header">
           <div>
             <div class="runner-title">任务执行准备</div>
-            <div class="runner-subtitle">当前阶段会执行 test 和 stress；Apptainer 只做容器分发上传，不执行。</div>
+            <div class="runner-subtitle">当前阶段会执行 test、stress 和 3 个显式白名单 mpi 脚本；Apptainer 只做容器分发上传，不执行。</div>
           </div>
-          <el-tag type="success" effect="plain">Apptainer 分发</el-tag>
+          <el-tag type="success" effect="plain">阶段 11B</el-tag>
         </div>
       </template>
 
@@ -143,8 +143,15 @@
               </el-form>
 
               <el-alert
-                v-if="selectedTaskType && !['test', 'stress'].includes(selectedTaskType)"
+                v-if="selectedTaskType === 'apptainer'"
                 title="当前阶段 Apptainer 只分发上传容器文件，不执行容器。"
+                type="warning"
+                :closable="false"
+              />
+
+              <el-alert
+                v-if="selectedTaskType === 'mpi' && selectedFile && !isAllowedMpiFile(selectedFile)"
+                :title="MPI_TASK_BLOCKED_MESSAGE"
                 type="warning"
                 :closable="false"
               />
@@ -307,7 +314,15 @@
                 <template #title>
                   <div>任务执行成功</div>
                   <div class="alert-detail">远程工作目录：{{ activeTask.remote_work_dir }}</div>
-                  <div class="alert-hint">{{ activeTask.task_type === 'apptainer' ? '容器文件已上传到远端固定目录，未执行容器。' : '后续阶段将支持自动回收和下载结果文件。' }}</div>
+                  <div class="alert-hint">
+                    {{
+                      activeTask.task_type === 'apptainer'
+                        ? '容器文件已上传到远端固定目录，未执行容器。'
+                        : activeTask.task_type === 'mpi'
+                          ? '当前 MPI 任务已执行完成。仅显式白名单脚本允许执行。'
+                          : '后续阶段将支持自动回收和下载结果文件。'
+                    }}
+                  </div>
                 </template>
               </el-alert>
 
@@ -322,6 +337,20 @@
                   <div>任务执行失败</div>
                   <div v-if="activeTask.error_message" class="alert-detail">{{ activeTask.error_message }}</div>
                   <div class="alert-hint">请查看右侧日志了解详情。</div>
+                </template>
+              </el-alert>
+
+              <el-alert
+                v-if="activeTask.status === 'CANCELED'"
+                type="warning"
+                :closable="false"
+                show-icon
+                class="completion-alert"
+              >
+                <template #title>
+                  <div>任务已取消</div>
+                  <div v-if="activeTask.error_message" class="alert-detail">{{ activeTask.error_message }}</div>
+                  <div class="alert-hint">远端工作目录已清理，任务记录和日志已保留。</div>
                 </template>
               </el-alert>
 
@@ -347,6 +376,16 @@
               </div>
               <div class="live-task-actions">
                 <StatusTag :status="activeTask?.status || 'PENDING'" />
+                <el-button
+                  v-if="showCancelTaskButton"
+                  type="danger"
+                  plain
+                  :disabled="cancelSubmitting"
+                  @click="cancelCurrentTask"
+                >
+                  取消任务
+                </el-button>
+                <el-button v-if="showCancelingTaskButton" type="warning" plain disabled>正在取消...</el-button>
                 <el-button :disabled="!activeTaskId" :loading="monitorLoading || (polling && activePanel === 'logs')" @click="refreshCurrentPanel">
                   刷新当前监控
                 </el-button>
@@ -399,6 +438,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { listScriptFiles, type ScriptFileRecord } from '@/api/script'
 import { listServers, type ServerRecord } from '@/api/server'
 import {
+  cancelTask,
   getTask,
   getTaskLogs,
   monitorTask,
@@ -408,6 +448,8 @@ import {
   type TaskRecord,
   type TaskType as ApiTaskType
 } from '@/api/task'
+import { formatDateTime } from '@/utils/time'
+import { buildConfirmContent } from '@/utils/confirm'
 import LogViewer from '@/components/LogViewer.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -427,6 +469,12 @@ type TaskRunnerFile = ScriptFileRecord & {
 type MonitorPanel = 'logs' | 'cpu_mem' | 'disk' | 'gpu'
 
 type PageMode = 'config' | 'summary' | 'config-readonly'
+const ALLOWED_MPI_FILENAMES = [
+  'mpi_env_test.sh',
+  'install_oneapi_2022.sh',
+  'install_openmpi_4.1.6_aocc_aocl.sh'
+] as const
+const MPI_TASK_BLOCKED_MESSAGE = '当前阶段只允许执行 mpi_env_test.sh、install_oneapi_2022.sh、install_openmpi_4.1.6_aocc_aocl.sh。'
 
 const taskTypes: Array<{ label: string; value: TaskType }> = [
   { label: '编译环境', value: 'mpi' },
@@ -444,6 +492,7 @@ const servers = ref<ServerRecord[]>([])
 const files = ref<TaskRunnerFile[]>([])
 const validating = ref(false)
 const submitting = ref(false)
+const cancelSubmitting = ref(false)
 const polling = ref(false)
 const monitorLoading = ref(false)
 const apptainerTargetDir = ref('~/hpcdeploy/apptainer/')
@@ -488,6 +537,9 @@ const commandPreview = computed(() => {
   if (selectedFile.value.physical_category === 'stress') {
     return `./${selectedFile.value.name} ${stressDurationSeconds.value}`
   }
+  if (selectedFile.value.physical_category === 'mpi' && !isAllowedMpiFile(selectedFile.value)) {
+    return MPI_TASK_BLOCKED_MESSAGE
+  }
   if (selectedFile.value.physical_category === 'apptainer') {
     return `复制容器到远程目录：${apptainerTargetDir.value}`
   }
@@ -500,6 +552,12 @@ const executeTooltip = computed(() => {
   }
   if (selectedTaskType.value === 'stress') {
     return '当前会上传并执行 stress 脚本，单次最多 3600 秒'
+  }
+  if (selectedTaskType.value === 'mpi') {
+    if (selectedFile.value && !isAllowedMpiFile(selectedFile.value)) {
+      return MPI_TASK_BLOCKED_MESSAGE
+    }
+    return '当前只允许执行 3 个显式白名单 mpi 脚本，不会放开 mpi 目录下全部 .sh'
   }
   if (selectedTaskType.value === 'apptainer') {
     return '当前会把 .sif 容器文件上传到固定远端目录，不执行容器'
@@ -547,7 +605,16 @@ const isFormDisabled = computed(() => {
   if (!activeTaskId.value) return false
   const status = activeTask.value?.status
   if (!status) return false
+  return ['PENDING', 'CONNECTING', 'PREPARING', 'UPLOADING', 'RUNNING', 'CANCELING'].includes(status)
+})
+
+const showCancelTaskButton = computed(() => {
+  const status = activeTask.value?.status?.toUpperCase() ?? ''
   return ['PENDING', 'CONNECTING', 'PREPARING', 'UPLOADING', 'RUNNING'].includes(status)
+})
+
+const showCancelingTaskButton = computed(() => {
+  return (activeTask.value?.status?.toUpperCase() ?? '') === 'CANCELING'
 })
 
 const executeButtonText = computed(() => {
@@ -573,6 +640,14 @@ function normalizeDurationParts(parts: DurationParts) {
   }
 }
 
+function isAllowedMpiFile(file: TaskRunnerFile | null | undefined): boolean {
+  return Boolean(
+    file &&
+    file.physical_category === 'mpi' &&
+    ALLOWED_MPI_FILENAMES.includes(file.name as (typeof ALLOWED_MPI_FILENAMES)[number])
+  )
+}
+
 function resetParamsForFile() {
   Object.assign(durationParts, { hours: 0, minutes: 1, seconds: 0 })
   apptainerTargetDir.value = '~/hpcdeploy/apptainer/'
@@ -593,6 +668,10 @@ async function validateRunner() {
       ElMessage.error('必须选择知识库文件')
       return
     }
+    if (selectedTaskType.value === 'mpi' && !isAllowedMpiFile(selectedFile.value)) {
+      ElMessage.error(MPI_TASK_BLOCKED_MESSAGE)
+      return
+    }
     if (selectedFile.value.physical_category === 'stress' && stressDurationSeconds.value <= 0) {
       ElMessage.error('压测脚本总秒数必须大于 0')
       return
@@ -605,7 +684,15 @@ async function validateRunner() {
       ElMessage.error('Apptainer 目标目录不能为空')
       return
     }
-    ElMessage.success('参数校验通过。Apptainer 任务只会上传 .sif 容器文件到固定远端目录，不执行容器。')
+    if (selectedTaskType.value === 'mpi') {
+      ElMessage.success('参数校验通过。当前只允许执行 3 个显式白名单 mpi 脚本。')
+      return
+    }
+    if (selectedTaskType.value === 'apptainer') {
+      ElMessage.success('参数校验通过。Apptainer 任务只会上传 .sif 容器文件到固定远端目录，不执行容器。')
+      return
+    }
+    ElMessage.success('参数校验通过。')
   } finally {
     validating.value = false
   }
@@ -626,6 +713,10 @@ async function createTask() {
   }
   if (!selectedFile.value) {
     ElMessage.error('必须选择知识库文件')
+    return
+  }
+  if (selectedTaskType.value === 'mpi' && !isAllowedMpiFile(selectedFile.value)) {
+    ElMessage.error(MPI_TASK_BLOCKED_MESSAGE)
     return
   }
   if (selectedFile.value.physical_category === 'stress' && stressDurationSeconds.value <= 0) {
@@ -711,6 +802,41 @@ async function handleNewTask() {
   await router.replace('/task-runner')
 }
 
+async function cancelCurrentTask() {
+  if (!activeTaskId.value) return
+  try {
+    await ElMessageBox.confirm(
+      buildConfirmContent({
+        intro: '确认取消当前任务？',
+        doTitle: '将执行：',
+        doItems: ['终止远端任务进程', '清理本次任务远端工作目录', '清理允许范围内的临时下载目录'],
+        dontTitle: '不会执行：',
+        dontItems: ['删除任务记录', '删除任务日志', '回滚已安装软件', '删除 Apptainer 容器仓库'],
+      }),
+      '取消任务',
+      {
+        confirmButtonText: '确认取消',
+        cancelButtonText: '取消',
+        type: 'warning',
+        customClass: 'confirm-dialog'
+      }
+    )
+  } catch {
+    return
+  }
+
+  cancelSubmitting.value = true
+  try {
+    await cancelTask(activeTaskId.value)
+    ElMessage.success('已提交取消请求')
+    await fetchTaskRuntime(activeTaskId.value)
+  } catch (error) {
+    ElMessage.error(getApiErrorMessage(error))
+  } finally {
+    cancelSubmitting.value = false
+  }
+}
+
 function goToHistory() {
   router.push('/history')
 }
@@ -727,7 +853,7 @@ async function recoverTask() {
     mode.value = 'summary'
 
     const status = taskResp.data.status?.toUpperCase() ?? ''
-    if (['SUCCESS', 'FAILED'].includes(status)) {
+    if (['SUCCESS', 'FAILED', 'CANCELED'].includes(status)) {
       localStorage.removeItem('hpcdeploy.currentTaskId')
       return
     }
@@ -757,7 +883,7 @@ async function fetchTaskRuntime(taskId: string) {
     activeTask.value = taskResp.data
     activeLogs.value = logsResp.data
 
-    if (['SUCCESS', 'FAILED'].includes(taskResp.data.status.toUpperCase())) {
+    if (['SUCCESS', 'FAILED', 'CANCELED'].includes(taskResp.data.status.toUpperCase())) {
       stopTaskPolling()
     }
   } catch (error) {
@@ -825,12 +951,7 @@ function formatSize(size: number) {
   return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`
 }
 
-function formatDate(value: string | null | undefined) {
-  if (!value) return '-'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleString('zh-CN', { hour12: false })
-}
+const formatDate = formatDateTime
 
 function taskTypeLabel(value: TaskType | null | undefined) {
   if (!value) return '-'
@@ -868,8 +989,10 @@ function statusLabel(status: string | null | undefined): string {
     PREPARING: '准备中',
     UPLOADING: '上传中',
     RUNNING: '运行中',
+    CANCELING: '取消中',
     SUCCESS: '已完成',
-    FAILED: '已失败'
+    FAILED: '已失败',
+    CANCELED: '已取消'
   }
   return labels[status ?? ''] ?? status ?? '-'
 }

@@ -24,9 +24,9 @@ const tagVariant = computed(() => {
   }
   if (['ONLINE', 'SUCCESS'].includes(normalized.value)) return 'success'
   if (['FAILED', 'OFFLINE', 'TIMEOUT'].includes(normalized.value)) return 'danger'
-  if (['RUNNING', 'CONNECTING', 'PREPARING', 'UPLOADING'].includes(normalized.value)) return 'progress'
+  if (['RUNNING', 'CONNECTING', 'PREPARING', 'UPLOADING', 'CANCELING'].includes(normalized.value)) return 'progress'
   if (['PENDING', 'UNKNOWN'].includes(normalized.value)) return 'info'
-  if (['CANCELLED', 'WARN', 'WARNING'].includes(normalized.value)) return 'warning'
+  if (['CANCELLED', 'CANCELED', 'WARN', 'WARNING'].includes(normalized.value)) return 'warning'
   return 'info'
 })
 </script>

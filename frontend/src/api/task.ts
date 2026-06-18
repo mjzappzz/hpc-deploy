@@ -66,6 +66,23 @@ export interface ArtifactFileDetail {
   download_url: string
 }
 
+export interface TaskCleanupResponse {
+  task_id: string
+  local_artifacts_removed: boolean
+  remote_work_dir_removed: boolean
+  messages: string[]
+}
+
+export interface TaskDeleteResponse {
+  task_id: string
+  deleted: boolean
+  local_artifacts_removed: boolean
+  remote_work_dir_removed: boolean
+  logs_deleted: boolean
+  task_deleted: boolean
+  messages: string[]
+}
+
 export interface ArtifactListResponse {
   artifact_dir: string
   files: ArtifactFileDetail[]
@@ -87,10 +104,29 @@ export function getTaskLogs(taskId: string) {
   return request.get<TaskLogRecord[]>(`/tasks/${taskId}/logs`)
 }
 
+export function cancelTask(taskId: string) {
+  return request.post<RunTaskResult>(`/tasks/${taskId}/cancel`)
+}
+
+export function cleanupTask(taskId: string) {
+  return request.post<TaskCleanupResponse>(`/tasks/${taskId}/cleanup`)
+}
+
+export function deleteTask(taskId: string) {
+  return request.delete<TaskDeleteResponse>(`/tasks/${taskId}`)
+}
+
 export function monitorTask(taskId: string, data: TaskMonitorPayload) {
   return request.post<TaskMonitorResult>(`/tasks/${taskId}/monitor`, data)
 }
 
 export function listArtifacts(taskId: string) {
   return request.get<ArtifactListResponse>(`/tasks/${taskId}/artifacts`)
+}
+
+export function downloadTaskLogs(taskId: string) {
+  const a = document.createElement('a')
+  a.href = `/api/tasks/${taskId}/logs/download`
+  a.download = `${taskId}.log`
+  a.click()
 }

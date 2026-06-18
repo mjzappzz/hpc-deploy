@@ -8,16 +8,26 @@ MVP 已全部完成，进入收尾维护阶段。
 
 ```text
 脚本知识库 → 选择服务器 → 选择脚本 → SSH 上传 → 远程执行 → 实时日志
-→ 资源快照 → 任务历史 → 结果文件回收下载 → 任务取消
+→ 资源快照 → 任务历史 → 结果文件回收下载 → 任务取消 → 任务删除
 ```
 
 当前下一步：
 
 ```text
-阶段 12：部署与安全增强（Docker / Nginx）
+阶段 12B：任务历史筛选/搜索/分页优化
 ```
 
 ## 最新状态补充
+
+### 阶段 12A：任务历史删除功能已完成
+- `DELETE /api/tasks/{task_id}` — 删除任务记录、任务日志、本地结果文件、远端工作目录
+- `POST /api/tasks/{task_id}/cleanup` — 仅删除本地结果文件和远端工作目录，保留任务记录和日志
+- 删除按钮仅对终态任务显示（SUCCESS / FAILED / CANCELED）
+- 确认弹窗采用结构化排版，明确列出"将删除/不会删除"内容
+- 安全模型：远端工作目录路径格式校验（禁止 `/root`、`/home`、`/tmp` 等顶层目录）
+- SSH 失败或安全校验失败时返回错误，不删除数据库记录
+- 不删除：服务器配置、脚本知识库文件、已安装到 `/opt`/`/usr` 的软件、Apptainer 容器仓库
+- 新增前端工具函数：`frontend/src/utils/confirm.ts` — `buildConfirmContent()` 统一构造确认弹窗 VNode
 
 ### 任务取消（Phase 11B-11E）已完成
 - PID 文件（`.hpcdeploy.pid`）→ PGID → 进程组 SIGTERM/SIGKILL
@@ -59,6 +69,7 @@ HPCDeploy 是一个面向 HPC 运维的轻量级脚本执行控制台。
 → 资源快照
 → 任务历史
 → 结果文件回收下载
+→ 任务删除
 ```
 
 ## 已完成阶段
@@ -213,6 +224,15 @@ HPCDeploy 是一个面向 HPC 运维的轻量级脚本执行控制台。
 - 时间本地化显示（`formatDateTime`）
 - 日志下载功能
 
+### 阶段 12A：任务历史删除功能
+- `DELETE /api/tasks/{task_id}` — 删除任务记录、任务日志、本地结果文件、远端工作目录
+- `POST /api/tasks/{task_id}/cleanup` — 仅删除本地文件和远端目录，保留任务记录和日志
+- 删除按钮仅对终态任务显示（SUCCESS / FAILED / CANCELED）
+- 安全模型：远端路径格式校验（禁止 `/root`、`/home`、`/tmp` 等顶层目录），SSH/安全失败不删除数据库记录
+- 新增 `TaskDeleteResponse` / `TaskCleanupResponse` schema
+- 前端确认弹窗结构化为"将删除/不会删除"排版（`frontend/src/utils/confirm.ts`）
+- 不删除：服务器配置、脚本知识库文件、已安装到 `/opt`/`/usr` 的软件、Apptainer 容器仓库
+
 ## 当前完整主链路
 
 ```text
@@ -238,6 +258,10 @@ SSH 连接（CONNECTING → PREPARING → UPLOADING）
 结果文件回收（仅 stress）
   └─ SFTP 下载到 backend/data/artifacts/{task_id}/
       └─ .log / .txt / .csv / .xlsx / .json
+  ↓
+任务删除（仅终态 SUCCESS / FAILED / CANCELED）
+  ├─ DELETE /api/tasks/{task_id} → 删除记录 + 日志 + 本地文件 + 远端目录
+  └─ POST /api/tasks/{task_id}/cleanup → 仅删文件，保留记录
 ```
 
 ## 当前已完成
@@ -327,6 +351,13 @@ SSH 连接（CONNECTING → PREPARING → UPLOADING）
     - 后端 UTC 存储，前端 `formatDateTime()` 转换本地时间
     - 格式：`YYYY/MM/DD HH:mm:ss`
 
+14. 任务删除
+    - `DELETE /api/tasks/{task_id}` — 删除任务记录、日志、本地文件、远端目录
+    - `POST /api/tasks/{task_id}/cleanup` — 仅删文件，保留记录和日志
+    - 仅终态任务显示删除按钮（SUCCESS / FAILED / CANCELED）
+    - 安全校验：远端路径格式限制，失败不删除数据库记录
+    - 不删除：服务器配置、脚本库、已安装软件、Apptainer 仓库
+
 ## 当前仍不做
 
 - WebSocket（用 HTTP 轮询替代）
@@ -355,11 +386,12 @@ SSH 连接（CONNECTING → PREPARING → UPLOADING）
 - `frontend/src/components/LogViewer.vue` — 日志展示组件
 - `frontend/src/api/task.ts` — 任务 API 调用（含日志下载）
 - `frontend/src/utils/time.ts` — 时间格式化工具
+- `frontend/src/utils/confirm.ts` — 确认弹窗结构化排版工具函数
 
 ## 下一步建议
 
-下一阶段：阶段 12，部署与安全增强。
-- Docker Compose 容器化部署
-- Nginx 反代配置
-- SSH key 权限自动检查
-- 日志保留策略
+下一阶段：阶段 12B，任务历史交互优化。
+- 任务历史筛选（按状态、按类型、按服务器）
+- 搜索（按 task_id、文件名、服务器名）
+- 分页加载
+- 批量删除（可选）

@@ -2,7 +2,7 @@
   <div ref="containerRef" class="log-viewer" :style="{ maxHeight }">
     <div v-if="logs.length === 0" class="log-viewer__empty">暂无日志</div>
     <div v-for="log in logs" :key="log.id" class="log-viewer__line">
-      <span class="log-viewer__time">{{ formatTime(log.created_at) }}</span>
+      <span class="log-viewer__time">{{ formatDateTime(log.created_at) }}</span>
       <span :class="['log-viewer__level', `is-${log.level.toLowerCase()}`]">{{ log.level }}</span>
       <span class="log-viewer__message">{{ log.message }}</span>
     </div>
@@ -12,6 +12,7 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue'
 import type { TaskLogRecord } from '@/api/task'
+import { formatDateTime } from '@/utils/time'
 
 const props = withDefaults(defineProps<{
   logs: TaskLogRecord[]
@@ -21,10 +22,6 @@ const props = withDefaults(defineProps<{
 })
 
 const containerRef = ref<HTMLElement | null>(null)
-
-function formatTime(value: string) {
-  return new Date(value).toLocaleString()
-}
 
 watch(
   () => props.logs.length,
@@ -80,8 +77,15 @@ watch(
   color: #86efac;
 }
 
-.log-viewer__level.is-error,
 .log-viewer__level.is-stderr {
+  color: #fb923c;
+}
+
+.log-viewer__level.is-warn {
+  color: #fcd34d;
+}
+
+.log-viewer__level.is-error {
   color: #fca5a5;
 }
 

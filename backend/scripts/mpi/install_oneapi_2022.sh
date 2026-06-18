@@ -306,8 +306,32 @@ echo "如需仅当前终端临时加载，请执行："
 echo
 echo "  source ${INSTALL_DIR}/setvars.sh --force"
 echo
+echo "如需验证环境，请执行："
+echo
+echo "  source ${INSTALL_DIR}/setvars.sh --force"
+echo "  which icc"
+echo "  which icx"
+echo "  which ifort"
+echo "  which mpiicc"
+echo "  which mpiifort"
+echo "  which mpirun"
+echo "  icc --version"
+echo "  icx --version"
+echo "  ifort --version"
+echo "  mpiicc --version"
+echo "  mpiifort --version"
+echo "  mpirun --version"
+echo "  echo \$ONEAPI_ROOT"
+echo "  echo \$MKLROOT"
+echo "  echo \$I_MPI_ROOT"
+echo "  ls -ld ${INSTALL_DIR}"
+echo "  ls -ld ${MKL_DIR}"
+echo "  find ${INSTALL_DIR} -name 'libmkl_core*' | head"
+echo "  find ${INSTALL_DIR} -name 'libmpi*' | head"
+echo
 echo "如需删除安装包释放空间，请执行："
 echo
 echo "  sudo rm -rf ${DOWNLOAD_DIR}"
 echo
 echo "============================================================"
+
