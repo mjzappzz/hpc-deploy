@@ -83,6 +83,23 @@ export interface TaskDeleteResponse {
   messages: string[]
 }
 
+export interface TaskListQuery {
+  status?: string
+  task_type?: string
+  server_id?: number
+  keyword?: string
+  limit?: number
+  offset?: number
+  order?: string
+}
+
+export interface TaskListResponse {
+  items: TaskRecord[]
+  total: number
+  limit: number
+  offset: number
+}
+
 export interface ArtifactListResponse {
   artifact_dir: string
   files: ArtifactFileDetail[]
@@ -92,8 +109,8 @@ export function runTask(data: RunTaskPayload) {
   return request.post<RunTaskResult>('/tasks/run', data)
 }
 
-export function listTasks() {
-  return request.get<TaskRecord[]>('/tasks')
+export function listTasks(params?: TaskListQuery) {
+  return request.get<TaskListResponse>('/tasks', { params })
 }
 
 export function getTask(taskId: string) {

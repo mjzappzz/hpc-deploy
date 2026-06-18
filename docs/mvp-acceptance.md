@@ -232,25 +232,61 @@ curl -s "http://localhost:8000/api/tasks/{task_id}"
 
 ---
 
-## 16. 非阻塞问题记录
+## 16. 任务历史筛选/搜索/分页（Phase 12B）
+
+- [ ] 进入任务历史页，默认显示最近 50 条任务
+- [ ] 页面底部显示分页组件，显示总数和当前页码
+- [ ] 状态筛选下拉：选择"成功"后只显示 SUCCESS 任务，选择"已取消"后只显示 CANCELED
+- [ ] 类型筛选下拉：选择"压测脚本"后只显示 stress 任务，选择"编译环境"后只显示 mpi
+- [ ] 输入关键词搜索，能匹配 task_id、文件路径、远端目录、错误信息
+- [ ] 点击重置按钮后，筛选条件清空，恢复默认列表
+- [ ] 分页切换正常，上一页/下一页/页码跳转均可用
+- [ ] 每页条数切换（20/50/100）后重新加载
+- [ ] 搜索按钮在无筛选条件时为普通按钮，有筛选条件时变蓝 primary
+- [ ] 非法参数（无效状态/类型/排序）后端返回 400 不是 500
+- [ ] 查看日志、下载日志、结果文件、删除任务、取消任务均不受影响
+
+**验证 API 命令：**
+
+```bash
+# 默认分页
+curl -s "http://localhost:8000/api/tasks?limit=2&offset=0"
+# 预期：{"items":[...],"total":N,"limit":2,"offset":0}
+
+# 状态筛选
+curl -s "http://localhost:8000/api/tasks?status=SUCCESS&limit=5"
+# 预期：只返回 SUCCESS 状态任务
+
+# 关键词搜索
+curl -s "http://localhost:8000/api/tasks?keyword=openmpi&limit=5"
+# 预期：返回匹配 openmpi 的任务
+
+# 非法参数返回 400
+curl -s -w "%{http_code}" "http://localhost:8000/api/tasks?status=INVALID"
+# 预期：400
+```
+
+---
+
+## 17. 非阻塞问题记录
 
 以下 3 个问题不影响 MVP 功能完整性，建议记录但不立即修复：
 
-### 16.1 clipboard.writeText 在非 HTTPS 环境降级
+### 17.1 clipboard.writeText 在非 HTTPS 环境降级
 
 `TaskHistory.vue` 中 `copyArtifactDir` 使用 `navigator.clipboard.writeText()`，该 API 需要安全上下文（HTTPS 或 localhost）。开发模式（localhost）下没问题，生产环境需要 HTTPS。影响极小——复制按钮只是便利功能，失败时用户可手动选中路径复制。
 
-### 16.2 旧 PENDING 任务需要人工清理
+### 17.2 旧 PENDING 任务需要人工清理
 
 后端已实现同服务器防重复提交。当前保留风险是历史遗留 `PENDING` 任务会被视为未完成任务，从而阻塞新提交。出现这种情况时，可通过 SQLite 手动将旧 `PENDING` 修正为 `FAILED`。
 
-### 16.3 回收失败未更新 error_message
+### 17.3 回收失败未更新 error_message
 
 `artifact_collector.py` 中回收失败只写 ERROR 日志到 `task_logs`，没有更新 `task.error_message`。按需求描述"可以在任务上记录 artifact_error"，当前省略了，不影响核心验收（任务状态和退出码仍然正确）。
 
 ---
 
-## 17. 当前 MVP 验收通过标准
+## 18. 当前 MVP 验收通过标准
 
 - test/hello.sh 能执行成功
 - stress 60 秒能执行成功

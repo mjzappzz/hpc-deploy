@@ -367,6 +367,42 @@ rm -rf 远端工作目录
 - **事务安全**：如果 SSH 连接失败或远端路径安全校验失败，返回错误且不删除数据库记录
 - **不删除范围**：服务器配置、脚本知识库文件、已安装到 `/opt`/`/usr` 的软件、Apptainer 容器仓库、其他任务记录
 
+---
+
+## 12. 任务列表查询设计
+
+### 12.1 查询参数
+
+`GET /api/tasks` 支持以下查询参数：
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `status` | string | 无 | 按任务状态筛选（9 个合法值） |
+| `task_type` | string | 无 | 按任务类型筛选（test/stress/mpi/apptainer） |
+| `server_id` | int | 无 | 按服务器 ID 筛选 |
+| `keyword` | string | 无 | 关键词搜索（task_id / file_path / remote_work_dir / error_message） |
+| `limit` | int | 50 | 每页数量，最大 100 |
+| `offset` | int | 0 | 分页偏移 |
+| `order` | string | `created_desc` | 排序方式（created_desc / created_asc） |
+
+### 12.2 返回结构
+
+```json
+{
+  "items": [ { ... TaskRead fields ... } ],
+  "total": 43,
+  "limit": 50,
+  "offset": 0
+}
+```
+
+### 12.3 安全要求
+
+- status/task_type/order 使用白名单校验，非法值返回 400
+- keyword 使用 SQLAlchemy `ilike()` 参数化查询，防 SQL 注入
+- limit 上限 100，防止超量查询
+- 校验失败不返回 500
+
 ### 11.4 与任务取消的区别
 
 | 维度 | 取消 (Cancel) | 删除 (Delete) |

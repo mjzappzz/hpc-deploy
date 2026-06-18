@@ -68,7 +68,7 @@ async function loadDashboard() {
     ])
     servers.value = serverResp.data
     scripts.value = scriptResp.data
-    tasks.value = taskResp.data
+    tasks.value = taskResp.data.items
   } finally {
     loading.value = false
   }

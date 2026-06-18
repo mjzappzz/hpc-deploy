@@ -14,7 +14,7 @@ MVP 已全部完成，进入收尾维护阶段。
 当前下一步：
 
 ```text
-阶段 12B：任务历史筛选/搜索/分页优化
+阶段 13：部署与安全增强（Docker / Nginx）
 ```
 
 ## 最新状态补充
@@ -28,6 +28,17 @@ MVP 已全部完成，进入收尾维护阶段。
 - SSH 失败或安全校验失败时返回错误，不删除数据库记录
 - 不删除：服务器配置、脚本知识库文件、已安装到 `/opt`/`/usr` 的软件、Apptainer 容器仓库
 - 新增前端工具函数：`frontend/src/utils/confirm.ts` — `buildConfirmContent()` 统一构造确认弹窗 VNode
+
+### 阶段 12B：任务历史筛选/搜索/分页优化已完成
+- `GET /api/tasks` 新增查询参数：status、task_type、server_id、keyword、limit、offset、order
+- 返回分页结构：`{items, total, limit, offset}`
+- 参数白名单校验：非法 status/task_type/order 返回 400，不返回 500
+- keyword 使用 ILIKE 参数化查询搜索 task_id、file_path、remote_work_dir、error_message
+- limit 默认 50，最大 100；offset 默认 0
+- 前端新增筛选区：状态下拉、类型下拉、关键词搜索、重置按钮
+- 前端新增分页：Element Plus Pagination 组件，可切换 20/50/100 条每页
+- 搜索按钮动态样式：有筛选条件时变蓝 primary
+- 后端兼容 Dashboard 页面，适配新的分页响应结构
 
 ### 任务取消（Phase 11B-11E）已完成
 - PID 文件（`.hpcdeploy.pid`）→ PGID → 进程组 SIGTERM/SIGKILL
@@ -233,6 +244,16 @@ HPCDeploy 是一个面向 HPC 运维的轻量级脚本执行控制台。
 - 前端确认弹窗结构化为"将删除/不会删除"排版（`frontend/src/utils/confirm.ts`）
 - 不删除：服务器配置、脚本知识库文件、已安装到 `/opt`/`/usr` 的软件、Apptainer 容器仓库
 
+### 阶段 12B：任务历史筛选/搜索/分页优化
+- `GET /api/tasks` 支持 7 个查询参数：status、task_type、server_id、keyword、limit、offset、order
+- 返回分页结构 `{items, total, limit, offset}`，不再直接返回数组
+- 参数白名单校验 + 400 响应（非法参数不返回 500）
+- keyword ILIKE 搜索 task_id、file_path、remote_work_dir、error_message
+- 前端新增状态下拉、类型下拉、关键词搜索、重置按钮
+- 前端 Element Plus 分页组件，支持 20/50/100 条每页
+- 搜索按钮有筛选条件时显示蓝色 primary
+- Dashboard 同步适配新的分页返回结构
+
 ## 当前完整主链路
 
 ```text
@@ -358,6 +379,15 @@ SSH 连接（CONNECTING → PREPARING → UPLOADING）
     - 安全校验：远端路径格式限制，失败不删除数据库记录
     - 不删除：服务器配置、脚本库、已安装软件、Apptainer 仓库
 
+15. 任务历史筛选与分页
+    - GET /api/tasks 支持 7 个查询参数：status、task_type、server_id、keyword、limit、offset、order
+    - 返回分页结构：{items, total, limit, offset}
+    - 参数白名单校验，非法值返回 400
+    - keyword 搜索 task_id、file_path、remote_work_dir、error_message
+    - 前端筛选区：状态下拉、类型下拉、关键词搜索、重置按钮
+    - 前端 Element Plus 分页，20/50/100 条每页
+    - 搜索按钮动态蓝色 primary 样式
+
 ## 当前仍不做
 
 - WebSocket（用 HTTP 轮询替代）
@@ -390,8 +420,8 @@ SSH 连接（CONNECTING → PREPARING → UPLOADING）
 
 ## 下一步建议
 
-下一阶段：阶段 12B，任务历史交互优化。
-- 任务历史筛选（按状态、按类型、按服务器）
-- 搜索（按 task_id、文件名、服务器名）
-- 分页加载
-- 批量删除（可选）
+下一阶段：阶段 13，部署与安全增强。
+- Docker Compose 容器化部署
+- Nginx 反代配置（前端静态 + API）
+- SSH key 权限自动检查
+- 日志保留策略

@@ -4,6 +4,54 @@
       <el-button @click="loadTasks">刷新</el-button>
     </div>
 
+    <div class="filter-bar">
+      <el-select
+        v-model="filters.status"
+        placeholder="全部状态"
+        clearable
+        style="width:140px"
+        @change="handleFilterChange"
+      >
+        <el-option label="全部状态" value="" />
+        <el-option label="等待中" value="PENDING" />
+        <el-option label="连接中" value="CONNECTING" />
+        <el-option label="准备中" value="PREPARING" />
+        <el-option label="上传中" value="UPLOADING" />
+        <el-option label="运行中" value="RUNNING" />
+        <el-option label="取消中" value="CANCELING" />
+        <el-option label="成功" value="SUCCESS" />
+        <el-option label="失败" value="FAILED" />
+        <el-option label="已取消" value="CANCELED" />
+      </el-select>
+
+      <el-select
+        v-model="filters.task_type"
+        placeholder="全部类型"
+        clearable
+        style="width:140px"
+        @change="handleFilterChange"
+      >
+        <el-option label="全部类型" value="" />
+        <el-option label="测试脚本" value="test" />
+        <el-option label="压测脚本" value="stress" />
+        <el-option label="编译环境" value="mpi" />
+        <el-option label="Apptainer 容器" value="apptainer" />
+      </el-select>
+
+      <el-input
+        v-model="filters.keyword"
+        placeholder="搜索任务、脚本、目录、错误"
+        clearable
+        class="keyword-input"
+        @keyup.enter="handleFilterChange"
+        @clear="handleFilterClear"
+      />
+
+      <el-button :type="hasActiveFilters ? 'primary' : 'default'" @click="handleFilterChange">搜索</el-button>
+
+      <el-button @click="resetFilters">重置</el-button>
+    </div>
+
     <div class="task-list" v-loading="loading">
       <el-empty v-if="tasks.length === 0 && !loading" description="暂无任务记录" />
       <TaskCard
@@ -21,6 +69,18 @@
         @copy-verify-commands="copyVerifyCommands"
         @cancel-task="cancelHistoryTask"
         @delete-task="handleDelete"
+      />
+    </div>
+
+    <div v-if="total > 0" class="pagination-bar">
+      <el-pagination
+        v-model:page-size="filters.limit"
+        :page-sizes="[20, 50, 100]"
+        :total="total"
+        :current-page="currentPage"
+        layout="total, sizes, prev, pager, next, jumper"
+        @current-change="handlePageChange"
+        @size-change="handleSizeChange"
       />
     </div>
 
@@ -63,10 +123,10 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onActivated, reactive, ref } from 'vue'
+import { computed, onMounted, onActivated, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRouter } from 'vue-router'
-import { cancelTask, deleteTask, getTask, getTaskLogs, listArtifacts, listTasks, type ArtifactFileDetail, type TaskLogRecord, type TaskRecord } from '@/api/task'
+import { cancelTask, deleteTask, getTask, getTaskLogs, listArtifacts, listTasks, type ArtifactFileDetail, type TaskLogRecord, type TaskListQuery, type TaskRecord } from '@/api/task'
 import { buildConfirmContent } from '@/utils/confirm'
 import LogViewer from '@/components/LogViewer.vue'
 import TaskCard from '@/components/TaskCard.vue'
@@ -87,6 +147,29 @@ const artFiles = ref<ArtifactFileDetail[]>([])
 const activeArtTaskId = ref('')
 const taskLogCache = reactive<Record<string, TaskLogRecord[]>>({})
 
+const filters = reactive<TaskListQuery>({
+  status: undefined,
+  task_type: undefined,
+  keyword: undefined,
+  limit: 50,
+  offset: 0,
+})
+const total = ref(0)
+
+const currentPage = computed(() => {
+  if (!filters.limit) return 1
+  return Math.floor((filters.offset ?? 0) / filters.limit) + 1
+})
+
+const hasActiveFilters = computed(() => {
+  return Boolean(
+    filters.status ||
+    filters.task_type ||
+    filters.server_id ||
+    filters.keyword?.trim()
+  )
+})
+
 function continueTask(task: TaskRecord) {
   localStorage.setItem('hpcdeploy.currentTaskId', task.task_id)
   router.push(`/task-runner?task_id=${task.task_id}`)
@@ -95,10 +178,44 @@ function continueTask(task: TaskRecord) {
 async function loadTasks() {
   loading.value = true
   try {
-    tasks.value = (await listTasks()).data
+    const resp = (await listTasks(filters)).data
+    tasks.value = resp.items
+    total.value = resp.total
   } finally {
     loading.value = false
   }
+}
+
+function handleFilterChange() {
+  if (!filters.keyword) filters.keyword = undefined
+  filters.offset = 0
+  loadTasks()
+}
+
+function handleFilterClear() {
+  filters.keyword = undefined
+  filters.offset = 0
+  loadTasks()
+}
+
+function handlePageChange(page: number) {
+  filters.offset = (page - 1) * (filters.limit ?? 50)
+  loadTasks()
+}
+
+function handleSizeChange(size: number) {
+  filters.limit = size
+  filters.offset = 0
+  loadTasks()
+}
+
+function resetFilters() {
+  filters.status = undefined
+  filters.task_type = undefined
+  filters.keyword = undefined
+  filters.limit = 50
+  filters.offset = 0
+  loadTasks()
 }
 
 async function openLogs(task: TaskRecord) {
@@ -342,6 +459,25 @@ onActivated(loadTasks)
 </script>
 
 <style scoped>
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.keyword-input {
+  width: 420px;
+  max-width: 100%;
+}
+
+.pagination-bar {
+  display: flex;
+  justify-content: center;
+  margin-top: 20px;
+}
+
 .art-loading-wrap {
   min-height: 100px;
 }

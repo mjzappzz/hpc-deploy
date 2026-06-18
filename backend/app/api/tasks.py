@@ -23,8 +23,8 @@ from app.models.server import Server
 from app.models.task import Task
 from app.models.task_log import TaskLog
 from app.schemas.log import TaskLogRead
-from app.schemas.task import ArtifactFileDetail, ArtifactListResponse, TaskCancelResponse, TaskCleanupResponse, TaskDeleteResponse, TaskMonitorRequest, TaskMonitorResponse, TaskRead, TaskRunRequest, TaskRunResponse
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from app.schemas.task import ArtifactFileDetail, ArtifactListResponse, TaskCancelResponse, TaskCleanupResponse, TaskDeleteResponse, TaskListResponse, TaskMonitorRequest, TaskMonitorResponse, TaskRead, TaskRunRequest, TaskRunResponse
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
@@ -62,6 +62,13 @@ MONITOR_COMMANDS: dict[str, str] = {
     "gpu": "if command -v nvidia-smi >/dev/null 2>&1; then nvidia-smi; else printf 'nvidia-smi not found or NVIDIA driver unavailable\\n'; fi",
 }
 
+VALID_TASK_STATUSES: frozenset[str] = frozenset({
+    "PENDING", "CONNECTING", "PREPARING", "UPLOADING",
+    "RUNNING", "CANCELING", "SUCCESS", "FAILED", "CANCELED",
+})
+VALID_TASK_TYPES: frozenset[str] = frozenset({"test", "stress", "mpi", "apptainer"})
+VALID_ORDER_VALUES: frozenset[str] = frozenset({"created_desc", "created_asc"})
+
 
 def _get_task_or_404(db: Session, task_id: str) -> Task:
     task = db.query(Task).filter(Task.task_id == task_id).first()
@@ -77,10 +84,67 @@ def _get_server_or_400(db: Session, server_id: int) -> Server:
     return server
 
 
-@router.get("", response_model=list[TaskRead])
-def list_tasks(db: Session = Depends(get_db)) -> list[dict[str, object]]:
-    tasks = db.query(Task).order_by(Task.id.desc()).all()
-    return [_serialize_task(task, db) for task in tasks]
+@router.get("", response_model=TaskListResponse)
+def list_tasks(
+    db: Session = Depends(get_db),
+    task_status: str | None = Query(None, alias="status"),
+    task_type: str | None = Query(None),
+    server_id: int | None = Query(None, ge=1),
+    keyword: str | None = Query(None, min_length=1),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    order: str = Query("created_desc"),
+) -> TaskListResponse:
+    # --- parameter validation ---
+    if task_status is not None and task_status not in VALID_TASK_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"invalid status: {task_status}",
+        )
+    if task_type is not None and task_type not in VALID_TASK_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"invalid task_type: {task_type}",
+        )
+    if order not in VALID_ORDER_VALUES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"invalid order: {order}",
+        )
+
+    # --- build query ---
+    query = db.query(Task)
+
+    if task_status is not None:
+        query = query.filter(Task.status == task_status)
+    if task_type is not None:
+        query = query.filter(Task.task_type == task_type)
+    if server_id is not None:
+        query = query.filter(Task.server_id == server_id)
+    if keyword is not None:
+        like_pattern = f"%{keyword}%"
+        query = query.filter(
+            Task.task_id.ilike(like_pattern)
+            | Task.file_path.ilike(like_pattern)
+            | Task.remote_work_dir.ilike(like_pattern)
+            | Task.error_message.ilike(like_pattern)
+        )
+
+    # --- order ---
+    if order == "created_asc":
+        query = query.order_by(Task.id.asc())
+    else:
+        query = query.order_by(Task.id.desc())
+
+    # --- total before pagination ---
+    total = query.count()
+
+    # --- pagination ---
+    tasks = query.offset(offset).limit(limit).all()
+
+    # --- serialize ---
+    items = [_serialize_task(task, db) for task in tasks]
+    return TaskListResponse(items=items, total=total, limit=limit, offset=offset)
 
 
 @router.post("/run", response_model=TaskRunResponse, status_code=status.HTTP_201_CREATED)

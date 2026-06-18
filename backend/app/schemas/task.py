@@ -90,3 +90,10 @@ class TaskDeleteResponse(BaseModel):
     logs_deleted: bool
     task_deleted: bool
     messages: list[str]
+
+
+class TaskListResponse(BaseModel):
+    items: list[TaskRead]
+    total: int
+    limit: int
+    offset: int
