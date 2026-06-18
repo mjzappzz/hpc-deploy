@@ -2,46 +2,46 @@
 
 ## 当前阶段
 
-当前进行到：MVP 收口完成，下一阶段为阶段 10B：mpi / 编译环境脚本轻量执行验证
+MVP 已全部完成，进入收尾维护阶段。
 
 当前主线：
 
 ```text
-脚本知识库
-↓
-任务执行器
-↓
-SSH 上传
-↓
-远程执行
-↓
-实时日志 + 资源快照
-↓
-任务历史
-↓
-结果文件回收下载
+脚本知识库 → 选择服务器 → 选择脚本 → SSH 上传 → 远程执行 → 实时日志
+→ 资源快照 → 任务历史 → 结果文件回收下载 → 任务取消
 ```
 
 当前下一步：
 
 ```text
-阶段 10B：mpi / 编译环境脚本轻量执行验证
+阶段 12：部署与安全增强（Docker / Nginx）
 ```
 
 ## 最新状态补充
 
-- 后端同服务器防重复提交已生效。
-- 已发现旧 PENDING 任务会阻塞同服务器新任务提交。
-- 已通过 SQLite 手动将旧 PENDING 任务标记为 FAILED。
-- 当前已恢复为可正常提交新任务。
-- 后续建议增加“卡住任务清理”能力，但当前先不做。
-- Apptainer 容器分发已完成。
-- 后端知识库目录：`backend/apptainer/`
-- 前端任务类型：`Apptainer 容器`
-- 远端固定目录：`$HOME/hpcdeploy/apptainer/`
-- 当前只做上传分发：SSH 连接、创建远端目录、上传 `.sif` 文件，不 `chmod`，不执行 `apptainer run / exec`
-- 任务日志会显示：`apptainer distribution completed, file was uploaded but not executed`
-- `.sif` 文件不建议提交到 Git，应通过知识库上传或本地放置
+### 任务取消（Phase 11B-11E）已完成
+- PID 文件（`.hpcdeploy.pid`）→ PGID → 进程组 SIGTERM/SIGKILL
+- 远端工作目录 `~/hpcdeploy/tasks/{type}/{task_id}/` 被清理
+- 临时目录白名单清理：`/tmp/oneapi_install_2022`、`/tmp/openmpi_aocc_aocl_install`
+- 任务状态变为 CANCELED，exit_code 为 -15
+- 取消失败不改变 CANCELED 状态
+- 不删除任务记录和日志，不回滚已安装软件
+
+### MPI 脚本执行已开放
+- 白名单：`mpi_env_test.sh`、`install_oneapi_2022.sh`、`install_openmpi_4.1.6_aocc_aocl.sh`
+- 执行方式 `bash ./script.sh`
+- 支持取消
+
+### 其他已完成
+- 日志下载功能（`GET /api/tasks/{id}/logs/download`）
+- 时间本地化显示（UTC→浏览器本地时间）
+- 前后端 systemd 服务化，修复 nvm PATH 问题
+- 前端取消弹窗文案精简
+
+### 已知未修复
+- 旧 PENDING 任务会阻塞同服务器新任务提交，需 SQLite 手动清理
+- `clipboard.writeText` 在非 HTTPS 下降级
+- 回收失败只写 ERROR 日志，不更新 `error_message`
 
 ## 当前项目定位
 
@@ -130,14 +130,12 @@ HPCDeploy 是一个面向 HPC 运维的轻量级脚本执行控制台。
 - test 类型执行 bash ./脚本名
 - 实时 stdout/stderr → task_logs（INFO/ERROR 级别）
 - 保存 exit_code、end_time
-- stress/mpi/apptainer 仍只上传不执行
 
 ### 阶段 8D：stress 压测脚本短时间执行
 - stress 类型执行 ./脚本名 duration_seconds
 - duration_seconds 限制 1–3600 秒
 - timeout = max(duration_seconds + 300, 300)
 - 实时日志 + 资源快照监控（CPU/内存/磁盘/GPU）
-- mpi/apptainer 仍只上传不执行
 
 ### 阶段 8E：任务执行页交互完善
 - 左侧配置面板（文件信息、执行参数、命令预览、校验/执行按钮）
@@ -180,6 +178,41 @@ HPCDeploy 是一个面向 HPC 运维的轻量级脚本执行控制台。
 - 任务完成日志固定包含：`apptainer distribution completed, file was uploaded but not executed`
 - `.sif` 文件不建议提交到 Git，应通过知识库上传或本地放置。
 
+### 阶段 10A：HTTP 轮询实时日志
+- 放弃 WebSocket 方案
+- 前端 1s HTTP 轮询 `GET /api/tasks/{id}/logs`
+- 实现更简单，避免了 WebSocket 重连/鉴权/心跳等复杂度
+
+### 阶段 10B：MPI 脚本轻量执行验证
+- 开放 mpi 目录白名单：`mpi_env_test.sh`、`install_oneapi_2022.sh`、`install_openmpi_4.1.6_aocc_aocl.sh`
+- 执行方式：`bash ./script.sh`
+- 严格文件名白名单校验，非白名单文件拒绝执行
+
+### 阶段 10C：任务执行页重构三模式
+- config（新建任务）、summary（执行摘要）、config-readonly（只读配置快照）模式切换
+- URL query 恢复任务状态
+- 新建任务清空状态
+
+### 阶段 10D：部署强化
+- 后端 systemd 服务化：`hpcdeploy-backend.service`
+- 前端 systemd 服务化：`hpcdeploy-frontend.service`
+- 修复 systemd 下 nvm PATH 找不到 node 的问题
+
+### 阶段 11A：同服务器防重复提交
+- 同一 `server_id` 同时只允许一个未完成任务
+- 未完成状态：PENDING / CONNECTING / PREPARING / UPLOADING / RUNNING / CANCELING
+- 已完成状态：SUCCESS / FAILED / CANCELED
+
+### 阶段 11B-11E：任务取消完整链路
+- `setsid --wait bash -lc 'printf "%s" $$ > .hpcdeploy.pid; exec <command>'` — session 隔离
+- PID → PGID 定位进程组 → SIGTERM → 等待 → SIGKILL
+- 远端工作目录清理 `~/hpcdeploy/tasks/{type}/{task_id}/`
+- 临时目录白名单清理（`/tmp/oneapi_install_2022`、`/tmp/openmpi_aocc_aocl_install`）
+- SCRIPT_TEMP_DIR_MAP 代码级硬编码白名单
+- 前端取消弹窗文案简化
+- 时间本地化显示（`formatDateTime`）
+- 日志下载功能
+
 ## 当前完整主链路
 
 ```text
@@ -192,11 +225,15 @@ SSH 连接（CONNECTING → PREPARING → UPLOADING）
 远端执行 / 分发
   ├─ test: bash ./脚本名
   ├─ stress: ./脚本名 duration_seconds
+  ├─ mpi: bash ./脚本名（白名单3个脚本）
   └─ apptainer: 上传 .sif 到 $HOME/hpcdeploy/apptainer/
   ↓
 实时日志轮询（1s interval） + 资源快照（手动刷新）
   ↓
-任务历史（SUCCESS / FAILED）
+任务历史 + 日志下载
+  ├─ SUCCESS / FAILED / TIMEOUT / CANCELED
+  ├─ RUNNING 支持继续查看、取消
+  └─ 日志下载
   ↓
 结果文件回收（仅 stress）
   └─ SFTP 下载到 backend/data/artifacts/{task_id}/
@@ -265,33 +302,64 @@ SSH 连接（CONNECTING → PREPARING → UPLOADING）
 
 9. 同服务器防重复提交
    - 同一 `server_id` 同时只允许一个未完成任务
-   - 未完成状态：
-     - `PENDING`
-     - `CONNECTING`
-     - `PREPARING`
-     - `UPLOADING`
-     - `RUNNING`
-   - 已完成状态：
-     - `SUCCESS`
-     - `FAILED`
+   - 未完成状态：PENDING / CONNECTING / PREPARING / UPLOADING / RUNNING / CANCELING
+   - 已完成状态：SUCCESS / FAILED / CANCELED
    - 如果有旧 `PENDING` 卡住，可用 SQLite 清理。
+
+10. mpi 脚本执行
+    - 白名单三个脚本：`mpi_env_test.sh`、`install_oneapi_2022.sh`、`install_openmpi_4.1.6_aocc_aocl.sh`
+    - 执行 `bash ./script.sh`
+    - 支持取消（PID→PGID→kill）
+
+11. 任务取消
+    - `setsid --wait` session 隔离，PID 写入 `.hpcdeploy.pid`
+    - PID → PGID → SIGTERM → 等待 → SIGKILL
+    - 清理远端工作目录
+    - 清理临时目录白名单
+    - 状态变为 CANCELED，exit_code 为 -15
+    - 不删除记录和日志，不回滚已安装软件
+
+12. 日志下载
+    - `GET /api/tasks/{id}/logs/download` → text/plain
+    - 前端每张任务卡片都有"下载日志"按钮
+
+13. 时间本地化显示
+    - 后端 UTC 存储，前端 `formatDateTime()` 转换本地时间
+    - 格式：`YYYY/MM/DD HH:mm:ss`
 
 ## 当前仍不做
 
-- WebSocket
-- 任务取消
-- 复杂 Server Lock
-- mpi 真实安装脚本执行
-- apptainer run / exec
+- WebSocket（用 HTTP 轮询替代）
+- 复杂 Server Lock（用简单防重复提交替代）
+- apptainer run / exec（当前只做上传分发）
 - AI 助手
 - 多用户权限
 - 复杂 params_schema
-- 前端传 command
-- 前端传 remote_path
-- 前端传 timeout
+- 前端传 command / remote_path / timeout
+
+## 关键文件清单
+
+### 后端
+- `backend/app/api/tasks.py` — 任务 API（含 artifacts、cancel、log download 端点）
+- `backend/app/core/task_runner.py` — 执行编排（test/stress/mpi/apptainer）
+- `backend/app/core/artifact_collector.py` — 结果文件回收
+- `backend/app/core/ssh_executor.py` — SSH/SFTP 执行器
+- `backend/app/core/script_library.py` — 脚本库管理
+- `backend/app/schemas/task.py` — Pydantic 模型
+- `backend/app/db/database.py` — 数据库引擎 + 迁移
+
+### 前端
+- `frontend/src/views/TaskRunner.vue` — 任务执行页
+- `frontend/src/views/TaskHistory.vue` — 任务历史 + 结果文件弹窗
+- `frontend/src/components/TaskCard.vue` — 任务卡片组件
+- `frontend/src/components/LogViewer.vue` — 日志展示组件
+- `frontend/src/api/task.ts` — 任务 API 调用（含日志下载）
+- `frontend/src/utils/time.ts` — 时间格式化工具
 
 ## 下一步建议
 
-下一阶段：阶段 10B，mpi / 编译环境脚本轻量执行验证。
-
-注意：只允许执行 `backend/scripts/mpi/mpi_env_test.sh`，不要执行真实安装脚本。
+下一阶段：阶段 12，部署与安全增强。
+- Docker Compose 容器化部署
+- Nginx 反代配置
+- SSH key 权限自动检查
+- 日志保留策略

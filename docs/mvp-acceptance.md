@@ -70,9 +70,10 @@
 
 ## 6. mpi/apptainer 阶段边界
 
-- [ ] 当前 MVP 阶段不执行真实 mpi 安装脚本
+- [ ] mpi 脚本已开放执行，包括 `mpi_env_test.sh`、`install_oneapi_2022.sh`、`install_openmpi_4.1.6_aocc_aocl.sh`
 - [ ] apptainer 任务选择 `.sif` 文件后上传到 `$HOME/hpcdeploy/apptainer/`
 - [ ] apptainer 日志包含 `apptainer distribution completed, file was uploaded but not executed`
+- [ ] apptainer 不做 run/exec，不上传 .sh/.py 文件
 
 ---
 
@@ -149,28 +150,86 @@ curl -s -o /dev/null -w "%{http_code}" "http://localhost:8000/api/tasks/{task_id
 
 ---
 
-## 11. 非阻塞问题记录
+## 11. 日志下载
+
+- [ ] 任务历史页面每个任务都有"下载日志"按钮
+- [ ] 下载文件名格式为 `{task_id}.log`
+- [ ] 下载内容包含任务所有日志（SYSTEM/INFO/ERROR），格式 `[YYYY-MM-DD HH:mm:ss] [LEVEL] message`
+- [ ] 下载不依赖任务状态（已结束、运行中的任务均可下载）
+
+**验证命令：**
+
+```bash
+curl -s -o /tmp/test.log -w "%{http_code}" "http://localhost:8000/api/tasks/{task_id}/logs/download"
+# 预期：200
+head -5 /tmp/test.log
+```
+
+---
+
+## 12. 任务取消
+
+- [ ] RUNNING / PENDING / CONNECTING / PREPARING / UPLOADING 状态的任务显示"取消任务"按钮
+- [ ] 取消弹窗提示清晰，确认后执行
+- [ ] 取消后远端进程通过 `.hpcdeploy.pid` 定位 PGID 并终止
+- [ ] 先 SIGTERM 等待，超时后 SIGKILL
+- [ ] 远端工作目录 `~/hpcdeploy/tasks/{type}/{task_id}/` 被清理
+- [ ] 脚本对应的临时下载目录（`/tmp/oneapi_install_2022`、`/tmp/openmpi_aocc_aocl_install`）被清理
+- [ ] 任务状态变为 CANCELED，exit_code 为 -15
+- [ ] 任务记录和日志不删除
+- [ ] 已安装到 `/opt`、`/usr` 的软件不回滚
+- [ ] CANCELING 状态下按钮灰色禁用
+
+**验证 API 命令：**
+
+```bash
+curl -s -X POST "http://localhost:8000/api/tasks/{task_id}/cancel"
+# 预期：{"status": "CANCELED", ...}
+```
+
+---
+
+## 13. 时间显示
+
+- [ ] 所有时间字段（创建时间、开始时间、结束时间）显示为浏览器本地时间
+- [ ] 格式为 `YYYY/MM/DD HH:mm:ss`
+- [ ] 后端存储为 UTC，前端自动转换
+
+---
+
+## 14. 服务部署
+
+- [ ] 后端 systemd 服务已配置，`systemctl status hpcdeploy-backend` 为 active
+- [ ] 前端 systemd 服务已配置，`systemctl status hpcdeploy-frontend` 为 active
+
+---
+
+## 15. 非阻塞问题记录
 
 以下 3 个问题不影响 MVP 功能完整性，建议记录但不立即修复：
 
-### 11.1 clipboard.writeText 在非 HTTPS 环境降级
+### 15.1 clipboard.writeText 在非 HTTPS 环境降级
 
 `TaskHistory.vue` 中 `copyArtifactDir` 使用 `navigator.clipboard.writeText()`，该 API 需要安全上下文（HTTPS 或 localhost）。开发模式（localhost）下没问题，生产环境需要 HTTPS。影响极小——复制按钮只是便利功能，失败时用户可手动选中路径复制。
 
-### 11.2 旧 PENDING 任务需要人工清理
+### 15.2 旧 PENDING 任务需要人工清理
 
 后端已实现同服务器防重复提交。当前保留风险是历史遗留 `PENDING` 任务会被视为未完成任务，从而阻塞新提交。出现这种情况时，可通过 SQLite 手动将旧 `PENDING` 修正为 `FAILED`。
 
-### 11.3 回收失败未更新 error_message
+### 15.3 回收失败未更新 error_message
 
 `artifact_collector.py` 中回收失败只写 ERROR 日志到 `task_logs`，没有更新 `task.error_message`。按需求描述"可以在任务上记录 artifact_error"，当前省略了，不影响核心验收（任务状态和退出码仍然正确）。
 
 ---
 
-## 12. 当前 MVP 验收通过标准
+## 16. 当前 MVP 验收通过标准
 
 - test/hello.sh 能执行成功
 - stress 60 秒能执行成功
+- mpi_env_test.sh 能执行成功
 - 实时日志正常
 - stress 结果文件能回收并下载
+- RUNNING 任务能取消
 - 知识库路径和 artifact 下载路径不能逃逸
+- 日志下载功能正常
+- 时间显示为本地时间
