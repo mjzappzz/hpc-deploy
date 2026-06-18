@@ -14,19 +14,25 @@ HPCDeploy 是一个面向 HPC 运维的脚本执行控制台。
 核心链路：
 
 ```
-脚本知识库 → 选择服务器 → 选择脚本 → SSH 上传 → 执行脚本 → 实时日志 → 资源快照 → 任务历史 → 结果文件回收下载
+脚本知识库 → 选择服务器 → 选择脚本 → SSH 上传 → 远程执行 → 实时日志 → 资源快照 → 任务历史 → 结果文件回收下载
 ```
 
 当前不做：
-- 复杂 params_schema 平台
-- WebSocket / Server Lock / 任务取消
-- mpi / apptainer 真实执行
-- 多用户权限
+- WebSocket
+- 任务取消
+- 复杂 Server Lock
+- mpi 真实安装脚本执行
+- apptainer run / exec
 - AI 助手
+- 多用户权限
+- 复杂 params_schema
+- 前端传 command
+- 前端传 remote_path
+- 前端传 timeout
 
 ## 当前阶段
 
-阶段 9A（stress 结果文件回收）已完成。
+MVP 收口已完成，下一阶段进入阶段 10B：mpi / 编译环境脚本轻量执行验证。
 
 ## 最新状态说明
 
@@ -35,6 +41,13 @@ HPCDeploy 是一个面向 HPC 运维的脚本执行控制台。
 - 本次已通过 SQLite 手动将旧 PENDING 任务改为 FAILED，用于解除阻塞。
 - 当前状态：新任务已可正常提交。
 - 后续建议：补“卡住任务清理”能力，自动或半自动处理遗留 PENDING；当前先不做。
+- Apptainer 容器分发已完成。
+- 后端知识库目录：`backend/apptainer/`
+- 前端任务类型：`Apptainer 容器`
+- 远端固定目录：`$HOME/hpcdeploy/apptainer/`
+- 当前只做上传分发：SSH 连接、创建远端目录、上传 `.sif` 文件，不 `chmod`，不执行 `apptainer run / exec`
+- 任务日志固定会出现：`apptainer distribution completed, file was uploaded but not executed`
+- `.sif` 文件不建议提交到 Git，应通过知识库上传或本地放置。
 
 ## 已完成功能
 
@@ -51,12 +64,15 @@ HPCDeploy 是一个面向 HPC 运维的脚本执行控制台。
 - 右侧实时面板：执行日志（HTTP 1s 轮询）、资源快照（手动刷新）
 - 三种模式切换：config（新建）、summary（执行摘要）、config-readonly（只读配置快照）
 - stress 参数：小时/分钟/秒 → 总秒数
+- Apptainer 参数区固定显示：`~/hpcdeploy/apptainer/`
+- Apptainer 命令预览固定显示：复制容器到远程目录
 
 ### 后台执行
 - 状态流转：PENDING → CONNECTING → PREPARING → UPLOADING → RUNNING → SUCCESS/FAILED
 - test：bash ./脚本名（timeout 120s）
 - stress：./脚本名 duration_seconds（timeout = max(duration+300, 300)）
-- mpi/apptainer：只上传，不执行
+- apptainer：上传 `.sif` 到 `$HOME/hpcdeploy/apptainer/`，不执行
+- mpi：当前仍不真实执行
 - 所有 SYSTEM/INFO/ERROR 日志写入 task_logs 表
 - 同服务器防重复提交已生效：同一服务器存在运行中任务时拒绝新提交
 - 已知现象：历史遗留 PENDING 任务同样会触发拦截，需要人工清理或后续补清理能力
@@ -103,18 +119,80 @@ GET /api/tasks/{task_id}/artifacts
 GET /api/tasks/{task_id}/artifacts/{filename}/download
 → FileResponse (application/octet-stream)
 
-## 当前不做（仍禁止）
+## 当前已完成摘要
+
+1. 服务器管理
+   - 新增服务器
+   - SSH 测试
+   - 服务器信息探测
+
+2. 脚本知识库
+   - 后端目录：
+     - `backend/scripts/mpi`
+     - `backend/scripts/stress`
+     - `backend/scripts/test`
+     - `backend/apptainer`
+   - 支持扫描、上传、下载、删除、预览
+   - `.sh` / `.py` / `.txt` / `.md` 可预览
+   - `.sif` 不预览，只显示文件信息和下载
+
+3. test 脚本执行
+   - `test/hello.sh` 可以上传、`chmod`、执行
+   - `stdout/stderr` 写入 `task_logs`
+   - `exit_code=0` 时任务 `SUCCESS`
+
+4. stress 压测执行
+   - `stress` 脚本支持真实执行
+   - 支持时/分/秒输入，后端换算 `duration_seconds`
+   - `timeout_seconds = max(duration_seconds + 300, 300)`
+   - 实时日志通过 HTTP 轮询，不使用 WebSocket
+
+5. 资源快照
+   - 支持 CPU/内存、磁盘 IO、GPU
+   - 通过白名单监控命令实现
+   - 不允许前端传 `command`
+   - 快照失败不影响任务状态
+
+6. 任务历史
+   - 查看任务状态
+   - 查看日志
+   - `RUNNING` 等未完成任务支持“继续查看”
+   - `SUCCESS / FAILED` 不显示“继续查看”，只显示“查看日志”
+   - `stress` 完成任务支持“结果文件”
+
+7. stress 结果文件回收
+   - 远端结果文件回收到 `backend/data/artifacts/{task_id}/`
+   - 支持回收：`.log`、`.txt`、`.csv`、`.xlsx`、`.json`
+   - 不回收：`.sh`、`.py`、`.sif`、隐藏文件、目录、软链接
+   - 前端可以下载结果文件
+
+8. Apptainer 分发
+   - 知识库目录：`backend/apptainer/`
+   - 远端目录：`$HOME/hpcdeploy/apptainer/`
+   - 当前只做 SSH 连接、创建远端目录、上传 `.sif`
+   - 不 `chmod`
+   - 不执行 `apptainer run / exec`
+   - 日志应包含：`apptainer distribution completed, file was uploaded but not executed`
+
+9. 同服务器防重复提交
+   - 同一 `server_id` 同时只允许一个未完成任务
+   - 未完成状态：`PENDING`、`CONNECTING`、`PREPARING`、`UPLOADING`、`RUNNING`
+   - 已完成状态：`SUCCESS`、`FAILED`
+   - 如果有旧 `PENDING` 卡住，可用 SQLite 清理。
+
+## 当前仍不做
 
 - WebSocket
-- Server Lock
 - 任务取消
-- 结果文件在线预览
-- 结果文件压缩打包
-- mpi 真实执行
-- apptainer 真实执行
-- 多用户权限系统
-- 自动删除远端结果文件
+- 复杂 Server Lock
+- mpi 真实安装脚本执行
+- apptainer run / exec
 - AI 助手
+- 多用户权限
+- 复杂 params_schema
+- 前端传 command
+- 前端传 remote_path
+- 前端传 timeout
 
 ## 关键文件清单
 
@@ -136,22 +214,6 @@ GET /api/tasks/{task_id}/artifacts/{filename}/download
 
 ## 下一步建议
 
-### 1. MVP 完整验收
-- 创建 60 秒 stress 任务
-- 等待 SUCCESS
-- 确认 backend/data/artifacts/{task_id}/ 有结果文件
-- 确认 task_logs 有 artifact 相关 SYSTEM 日志
-- 在任务历史页打开结果文件弹窗
-- 下载文件确认内容正确
-
-### 2. 稳定性修复（如果有问题）
-- 回收部分失败时的 error_message 提示
-- 无结果文件时前端提示已完善
-- 资源快照监控超时/失败处理
-- 增加“卡住任务清理”能力，避免旧 PENDING 阻塞新任务（当前先不做）
-
-### 3. 后续可能的方向（先不做，仅记录）
-- mpi 脚本真实执行（需要解决环境依赖）
-- apptainer 容器远程执行
-- 任务取消（当前完全不做）
-- 多用户权限
+- 下一阶段：阶段 10B，mpi / 编译环境脚本轻量执行验证。
+- 只允许执行 `backend/scripts/mpi/mpi_env_test.sh`。
+- 不要执行真实 OneAPI / OpenMPI / AOCC / AOCL 安装脚本。

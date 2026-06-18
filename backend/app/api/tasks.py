@@ -21,6 +21,7 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 MAX_STRESS_DURATION_SECONDS = 3600
 MONITOR_TIMEOUT_SECONDS = 10
+RUNNING_STATUSES = ("PENDING", "CONNECTING", "PREPARING", "UPLOADING", "RUNNING")
 
 MONITOR_COMMANDS: dict[str, str] = {
     "top": "top -b -n 1 | head -40",
@@ -62,6 +63,22 @@ def run_task(
     db: Session = Depends(get_db),
 ) -> TaskRunResponse:
     server = _get_server_or_400(db, payload.server_id)
+
+    running_task = (
+        db.query(Task)
+        .filter(Task.server_id == payload.server_id, Task.status.in_(RUNNING_STATUSES))
+        .first()
+    )
+    if running_task is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": "server already has a running task",
+                "running_task_id": running_task.task_id,
+                "running_status": running_task.status,
+            },
+        )
+
     file_record = _get_library_file_or_400(payload.file_path)
 
     if file_record["physical_category"] != payload.task_type:
