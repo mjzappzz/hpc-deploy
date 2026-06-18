@@ -28,6 +28,14 @@ HPCDeploy 是一个面向 HPC 运维的脚本执行控制台。
 
 阶段 9A（stress 结果文件回收）已完成。
 
+## 最新状态说明
+
+- 后端同服务器防重复提交已生效。
+- 现状确认：旧 PENDING 任务会被当作运行中任务，阻塞同服务器新任务提交。
+- 本次已通过 SQLite 手动将旧 PENDING 任务改为 FAILED，用于解除阻塞。
+- 当前状态：新任务已可正常提交。
+- 后续建议：补“卡住任务清理”能力，自动或半自动处理遗留 PENDING；当前先不做。
+
 ## 已完成功能
 
 ### 脚本知识库
@@ -50,6 +58,8 @@ HPCDeploy 是一个面向 HPC 运维的脚本执行控制台。
 - stress：./脚本名 duration_seconds（timeout = max(duration+300, 300)）
 - mpi/apptainer：只上传，不执行
 - 所有 SYSTEM/INFO/ERROR 日志写入 task_logs 表
+- 同服务器防重复提交已生效：同一服务器存在运行中任务时拒绝新提交
+- 已知现象：历史遗留 PENDING 任务同样会触发拦截，需要人工清理或后续补清理能力
 
 ### 资源快照
 - POST /api/tasks/{task_id}/monitor
@@ -138,6 +148,7 @@ GET /api/tasks/{task_id}/artifacts/{filename}/download
 - 回收部分失败时的 error_message 提示
 - 无结果文件时前端提示已完善
 - 资源快照监控超时/失败处理
+- 增加“卡住任务清理”能力，避免旧 PENDING 阻塞新任务（当前先不做）
 
 ### 3. 后续可能的方向（先不做，仅记录）
 - mpi 脚本真实执行（需要解决环境依赖）
