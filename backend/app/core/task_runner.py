@@ -9,6 +9,8 @@ from app.models.server import Server
 from app.models.task import Task
 from app.models.task_log import TaskLog
 
+APPTAINER_REMOTE_DIR_SUFFIX = "/hpcdeploy/apptainer"
+
 
 def run_task_stage8b(task_id: str) -> None:
     db = SessionLocal()
@@ -18,13 +20,19 @@ def run_task_stage8b(task_id: str) -> None:
         if task is None:
             return
         _set_status(db, task, "CONNECTING")
-        _add_log(db, task_id, "SYSTEM", f"connecting to server {task.server_id}")
+        _add_log(
+            db,
+            task_id,
+            "SYSTEM",
+            "connecting" if task.task_type == "apptainer" else f"connecting to server {task.server_id}",
+        )
 
         server = db.get(Server, task.server_id)
         if server is None:
             raise TaskRunnerError("server not found")
 
         file_record = _resolve_task_library_file(task.file_path, task.task_type)
+        _validate_task_file_type(task, file_record)
         local_path = resolve_library_path(str(task.file_path))
 
         executor.connect(
@@ -46,11 +54,22 @@ def run_task_stage8b(task_id: str) -> None:
         remote_path = _build_remote_path(remote_dir, str(file_record["name"]))
 
         _set_status(db, task, "PREPARING")
-        _add_log(db, task_id, "SYSTEM", f"creating remote directory {remote_dir}")
+        _mark_task_started(db, task)
+        _add_log(
+            db,
+            task_id,
+            "SYSTEM",
+            "creating remote directory" if task.task_type == "apptainer" else f"creating remote directory {remote_dir}",
+        )
         executor.mkdir_p(remote_dir)
 
         _set_status(db, task, "UPLOADING")
-        _add_log(db, task_id, "SYSTEM", f"uploading {task.file_path}")
+        _add_log(
+            db,
+            task_id,
+            "SYSTEM",
+            "uploading apptainer file" if task.task_type == "apptainer" else f"uploading {task.file_path}",
+        )
         executor.upload_file(str(local_path), remote_path)
         _add_log(db, task_id, "SYSTEM", f"uploaded to {remote_path}")
 
@@ -70,6 +89,13 @@ def run_task_stage8b(task_id: str) -> None:
                     collect_artifacts(db, task_id, task.remote_work_dir, executor)
                 except Exception:
                     _add_log(db, task_id, "ERROR", "artifact collection failed")
+        elif task.task_type == "apptainer":
+            _add_log(db, task_id, "SYSTEM", "apptainer distribution completed, file was uploaded but not executed")
+            task.status = "SUCCESS"
+            task.exit_code = 0
+            task.end_time = datetime.utcnow()
+            task.error_message = None
+            db.commit()
         else:
             _add_log(db, task_id, "SYSTEM", "stage 8B completed, script was uploaded but not executed")
             task.status = "SUCCESS"
@@ -102,6 +128,15 @@ def _resolve_task_library_file(file_path: str | None, task_type: str | None) -> 
     return record
 
 
+def _validate_task_file_type(task: Task, file_record: dict[str, object]) -> None:
+    file_name = str(file_record["name"])
+    suffix = Path(file_name).suffix.lower()
+    if task.task_type == "apptainer" and suffix != ".sif":
+        raise TaskRunnerError("apptainer task only allows .sif files")
+    if task.task_type == "apptainer" and suffix in {".sh", ".py"}:
+        raise TaskRunnerError("apptainer task does not allow shell or python scripts")
+
+
 def _build_remote_path(remote_dir: str, file_name: str) -> str:
     remote_dir_clean = remote_dir.rstrip("/")
     return f"{remote_dir_clean}/{Path(file_name).name}"
@@ -112,7 +147,7 @@ def _resolve_remote_work_dir(task_type: str | None, remote_home: str) -> str:
         raise TaskRunnerError("task type is empty")
     base_home = remote_home.rstrip("/")
     if task_type == "apptainer":
-        return f"{base_home}/hpcdeploy/apptainer"
+        return f"{base_home}{APPTAINER_REMOTE_DIR_SUFFIX}"
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     return f"{base_home}/hpcdeploy/tasks/{task_type}/{timestamp}"
 
@@ -193,6 +228,12 @@ def _resolve_command_timeout(task: Task) -> int:
 
 def _should_chmod(local_path: Path) -> bool:
     return local_path.suffix.lower() in {".sh", ".py"}
+
+
+def _mark_task_started(db, task: Task) -> None:
+    if task.start_time is None:
+        task.start_time = datetime.utcnow()
+        db.commit()
 
 
 def _add_log(db, task_id: str, level: str, message: str) -> None:

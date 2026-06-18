@@ -43,5 +43,6 @@ logs/
 *:Zone.Identifier
 
 # Project-specific
+backend/apptainer/*.sif
 backend/keys/*
 !backend/keys/.gitkeep

@@ -5,9 +5,9 @@
         <div class="runner-header">
           <div>
             <div class="runner-title">任务执行准备</div>
-            <div class="runner-subtitle">当前阶段会执行 test 和 stress，mpi 与 apptainer 仍只上传不执行。</div>
+            <div class="runner-subtitle">当前阶段会执行 test 和 stress；Apptainer 只做容器分发上传，不执行。</div>
           </div>
-          <el-tag type="success" effect="plain">阶段 8D</el-tag>
+          <el-tag type="success" effect="plain">Apptainer 分发</el-tag>
         </div>
       </template>
 
@@ -96,9 +96,9 @@
                 <el-form-item :label="selectedFile.physical_category === 'apptainer' ? '目标目录' : '远程工作目录'">
                   <el-input
                     v-if="selectedFile.physical_category === 'apptainer'"
-                    v-model="apptainerTargetDir"
+                    :model-value="apptainerTargetDir"
                     class="runner-control"
-                    :disabled="isFormDisabled"
+                    readonly
                   />
                   <el-input
                     v-else
@@ -144,7 +144,7 @@
 
               <el-alert
                 v-if="selectedTaskType && !['test', 'stress'].includes(selectedTaskType)"
-                title="当前阶段仅 test 和 stress 类型会执行，其他类型只上传不执行。"
+                title="当前阶段 Apptainer 只分发上传容器文件，不执行容器。"
                 type="warning"
                 :closable="false"
               />
@@ -307,7 +307,7 @@
                 <template #title>
                   <div>任务执行成功</div>
                   <div class="alert-detail">远程工作目录：{{ activeTask.remote_work_dir }}</div>
-                  <div class="alert-hint">后续阶段将支持自动回收和下载结果文件。</div>
+                  <div class="alert-hint">{{ activeTask.task_type === 'apptainer' ? '容器文件已上传到远端固定目录，未执行容器。' : '后续阶段将支持自动回收和下载结果文件。' }}</div>
                 </template>
               </el-alert>
 
@@ -489,7 +489,7 @@ const commandPreview = computed(() => {
     return `./${selectedFile.value.name} ${stressDurationSeconds.value}`
   }
   if (selectedFile.value.physical_category === 'apptainer') {
-    return `复制容器到远程目录：${apptainerTargetDir.value || '~/hpcdeploy/apptainer/'}`
+    return `复制容器到远程目录：${apptainerTargetDir.value}`
   }
   return `bash ./${selectedFile.value.name}`
 })
@@ -501,7 +501,10 @@ const executeTooltip = computed(() => {
   if (selectedTaskType.value === 'stress') {
     return '当前会上传并执行 stress 脚本，单次最多 3600 秒'
   }
-  return '当前阶段仅 test 和 stress 类型会执行，其他类型只上传不执行'
+  if (selectedTaskType.value === 'apptainer') {
+    return '当前会把 .sif 容器文件上传到固定远端目录，不执行容器'
+  }
+  return '当前阶段仅上传，不执行'
 })
 
 const currentTaskType = computed<TaskType | ''>(() => {
@@ -602,7 +605,7 @@ async function validateRunner() {
       ElMessage.error('Apptainer 目标目录不能为空')
       return
     }
-    ElMessage.success('参数校验通过。test 和 stress 类型会执行，mpi 与 apptainer 当前阶段只上传不执行。')
+    ElMessage.success('参数校验通过。Apptainer 任务只会上传 .sif 容器文件到固定远端目录，不执行容器。')
   } finally {
     validating.value = false
   }
@@ -651,7 +654,32 @@ async function createTask() {
     localStorage.setItem('hpcdeploy.currentTaskId', result.task_id)
     mode.value = 'summary'
     startTaskPolling(result.task_id)
-  } catch (error) {
+  } catch (error: unknown) {
+    // Handle 409 conflict — server already has a running task
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'response' in error
+    ) {
+      const resp = (error as { response: { status?: number; data?: { detail?: Record<string, unknown> } } }).response
+      if (resp.status === 409 && resp.data?.detail && typeof resp.data.detail === 'object') {
+        const detail = resp.data.detail as { message?: string; running_task_id?: string }
+        const msg = detail.message || '当前服务器已有任务正在执行，请到任务历史继续查看。'
+        if (detail.running_task_id) {
+          ElMessageBox.alert(msg, '任务冲突', {
+            confirmButtonText: '跳转查看',
+            type: 'warning',
+            callback: () => {
+              localStorage.setItem('hpcdeploy.currentTaskId', detail.running_task_id!)
+              router.push(`/task-runner?task_id=${detail.running_task_id!}`)
+            }
+          })
+        } else {
+          ElMessage.error(msg)
+        }
+        return
+      }
+    }
     ElMessage.error(getApiErrorMessage(error))
   } finally {
     submitting.value = false
