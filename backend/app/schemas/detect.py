@@ -27,3 +27,19 @@ class ServerDetectResponse(BaseModel):
     network_info: str | None = None
     summary: ServerProbeSummary | None = None
     error: str | None = None
+
+
+class ProbeAllResult(BaseModel):
+    server_id: int
+    name: str
+    host: str
+    status: str
+    last_check_at: datetime | None = None
+    last_error: str | None = None
+
+
+class ProbeAllResponse(BaseModel):
+    total: int
+    online: int
+    offline: int
+    results: list[ProbeAllResult]

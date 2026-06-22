@@ -73,7 +73,7 @@ INTERVAL=${2:-2}
 TEST_DIR=${3:-$(pwd)}
 
 CPU_CORES=$(nproc)
-HDD_WORKERS=$(( CPU_CORES / 16 ))
+HDD_WORKERS=${WORKERS:-$(( CPU_CORES / 16 ))}
 [ "$HDD_WORKERS" -lt 4 ] && HDD_WORKERS=4
 [ "$HDD_WORKERS" -gt 32 ] && HDD_WORKERS=32
 
@@ -188,9 +188,11 @@ set +e
   echo "Mode       : wr-rnd"
   echo
 
+  TEST_FILE_SIZE="${TEST_FILE_SIZE:-20G}"
+
   stdbuf -oL -eL stress-ng \
     --hdd ${HDD_WORKERS} \
-    --hdd-bytes 20G \
+    --hdd-bytes ${TEST_FILE_SIZE} \
     --hdd-opts wr-rnd \
     --verify \
     --timeout "${DURATION}" \

@@ -13,6 +13,7 @@ class TaskRunRequest(BaseModel):
     task_type: TaskType
     file_path: str = Field(min_length=1, max_length=255)
     duration_seconds: int | None = Field(default=None, ge=1)
+    params: dict[str, object] | None = Field(default=None)
 
 
 class TaskRunResponse(BaseModel):

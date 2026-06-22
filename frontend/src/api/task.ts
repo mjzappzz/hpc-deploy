@@ -39,6 +39,7 @@ export interface RunTaskPayload {
   task_type: TaskType
   file_path: string
   duration_seconds?: number
+  params?: Record<string, unknown>
 }
 
 export interface RunTaskResult {

@@ -105,16 +105,41 @@
           <p class="art-empty-hint">可能脚本未生成报告或回收失败，请查看任务日志。</p>
         </template>
         <div v-else class="art-list">
-          <div v-for="f in artFiles" :key="f.name" class="art-item">
-            <div class="art-item-info">
-              <span class="art-name" :title="f.name">{{ f.name }}</span>
-              <div class="art-meta-row">
-                <span class="art-size">{{ formatFileSize(f.size) }}</span>
-                <el-tag size="small">{{ f.type }}</el-tag>
-                <span class="art-local-path" :title="f.local_relative_path">{{ f.local_relative_path }}</span>
-              </div>
+          <!-- 最终报告 -->
+          <div v-if="artifactGroups.reports.length > 0" class="art-group">
+            <div class="art-group-header">
+              <span class="art-group-title">最终报告</span>
+              <span class="art-group-desc">压测汇总报告，优先下载查看。</span>
             </div>
-            <el-button size="small" @click="downloadArtifact(f.name)">下载</el-button>
+            <div v-for="f in artifactGroups.reports" :key="f.name" class="art-item art-item-report">
+              <div class="art-item-info">
+                <span class="art-name" :title="f.name">{{ f.name }}</span>
+                <div class="art-meta-row">
+                  <span class="art-size">{{ formatFileSize(f.size) }}</span>
+                  <el-tag size="small">{{ f.type }}</el-tag>
+                  <span class="art-local-path" :title="f.local_relative_path">{{ f.local_relative_path }}</span>
+                </div>
+              </div>
+              <el-button size="small" type="primary" @click="downloadArtifact(f.name)">下载报告</el-button>
+            </div>
+          </div>
+          <!-- 原始文件 -->
+          <div v-if="artifactGroups.rawFiles.length > 0" class="art-group">
+            <div class="art-group-header">
+              <span class="art-group-title">原始文件</span>
+              <span class="art-group-desc">包含采样数据、运行日志和辅助文本。</span>
+            </div>
+            <div v-for="f in artifactGroups.rawFiles" :key="f.name" class="art-item">
+              <div class="art-item-info">
+                <span class="art-name" :title="f.name">{{ f.name }}</span>
+                <div class="art-meta-row">
+                  <span class="art-size">{{ formatFileSize(f.size) }}</span>
+                  <el-tag size="small">{{ f.type }}</el-tag>
+                  <span class="art-local-path" :title="f.local_relative_path">{{ f.local_relative_path }}</span>
+                </div>
+              </div>
+              <el-button size="small" @click="downloadArtifact(f.name)">下载</el-button>
+            </div>
           </div>
         </div>
       </template>
@@ -146,6 +171,19 @@ const artLoading = ref(false)
 const artDir = ref('')
 const artFiles = ref<ArtifactFileDetail[]>([])
 const activeArtTaskId = ref('')
+const artifactGroups = computed(() => {
+  const reports: ArtifactFileDetail[] = []
+  const rawFiles: ArtifactFileDetail[] = []
+  for (const f of artFiles.value) {
+    const ext = (f.name.split('.').pop() || '').toLowerCase()
+    if (ext === 'xlsx') {
+      reports.push(f)
+    } else {
+      rawFiles.push(f)
+    }
+  }
+  return { reports, rawFiles }
+})
 const taskLogCache = reactive<Record<string, TaskLogRecord[]>>({})
 
 const filters = reactive<TaskListQuery>({
@@ -530,7 +568,31 @@ onActivated(loadTasks)
 .art-list {
   display: flex;
   flex-direction: column;
+  gap: 12px;
+}
+
+.art-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.art-group-header {
+  display: flex;
+  align-items: baseline;
   gap: 8px;
+  padding: 4px 2px;
+}
+
+.art-group-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+.art-group-desc {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 
 .art-item {
@@ -541,6 +603,11 @@ onActivated(loadTasks)
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 10px;
   background: var(--el-fill-color-lighter);
+}
+
+.art-item-report {
+  border-color: var(--el-color-primary-light-5);
+  background: var(--el-color-primary-light-9);
 }
 
 .art-item-info {

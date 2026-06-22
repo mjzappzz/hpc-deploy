@@ -82,13 +82,13 @@ ERR_LOG="${WORKDIR}/cpu_mem_error_${TIME_TAG}.log"
 REPORT="${WORKDIR}/cpu_mem_report_${TIME_TAG}.txt"
 XLSX_REPORT="${WORKDIR}/cpu_mem_report_${TIME_TAG}.xlsx"
 
-CPU_WORKERS=$(nproc)
+CPU_WORKERS=${WORKERS:-$(nproc)}
 CPU_CORES=$(nproc)
 
 VM_WORKERS=$(( CPU_WORKERS / 8 ))
 [ "$VM_WORKERS" -lt 1 ] && VM_WORKERS=1
 
-VM_BYTES="85%"
+VM_BYTES="${MEMORY_PERCENT:-85}%"
 SWAP_FAIL_MB=1024
 
 CRITICAL_ERR_PATTERN="out of memory|oom-killer|killed process|hardware error|machine check error|machine check exception|mce:.*error|edac.*error|ecc.*uncorrected|uncorrected error|thermal thrott|throttling|segfault|general protection fault|verification failed"

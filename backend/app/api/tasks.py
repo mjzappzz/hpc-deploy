@@ -1,4 +1,5 @@
 import shutil
+import re
 from datetime import datetime
 from pathlib import Path
 from secrets import token_hex
@@ -28,9 +29,19 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, s
 from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
+# Stress param whitelists
+STRESS_ALLOWED_INTERVALS: list[int] = [5, 10, 30, 60]
+STRESS_ALLOWED_DISK_FILE_SIZES: list[str] = ["1G", "10G", "50G", "100G"]
+STRESS_ALLOWED_GPU_BACKENDS: list[str] = ["cuda"]
+STRESS_ALL_PARAM_KEYS: set[str] = {
+    "duration_seconds", "interval_seconds",
+    "memory_percent", "workers",
+    "disk_file_size", "disk_path",
+    "gpu_ids", "gpu_memory_percent", "gpu_backend",
+}
+
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
-MAX_STRESS_DURATION_SECONDS = 3600
 MONITOR_TIMEOUT_SECONDS = 10
 CLEANUP_TIMEOUT_SECONDS = 30
 # Whitelist: script_name → list of allowed temp download dirs to clean up on cancel
@@ -49,6 +60,92 @@ MPI_TASK_BLOCKED_MESSAGE = (
     "install_openmpi_4.1.6_aocc_aocl.sh。"
 )
 TEST_TASK_BLOCKED_MESSAGE = "当前阶段只允许执行 hello.sh、sleep_60.sh。"
+
+def _validate_stress_params(raw: dict[str, object], script_name: str) -> dict[str, object]:
+    """Validate and sanitize stress task params.
+    Raises HTTPException(400) on any invalid value.
+    Returns a cleaned params dict with only accepted keys.
+    """
+    validated: dict[str, object] = {}
+
+    # duration_seconds: required, 10 ~ 259200
+    dur = raw.get("duration_seconds")
+    if not isinstance(dur, int) or dur < 10 or dur > 259200:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="duration_seconds must be an integer between 10 and 259200",
+        )
+    validated["duration_seconds"] = dur
+
+    # interval_seconds: optional, must be in whitelist
+    if "interval_seconds" in raw:
+        iv = raw["interval_seconds"]
+        if iv not in STRESS_ALLOWED_INTERVALS:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"interval_seconds must be one of {STRESS_ALLOWED_INTERVALS}",
+            )
+        validated["interval_seconds"] = iv
+
+    # --- cpu_mem_stress_report.sh params ---
+    if script_name == "cpu_mem_stress_report.sh":
+        if "memory_percent" in raw:
+            mp = raw["memory_percent"]
+            if not isinstance(mp, int) or mp < 10 or mp > 95:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="memory_percent must be between 10 and 95")
+            validated["memory_percent"] = mp
+        if "workers" in raw:
+            w = raw["workers"]
+            if not isinstance(w, int) or w < 1 or w > 1024:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="workers must be between 1 and 1024")
+            validated["workers"] = w
+
+    # --- disk_stress_report.sh params ---
+    elif script_name == "disk_stress_report.sh":
+        if "disk_file_size" in raw:
+            dfs = raw["disk_file_size"]
+            if dfs not in STRESS_ALLOWED_DISK_FILE_SIZES:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"disk_file_size must be one of {STRESS_ALLOWED_DISK_FILE_SIZES}",
+                )
+            validated["disk_file_size"] = dfs
+        if "disk_path" in raw:
+            dp = raw["disk_path"]
+            if not isinstance(dp, str) or not dp.startswith("~/") or ".." in dp:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="disk_path must be under home directory (~/...)")
+            validated["disk_path"] = dp
+
+    # --- gpu_stress_report.sh params ---
+    elif script_name == "gpu_stress_report.sh":
+        if "gpu_ids" in raw:
+            gpu_ids = raw["gpu_ids"]
+            if not isinstance(gpu_ids, str) or not re.match(r'^(\d+(,\d+)*|all)$', gpu_ids):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="gpu_ids must be 'all' or comma-separated numbers (e.g. '0,1')",
+                )
+            validated["gpu_ids"] = gpu_ids
+        if "gpu_memory_percent" in raw:
+            gmp = raw["gpu_memory_percent"]
+            if not isinstance(gmp, int) or gmp < 10 or gmp > 95:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="gpu_memory_percent must be between 10 and 95")
+            validated["gpu_memory_percent"] = gmp
+        if "gpu_backend" in raw:
+            if raw["gpu_backend"] not in STRESS_ALLOWED_GPU_BACKENDS:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"gpu_backend must be one of {STRESS_ALLOWED_GPU_BACKENDS}",
+                )
+            validated["gpu_backend"] = "cuda"
+
+    # Reject unknown keys
+    for key in raw:
+        if key not in STRESS_ALL_PARAM_KEYS:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"unknown param: {key}")
+
+    return validated
+
 
 MONITOR_COMMANDS: dict[str, str] = {
     "top": "top -b -n 1 | head -40",
@@ -184,25 +281,29 @@ def run_task(
 
     params: dict[str, object] | None = None
     if payload.task_type == "stress":
-        if payload.duration_seconds is None:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="duration_seconds is required")
-        if payload.duration_seconds > MAX_STRESS_DURATION_SECONDS:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="duration_seconds must be less than or equal to 3600",
-            )
-        params = {"duration_seconds": payload.duration_seconds}
-    elif payload.duration_seconds is not None:
+        # Accept params dict if provided; otherwise fall back to top-level duration_seconds (legacy)
+        raw_params: dict[str, object] = {}
+        if payload.params is not None:
+            raw_params = payload.params
+        elif payload.duration_seconds is not None:
+            raw_params = {"duration_seconds": payload.duration_seconds}
+
+        if "duration_seconds" not in raw_params:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="duration_seconds is required for stress tasks")
+
+        validated = _validate_stress_params(raw_params, str(file_record["name"]))
+        params = validated
+    elif payload.params is not None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="duration_seconds is only allowed for stress tasks",
+            detail="params is only allowed for stress tasks",
         )
 
     remote_work_dir = _build_remote_work_dir(payload.task_type)
     command_preview = _build_command_preview(
         task_type=payload.task_type,
         file_name=str(file_record["name"]),
-        duration_seconds=payload.duration_seconds,
+        params=params,
         remote_work_dir=remote_work_dir,
     )
     task_id = _generate_task_id()
@@ -730,12 +831,38 @@ def _build_command_preview(
     *,
     task_type: str,
     file_name: str,
-    duration_seconds: int | None,
+    params: dict[str, object] | None,
     remote_work_dir: str,
 ) -> str:
     script_name = Path(file_name).name
     if task_type == "stress":
-        return f"./{script_name} {duration_seconds}"
+        p = params or {}
+        dur = p.get("duration_seconds", "?")
+        interval = p.get("interval_seconds", 2)
+
+        env_parts: list[str] = []
+        if script_name == "cpu_mem_stress_report.sh":
+            if "memory_percent" in p:
+                env_parts.append(f"MEMORY_PERCENT={p['memory_percent']}")
+            if "workers" in p:
+                env_parts.append(f"WORKERS={p['workers']}")
+        elif script_name == "disk_stress_report.sh":
+            if "disk_file_size" in p:
+                env_parts.append(f"TEST_FILE_SIZE={p['disk_file_size']}")
+            if "disk_path" in p:
+                env_parts.append(f"TEST_DIR={p['disk_path']}")
+            if "workers" in p:
+                env_parts.append(f"WORKERS={p['workers']}")
+        elif script_name == "gpu_stress_report.sh":
+            gid = p.get("gpu_ids")
+            if gid and gid != "all":
+                env_parts.append(f"CUDA_VISIBLE_DEVICES={gid}")
+
+        env_prefix = " ".join(env_parts)
+        if env_prefix:
+            return f"{env_prefix} ./{script_name} {dur} {interval}"
+        return f"./{script_name} {dur} {interval}"
+
     if task_type == "mpi":
         return f"bash ./{script_name}"
     if task_type == "apptainer":

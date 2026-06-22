@@ -111,26 +111,73 @@
                   后续阶段会在远端该目录下执行脚本或存放文件。
                 </div>
 
-                <el-form-item
-                  v-if="selectedFile.physical_category === 'stress'"
-                  label="压测时长"
-                  required
-                >
-                  <div class="duration-parts-vertical">
-                    <div class="duration-part">
-                      <el-input-number v-model="durationParts.hours" :min="0" :step="1" controls-position="right" :disabled="isFormDisabled" size="small" />
-                      <span>小时</span>
+                <template v-if="selectedFile.physical_category === 'stress'">
+                  <el-form-item label="压测时长" required>
+                    <div class="duration-parts-vertical">
+                      <div class="duration-part">
+                        <el-input-number v-model="durationParts.hours" :min="0" :step="1" controls-position="right" :disabled="isFormDisabled" size="small" />
+                        <span>小时</span>
+                      </div>
+                      <div class="duration-part">
+                        <el-input-number v-model="durationParts.minutes" :min="0" :max="59" :step="1" controls-position="right" :disabled="isFormDisabled" size="small" />
+                        <span>分钟</span>
+                      </div>
+                      <div class="duration-part">
+                        <el-input-number v-model="durationParts.seconds" :min="0" :max="59" :step="1" controls-position="right" :disabled="isFormDisabled" size="small" />
+                        <span>秒</span>
+                      </div>
                     </div>
-                    <div class="duration-part">
-                      <el-input-number v-model="durationParts.minutes" :min="0" :max="59" :step="1" controls-position="right" :disabled="isFormDisabled" size="small" />
-                      <span>分钟</span>
-                    </div>
-                    <div class="duration-part">
-                      <el-input-number v-model="durationParts.seconds" :min="0" :max="59" :step="1" controls-position="right" :disabled="isFormDisabled" size="small" />
-                      <span>秒</span>
-                    </div>
-                  </div>
-                </el-form-item>
+                  </el-form-item>
+
+                  <el-form-item label="采样间隔">
+                    <el-select v-model="stressFormParams.intervalSeconds" :disabled="isFormDisabled" style="width:140px">
+                      <el-option label="5 秒" :value="5" />
+                      <el-option label="10 秒" :value="10" />
+                      <el-option label="30 秒" :value="30" />
+                      <el-option label="60 秒" :value="60" />
+                    </el-select>
+                  </el-form-item>
+
+                  <!-- cpu_mem params -->
+                  <template v-if="selectedFile.name === 'cpu_mem_stress_report.sh'">
+                    <el-form-item label="内存占比 (%)">
+                      <el-slider v-model="stressFormParams.memoryPercent" :min="10" :max="95" :disabled="isFormDisabled" style="width:240px" />
+                    </el-form-item>
+                    <el-form-item label="CPU 线程数">
+                      <el-input-number v-model="stressFormParams.workers" :min="0" :max="1024" :disabled="isFormDisabled" controls-position="right" size="small" />
+                      <span class="form-help-inline">0 = 自动（按 CPU 核数）</span>
+                    </el-form-item>
+                  </template>
+
+                  <!-- disk params -->
+                  <template v-else-if="selectedFile.name === 'disk_stress_report.sh'">
+                    <el-form-item label="测试文件大小">
+                      <el-select v-model="stressFormParams.diskFileSize" :disabled="isFormDisabled" style="width:140px">
+                        <el-option label="1 GB" value="1G" />
+                        <el-option label="10 GB" value="10G" />
+                        <el-option label="50 GB" value="50G" />
+                        <el-option label="100 GB" value="100G" />
+                      </el-select>
+                    </el-form-item>
+                    <el-form-item label="测试目录">
+                      <el-input v-model="stressFormParams.diskPath" placeholder="~/ (默认)" :disabled="isFormDisabled" style="width:240px" />
+                    </el-form-item>
+                    <el-form-item label="磁盘线程数">
+                      <el-input-number v-model="stressFormParams.workers" :min="0" :max="1024" :disabled="isFormDisabled" controls-position="right" size="small" />
+                      <span class="form-help-inline">0 = 自动（按 CPU 核数）</span>
+                    </el-form-item>
+                  </template>
+
+                  <!-- gpu params -->
+                  <template v-else-if="selectedFile.name === 'gpu_stress_report.sh'">
+                    <el-form-item label="GPU ID">
+                      <el-input v-model="stressFormParams.gpuIds" placeholder="all 或 0,1,2" :disabled="isFormDisabled" style="width:200px" />
+                    </el-form-item>
+                    <el-form-item label="GPU 内存占比 (%)">
+                      <el-slider v-model="stressFormParams.gpuMemoryPercent" :min="10" :max="95" :disabled="isFormDisabled" style="width:240px" />
+                    </el-form-item>
+                  </template>
+                </template>
 
                 <el-form-item v-else label="参数">
                   <el-alert
@@ -453,6 +500,7 @@ import {
   monitorTask,
   type MonitorType,
   runTask,
+  type RunTaskPayload,
   type TaskLogRecord,
   type TaskRecord,
   type TaskType as ApiTaskType
@@ -513,11 +561,21 @@ const activePanel = ref<MonitorPanel>('logs')
 const monitorOutput = ref('')
 const monitorError = ref('')
 const monitorExecutedAt = ref('')
+const stressParamDefaults = {
+  intervalSeconds: 10,
+  memoryPercent: 85,
+  workers: 0,
+  diskFileSize: '10G',
+  diskPath: '',
+  gpuIds: 'all',
+  gpuMemoryPercent: 85,
+}
 const durationParts = reactive<DurationParts>({
   hours: 0,
   minutes: 0,
   seconds: 60
 })
+const stressFormParams = reactive({ ...stressParamDefaults })
 const router = useRouter()
 const route = useRoute()
 let pollTimer: number | null = null
@@ -551,7 +609,20 @@ const stressDurationSeconds = computed(() => {
 const commandPreview = computed(() => {
   if (!selectedFile.value) return '请选择知识库文件'
   if (selectedFile.value.physical_category === 'stress') {
-    return `./${selectedFile.value.name} ${stressDurationSeconds.value}`
+    const env: string[] = []
+    const fname = selectedFile.value.name
+    if (fname === 'cpu_mem_stress_report.sh') {
+      if (stressFormParams.memoryPercent !== 85) env.push(`MEMORY_PERCENT=${stressFormParams.memoryPercent}`)
+      if (stressFormParams.workers > 0) env.push(`WORKERS=${stressFormParams.workers}`)
+    } else if (fname === 'disk_stress_report.sh') {
+      if (stressFormParams.diskFileSize !== '10G') env.push(`TEST_FILE_SIZE=${stressFormParams.diskFileSize}`)
+      if (stressFormParams.diskPath) env.push(`TEST_DIR=${stressFormParams.diskPath}`)
+      if (stressFormParams.workers > 0) env.push(`WORKERS=${stressFormParams.workers}`)
+    } else if (fname === 'gpu_stress_report.sh') {
+      if (stressFormParams.gpuIds !== 'all') env.push(`CUDA_VISIBLE_DEVICES=${stressFormParams.gpuIds}`)
+    }
+    const prefix = env.length ? env.join(' ') + ' ' : ''
+    return `${prefix}./${fname} ${stressDurationSeconds.value} ${stressFormParams.intervalSeconds}`
   }
   if (selectedFile.value.physical_category === 'mpi' && !isAllowedMpiFile(selectedFile.value)) {
     return MPI_TASK_BLOCKED_MESSAGE
@@ -567,7 +638,7 @@ const executeTooltip = computed(() => {
     return '当前会上传并执行 test 脚本'
   }
   if (selectedTaskType.value === 'stress') {
-    return '当前会上传并执行 stress 脚本，单次最多 3600 秒'
+    return '当前会上传并执行 stress 脚本，时长由参数决定'
   }
   if (selectedTaskType.value === 'mpi') {
     if (selectedFile.value && !isAllowedMpiFile(selectedFile.value)) {
@@ -666,7 +737,37 @@ function isAllowedMpiFile(file: TaskRunnerFile | null | undefined): boolean {
 
 function resetParamsForFile() {
   Object.assign(durationParts, { hours: 0, minutes: 1, seconds: 0 })
+  Object.assign(stressFormParams, { ...stressParamDefaults })
   apptainerTargetDir.value = '~/hpcdeploy/apptainer/'
+}
+
+function buildStressParams(): Record<string, unknown> {
+  const fname = selectedFile.value?.name ?? ''
+  const params: Record<string, unknown> = {
+    duration_seconds: stressDurationSeconds.value,
+  }
+  params.interval_seconds = stressFormParams.intervalSeconds
+
+  if (fname === 'cpu_mem_stress_report.sh') {
+    params.memory_percent = stressFormParams.memoryPercent
+    if (stressFormParams.workers > 0) {
+      params.workers = stressFormParams.workers
+    }
+  } else if (fname === 'disk_stress_report.sh') {
+    params.disk_file_size = stressFormParams.diskFileSize
+    if (stressFormParams.diskPath) {
+      params.disk_path = stressFormParams.diskPath
+    }
+    if (stressFormParams.workers > 0) {
+      params.workers = stressFormParams.workers
+    }
+  } else if (fname === 'gpu_stress_report.sh') {
+    if (stressFormParams.gpuIds !== 'all') {
+      params.gpu_ids = stressFormParams.gpuIds
+    }
+    params.gpu_memory_percent = stressFormParams.gpuMemoryPercent
+  }
+  return params
 }
 
 async function validateRunner() {
@@ -690,10 +791,6 @@ async function validateRunner() {
     }
     if (selectedFile.value.physical_category === 'stress' && stressDurationSeconds.value <= 0) {
       ElMessage.error('压测脚本总秒数必须大于 0')
-      return
-    }
-    if (selectedFile.value.physical_category === 'stress' && stressDurationSeconds.value > 3600) {
-      ElMessage.error('当前阶段压测脚本最多支持 3600 秒')
       return
     }
     if (selectedFile.value.physical_category === 'apptainer' && !apptainerTargetDir.value.trim()) {
@@ -739,10 +836,6 @@ async function createTask() {
     ElMessage.error('压测脚本总秒数必须大于 0')
     return
   }
-  if (selectedFile.value.physical_category === 'stress' && stressDurationSeconds.value > 3600) {
-    ElMessage.error('当前阶段压测脚本最多支持 3600 秒')
-    return
-  }
   if (selectedFile.value.physical_category === 'apptainer' && !apptainerTargetDir.value.trim()) {
     ElMessage.error('Apptainer 目标目录不能为空')
     return
@@ -750,11 +843,13 @@ async function createTask() {
 
   submitting.value = true
   try {
-    const payload = {
+    const payload: RunTaskPayload = {
       server_id: selectedServerId.value,
-      task_type: selectedTaskType.value,
+      task_type: selectedTaskType.value as TaskType,
       file_path: selectedFile.value.path,
-      ...(selectedTaskType.value === 'stress' ? { duration_seconds: stressDurationSeconds.value } : {})
+    }
+    if (selectedTaskType.value === 'stress') {
+      payload.params = buildStressParams()
     }
     const result = (await runTask(payload)).data
     ElMessage.success(`任务创建成功：${result.task_id}`)
@@ -995,7 +1090,29 @@ const formattedReadonlyDuration = computed(() => {
   const h = Math.floor(total / 3600)
   const m = Math.floor((total % 3600) / 60)
   const s = total % 60
-  return `${total} 秒（${h} 小时 ${m} 分钟 ${s} 秒）`
+  const parts: string[] = [`${total} 秒（${h} 小时 ${m} 分钟 ${s} 秒）`]
+  if (typeof params.interval_seconds === 'number') {
+    parts.push(`间隔 ${params.interval_seconds} 秒`)
+  }
+  if (typeof params.memory_percent === 'number') {
+    parts.push(`内存占比 ${params.memory_percent}%`)
+  }
+  if (typeof params.workers === 'number') {
+    parts.push(`线程数 ${params.workers}`)
+  }
+  if (typeof params.disk_file_size === 'string') {
+    parts.push(`文件大小 ${params.disk_file_size}`)
+  }
+  if (typeof params.disk_path === 'string') {
+    parts.push(`目录 ${params.disk_path}`)
+  }
+  if (typeof params.gpu_ids === 'string') {
+    parts.push(`GPU ID ${params.gpu_ids}`)
+  }
+  if (typeof params.gpu_memory_percent === 'number') {
+    parts.push(`GPU 内存占比 ${params.gpu_memory_percent}%`)
+  }
+  return parts.join(' | ')
 })
 
 function statusLabel(status: string | null | undefined): string {
@@ -1626,6 +1743,12 @@ onBeforeUnmount(stopTaskPolling)
 
 .summary-loading {
   padding: 40px 20px;
+}
+
+.form-help-inline {
+  margin-left: 8px;
+  font-size: 12px;
+  color: #64748b;
 }
 
 @media (max-width: 960px) {

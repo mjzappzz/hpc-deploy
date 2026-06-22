@@ -1,5 +1,6 @@
 from datetime import datetime
 from pathlib import Path
+import re
 
 from app.core.script_library import get_library_file_record, resolve_library_path
 from app.core.script_validator import ScriptValidationError
@@ -302,12 +303,40 @@ def _build_stress_command(task: Task) -> str:
     duration_seconds = params.get("duration_seconds")
     if not isinstance(duration_seconds, int):
         raise TaskRunnerError("stress duration_seconds is invalid")
-    if duration_seconds <= 0:
-        raise TaskRunnerError("stress duration_seconds must be greater than 0")
-    if duration_seconds > 3600:
-        raise TaskRunnerError("stress duration_seconds must be less than or equal to 3600")
 
-    return f"./{Path(task.file_name).name} {duration_seconds}"
+    script_name = Path(task.file_name).name
+    interval = params.get("interval_seconds", 2)
+
+    # Build env var prefix from additional params (memory_percent, workers, etc.)
+    env_vars: list[str] = []
+
+    if script_name == "cpu_mem_stress_report.sh":
+        if "memory_percent" in params:
+            env_vars.append(f"MEMORY_PERCENT={params['memory_percent']}")
+        if "workers" in params:
+            env_vars.append(f"WORKERS={params['workers']}")
+
+    elif script_name == "disk_stress_report.sh":
+        if "disk_file_size" in params:
+            env_vars.append(f"TEST_FILE_SIZE={params['disk_file_size']}")
+        if "disk_path" in params:
+            env_vars.append(f"TEST_DIR={params['disk_path']}")
+        if "workers" in params:
+            env_vars.append(f"WORKERS={params['workers']}")
+
+    elif script_name == "gpu_stress_report.sh":
+        gpu_ids = params.get("gpu_ids")
+        if gpu_ids and gpu_ids != "all":
+            env_vars.append(f"CUDA_VISIBLE_DEVICES={gpu_ids}")
+        if "gpu_memory_percent" in params:
+            env_vars.append(f"GPU_MEMORY_PERCENT={params['gpu_memory_percent']}")
+        if "gpu_backend" in params:
+            env_vars.append(f"GPU_BACKEND={params['gpu_backend']}")
+
+    env_prefix = " ".join(env_vars)
+    if env_prefix:
+        return f"{env_prefix} ./{script_name} {duration_seconds} {interval}"
+    return f"./{script_name} {duration_seconds} {interval}"
 
 
 def _resolve_command_timeout(task: Task) -> int:
@@ -353,7 +382,21 @@ def _classify_stderr_level(message: str) -> str:
 
 
 def _build_remote_execution_command(command: str, pid_file_path: str) -> str:
-    inner_command = f"printf '%s' $$ > {shell_quote(pid_file_path)}; exec {command}"
+    # Move leading env var assignments before exec so that
+    #   exec KEY=VALUE ./script.sh  →  KEY=VALUE exec ./script.sh
+    env_part = ""
+    cmd = command
+    while True:
+        m = re.match(r'^([A-Za-z_][A-Za-z0-9_]*=\S+)\s*', cmd)
+        if not m:
+            break
+        env_part += m.group(0)
+        cmd = cmd[m.end():]
+
+    if env_part:
+        inner_command = f"printf '%s' $$ > {shell_quote(pid_file_path)}; {env_part}exec {cmd}"
+    else:
+        inner_command = f"printf '%s' $$ > {shell_quote(pid_file_path)}; exec {command}"
     return f"setsid --wait bash -lc {shell_quote(inner_command)}"
 
 

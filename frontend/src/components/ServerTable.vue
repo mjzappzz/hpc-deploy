@@ -80,7 +80,7 @@
           <el-button
             link
             type="warning"
-            :loading="detectingIds.includes(row.id)"
+            :loading="detectingIds.includes(row.id) || isProbingAll"
             @click="$emit('detect', row)"
           >
             探测
@@ -119,10 +119,12 @@ withDefaults(defineProps<{
   loading?: boolean
   testingIds?: number[]
   detectingIds?: number[]
+  isProbingAll?: boolean
 }>(), {
   loading: false,
   testingIds: () => [],
-  detectingIds: () => []
+  detectingIds: () => [],
+  isProbingAll: false
 })
 
 const emit = defineEmits<{

@@ -72,6 +72,22 @@ export interface SSHTestResult {
   error: string | null
 }
 
+export interface ProbeAllResult {
+  server_id: number
+  name: string
+  host: string
+  status: string
+  last_check_at: string | null
+  last_error: string | null
+}
+
+export interface ProbeAllResponse {
+  total: number
+  online: number
+  offline: number
+  results: ProbeAllResult[]
+}
+
 export interface ServerDetectResult {
   success: boolean
   server_id: number | null
@@ -118,6 +134,12 @@ export function testServerSsh(id: number) {
 
 export function detectServer(id: number) {
   return request.post<ServerDetectResult>(`/servers/${id}/probe`)
+}
+
+export function probeAllServers() {
+  return request.post<ProbeAllResponse>('/servers/probe-all', undefined, {
+    timeout: 120000
+  })
 }
 
 export function listSshKeys() {

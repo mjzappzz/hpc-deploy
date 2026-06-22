@@ -14,7 +14,7 @@ from app.schemas.server import (
     ServerRead,
     ServerUpdate,
 )
-from app.schemas.detect import ServerDetectResponse
+from app.schemas.detect import ProbeAllResponse, ProbeAllResult, ServerDetectResponse
 from app.schemas.ssh import SSHTestResponse
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -92,6 +92,50 @@ def create_server(payload: ServerCreate, db: Session = Depends(get_db)) -> Serve
     return server
 
 
+@router.post("/probe-all", response_model=ProbeAllResponse)
+def probe_all_servers(db: Session = Depends(get_db)) -> ProbeAllResponse:
+    servers = db.query(Server).order_by(Server.id.desc()).all()
+    results: list[ProbeAllResult] = []
+    for server in servers:
+        try:
+            resp = _probe_server(db, server)
+            results.append(
+                ProbeAllResult(
+                    server_id=resp.server_id or server.id,
+                    name=resp.name or server.name,
+                    host=resp.host or server.host,
+                    status=resp.status,
+                    last_check_at=resp.last_check_at,
+                    last_error=resp.last_error,
+                )
+            )
+        except Exception as exc:
+            # Safety net — should not happen since _probe_server wraps exceptions,
+            # but guards against unexpected errors (e.g. DB failure).
+            server.status = "offline"
+            server.last_error = f"Unexpected error: {exc}"
+            server.last_check_at = datetime.utcnow()
+            db.commit()
+            db.refresh(server)
+            results.append(
+                ProbeAllResult(
+                    server_id=server.id,
+                    name=server.name,
+                    host=server.host,
+                    status="offline",
+                    last_check_at=server.last_check_at,
+                    last_error=server.last_error,
+                )
+            )
+    online = sum(1 for r in results if r.status == "online")
+    return ProbeAllResponse(
+        total=len(results),
+        online=online,
+        offline=len(results) - online,
+        results=results,
+    )
+
+
 @router.get("/{server_id}", response_model=ServerRead)
 def get_server(server_id: int, db: Session = Depends(get_db)) -> Server:
     return _get_server_or_404(db, server_id)
@@ -157,8 +201,10 @@ def probe_server(server_id: int, db: Session = Depends(get_db)) -> ServerDetectR
     return _run_server_probe(server_id, db)
 
 
-def _run_server_probe(server_id: int, db: Session) -> ServerDetectResponse:
-    server = _get_server_or_404(db, server_id)
+def _probe_server(db: Session, server: Server) -> ServerDetectResponse:
+    """Probe a single server and update its health info in DB.
+    Used by both single-server and bulk probe endpoints.
+    """
     server.last_check_at = datetime.utcnow()
     try:
         raw_result = detect_server_info(
@@ -185,6 +231,11 @@ def _run_server_probe(server_id: int, db: Session) -> ServerDetectResponse:
         db.commit()
         db.refresh(server)
         return _build_probe_response(server, success=False, error=str(exc))
+
+
+def _run_server_probe(server_id: int, db: Session) -> ServerDetectResponse:
+    server = _get_server_or_404(db, server_id)
+    return _probe_server(db, server)
 
 
 @router.post("/{server_id}/deploy-public-key", response_model=DeployPublicKeyResponse)

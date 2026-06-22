@@ -3,6 +3,7 @@
     <el-card shadow="never" class="server-table-card">
       <div class="toolbar">
         <el-button type="primary" @click="openCreate">新增服务器</el-button>
+        <el-button :loading="isProbingAll" @click="probeAll">{{ isProbingAll ? '探测中' : '探测全部' }}</el-button>
         <el-button @click="loadServers">刷新</el-button>
       </div>
 
@@ -11,6 +12,7 @@
         :loading="loading"
         :testing-ids="testingIds"
         :detecting-ids="detectingIds"
+        :is-probing-all="isProbingAll"
         @edit="openEdit"
         @delete="removeServer"
         @test="testSsh"
@@ -199,8 +201,10 @@ import {
   deployPublicKey,
   listServers,
   listSshKeys,
+  probeAllServers,
   testServerSsh,
   updateServer,
+  type ProbeAllResponse,
   type SSHKeyItem,
   type ServerPayload,
   type ServerRecord
@@ -215,6 +219,7 @@ const editingId = ref<number | null>(null)
 const servers = ref<ServerRecord[]>([])
 const testingIds = ref<number[]>([])
 const detectingIds = ref<number[]>([])
+const isProbingAll = ref(false)
 const detailVisible = ref(false)
 const activeServer = ref<ServerRecord | null>(null)
 const sshKeys = ref<SSHKeyItem[]>([])
@@ -457,6 +462,20 @@ async function detectInfo(server: ServerRecord) {
     ElMessage.error(`探测失败：${message}`)
   } finally {
     detectingIds.value = detectingIds.value.filter((id) => id !== server.id)
+  }
+}
+
+async function probeAll() {
+  isProbingAll.value = true
+  try {
+    const resp: ProbeAllResponse = (await probeAllServers()).data
+    await loadServers()
+    ElMessage.success(`探测完成：在线 ${resp.online} 台，离线 ${resp.offline} 台`)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '请求失败'
+    ElMessage.error(`批量探测失败：${message}`)
+  } finally {
+    isProbingAll.value = false
   }
 }
 
