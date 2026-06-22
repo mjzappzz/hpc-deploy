@@ -1,7 +1,8 @@
 <template>
-  <el-container class="app-shell">
-    <el-aside width="236px" class="app-sidebar">
-      <div class="brand">
+  <div class="app-shell">
+    <!-- sidebar -->
+    <aside class="app-sidebar">
+      <div class="brand" style="cursor: pointer" @click="goHome">
         <div class="brand-mark">H</div>
         <div>
           <div class="brand-title">HPCDeploy</div>
@@ -35,30 +36,197 @@
           <span>系统设置</span>
         </el-menu-item>
       </el-menu>
-    </el-aside>
+    </aside>
 
-    <el-container>
-      <el-header class="app-header">
-        <div>
-          <h1>{{ routeTitle }}</h1>
-          <p>阶段 3 基础页面</p>
-        </div>
-        <el-tag type="success" effect="plain">DEV</el-tag>
-      </el-header>
+    <!-- main area -->
+    <div class="app-main-area">
+      <!-- topbar -->
+      <header class="app-topbar">
+        <h1 class="topbar-title">{{ routeTitle }}</h1>
+        <el-tag type="success" effect="plain" size="small">DEV</el-tag>
+      </header>
 
-      <el-main class="app-main">
+      <!-- content -->
+      <main class="app-content">
         <router-view />
-      </el-main>
-    </el-container>
-  </el-container>
+      </main>
+    </div>
+  </div>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { Cpu, Document, Monitor, Operation, Setting, Tickets } from '@element-plus/icons-vue'
 
 const route = useRoute()
+const router = useRouter()
 
 const routeTitle = computed(() => String(route.meta.title ?? 'HPCDeploy'))
+
+function goHome() {
+  router.push('/')
+}
 </script>
+
+<style>
+/* === CSS variables === */
+:root {
+  --sidebar-width: 236px;
+  --topbar-height: 56px;
+}
+
+/* === reset === */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #app {
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+}
+
+/* === shell === */
+.app-shell {
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* === sidebar (fixed) === */
+.app-sidebar {
+  position: fixed;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: var(--sidebar-width);
+  display: flex;
+  flex-direction: column;
+  background: #f8fafc;
+  border-right: 1px solid #e5e7eb;
+  z-index: 30;
+  overflow-y: auto;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 16px 14px;
+  background: #ffffff;
+  border-bottom: 1px solid #e5e7eb;
+  transition: background 0.15s;
+}
+.brand:hover {
+  background: #f1f5f9;
+}
+
+.brand-mark {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #1677ff, #409eff);
+  color: #fff;
+  font-size: 18px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.brand-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #1f2937;
+  line-height: 1.3;
+}
+.brand-subtitle {
+  font-size: 11px;
+  color: #9ca3af;
+  line-height: 1.3;
+}
+
+/* nav menu */
+.nav-menu {
+  flex: 1;
+  border-right: none !important;
+  background: transparent !important;
+  padding: 4px 0;
+}
+
+.nav-menu .el-menu-item {
+  height: 44px;
+  line-height: 44px;
+  margin: 2px 8px;
+  border-radius: 6px;
+  color: #374151;
+  font-size: 14px;
+  transition: all 0.15s;
+}
+
+.nav-menu .el-menu-item:hover {
+  background: #f1f5f9 !important;
+  color: #1f2937;
+}
+
+.nav-menu .el-menu-item.is-active {
+  background: #eaf3ff !important;
+  color: #1677ff;
+  font-weight: 600;
+}
+
+.nav-menu .el-menu-item.is-active .el-icon {
+  color: #1677ff;
+}
+
+.nav-menu .el-menu-item .el-icon {
+  font-size: 18px;
+  margin-right: 8px;
+  color: #6b7280;
+  transition: color 0.15s;
+}
+
+.nav-menu .el-menu-item.is-active .el-icon {
+  color: #1677ff;
+}
+
+/* === main area (scroll container) === */
+.app-main-area {
+  margin-left: var(--sidebar-width);
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: #f5f7fa;
+  overflow-y: auto;
+}
+
+/* === topbar (sticky inside scroll container) === */
+.app-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  height: var(--topbar-height);
+  min-height: var(--topbar-height);
+  padding: 0 24px;
+  background: #ffffff;
+  border-bottom: 1px solid #e5e7eb;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+.topbar-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #1f2937;
+}
+
+/* === content === */
+.app-content {
+  flex: 1;
+  padding: 20px 24px;
+}
+</style>

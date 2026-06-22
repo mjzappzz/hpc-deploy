@@ -9,53 +9,66 @@
     header-cell-class-name="server-table-header"
     cell-class-name="server-table-cell"
   >
-    <el-table-column prop="name" label="名称" width="120" />
-    <el-table-column label="地址" width="180">
+    <el-table-column prop="name" label="服务器名称" min-width="120" show-overflow-tooltip />
+    <el-table-column label="地址" min-width="145" show-overflow-tooltip>
       <template #default="{ row }">
         <span class="table-ellipsis">{{ row.host }}:{{ row.port }}</span>
       </template>
     </el-table-column>
-    <el-table-column label="用户" width="100">
+    <el-table-column label="用户" width="70" show-overflow-tooltip>
       <template #default="{ row }">
         <el-tooltip :content="displayValue(row.username)" placement="top" :disabled="!row.username">
           <span class="table-ellipsis">{{ displayValue(row.username) }}</span>
         </el-tooltip>
       </template>
     </el-table-column>
-    <el-table-column label="状态" width="100">
+    <el-table-column label="状态" width="80">
       <template #default="{ row }">
-        <StatusTag :status="row.status" />
+        <el-tooltip
+          :content="displayValue(row.last_error)"
+          placement="top"
+          :disabled="!(row.status === 'offline' && row.last_error)"
+        >
+          <span>
+            <StatusTag :status="row.status" />
+          </span>
+        </el-tooltip>
       </template>
     </el-table-column>
-    <el-table-column label="OS" width="120">
+    <el-table-column label="OS" min-width="110" show-overflow-tooltip>
       <template #default="{ row }">
         <el-tooltip :content="displayValue(row.os_info)" placement="top" :disabled="!row.os_info">
           <span class="table-ellipsis">{{ osSummary(row.os_info) }}</span>
         </el-tooltip>
       </template>
     </el-table-column>
-    <el-table-column label="CPU" width="220">
+    <el-table-column label="CPU" min-width="170" show-overflow-tooltip>
       <template #default="{ row }">
         <el-tooltip :content="displayValue(row.cpu_info)" placement="top" :disabled="!row.cpu_info">
           <span class="table-ellipsis">{{ cpuSummary(row.cpu_info) }}</span>
         </el-tooltip>
       </template>
     </el-table-column>
-    <el-table-column label="内存" width="90">
+    <el-table-column label="内存" width="80" show-overflow-tooltip>
       <template #default="{ row }">
         <span>{{ displayValue(row.memory_info) }}</span>
       </template>
     </el-table-column>
-    <el-table-column label="GPU" width="180">
+    <el-table-column label="GPU" min-width="170" show-overflow-tooltip>
       <template #default="{ row }">
         <el-tooltip :content="displayValue(row.gpu_info)" placement="top" :disabled="!row.gpu_info">
           <span class="table-ellipsis">{{ gpuSummary(row.gpu_info) }}</span>
         </el-tooltip>
       </template>
     </el-table-column>
-    <el-table-column label="操作" width="220" class-name="server-actions-column">
+    <el-table-column label="最后探测" min-width="135" show-overflow-tooltip>
       <template #default="{ row }">
-        <div class="table-actions">
+        <span>{{ formatDateTime(row.last_check_at) }}</span>
+      </template>
+    </el-table-column>
+    <el-table-column label="操作" width="320" class-name="server-actions-column">
+      <template #default="{ row }">
+        <div class="server-actions">
           <el-button
             link
             type="success"
@@ -71,6 +84,14 @@
             @click="$emit('detect', row)"
           >
             探测
+          </el-button>
+          <el-button
+            v-if="row.auth_type === 'password'"
+            link
+            type="primary"
+            @click="$emit('deployPublicKey', row)"
+          >
+            部署公钥
           </el-button>
           <el-button link type="info" @click="$emit('detail', row)">详情</el-button>
           <el-dropdown trigger="click" @command="(command: string) => handleMore(command, row)">
@@ -90,6 +111,7 @@
 
 <script setup lang="ts">
 import type { ServerRecord } from '@/api/server'
+import { formatDateTime } from '@/utils/time'
 import StatusTag from './StatusTag.vue'
 
 withDefaults(defineProps<{
@@ -109,6 +131,7 @@ const emit = defineEmits<{
   test: [server: ServerRecord]
   detect: [server: ServerRecord]
   detail: [server: ServerRecord]
+  deployPublicKey: [server: ServerRecord]
 }>()
 
 function displayValue(value: string | null | undefined) {

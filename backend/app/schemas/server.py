@@ -11,6 +11,8 @@ class ServerBase(BaseModel):
     auth_type: str = Field(default="key", max_length=20)
     key_path: str | None = Field(default=None, max_length=255)
     status: str = Field(default="unknown", max_length=20)
+    last_check_at: datetime | None = None
+    last_error: str | None = None
     os_info: str | None = None
     gpu_info: str | None = None
     cpu_info: str | None = None
@@ -20,7 +22,7 @@ class ServerBase(BaseModel):
 
 
 class ServerCreate(ServerBase):
-    pass
+    password: str | None = Field(default=None, max_length=255)
 
 
 class ServerUpdate(BaseModel):
@@ -30,7 +32,10 @@ class ServerUpdate(BaseModel):
     username: str | None = Field(default=None, min_length=1, max_length=100)
     auth_type: str | None = Field(default=None, max_length=20)
     key_path: str | None = Field(default=None, max_length=255)
+    password: str | None = Field(default=None, max_length=255)
     status: str | None = Field(default=None, max_length=20)
+    last_check_at: datetime | None = None
+    last_error: str | None = None
     os_info: str | None = None
     gpu_info: str | None = None
     cpu_info: str | None = None
@@ -45,3 +50,14 @@ class ServerRead(ServerBase):
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class DeployPublicKeyRequest(BaseModel):
+    private_key_path: str = Field(min_length=1, max_length=255)
+
+
+class DeployPublicKeyResponse(BaseModel):
+    success: bool
+    message: str
+    auth_type: str
+    private_key_path: str

@@ -16,16 +16,17 @@
         @test="testSsh"
         @detect="detectInfo"
         @detail="openDetail"
+        @deploy-public-key="openDeployPublicKey"
       />
     </el-card>
 
     <el-dialog v-model="dialogVisible" :title="editingId ? '编辑服务器' : '新增服务器'" width="560px">
-      <el-form :model="form" label-width="96px">
-        <el-form-item label="名称" required>
-          <el-input v-model="form.name" />
+      <el-form :model="form" label-width="110px">
+        <el-form-item label="服务器名称" required>
+          <el-input v-model="form.name" placeholder="例如：aliyun-gpu01" />
         </el-form-item>
         <el-form-item label="主机地址" required>
-          <el-input v-model="form.host" />
+          <el-input v-model="form.host" placeholder="例如：47.109.105.242" />
         </el-form-item>
         <el-form-item label="SSH 端口" required>
           <el-input-number v-model="form.port" :min="1" :max="65535" />
@@ -36,15 +37,87 @@
         <el-form-item label="认证方式">
           <el-select v-model="form.auth_type">
             <el-option label="SSH Key" value="key" />
+            <el-option label="Password" value="password" />
           </el-select>
         </el-form-item>
-        <el-form-item label="私钥路径">
-          <el-input v-model="form.key_path" placeholder="/backend/keys/node1_key" />
+        <el-form-item v-if="form.auth_type === 'password'" label="密码" required>
+          <el-input v-model="form.password" type="password" show-password placeholder="输入 SSH 登录密码" />
+        </el-form-item>
+        <el-form-item v-else label="SSH 私钥" required>
+          <div class="ssh-key-row">
+            <el-select
+              v-model="form.key_path"
+              filterable
+              clearable
+              placeholder="选择可用私钥"
+              :loading="sshKeysLoading"
+              class="ssh-key-select"
+            >
+              <el-option
+                v-for="item in availableSshKeyOptions"
+                :key="item.private_key_path"
+                :label="item.private_key_name"
+                :value="item.private_key_path"
+              >
+                <div class="ssh-key-option">
+                  <span>{{ item.private_key_name }}</span>
+                  <span class="ssh-key-option__path">{{ item.private_key_path }}</span>
+                </div>
+              </el-option>
+            </el-select>
+            <el-button class="ssh-key-refresh-button" :loading="sshKeysLoading" @click="refreshSshKeys">刷新私钥</el-button>
+          </div>
+          <div class="form-help-text">
+            选择 backend/keys/ 下的本地私钥。不会返回私钥内容。
+          </div>
         </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="saveServer">保存</el-button>
+        <el-button type="primary" :loading="saving" :disabled="saveDisabled" @click="saveServer">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="deployDialogVisible" title="部署公钥" width="560px">
+      <div class="deploy-hint">
+        <div>将使用当前服务器保存的账号密码登录远端，并写入所选密钥对的公钥。</div>
+        <div class="deploy-path">写入位置：~/.ssh/authorized_keys</div>
+        <div>部署成功后，该服务器会切换为 SSH Key 登录。</div>
+      </div>
+      <el-form label-width="110px">
+        <el-form-item label="目标服务器">
+          <span>{{ deployTargetServer ? `${deployTargetServer.name} (${deployTargetServer.host})` : '-' }}</span>
+        </el-form-item>
+        <el-form-item label="SSH 密钥对" required>
+          <div class="ssh-key-row">
+            <el-select
+              v-model="deployPrivateKeyPath"
+              placeholder="选择可部署的 SSH 密钥对"
+              :loading="sshKeysLoading"
+              class="ssh-key-select"
+            >
+              <el-option
+                v-for="item in sshKeysWithPublicKey"
+                :key="item.private_key_path"
+                :label="item.display_name"
+                :value="item.private_key_path"
+              >
+                <div class="ssh-key-option">
+                  <span>{{ item.display_name }}</span>
+                  <span class="ssh-key-option__path">{{ item.private_key_path }}</span>
+                </div>
+              </el-option>
+            </el-select>
+            <el-button class="ssh-key-refresh-button" :loading="sshKeysLoading" @click="refreshSshKeys">刷新私钥</el-button>
+          </div>
+          <div class="form-help-text">
+            只会写入 .pub 公钥，私钥不会上传到远端。
+          </div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="deployDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="deployingPublicKey" :disabled="deployDisabled" @click="submitDeployPublicKey">部署</el-button>
       </template>
     </el-dialog>
 
@@ -53,57 +126,82 @@
       :title="activeServer ? `探测信息：${activeServer.name}` : '探测信息'"
       size="560px"
     >
-      <el-descriptions v-if="activeServer" :column="1" border>
-        <el-descriptions-item label="名称">{{ displayValue(activeServer.name) }}</el-descriptions-item>
-        <el-descriptions-item label="地址">
-          {{ activeServer.host }}:{{ activeServer.port }}
-        </el-descriptions-item>
-        <el-descriptions-item label="认证方式">
-          {{ displayValue(activeServer.auth_type) }}
-        </el-descriptions-item>
-        <el-descriptions-item label="私钥路径">
-          {{ displayValue(activeServer.key_path) }}
-        </el-descriptions-item>
-        <el-descriptions-item label="状态">
-          <StatusTag :status="activeServer.status" />
-        </el-descriptions-item>
-        <el-descriptions-item label="OS 信息">
-          {{ displayValue(activeServer.os_info) }}
-        </el-descriptions-item>
-        <el-descriptions-item label="CPU 信息">
-          {{ displayValue(activeServer.cpu_info) }}
-        </el-descriptions-item>
-        <el-descriptions-item label="内存信息">
-          {{ displayValue(activeServer.memory_info) }}
-        </el-descriptions-item>
-        <el-descriptions-item label="磁盘信息">
-          {{ displayValue(activeServer.disk_info) }}
-        </el-descriptions-item>
-        <el-descriptions-item label="GPU 信息">
-          {{ displayValue(activeServer.gpu_info) }}
-        </el-descriptions-item>
-        <el-descriptions-item label="网络信息">
-          {{ displayValue(activeServer.network_info) }}
-        </el-descriptions-item>
-        <el-descriptions-item label="更新时间">
-          {{ formatTime(activeServer.updated_at) }}
-        </el-descriptions-item>
-      </el-descriptions>
+      <template v-if="activeServer">
+        <div class="detail-section">
+          <div class="detail-section__title">基础信息</div>
+          <el-descriptions :column="1" border>
+            <el-descriptions-item label="服务器名称">{{ displayValue(activeServer.name) }}</el-descriptions-item>
+            <el-descriptions-item label="地址">
+              {{ activeServer.host }}:{{ activeServer.port }}
+            </el-descriptions-item>
+            <el-descriptions-item label="用户名">
+              {{ displayValue(activeServer.username) }}
+            </el-descriptions-item>
+            <el-descriptions-item label="认证方式">
+              {{ authTypeLabel(activeServer.auth_type) }}
+            </el-descriptions-item>
+            <el-descriptions-item label="状态">
+              <StatusTag :status="activeServer.status" />
+            </el-descriptions-item>
+            <el-descriptions-item label="最后探测时间">
+              {{ formatTime(activeServer.last_check_at) }}
+            </el-descriptions-item>
+            <el-descriptions-item label="最后错误">
+              {{ displayValue(activeServer.last_error) }}
+            </el-descriptions-item>
+          </el-descriptions>
+        </div>
+
+        <div class="detail-section">
+          <div class="detail-section__title">资源摘要</div>
+          <el-descriptions :column="1" border>
+            <el-descriptions-item label="OS">{{ displayValue(activeServer.os_info) }}</el-descriptions-item>
+            <el-descriptions-item label="CPU">{{ displayValue(activeServer.cpu_info) }}</el-descriptions-item>
+            <el-descriptions-item label="内存">{{ displayValue(activeServer.memory_info) }}</el-descriptions-item>
+            <el-descriptions-item label="磁盘">{{ displayValue(activeServer.disk_info) }}</el-descriptions-item>
+            <el-descriptions-item label="GPU">{{ displayValue(activeServer.gpu_info) }}</el-descriptions-item>
+          </el-descriptions>
+        </div>
+
+        <div class="detail-section">
+          <div class="detail-section__title">原始探测信息</div>
+          <el-collapse>
+            <el-collapse-item title="OS 原始信息" name="os">
+              <pre class="detail-raw">{{ displayValue(activeServer.os_info) }}</pre>
+            </el-collapse-item>
+            <el-collapse-item title="CPU 原始信息" name="cpu">
+              <pre class="detail-raw">{{ displayValue(activeServer.cpu_info) }}</pre>
+            </el-collapse-item>
+            <el-collapse-item title="内存原始信息" name="memory">
+              <pre class="detail-raw">{{ displayValue(activeServer.memory_info) }}</pre>
+            </el-collapse-item>
+            <el-collapse-item title="磁盘原始信息" name="disk">
+              <pre class="detail-raw">{{ displayValue(activeServer.disk_info) }}</pre>
+            </el-collapse-item>
+            <el-collapse-item title="GPU 原始信息" name="gpu">
+              <pre class="detail-raw">{{ displayValue(activeServer.gpu_info) }}</pre>
+            </el-collapse-item>
+          </el-collapse>
+        </div>
+      </template>
     </el-drawer>
   </section>
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { formatDateTime } from '@/utils/time'
 import {
   createServer,
   deleteServer,
   detectServer,
+  deployPublicKey,
   listServers,
+  listSshKeys,
   testServerSsh,
   updateServer,
+  type SSHKeyItem,
   type ServerPayload,
   type ServerRecord
 } from '@/api/server'
@@ -119,6 +217,12 @@ const testingIds = ref<number[]>([])
 const detectingIds = ref<number[]>([])
 const detailVisible = ref(false)
 const activeServer = ref<ServerRecord | null>(null)
+const sshKeys = ref<SSHKeyItem[]>([])
+const sshKeysLoading = ref(false)
+const deployDialogVisible = ref(false)
+const deployTargetServer = ref<ServerRecord | null>(null)
+const deployPrivateKeyPath = ref('')
+const deployingPublicKey = ref(false)
 
 const form = reactive<ServerPayload>({
   name: '',
@@ -127,8 +231,35 @@ const form = reactive<ServerPayload>({
   username: '',
   auth_type: 'key',
   key_path: '',
+  password: '',
   status: 'unknown'
 })
+
+const availableSshKeyOptions = computed(() => {
+  const items = [...sshKeys.value]
+  const currentPath = form.key_path?.trim()
+  if (currentPath && !items.some((item) => item.private_key_path === currentPath)) {
+    items.unshift({
+      key_name: currentPath.split('/').pop() || currentPath,
+      private_key_name: currentPath.split('/').pop() || currentPath,
+      public_key_name: null,
+      private_key_path: currentPath,
+      has_public_key: false,
+      display_name: `当前已配置私钥 (${currentPath.split('/').pop() || currentPath})`
+    })
+  }
+  return items
+})
+
+const hasSelectableSshKey = computed(() => availableSshKeyOptions.value.length > 0)
+const sshKeysWithPublicKey = computed(() => sshKeys.value.filter((item) => item.has_public_key))
+const saveDisabled = computed(() => {
+  if (form.auth_type === 'password') {
+    return !editingId.value && !form.password?.trim()
+  }
+  return !form.key_path?.trim() || (!editingId.value && !hasSelectableSshKey.value)
+})
+const deployDisabled = computed(() => !deployTargetServer.value || !deployPrivateKeyPath.value)
 
 function resetForm() {
   editingId.value = null
@@ -139,6 +270,7 @@ function resetForm() {
     username: '',
     auth_type: 'key',
     key_path: '',
+    password: '',
     status: 'unknown'
   })
 }
@@ -155,6 +287,24 @@ async function loadServers() {
   }
 }
 
+async function loadSshKeys() {
+  sshKeysLoading.value = true
+  try {
+    sshKeys.value = (await listSshKeys()).data.items
+    if (!form.key_path && form.auth_type === 'key' && sshKeys.value.length > 0) {
+      form.key_path = sshKeys.value[0].private_key_path
+    }
+    if (!deployPrivateKeyPath.value) {
+      deployPrivateKeyPath.value = sshKeys.value.find((item) => item.has_public_key)?.private_key_path ?? ''
+    }
+  } catch (error) {
+    sshKeys.value = []
+    ElMessage.error(`加载 SSH 私钥失败：${getApiErrorMessage(error)}`)
+  } finally {
+    sshKeysLoading.value = false
+  }
+}
+
 async function reloadAndSelectServer(serverId: number) {
   await loadServers()
   activeServer.value = servers.value.find((server) => server.id === serverId) ?? null
@@ -162,6 +312,7 @@ async function reloadAndSelectServer(serverId: number) {
 
 function openCreate() {
   resetForm()
+  void loadSshKeys()
   dialogVisible.value = true
 }
 
@@ -174,6 +325,7 @@ function openEdit(server: ServerRecord) {
     username: server.username,
     auth_type: server.auth_type,
     key_path: server.key_path ?? '',
+    password: '',
     status: server.status,
     os_info: server.os_info,
     gpu_info: server.gpu_info,
@@ -182,23 +334,79 @@ function openEdit(server: ServerRecord) {
     disk_info: server.disk_info,
     network_info: server.network_info
   })
+  void loadSshKeys()
   dialogVisible.value = true
+}
+
+async function openDeployPublicKey(server: ServerRecord) {
+  deployTargetServer.value = server
+  deployPrivateKeyPath.value = ''
+  await loadSshKeys()
+  deployDialogVisible.value = true
+}
+
+async function refreshSshKeys() {
+  await loadSshKeys()
 }
 
 async function saveServer() {
   saving.value = true
   try {
-    const payload = { ...form, key_path: form.key_path || null }
+    const payload: Partial<ServerPayload> = {
+      name: form.name,
+      host: form.host,
+      port: form.port,
+      username: form.username,
+      auth_type: form.auth_type,
+      status: form.status,
+      os_info: form.os_info,
+      gpu_info: form.gpu_info,
+      cpu_info: form.cpu_info,
+      memory_info: form.memory_info,
+      disk_info: form.disk_info,
+      network_info: form.network_info,
+    }
+    if (form.auth_type === 'password') {
+      payload.key_path = null
+      if (editingId.value) {
+        if (form.password?.trim()) {
+          payload.password = form.password
+        }
+      } else {
+        payload.password = form.password || null
+      }
+    } else {
+      payload.key_path = form.key_path || null
+      payload.password = null
+    }
     if (editingId.value) {
       await updateServer(editingId.value, payload)
     } else {
-      await createServer(payload)
+      await createServer(payload as ServerPayload)
     }
     ElMessage.success('服务器已保存')
     dialogVisible.value = false
     await loadServers()
   } finally {
     saving.value = false
+  }
+}
+
+async function submitDeployPublicKey() {
+  if (!deployTargetServer.value || !deployPrivateKeyPath.value) {
+    ElMessage.warning('请先选择带公钥的私钥')
+    return
+  }
+  deployingPublicKey.value = true
+  try {
+    await deployPublicKey(deployTargetServer.value.id, { private_key_path: deployPrivateKeyPath.value })
+    ElMessage.success('公钥部署成功，服务器已切换为 SSH Key')
+    deployDialogVisible.value = false
+    await loadServers()
+  } catch (error) {
+    ElMessage.error(`部署公钥失败：${getApiErrorMessage(error)}`)
+  } finally {
+    deployingPublicKey.value = false
   }
 }
 
@@ -237,13 +445,12 @@ async function detectInfo(server: ServerRecord) {
   ElMessage.info(`正在探测 ${server.name} 服务器信息`)
   try {
     const result = (await detectServer(server.id)).data
+    await reloadAndSelectServer(server.id)
     if (result.success) {
-      ElMessage.success(`探测成功：${result.os_info ?? server.host}`)
-      await reloadAndSelectServer(server.id)
+      ElMessage.success('探测完成')
       detailVisible.value = true
     } else {
-      ElMessage.error(`探测失败：${result.error ?? '未知错误'}`)
-      await reloadAndSelectServer(server.id)
+      ElMessage.error(`探测失败：${result.last_error ?? result.error ?? '未知错误'}`)
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : '请求失败'
@@ -260,6 +467,12 @@ function openDetail(server: ServerRecord) {
 
 function displayValue(value: string | null | undefined) {
   return value?.trim() || '-'
+}
+
+function authTypeLabel(value: string | null | undefined) {
+  if (value === 'password') return 'Password'
+  if (value === 'key') return 'SSH Key'
+  return displayValue(value)
 }
 
 function getApiErrorMessage(error: unknown) {
@@ -281,3 +494,69 @@ function formatTime(value: string | null | undefined) {
 
 onMounted(loadServers)
 </script>
+
+<style scoped>
+.ssh-key-option {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.deploy-hint {
+  margin-bottom: 16px;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.deploy-path {
+  color: #475569;
+}
+
+.ssh-key-row {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  align-items: center;
+}
+
+.ssh-key-select {
+  flex: 1;
+}
+
+.ssh-key-refresh-button {
+  flex: 0 0 auto;
+}
+
+.form-help-text {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.4;
+}
+
+.ssh-key-option__path {
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.detail-section + .detail-section {
+  margin-top: 20px;
+}
+
+.detail-section__title {
+  margin-bottom: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.detail-raw {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #334155;
+}
+</style>

@@ -14,14 +14,19 @@ def test_ssh_connection(
     port: int,
     username: str,
     key_path: str | None,
+    password: str | None = None,
     timeout: int = 10,
 ) -> dict[str, str]:
-    if not key_path:
-        raise SSHTestError("SSH key_path is not configured")
-
-    key_file = Path(key_path).expanduser()
-    if not key_file.is_file():
-        raise SSHTestError(f"SSH key file not found: {key_path}")
+    connect_kwargs: dict[str, object] = {}
+    if password:
+        connect_kwargs["password"] = password
+    else:
+        if not key_path:
+            raise SSHTestError("SSH key_path is not configured")
+        key_file = Path(key_path).expanduser()
+        if not key_file.is_file():
+            raise SSHTestError(f"SSH key file not found: {key_path}")
+        connect_kwargs["key_filename"] = str(key_file)
 
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -30,12 +35,12 @@ def test_ssh_connection(
             hostname=host,
             port=port,
             username=username,
-            key_filename=str(key_file),
             timeout=timeout,
             banner_timeout=timeout,
             auth_timeout=timeout,
             look_for_keys=False,
             allow_agent=False,
+            **connect_kwargs,
         )
         hostname = _run_fixed_command(client, "hostname", timeout)
         uname = _run_fixed_command(client, "uname -a", timeout)
@@ -60,4 +65,3 @@ def _run_fixed_command(client: paramiko.SSHClient, command: str, timeout: int) -
     if exit_code != 0:
         raise SSHTestError(f"command failed: {command}: {error or output}")
     return output
-

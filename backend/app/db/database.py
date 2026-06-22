@@ -55,6 +55,8 @@ def init_db() -> None:
 
     Base.metadata.create_all(bind=engine)
     _ensure_stage5_server_columns()
+    _ensure_server_auth_columns()
+    _ensure_server_health_columns()
     _ensure_stage8_task_columns()
 
 
@@ -80,6 +82,44 @@ def _ensure_stage5_server_columns() -> None:
         "memory_info": "TEXT",
         "disk_info": "TEXT",
         "network_info": "TEXT",
+    }
+    missing = [(name, column_type) for name, column_type in required.items() if name not in existing]
+    if not missing:
+        return
+
+    with engine.begin() as connection:
+        for name, column_type in missing:
+            connection.execute(text(f"ALTER TABLE servers ADD COLUMN {name} {column_type}"))
+
+
+def _ensure_server_auth_columns() -> None:
+    if not normalized_database_url.startswith("sqlite"):
+        return
+
+    inspector = inspect(engine)
+    if "servers" not in inspector.get_table_names():
+        return
+
+    existing = {column["name"] for column in inspector.get_columns("servers")}
+    if "password" in existing:
+        return
+
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE servers ADD COLUMN password VARCHAR(255)"))
+
+
+def _ensure_server_health_columns() -> None:
+    if not normalized_database_url.startswith("sqlite"):
+        return
+
+    inspector = inspect(engine)
+    if "servers" not in inspector.get_table_names():
+        return
+
+    existing = {column["name"] for column in inspector.get_columns("servers")}
+    required = {
+        "last_check_at": "DATETIME",
+        "last_error": "TEXT",
     }
     missing = [(name, column_type) for name, column_type in required.items() if name not in existing]
     if not missing:

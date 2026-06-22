@@ -2,8 +2,8 @@
   <el-card shadow="never" class="task-card">
     <div class="task-card__header">
       <div>
-        <div class="task-card__id">{{ task.task_id }}</div>
-        <div class="task-card__meta">{{ serverLabel }} / {{ task.display_category ?? task.task_type ?? '-' }}</div>
+        <div class="task-card__title" :title="displayName">{{ displayName }}</div>
+        <div class="task-card__meta">{{ task.task_id }} / {{ serverLabel }} / {{ moduleLabel }}</div>
       </div>
       <StatusTag :status="task.status" />
     </div>
@@ -50,6 +50,7 @@ import { computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import type { TaskRecord } from '@/api/task'
 import { downloadTaskLogs } from '@/api/task'
+import { formatTaskDisplayName, getTaskModuleLabel } from '@/utils/taskDisplay'
 import { formatDateTime } from '@/utils/time'
 import StatusTag from './StatusTag.vue'
 
@@ -75,8 +76,17 @@ const serverLabel = computed(() => {
   if (props.task.server_name && props.task.server_host) {
     return `${props.task.server_name} (${props.task.server_host})`
   }
+  if (props.task.server_name) {
+    return props.task.server_name
+  }
+  if (props.task.server_host) {
+    return props.task.server_host
+  }
   return `Server #${props.task.server_id}`
 })
+
+const displayName = computed(() => formatTaskDisplayName(props.task))
+const moduleLabel = computed(() => getTaskModuleLabel(props.task.task_type))
 
 const isContinuable = computed(() => {
   const status = props.task.status?.toUpperCase() ?? ''
@@ -126,6 +136,13 @@ function handleDownloadLogs(task: TaskRecord) {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.task-card__title {
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .task-card__tooltip {

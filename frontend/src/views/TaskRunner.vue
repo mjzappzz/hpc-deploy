@@ -7,7 +7,6 @@
             <div class="runner-title">任务执行准备</div>
             <div class="runner-subtitle">当前阶段会执行 test、stress 和 3 个显式白名单 mpi 脚本；Apptainer 只做容器分发上传，不执行。</div>
           </div>
-          <el-tag type="success" effect="plain">阶段 11B</el-tag>
         </div>
       </template>
 
@@ -189,6 +188,10 @@
                 <div class="readonly-section-title">基础信息</div>
                 <div class="readonly-grid">
                   <div class="ro-field">
+                    <span class="ro-label">任务名称</span>
+                    <span class="ro-value">{{ activeTaskDisplayName }}</span>
+                  </div>
+                  <div class="ro-field">
                     <span class="ro-label">目标服务器</span>
                     <span class="ro-value">{{ activeTask.server_name }} ({{ activeTask.server_host }})</span>
                   </div>
@@ -248,6 +251,10 @@
                 <div class="summary-group">
                   <div class="summary-group-title">任务信息</div>
                   <div class="summary-group-grid">
+                    <div class="summary-field">
+                      <span class="field-key">任务名称</span>
+                      <span class="field-value">{{ activeTaskDisplayName }}</span>
+                    </div>
                     <div class="summary-field">
                       <span class="field-key">任务 ID</span>
                       <span class="field-value mono">{{ activeTask.task_id }}</span>
@@ -396,6 +403,8 @@
 
           <div class="live-content-wrapper">
             <div class="live-task-meta-bar" v-loading="polling && !!activeTaskId && !activeTask">
+              <span class="meta-item">{{ activeTaskDisplayName }}</span>
+              <span class="meta-divider">|</span>
               <span class="meta-item mono">{{ activeTask?.task_id || activeTaskId || '-' }}</span>
               <span class="meta-divider">|</span>
               <span class="meta-item">{{ statusLabel(activeTask?.status) }}</span>
@@ -450,6 +459,7 @@ import {
 } from '@/api/task'
 import { formatDateTime } from '@/utils/time'
 import { buildConfirmContent } from '@/utils/confirm'
+import { formatTaskDisplayName } from '@/utils/taskDisplay'
 import LogViewer from '@/components/LogViewer.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -519,6 +529,12 @@ const filteredFiles = computed(() => {
 
 const selectedServer = computed(() => servers.value.find((server) => server.id === selectedServerId.value) ?? null)
 const selectedFile = computed(() => filteredFiles.value.find((file) => file.path === selectedFilePath.value) ?? null)
+const activeTaskDisplayName = computed(() => {
+  if (activeTask.value) {
+    return formatTaskDisplayName(activeTask.value)
+  }
+  return activeTaskId.value || '-'
+})
 
 const remoteWorkDirTemplate = computed(() => {
   if (selectedTaskType.value === 'mpi') return '~/hpcdeploy/tasks/mpi/{datetime}'

@@ -23,13 +23,25 @@ class SSHExecutor:
         self.client: paramiko.SSHClient | None = None
         self.sftp: paramiko.SFTPClient | None = None
 
-    def connect(self, *, host: str, port: int, username: str, key_path: str | None) -> None:
-        if not key_path:
-            raise SSHExecutorError("SSH key_path is not configured")
-
-        key_file = Path(key_path).expanduser()
-        if not key_file.is_file():
-            raise SSHExecutorError(f"SSH key file not found: {key_path}")
+    def connect(
+        self,
+        *,
+        host: str,
+        port: int,
+        username: str,
+        key_path: str | None,
+        password: str | None = None,
+    ) -> None:
+        connect_kwargs: dict[str, object] = {}
+        if password:
+            connect_kwargs["password"] = password
+        else:
+            if not key_path:
+                raise SSHExecutorError("SSH key_path is not configured")
+            key_file = Path(key_path).expanduser()
+            if not key_file.is_file():
+                raise SSHExecutorError(f"SSH key file not found: {key_path}")
+            connect_kwargs["key_filename"] = str(key_file)
 
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -38,12 +50,12 @@ class SSHExecutor:
                 hostname=host,
                 port=port,
                 username=username,
-                key_filename=str(key_file),
                 timeout=self.timeout,
                 banner_timeout=self.timeout,
                 auth_timeout=self.timeout,
                 look_for_keys=False,
                 allow_agent=False,
+                **connect_kwargs,
             )
             self.client = client
             self.sftp = client.open_sftp()

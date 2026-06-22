@@ -9,6 +9,8 @@ export interface ServerRecord {
   auth_type: string
   key_path: string | null
   status: string
+  last_check_at: string | null
+  last_error: string | null
   os_info: string | null
   gpu_info: string | null
   cpu_info: string | null
@@ -26,13 +28,40 @@ export interface ServerPayload {
   username: string
   auth_type: string
   key_path?: string | null
+  password?: string | null
   status?: string
+  last_check_at?: string | null
+  last_error?: string | null
   os_info?: string | null
   gpu_info?: string | null
   cpu_info?: string | null
   memory_info?: string | null
   disk_info?: string | null
   network_info?: string | null
+}
+
+export interface SSHKeyItem {
+  key_name: string
+  private_key_name: string
+  public_key_name: string | null
+  private_key_path: string
+  has_public_key: boolean
+  display_name: string
+}
+
+export interface SSHKeyListResponse {
+  items: SSHKeyItem[]
+}
+
+export interface DeployPublicKeyPayload {
+  private_key_path: string
+}
+
+export interface DeployPublicKeyResult {
+  success: boolean
+  message: string
+  auth_type: string
+  private_key_path: string
 }
 
 export interface SSHTestResult {
@@ -45,13 +74,25 @@ export interface SSHTestResult {
 
 export interface ServerDetectResult {
   success: boolean
+  server_id: number | null
+  name: string | null
+  host: string | null
   status: string
+  last_check_at: string | null
+  last_error: string | null
   os_info: string | null
   cpu_info: string | null
   memory_info: string | null
   disk_info: string | null
   gpu_info: string | null
   network_info: string | null
+  summary: {
+    os: string | null
+    cpu: string | null
+    memory: string | null
+    disk: string | null
+    gpu: string | null
+  } | null
   error: string | null
 }
 
@@ -76,5 +117,13 @@ export function testServerSsh(id: number) {
 }
 
 export function detectServer(id: number) {
-  return request.post<ServerDetectResult>(`/servers/${id}/detect`)
+  return request.post<ServerDetectResult>(`/servers/${id}/probe`)
+}
+
+export function listSshKeys() {
+  return request.get<SSHKeyListResponse>('/ssh-keys')
+}
+
+export function deployPublicKey(id: number, data: DeployPublicKeyPayload) {
+  return request.post<DeployPublicKeyResult>(`/servers/${id}/deploy-public-key`, data)
 }

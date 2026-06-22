@@ -125,12 +125,13 @@
 <script setup lang="ts">
 import { computed, onMounted, onActivated, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { cancelTask, deleteTask, getTask, getTaskLogs, listArtifacts, listTasks, type ArtifactFileDetail, type TaskLogRecord, type TaskListQuery, type TaskRecord } from '@/api/task'
 import { buildConfirmContent } from '@/utils/confirm'
 import LogViewer from '@/components/LogViewer.vue'
 import TaskCard from '@/components/TaskCard.vue'
 
+const route = useRoute()
 const router = useRouter()
 
 const loading = ref(false)
@@ -454,7 +455,16 @@ function formatFileSize(size: number): string {
   return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`
 }
 
-onMounted(loadTasks)
+onMounted(() => {
+  // apply route.query params to filters
+  const qStatus = route.query.status
+  const qTaskType = route.query.task_type
+  const qKeyword = route.query.keyword
+  if (typeof qStatus === 'string' && qStatus) filters.status = qStatus
+  if (typeof qTaskType === 'string' && qTaskType) filters.task_type = qTaskType
+  if (typeof qKeyword === 'string' && qKeyword) filters.keyword = qKeyword
+  loadTasks()
+})
 onActivated(loadTasks)
 </script>
 

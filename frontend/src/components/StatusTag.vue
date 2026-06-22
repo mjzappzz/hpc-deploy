@@ -15,6 +15,9 @@ const label = computed(() => {
   if (typeof props.status === 'boolean') {
     return props.status ? '启用' : '禁用'
   }
+  if (normalized.value === 'ONLINE') return '在线'
+  if (normalized.value === 'OFFLINE') return '离线'
+  if (normalized.value === 'UNKNOWN') return '未探测'
   return String(props.status ?? 'unknown')
 })
 

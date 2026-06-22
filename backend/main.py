@@ -1,4 +1,4 @@
-from app.api import scripts, servers, tasks
+from app.api import dashboard, scripts, servers, ssh_keys, tasks
 from app.api.health import router as health_router
 from app.core.config import settings
 from app.db.database import init_db
@@ -11,6 +11,8 @@ def create_app() -> FastAPI:
     app.include_router(servers.router, prefix="/api")
     app.include_router(scripts.router, prefix="/api")
     app.include_router(tasks.router, prefix="/api")
+    app.include_router(dashboard.router, prefix="/api")
+    app.include_router(ssh_keys.router, prefix="/api")
 
     @app.on_event("startup")
     def on_startup() -> None:
