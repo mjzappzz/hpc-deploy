@@ -79,13 +79,19 @@ export interface ProbeAllResult {
   status: string
   last_check_at: string | null
   last_error: string | null
+  elapsed_seconds: number | null
+  skipped: boolean
+  reason: string | null
 }
 
 export interface ProbeAllResponse {
   total: number
+  probed: number
   online: number
   offline: number
+  skipped: number
   results: ProbeAllResult[]
+  total_elapsed_seconds: number | null
 }
 
 export interface ServerDetectResult {
@@ -136,9 +142,11 @@ export function detectServer(id: number) {
   return request.post<ServerDetectResult>(`/servers/${id}/probe`)
 }
 
-export function probeAllServers() {
+export function probeAllServers(includeOffline = false) {
+  const params = includeOffline ? { include_offline: 'true' } : undefined
   return request.post<ProbeAllResponse>('/servers/probe-all', undefined, {
-    timeout: 120000
+    timeout: 120000,
+    params
   })
 }
 

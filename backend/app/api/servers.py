@@ -1,11 +1,14 @@
 from datetime import datetime
 from pathlib import Path
+from time import monotonic
+import concurrent.futures
+import logging
 
 from app.core.config import BACKEND_ROOT
-from app.core.ssh_detector import ServerDetectError, detect_server_info, summarize_detect_result
+from app.core.ssh_detector import DEFAULT_DETECT_TIMEOUT, ServerDetectError, detect_server_info, summarize_detect_result
 from app.core.ssh_executor import SSHExecutor, SSHExecutorError, shell_quote
 from app.core.ssh_tester import SSHTestError, test_ssh_connection
-from app.db.database import get_db
+from app.db.database import SessionLocal, get_db
 from app.models.server import Server
 from app.schemas.server import (
     DeployPublicKeyRequest,
@@ -16,9 +19,10 @@ from app.schemas.server import (
 )
 from app.schemas.detect import ProbeAllResponse, ProbeAllResult, ServerDetectResponse
 from app.schemas.ssh import SSHTestResponse
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/servers", tags=["servers"])
 KEYS_DIR = (BACKEND_ROOT / "keys").resolve()
 
@@ -36,7 +40,7 @@ def _server_auth_kwargs(server: Server) -> dict[str, str | None]:
     return {"key_path": server.key_path, "password": None}
 
 
-def _build_probe_response(server: Server, *, success: bool, error: str | None = None) -> ServerDetectResponse:
+def _build_probe_response(server: Server, *, success: bool, error: str | None = None, timings: dict[str, float] | None = None) -> ServerDetectResponse:
     return ServerDetectResponse(
         success=success,
         server_id=server.id,
@@ -59,6 +63,7 @@ def _build_probe_response(server: Server, *, success: bool, error: str | None = 
             "gpu": server.gpu_info,
         },
         error=error,
+        timings=timings,
     )
 
 
@@ -92,47 +97,213 @@ def create_server(payload: ServerCreate, db: Session = Depends(get_db)) -> Serve
     return server
 
 
+PROBE_ALL_MAX_WORKERS = 8
+
+
 @router.post("/probe-all", response_model=ProbeAllResponse)
-def probe_all_servers(db: Session = Depends(get_db)) -> ProbeAllResponse:
-    servers = db.query(Server).order_by(Server.id.desc()).all()
-    results: list[ProbeAllResult] = []
-    for server in servers:
-        try:
-            resp = _probe_server(db, server)
-            results.append(
-                ProbeAllResult(
-                    server_id=resp.server_id or server.id,
-                    name=resp.name or server.name,
-                    host=resp.host or server.host,
-                    status=resp.status,
-                    last_check_at=resp.last_check_at,
-                    last_error=resp.last_error,
-                )
+def probe_all_servers(
+    db: Session = Depends(get_db),
+    include_offline: bool = Query(False, description="if false, skip known-offline servers"),
+) -> ProbeAllResponse:
+    all_servers = db.query(Server).order_by(Server.id.desc()).all()
+    total = len(all_servers)
+
+    if total == 0:
+        logger.info("[probe-all] no servers to probe")
+        return ProbeAllResponse(total=0, probed=0, online=0, offline=0, results=[], total_elapsed_seconds=0)
+
+    probe_all_start = monotonic()
+
+    # Split servers into "to probe" and "skipped"
+    if include_offline:
+        probe_servers = list(all_servers)
+        skipped_results: list[ProbeAllResult] = []
+    else:
+        probe_servers = [s for s in all_servers if s.status != "offline"]
+        skipped_results = [
+            ProbeAllResult(
+                server_id=s.id,
+                name=s.name,
+                host=s.host,
+                status=s.status or "offline",
+                last_check_at=s.last_check_at,
+                last_error=s.last_error,
+                skipped=True,
+                reason="server is offline, skipped by default (include_offline=false)",
             )
-        except Exception as exc:
-            # Safety net — should not happen since _probe_server wraps exceptions,
-            # but guards against unexpected errors (e.g. DB failure).
-            server.status = "offline"
-            server.last_error = f"Unexpected error: {exc}"
-            server.last_check_at = datetime.utcnow()
-            db.commit()
-            db.refresh(server)
-            results.append(
-                ProbeAllResult(
+            for s in all_servers
+            if s.status == "offline"
+        ]
+
+    probed_count = len(probe_servers)
+    skipped_count = len(skipped_results)
+
+    max_workers = min(PROBE_ALL_MAX_WORKERS, probed_count) if probed_count else 1
+
+    if probed_count == 0:
+        total_elapsed = round(monotonic() - probe_all_start, 3)
+        logger.info(
+            "[probe-all] all %d servers skipped, total_elapsed=%.3fs",
+            skipped_count, total_elapsed,
+        )
+        return ProbeAllResponse(
+            total=total,
+            probed=0,
+            online=0,
+            offline=0,
+            skipped=skipped_count,
+            results=skipped_results,
+            total_elapsed_seconds=total_elapsed,
+        )
+
+    logger.info(
+        "[probe-all] start probed=%d skipped=%d max_workers=%d timeout=%d include_offline=%s",
+        probed_count, skipped_count, max_workers, DEFAULT_DETECT_TIMEOUT, include_offline,
+    )
+
+    for s in probe_servers:
+        logger.info("[probe-all] submit server_id=%d name=%s", s.id, s.name)
+
+    def _probe_in_thread(sid: int) -> ProbeAllResult:
+        """Probe one server in a dedicated thread with its own DB session."""
+        start = monotonic()
+        thread_db = SessionLocal()
+        try:
+            server = thread_db.get(Server, sid)
+            if server is None:
+                logger.info("[probe-one] server_id=%d — deleted before probe", sid)
+                return ProbeAllResult(
+                    server_id=sid,
+                    name="(deleted)",
+                    host="",
+                    status="offline",
+                    last_check_at=None,
+                    last_error="server not found at probe time",
+                    elapsed_seconds=round(monotonic() - start, 3),
+                )
+
+            logger.info("[probe-one] start server_id=%d name=%s", server.id, server.name)
+            server_start = monotonic()
+
+            try:
+                raw_result, timings = detect_server_info(
+                    host=server.host,
+                    port=server.port,
+                    username=server.username,
+                    timeout=DEFAULT_DETECT_TIMEOUT,
+                    **_server_auth_kwargs(server),
+                )
+                summary = summarize_detect_result(raw_result)
+                server.status = "online"
+                server.last_check_at = datetime.utcnow()
+                server.last_error = None
+                server.os_info = summary["os_info"]
+                server.cpu_info = summary["cpu_info"]
+                server.memory_info = summary["memory_info"]
+                server.disk_info = summary["disk_info"]
+                server.gpu_info = summary["gpu_info"]
+                server.network_info = summary["network_info"]
+                thread_db.commit()
+                thread_db.refresh(server)
+                elapsed = round(monotonic() - server_start, 3)
+                logger.info(
+                    "[probe-one] done server_id=%d name=%s status=online elapsed=%.3fs",
+                    server.id, server.name, elapsed,
+                )
+                return ProbeAllResult(
+                    server_id=server.id,
+                    name=server.name,
+                    host=server.host,
+                    status="online",
+                    last_check_at=server.last_check_at,
+                    last_error=None,
+                    elapsed_seconds=elapsed,
+                    timings=timings,
+                )
+            except ServerDetectError as exc:
+                server.status = "offline"
+                server.last_error = str(exc)
+                # Do NOT update last_check_at on failure
+                thread_db.commit()
+                thread_db.refresh(server)
+                elapsed = round(monotonic() - server_start, 3)
+                logger.info(
+                    "[probe-one] done server_id=%d name=%s status=offline elapsed=%.3fs error=%s",
+                    server.id, server.name, elapsed, str(exc),
+                )
+                return ProbeAllResult(
                     server_id=server.id,
                     name=server.name,
                     host=server.host,
                     status="offline",
                     last_check_at=server.last_check_at,
-                    last_error=server.last_error,
+                    last_error=str(exc),
+                    elapsed_seconds=elapsed,
                 )
+        except Exception as exc:
+            try:
+                server = thread_db.get(Server, sid)
+                if server:
+                    server.status = "offline"
+                    server.last_error = f"Unexpected error: {exc}"
+                    thread_db.commit()
+            except Exception:
+                pass
+            elapsed = round(monotonic() - start, 3)
+            logger.info(
+                "[probe-one] done server_id=%d status=error elapsed=%.3fs error=%s",
+                sid, elapsed, exc,
             )
+            return ProbeAllResult(
+                server_id=sid,
+                name="(error)",
+                host="",
+                status="offline",
+                last_check_at=None,
+                last_error=f"Probe thread error: {exc}",
+                elapsed_seconds=elapsed,
+            )
+        finally:
+            thread_db.close()
+
+    probed_ids = [s.id for s in probe_servers]
+    results: list[ProbeAllResult] = []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        fut_map = {executor.submit(_probe_in_thread, sid): sid for sid in probed_ids}
+        for future in concurrent.futures.as_completed(fut_map):
+            try:
+                result = future.result()
+                results.append(result)
+            except Exception as exc:
+                sid = fut_map[future]
+                results.append(
+                    ProbeAllResult(
+                        server_id=sid,
+                        name="(error)",
+                        host="",
+                        status="offline",
+                        last_check_at=None,
+                        last_error=f"Thread execution error: {exc}",
+                    )
+                )
+
+    results.extend(skipped_results)
     online = sum(1 for r in results if r.status == "online")
+    offline_probed = sum(1 for r in results if r.status == "offline" and not r.skipped)
+    total_elapsed = round(monotonic() - probe_all_start, 3)
+    logger.info(
+        "[probe-all] done total_elapsed=%.3fs online=%d offline=%d skipped=%d",
+        total_elapsed, online, offline_probed, skipped_count,
+    )
     return ProbeAllResponse(
-        total=len(results),
+        total=total,
+        probed=probed_count,
         online=online,
-        offline=len(results) - online,
+        offline=offline_probed,
+        skipped=skipped_count,
         results=results,
+        total_elapsed_seconds=total_elapsed,
     )
 
 
@@ -171,6 +342,7 @@ def test_server_ssh(server_id: int, db: Session = Depends(get_db)) -> SSHTestRes
             host=server.host,
             port=server.port,
             username=server.username,
+            timeout=DEFAULT_DETECT_TIMEOUT,
             **_server_auth_kwargs(server),
         )
         server.status = "online"
@@ -185,7 +357,7 @@ def test_server_ssh(server_id: int, db: Session = Depends(get_db)) -> SSHTestRes
         )
     except SSHTestError as exc:
         server.status = "offline"
-        server.last_check_at = datetime.utcnow()
+        # Do NOT update last_check_at on failure
         server.last_error = str(exc)
         db.commit()
         return SSHTestResponse(success=False, status="offline", error=str(exc))
@@ -204,17 +376,21 @@ def probe_server(server_id: int, db: Session = Depends(get_db)) -> ServerDetectR
 def _probe_server(db: Session, server: Server) -> ServerDetectResponse:
     """Probe a single server and update its health info in DB.
     Used by both single-server and bulk probe endpoints.
+    On success: status=online, last_check_at updated, last_error cleared.
+    On failure: status=offline, last_error set, last_check_at NOT updated,
+                existing os/cpu/memory/disk/gpu info preserved.
     """
-    server.last_check_at = datetime.utcnow()
     try:
-        raw_result = detect_server_info(
+        raw_result, timings = detect_server_info(
             host=server.host,
             port=server.port,
             username=server.username,
+            timeout=DEFAULT_DETECT_TIMEOUT,
             **_server_auth_kwargs(server),
         )
         summary = summarize_detect_result(raw_result)
         server.status = "online"
+        server.last_check_at = datetime.utcnow()
         server.last_error = None
         server.os_info = summary["os_info"]
         server.cpu_info = summary["cpu_info"]
@@ -224,10 +400,11 @@ def _probe_server(db: Session, server: Server) -> ServerDetectResponse:
         server.network_info = summary["network_info"]
         db.commit()
         db.refresh(server)
-        return _build_probe_response(server, success=True)
+        return _build_probe_response(server, success=True, timings=timings)
     except ServerDetectError as exc:
         server.status = "offline"
         server.last_error = str(exc)
+        # Do NOT update last_check_at — keep the last successful check timestamp
         db.commit()
         db.refresh(server)
         return _build_probe_response(server, success=False, error=str(exc))

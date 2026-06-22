@@ -1,5 +1,6 @@
 import shutil
 import re
+import threading
 from datetime import datetime
 from pathlib import Path
 from secrets import token_hex
@@ -24,7 +25,22 @@ from app.models.server import Server
 from app.models.task import Task
 from app.models.task_log import TaskLog
 from app.schemas.log import TaskLogRead
-from app.schemas.task import ArtifactFileDetail, ArtifactListResponse, TaskCancelResponse, TaskCleanupResponse, TaskDeleteResponse, TaskListResponse, TaskMonitorRequest, TaskMonitorResponse, TaskRead, TaskRunRequest, TaskRunResponse
+from app.schemas.task import (
+    ArtifactFileDetail,
+    ArtifactListResponse,
+    BatchTaskCreateItem,
+    BatchTaskCreateRequest,
+    BatchTaskCreateResponse,
+    TaskCancelResponse,
+    TaskCleanupResponse,
+    TaskDeleteResponse,
+    TaskListResponse,
+    TaskMonitorRequest,
+    TaskMonitorResponse,
+    TaskRead,
+    TaskRunRequest,
+    TaskRunResponse,
+)
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
@@ -333,6 +349,209 @@ def run_task(
     db.commit()
     background_tasks.add_task(run_task_stage8b, task_id)
     return TaskRunResponse(task_id=task_id, status="PENDING")
+
+
+# ───── Batch task creation ─────
+
+FORBIDDEN_PARAM_KEYS: frozenset[str] = frozenset({"command", "raw_args", "shell", "raw_command"})
+
+
+def _start_task_thread(task_id: str) -> None:
+    """Start a task runner in a background daemon thread for immediate concurrency."""
+    thread = threading.Thread(target=run_task_stage8b, args=(task_id,), daemon=True)
+    thread.start()
+
+
+def _create_task_for_server(
+    db: Session,
+    server: Server,
+    task_type: str,
+    file_path: str,
+    file_name: str,
+    file_record: dict[str, object],
+    params: dict[str, object] | None,
+) -> str:
+    """Create a single task record for a server. Raises HTTPException on conflict.
+    Does NOT start the task runner — caller is responsible for that.
+    """
+    running_task = (
+        db.query(Task)
+        .filter(Task.server_id == server.id, Task.status.in_(UNFINISHED_TASK_STATUSES))
+        .first()
+    )
+    if running_task is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="server already has unfinished task",
+        )
+
+    remote_work_dir = _build_remote_work_dir(task_type)
+    command_preview = _build_command_preview(
+        task_type=task_type,
+        file_name=file_name,
+        params=params,
+        remote_work_dir=remote_work_dir,
+    )
+    task_id = _generate_task_id()
+
+    task = Task(
+        task_id=task_id,
+        server_id=server.id,
+        script_id=None,
+        task_type=task_type,
+        file_path=str(file_record["path"]),
+        file_name=str(file_record["name"]),
+        display_category=str(file_record["display_category"]),
+        remote_work_dir=remote_work_dir,
+        command_preview=command_preview,
+        params=params,
+        status="PENDING",
+    )
+    db.add(task)
+    db.flush()
+    db.add(TaskLog(task_id=task_id, level="SYSTEM", message="task created"))
+    db.commit()
+    return task_id
+
+
+@router.post("/batch", response_model=BatchTaskCreateResponse)
+def batch_run_task(
+    payload: BatchTaskCreateRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> BatchTaskCreateResponse:
+    # Reject forbidden param keys before any other validation
+    for key in payload.params:
+        if key in FORBIDDEN_PARAM_KEYS:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"forbidden param key: {key}",
+            )
+
+    # Validate script file (reuses single-task validation)
+    file_record = _get_library_file_or_400(payload.script_path)
+
+    if file_record["physical_category"] != payload.script_type:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="script_type does not match knowledge base file category",
+        )
+
+    script_name = str(file_record["name"])
+    if payload.script_type == "mpi" and script_name not in ALLOWED_MPI_FILENAMES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=MPI_TASK_BLOCKED_MESSAGE)
+    if payload.script_type == "test" and script_name not in TEST_ALLOWED_FILENAMES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=TEST_TASK_BLOCKED_MESSAGE)
+
+    # Validate params (reuses single-task validation for stress)
+    params: dict[str, object] | None = None
+    if payload.script_type == "stress":
+        if "duration_seconds" not in payload.params:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="duration_seconds is required for stress tasks",
+            )
+        params = _validate_stress_params(payload.params, script_name)
+    elif payload.params:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="params is only allowed for stress tasks",
+        )
+
+    # Deduplicate server_ids preserving order
+    server_ids: list[int] = list(dict.fromkeys(payload.server_ids))
+
+    items: list[BatchTaskCreateItem] = []
+    created = 0
+    skipped = 0
+    failed = 0
+
+    for sid in server_ids:
+        server = db.get(Server, sid)
+        if server is None:
+            items.append(
+                BatchTaskCreateItem(
+                    server_id=sid,
+                    server_name="unknown",
+                    success=False,
+                    status="FAILED",
+                    reason="server not found",
+                )
+            )
+            failed += 1
+            continue
+
+        if server.status != "online":
+            items.append(
+                BatchTaskCreateItem(
+                    server_id=sid,
+                    server_name=server.name,
+                    success=False,
+                    status="SKIPPED",
+                    reason="server is offline",
+                )
+            )
+            skipped += 1
+            continue
+
+        running = (
+            db.query(Task)
+            .filter(Task.server_id == sid, Task.status.in_(UNFINISHED_TASK_STATUSES))
+            .first()
+        )
+        if running is not None:
+            items.append(
+                BatchTaskCreateItem(
+                    server_id=sid,
+                    server_name=server.name,
+                    success=False,
+                    status="SKIPPED",
+                    reason="server already has unfinished task",
+                )
+            )
+            skipped += 1
+            continue
+
+        try:
+            task_id = _create_task_for_server(
+                db, server, payload.script_type,
+                payload.script_path, script_name, file_record,
+                params,
+            )
+            # Start each task in its own daemon thread for true concurrency
+            _start_task_thread(task_id)
+            items.append(
+                BatchTaskCreateItem(
+                    server_id=sid,
+                    server_name=server.name,
+                    task_id=task_id,
+                    success=True,
+                    status="PENDING",
+                )
+            )
+            created += 1
+        except HTTPException as exc:
+            detail = exc.detail
+            if not isinstance(detail, str):
+                detail = "task creation failed"
+            items.append(
+                BatchTaskCreateItem(
+                    server_id=sid,
+                    server_name=server.name,
+                    success=False,
+                    status="FAILED",
+                    reason=detail,
+                )
+            )
+            failed += 1
+
+    return BatchTaskCreateResponse(
+        total=len(server_ids),
+        created=created,
+        skipped=skipped,
+        failed=failed,
+        items=items,
+    )
 
 
 @router.get("/{task_id}", response_model=TaskRead)

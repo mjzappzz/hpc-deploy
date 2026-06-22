@@ -3,6 +3,8 @@ from socket import timeout as SocketTimeout
 
 import paramiko
 
+from app.core.ssh_detector import DEFAULT_DETECT_TIMEOUT
+
 
 class SSHTestError(Exception):
     pass
@@ -15,7 +17,7 @@ def test_ssh_connection(
     username: str,
     key_path: str | None,
     password: str | None = None,
-    timeout: int = 10,
+    timeout: int = DEFAULT_DETECT_TIMEOUT,
 ) -> dict[str, str]:
     connect_kwargs: dict[str, object] = {}
     if password:

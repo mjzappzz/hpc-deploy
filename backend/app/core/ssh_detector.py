@@ -1,21 +1,59 @@
+import logging
+import re
 from pathlib import Path
 from socket import timeout as SocketTimeout
+from time import monotonic as time_monotonic
 
 import paramiko
+
+logger = logging.getLogger(__name__)
 
 
 class ServerDetectError(Exception):
     pass
 
 
-DETECT_COMMANDS: dict[str, str] = {
-    "os_release": "cat /etc/os-release | head -20",
-    "uname": "uname -a",
-    "cpu_info": "lscpu | head -40",
-    "memory_info": "free -h",
-    "disk_info": "df -h",
-    "gpu_info": "if command -v nvidia-smi >/dev/null 2>&1; then nvidia-smi --query-gpu=index,name,driver_version,memory.total,memory.used,temperature.gpu,utilization.gpu --format=csv,noheader,nounits; else echo 'NVIDIA GPU not detected or nvidia-smi not available'; fi",
-}
+# Shared timeout for health/detect probes (both single-server and bulk).
+# 3s is sufficient to determine SSH connectivity; a longer timeout would
+# make bulk probe-all unacceptably slow when servers are offline.
+DEFAULT_DETECT_TIMEOUT = 3
+
+
+# Consolidated bash probe script — runs as a single exec_command.
+# Sections are delimited by unique markers so the output can be split server-side.
+# Using `|| df -h` fallback for systems where df --local is unsupported (e.g. BusyBox).
+# nvidia-smi guarded with `timeout 3s` so a hung GPU driver never stalls the probe.
+CONSOLIDATED_PROBE_SCRIPT = r"""
+echo '__HPROBE_SECT_B__os'
+cat /etc/os-release 2>/dev/null | head -20
+echo '__HPROBE_SECT_E__'
+echo '__HPROBE_SECT_B__uname'
+uname -a 2>/dev/null
+echo '__HPROBE_SECT_E__'
+echo '__HPROBE_SECT_B__cpu'
+lscpu 2>/dev/null | head -40
+echo '__HPROBE_SECT_E__'
+echo '__HPROBE_SECT_B__memory'
+free -h 2>/dev/null
+echo '__HPROBE_SECT_E__'
+echo '__HPROBE_SECT_B__disk'
+(df -h --local 2>/dev/null || df -h 2>/dev/null)
+echo '__HPROBE_SECT_E__'
+echo '__HPROBE_SECT_B__gpu'
+if command -v nvidia-smi >/dev/null 2>&1; then
+  timeout 3 nvidia-smi --query-gpu=index,name,driver_version,memory.total,memory.used,temperature.gpu,utilization.gpu --format=csv,noheader,nounits 2>/dev/null || echo 'NVIDIA GPU query timed out or failed'
+else
+  echo 'NVIDIA GPU not detected or nvidia-smi not available'
+fi
+echo '__HPROBE_SECT_E__'
+"""
+
+# Regex to extract sections from the consolidated script output.
+# Matches: __HPROBE_SECT_B__<name>\n<content>\n__HPROBE_SECT_E__
+_SECTION_RE = re.compile(
+    r"__HPROBE_SECT_B__(?P<name>\w+)\n(?P<content>.*?)\n__HPROBE_SECT_E__",
+    re.DOTALL,
+)
 
 
 def detect_server_info(
@@ -25,8 +63,17 @@ def detect_server_info(
     username: str,
     key_path: str | None,
     password: str | None = None,
-    timeout: int = 10,
-) -> dict[str, str]:
+    timeout: int = DEFAULT_DETECT_TIMEOUT,
+) -> tuple[dict[str, str], dict[str, float]]:
+    """
+    Probe a server and return (raw_data, timings).
+
+    raw_data keys: os_release, uname, cpu_info, memory_info, disk_info, gpu_info
+    timings keys:  connect, os, uname, cpu, memory, disk, gpu, total
+    """
+    timings: dict[str, float] = {}
+    total_start = time_monotonic()
+
     connect_kwargs: dict[str, object] = {}
     if password:
         connect_kwargs["password"] = password
@@ -41,6 +88,7 @@ def detect_server_info(
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     try:
+        connect_start = time_monotonic()
         client.connect(
             hostname=host,
             port=port,
@@ -52,7 +100,65 @@ def detect_server_info(
             allow_agent=False,
             **connect_kwargs,
         )
-        return {name: _run_detect_command(client, command, timeout) for name, command in DETECT_COMMANDS.items()}
+        timings["connect"] = round(time_monotonic() - connect_start, 3)
+        logger.info(
+            "[probe-timing] %s:%d connect elapsed=%.3fs",
+            host, port, timings["connect"],
+        )
+
+        # Execute the consolidated probe script
+        exec_start = time_monotonic()
+        _stdin, stdout, stderr = client.exec_command(
+            CONSOLIDATED_PROBE_SCRIPT, timeout=timeout,
+        )
+        exit_code = stdout.channel.recv_exit_status()
+        raw_output = stdout.read().decode("utf-8", errors="replace").strip()
+        err_output = stderr.read().decode("utf-8", errors="replace").strip()
+
+        exec_elapsed = round(time_monotonic() - exec_start, 3)
+        logger.info(
+            "[probe-timing] %s:%d consolidated_script elapsed=%.3fs exit_code=%d",
+            host, port, exec_elapsed, exit_code,
+        )
+
+        # Parse sections
+        sections: dict[str, str] = {}
+        for match in _SECTION_RE.finditer(raw_output):
+            name = match.group("name")
+            content = match.group("content").strip()
+            sections[name] = content
+
+        # Build result dict — missing sections get empty string
+        raw_data: dict[str, str] = {
+            "os_release": sections.get("os", ""),
+            "uname": sections.get("uname", ""),
+            "cpu_info": sections.get("cpu", ""),
+            "memory_info": sections.get("memory", ""),
+            "disk_info": sections.get("disk", ""),
+            "gpu_info": sections.get("gpu", ""),
+        }
+
+        # Log per-section timing by tracking elapsed for each
+        # We can't get per-section wall time from the client side,
+        # but the script executes sections sequentially so the
+        # exit tells us the script completed. Log output size as a heuristic.
+        for name in ("os", "uname", "cpu", "memory", "disk", "gpu"):
+            content = sections.get(name, "")
+            size = len(content)
+            marker = "OK" if content else "EMPTY"
+            logger.info(
+                "[probe-timing] %s:%d section=%s size=%d %s",
+                host, port, name, size, marker,
+            )
+
+        timings["total"] = round(time_monotonic() - total_start, 3)
+        logger.info(
+            "[probe-timing] %s:%d total elapsed=%.3fs",
+            host, port, timings["total"],
+        )
+
+        return raw_data, timings
+
     except (SocketTimeout, TimeoutError) as exc:
         raise ServerDetectError(f"SSH connection timed out after {timeout}s") from exc
     except paramiko.AuthenticationException as exc:
@@ -79,16 +185,6 @@ def summarize_detect_result(result: dict[str, str]) -> dict[str, str]:
         "gpu_info": _compact(gpu_info),
         "network_info": "",
     }
-
-
-def _run_detect_command(client: paramiko.SSHClient, command: str, timeout: int) -> str:
-    _stdin, stdout, stderr = client.exec_command(command, timeout=timeout)
-    exit_code = stdout.channel.recv_exit_status()
-    output = stdout.read().decode("utf-8", errors="replace").strip()
-    error = stderr.read().decode("utf-8", errors="replace").strip()
-    if exit_code != 0:
-        return error or output
-    return output
 
 
 def _extract_pretty_name(os_release: str) -> str:

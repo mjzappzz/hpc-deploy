@@ -142,6 +142,34 @@ export function listArtifacts(taskId: string) {
   return request.get<ArtifactListResponse>(`/tasks/${taskId}/artifacts`)
 }
 
+export interface BatchTaskCreatePayload {
+  server_ids: number[]
+  script_type: TaskType
+  script_path: string
+  params: Record<string, unknown>
+}
+
+export interface BatchTaskCreateItem {
+  server_id: number
+  server_name: string
+  task_id: string | null
+  success: boolean
+  status: string
+  reason: string | null
+}
+
+export interface BatchTaskCreateResponse {
+  total: number
+  created: number
+  skipped: number
+  failed: number
+  items: BatchTaskCreateItem[]
+}
+
+export function batchRunTask(data: BatchTaskCreatePayload) {
+  return request.post<BatchTaskCreateResponse>('/tasks/batch', data)
+}
+
 export function downloadTaskLogs(taskId: string) {
   const a = document.createElement('a')
   a.href = `/api/tasks/${taskId}/logs/download`

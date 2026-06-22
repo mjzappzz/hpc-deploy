@@ -27,6 +27,7 @@ class ServerDetectResponse(BaseModel):
     network_info: str | None = None
     summary: ServerProbeSummary | None = None
     error: str | None = None
+    timings: dict[str, float] | None = None  # per-stage elapsed seconds for debugging
 
 
 class ProbeAllResult(BaseModel):
@@ -36,10 +37,17 @@ class ProbeAllResult(BaseModel):
     status: str
     last_check_at: datetime | None = None
     last_error: str | None = None
+    elapsed_seconds: float | None = None  # per-server probe duration, for debugging
+    timings: dict[str, float] | None = None  # per-stage elapsed seconds for debugging
+    skipped: bool = False  # True when server was not probed (e.g. offline + include_offline=False)
+    reason: str | None = None  # why the server was skipped
 
 
 class ProbeAllResponse(BaseModel):
     total: int
+    probed: int
     online: int
     offline: int
+    skipped: int = 0
     results: list[ProbeAllResult]
+    total_elapsed_seconds: float | None = None  # wall-clock duration of the bulk probe

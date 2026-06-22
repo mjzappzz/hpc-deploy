@@ -61,7 +61,7 @@
         </el-tooltip>
       </template>
     </el-table-column>
-    <el-table-column label="最后探测" min-width="135" show-overflow-tooltip>
+    <el-table-column label="最后成功探测" min-width="135" show-overflow-tooltip>
       <template #default="{ row }">
         <span>{{ formatDateTime(row.last_check_at) }}</span>
       </template>
@@ -80,7 +80,7 @@
           <el-button
             link
             type="warning"
-            :loading="detectingIds.includes(row.id) || isProbingAll"
+            :loading="detectingIds.includes(row.id)"
             @click="$emit('detect', row)"
           >
             探测

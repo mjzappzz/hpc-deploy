@@ -18,23 +18,37 @@
             <div class="selection-grid">
               <div class="selection-card">
                 <div class="selection-label">目标服务器</div>
-                <el-select v-model="selectedServerId" placeholder="选择服务器" filterable class="runner-control" :disabled="isFormDisabled">
-                  <el-option
-                    v-for="server in servers"
-                    :key="server.id"
-                    :label="`${server.name} (${server.host})`"
-                    :value="server.id"
-                  >
-                    <div class="server-option">
-                      <span>{{ server.name }} ({{ server.host }})</span>
-                      <StatusTag :status="server.status || 'unknown'" />
-                    </div>
-                  </el-option>
-                </el-select>
-                <div class="selection-meta">
-                  <StatusTag :status="selectedServer?.status || 'unknown'" />
-                  <span>{{ selectedServer ? `${selectedServer.name} (${selectedServer.host})` : '未选择服务器' }}</span>
-                </div>
+                <template v-if="onlineServers.length === 0">
+                  <div class="empty-servers-hint">暂无在线服务器，请先在服务器管理页完成探测。</div>
+                  <div class="selection-meta">
+                    <span>无可选服务器</span>
+                  </div>
+                </template>
+                <template v-else>
+                  <el-select v-model="selectedServerIds" placeholder="选择服务器（可多选）" multiple filterable collapse-tags collapse-tags-tooltip class="runner-control" :disabled="isFormDisabled">
+                    <el-option
+                      v-for="server in onlineServers"
+                      :key="server.id"
+                      :label="`${server.name} (${server.host})`"
+                      :value="server.id"
+                    >
+                      <div class="server-option-checkbox">
+                        <span class="server-opt-check">{{ selectedServerIds.includes(server.id) ? '☑' : '☐' }}</span>
+                        <span class="server-opt-name">{{ server.name }}</span>
+                        <span class="server-opt-host">{{ server.host }}</span>
+                        <StatusTag :status="server.status || 'unknown'" />
+                      </div>
+                    </el-option>
+                  </el-select>
+                  <div class="selection-meta">
+                    <template v-if="selectedServerIds.length === 0">
+                      <span>请选择服务器</span>
+                    </template>
+                    <template v-else>
+                      <span>已选择 {{ selectedServerIds.length }} 台服务器</span>
+                    </template>
+                  </div>
+                </template>
               </div>
 
               <div class="selection-card">
@@ -77,6 +91,41 @@
                   <span>{{ selectedFile ? selectedFile.relative_path : '按任务类型过滤显示知识库文件' }}</span>
                 </div>
               </div>
+            </div>
+
+            <!-- 任务模板 -->
+            <div class="selection-card">
+              <div class="selection-label">任务模板</div>
+              <el-select v-model="selectedTemplateId" placeholder="选择任务模板（可选）" filterable clearable class="runner-control" :disabled="isFormDisabled">
+                <el-option
+                  v-for="tmpl in taskTemplates"
+                  :key="tmpl.id"
+                  :label="tmpl.name"
+                  :value="tmpl.id"
+                >
+                  <div class="template-option">
+                    <span>{{ tmpl.name }}</span>
+                    <span class="template-option-cat">{{ categoryLabel(tmpl.category) }}</span>
+                  </div>
+                </el-option>
+              </el-select>
+              <div class="selection-meta">
+                <span>{{ selectedTemplate ? selectedTemplate.description : '选择模板可自动填充脚本和参数' }}</span>
+              </div>
+              <el-alert
+                v-if="selectedTemplate?.warning"
+                :title="selectedTemplate.warning"
+                type="warning"
+                :closable="false"
+                class="template-warning"
+              />
+              <el-alert
+                v-if="templateScriptNotFound"
+                title="模板脚本不存在，请先在脚本知识库中上传或扫描该脚本。"
+                type="error"
+                :closable="false"
+                class="template-warning"
+              />
             </div>
 
             <el-card v-if="selectedFile" shadow="never" class="info-card action-card">
@@ -486,6 +535,37 @@
         </el-card>
       </div>
     </el-card>
+    <!-- 批量执行结果弹窗 -->
+    <el-dialog v-model="showBatchResult" title="批量任务创建结果" width="600px" :close-on-click-modal="false">
+      <template v-if="batchResult">
+        <div class="batch-summary-bar">
+          <span class="batch-summary-item batch-summary-total">总计 {{ batchResult.total }} 台</span>
+          <span class="batch-summary-item batch-summary-ok">成功 {{ batchResult.created }} 台</span>
+          <span v-if="batchResult.skipped > 0" class="batch-summary-item batch-summary-skip">跳过 {{ batchResult.skipped }} 台</span>
+          <span v-if="batchResult.failed > 0" class="batch-summary-item batch-summary-fail">失败 {{ batchResult.failed }} 台</span>
+        </div>
+        <el-table :data="batchResult.items" max-height="360" stripe size="small">
+          <el-table-column prop="server_name" label="服务器" width="140" />
+          <el-table-column label="结果" width="100">
+            <template #default="{ row }">
+              <el-tag v-if="row.success" type="success" size="small">成功</el-tag>
+              <el-tag v-else-if="row.status === 'SKIPPED'" type="warning" size="small">跳过</el-tag>
+              <el-tag v-else type="danger" size="small">失败</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="说明" min-width="220">
+            <template #default="{ row }">
+              <span v-if="row.task_id" class="batch-task-id">{{ row.task_id }}</span>
+              <span v-else class="batch-reason">{{ row.reason }}</span>
+            </template>
+          </el-table-column>
+        </el-table>
+      </template>
+      <template #footer>
+        <el-button @click="showBatchResult = false">关闭</el-button>
+        <el-button type="primary" @click="goToHistory">查看任务历史</el-button>
+      </template>
+    </el-dialog>
   </section>
 </template>
 <script setup lang="ts">
@@ -494,10 +574,12 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { listScriptFiles, type ScriptFileRecord } from '@/api/script'
 import { listServers, type ServerRecord } from '@/api/server'
 import {
+  batchRunTask,
   cancelTask,
   getTask,
   getTaskLogs,
   monitorTask,
+  type BatchTaskCreateResponse,
   type MonitorType,
   runTask,
   type RunTaskPayload,
@@ -508,6 +590,7 @@ import {
 import { formatDateTime } from '@/utils/time'
 import { buildConfirmContent } from '@/utils/confirm'
 import { formatTaskDisplayName } from '@/utils/taskDisplay'
+import taskTemplates, { type TaskTemplate } from '@/constants/taskTemplates'
 import LogViewer from '@/components/LogViewer.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -543,10 +626,26 @@ const taskTypes: Array<{ label: string; value: TaskType }> = [
 
 const mode = ref<PageMode>('config')
 
-const selectedServerId = ref<number>()
+const selectedServerIds = ref<number[]>([])
 const selectedTaskType = ref<TaskType | ''>('')
 const selectedFilePath = ref<string>('')
+const selectedTemplateId = ref<string>('')
+const selectedTemplate = computed<TaskTemplate | undefined>(() =>
+  taskTemplates.find((t) => t.id === selectedTemplateId.value)
+)
+const templateScriptNotFound = computed(() => {
+  if (!selectedTemplate.value || !selectedTemplate.value.scriptRelativePath) return false
+  if (!selectedFile.value) return true
+  // Match against both path and relative_path
+  const sp = selectedTemplate.value.scriptRelativePath
+  return !(
+    selectedFile.value.path === sp ||
+    selectedFile.value.path.endsWith('/' + sp) ||
+    selectedFile.value.relative_path === sp
+  )
+})
 const servers = ref<ServerRecord[]>([])
+const onlineServers = computed(() => servers.value.filter((s) => s.status === 'online'))
 const files = ref<TaskRunnerFile[]>([])
 const validating = ref(false)
 const submitting = ref(false)
@@ -576,6 +675,8 @@ const durationParts = reactive<DurationParts>({
   seconds: 60
 })
 const stressFormParams = reactive({ ...stressParamDefaults })
+const batchResult = ref<BatchTaskCreateResponse | null>(null)
+const showBatchResult = ref(false)
 const router = useRouter()
 const route = useRoute()
 let pollTimer: number | null = null
@@ -585,8 +686,14 @@ const filteredFiles = computed(() => {
   return files.value.filter((file) => file.physical_category === selectedTaskType.value)
 })
 
-const selectedServer = computed(() => servers.value.find((server) => server.id === selectedServerId.value) ?? null)
+const selectedServers = computed(() => {
+  return selectedServerIds.value
+    .map((id) => servers.value.find((s) => s.id === id))
+    .filter((s): s is ServerRecord => s != null)
+})
 const selectedFile = computed(() => filteredFiles.value.find((file) => file.path === selectedFilePath.value) ?? null)
+const isSingleServer = computed(() => selectedServerIds.value.length === 1)
+const isMultiServer = computed(() => selectedServerIds.value.length >= 2)
 const activeTaskDisplayName = computed(() => {
   if (activeTask.value) {
     return formatTaskDisplayName(activeTask.value)
@@ -634,6 +741,9 @@ const commandPreview = computed(() => {
 })
 
 const executeTooltip = computed(() => {
+  if (isMultiServer.value) {
+    return `将在 ${selectedServerIds.value.length} 台服务器上批量创建任务，每台独立执行`
+  }
   if (selectedTaskType.value === 'test') {
     return '当前会上传并执行 test 脚本'
   }
@@ -735,6 +845,11 @@ function isAllowedMpiFile(file: TaskRunnerFile | null | undefined): boolean {
   )
 }
 
+function categoryLabel(cat: string): string {
+  const map: Record<string, string> = { stress: '压测', mpi: '安装', apptainer: '容器', test: '测试' }
+  return map[cat] || cat
+}
+
 function resetParamsForFile() {
   Object.assign(durationParts, { hours: 0, minutes: 1, seconds: 0 })
   Object.assign(stressFormParams, { ...stressParamDefaults })
@@ -773,8 +888,8 @@ function buildStressParams(): Record<string, unknown> {
 async function validateRunner() {
   validating.value = true
   try {
-    if (!selectedServerId.value) {
-      ElMessage.error('必须选择目标服务器')
+    if (selectedServerIds.value.length === 0) {
+      ElMessage.error('必须选择至少一台目标服务器')
       return
     }
     if (!selectedTaskType.value) {
@@ -816,8 +931,8 @@ async function createTask() {
     ElMessage.warning('当前有任务正在执行中')
     return
   }
-  if (!selectedServerId.value) {
-    ElMessage.error('必须选择目标服务器')
+  if (selectedServerIds.value.length === 0) {
+    ElMessage.error('必须选择至少一台目标服务器')
     return
   }
   if (!selectedTaskType.value) {
@@ -841,10 +956,17 @@ async function createTask() {
     return
   }
 
+  // ── Multi-server: batch flow ──
+  if (isMultiServer.value) {
+    await batchCreate()
+    return
+  }
+
+  // ── Single-server: existing flow ──
   submitting.value = true
   try {
     const payload: RunTaskPayload = {
-      server_id: selectedServerId.value,
+      server_id: selectedServerIds.value[0],
       task_type: selectedTaskType.value as TaskType,
       file_path: selectedFile.value.path,
     }
@@ -1083,6 +1205,84 @@ function getApiErrorMessage(error: unknown) {
   return '任务创建失败'
 }
 
+function paramsPreviewString(): string {
+  if (selectedTaskType.value !== 'stress' || !selectedFile.value) return '无'
+  const fname = selectedFile.value.name
+  const dur = stressDurationSeconds.value
+  const parts: string[] = [`时长 ${dur} 秒`]
+  if (fname === 'cpu_mem_stress_report.sh') {
+    if (stressFormParams.memoryPercent) parts.push(`内存占比 ${stressFormParams.memoryPercent}%`)
+    if (stressFormParams.workers > 0) parts.push(`线程数 ${stressFormParams.workers}`)
+  } else if (fname === 'disk_stress_report.sh') {
+    parts.push(`文件大小 ${stressFormParams.diskFileSize}`)
+    if (stressFormParams.diskPath) parts.push(`目录 ${stressFormParams.diskPath}`)
+  } else if (fname === 'gpu_stress_report.sh') {
+    if (stressFormParams.gpuIds !== 'all') parts.push(`GPU ID ${stressFormParams.gpuIds}`)
+    parts.push(`GPU 内存占比 ${stressFormParams.gpuMemoryPercent}%`)
+  }
+  return parts.join('，')
+}
+
+async function batchCreate() {
+  if (!selectedFile.value) return
+  const servers = selectedServers.value
+  const scriptName = selectedFile.value.name
+
+  // Build confirmation message
+  const serverNames = servers.map((s) => `  - ${s.name} (${s.host})`).join('\n')
+  let confirmMsg = `将对以下 ${servers.length} 台服务器执行同一个脚本：\n\n${serverNames}\n\n脚本：\n${scriptName}\n`
+  if (selectedTaskType.value === 'stress') {
+    confirmMsg += `\n参数：\n${paramsPreviewString()}`
+  }
+  // MPI install template risk warning handled by template's .warning field
+  const isMpiInstall = selectedTaskType.value === 'mpi' && selectedFile.value.name.startsWith('install_')
+
+  try {
+    await ElMessageBox.confirm(confirmMsg, '批量执行任务', {
+      confirmButtonText: '确认执行',
+      cancelButtonText: '取消',
+      type: isMpiInstall ? 'warning' : 'info',
+      dangerouslyUseHTMLString: false,
+      customClass: 'batch-confirm-dialog',
+    })
+    // Extra confirm for MPI install scripts
+    if (isMpiInstall) {
+      await ElMessageBox.confirm(
+        '该脚本会修改目标服务器编译环境。请确认目标服务器和脚本来源无误后再执行。',
+        '风险确认',
+        {
+          confirmButtonText: '我已确认，继续执行',
+          cancelButtonText: '取消执行',
+          type: 'warning',
+        }
+      )
+    }
+  } catch {
+    return
+  }
+
+  submitting.value = true
+  try {
+    const res = (await batchRunTask({
+      server_ids: selectedServerIds.value,
+      script_type: selectedTaskType.value as ApiTaskType,
+      script_path: selectedFile.value.path,
+      params: selectedTaskType.value === 'stress' ? buildStressParams() : {},
+    })).data
+    batchResult.value = res
+    showBatchResult.value = true
+    const parts: string[] = []
+    if (res.created > 0) parts.push(`成功 ${res.created} 台`)
+    if (res.skipped > 0) parts.push(`跳过 ${res.skipped} 台`)
+    if (res.failed > 0) parts.push(`失败 ${res.failed} 台`)
+    ElMessage.success(`批量任务已创建：${parts.join('，')}`)
+  } catch (error: unknown) {
+    ElMessage.error(getApiErrorMessage(error))
+  } finally {
+    submitting.value = false
+  }
+}
+
 const formattedReadonlyDuration = computed(() => {
   const params = activeTask.value?.params
   if (!params || typeof params.duration_seconds !== 'number') return '-'
@@ -1138,6 +1338,58 @@ watch(selectedTaskType, () => {
 
 watch(selectedFilePath, () => {
   resetParamsForFile()
+})
+
+watch(selectedTemplateId, (newId) => {
+  if (!newId) return
+  const tmpl = taskTemplates.find((t) => t.id === newId)
+  if (!tmpl) return
+
+  // Find matching script file by path or relative_path
+  const match = files.value.find(
+    (f) =>
+      f.path === tmpl.scriptRelativePath ||
+      f.path.endsWith('/' + tmpl.scriptRelativePath) ||
+      f.relative_path === tmpl.scriptRelativePath
+  )
+  if (!match) {
+    // Script not found — selectedTemplate is set but templateScriptNotFound will show error
+    return
+  }
+
+  // Set task type and file
+  selectedTaskType.value = tmpl.scriptType
+  selectedFilePath.value = match.path
+
+  // Apply params
+  const p = tmpl.params
+  if (Object.keys(p).length > 0) {
+    // Reset durationParts from params (duration_seconds is special)
+    let remaining = true
+    for (const [key, val] of Object.entries(p)) {
+      if (key === 'duration_seconds' && typeof val === 'number' && remaining) {
+        const h = Math.floor(val / 3600)
+        const m = Math.floor((val % 3600) / 60)
+        const s = val % 60
+        Object.assign(durationParts, { hours: h, minutes: m, seconds: s })
+        remaining = false
+      } else if (key === 'interval_seconds' && typeof val === 'number') {
+        stressFormParams.intervalSeconds = val
+      } else if (key === 'memory_percent' && typeof val === 'number') {
+        stressFormParams.memoryPercent = val
+      } else if (key === 'workers' && typeof val === 'number') {
+        stressFormParams.workers = val
+      } else if (key === 'disk_file_size' && typeof val === 'string') {
+        stressFormParams.diskFileSize = val
+      } else if (key === 'disk_path' && typeof val === 'string') {
+        stressFormParams.diskPath = val
+      } else if (key === 'gpu_ids' && typeof val === 'string') {
+        stressFormParams.gpuIds = val
+      } else if (key === 'gpu_memory_percent' && typeof val === 'number') {
+        stressFormParams.gpuMemoryPercent = val
+      }
+    }
+  }
 })
 
 watch(durationParts, () => {
@@ -1247,11 +1499,39 @@ onBeforeUnmount(stopTaskPolling)
   min-height: 24px;
 }
 
-.server-option {
+.server-option-checkbox {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
+  width: 100%;
+}
+
+.server-opt-check {
+  font-size: 16px;
+  line-height: 1;
+  min-width: 18px;
+  text-align: center;
+}
+
+.server-opt-name {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--el-text-color-primary);
+  min-width: 60px;
+}
+
+.server-opt-host {
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+  font-family: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  min-width: 120px;
+}
+
+.empty-servers-hint {
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+  padding: 20px 0;
+  text-align: center;
 }
 
 .file-option {
@@ -1263,6 +1543,26 @@ onBeforeUnmount(stopTaskPolling)
 .file-option-path {
   color: var(--el-text-color-secondary);
   font-size: 12px;
+}
+
+.template-option {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.template-option-cat {
+  font-size: 11px;
+  color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+  padding: 1px 8px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+
+.template-warning {
+  margin-top: 8px;
 }
 
 .info-card {
@@ -1749,6 +2049,43 @@ onBeforeUnmount(stopTaskPolling)
   margin-left: 8px;
   font-size: 12px;
   color: #64748b;
+}
+
+/* ===== BATCH RESULT DIALOG ===== */
+.batch-summary-bar {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 14px;
+  padding: 10px 14px;
+  background: var(--el-fill-color-lighter);
+  border-radius: 10px;
+}
+
+.batch-summary-item {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.batch-summary-total { color: var(--el-text-color-primary); }
+.batch-summary-ok    { color: var(--el-color-success); }
+.batch-summary-skip  { color: var(--el-color-warning); }
+.batch-summary-fail  { color: var(--el-color-danger); }
+
+.batch-task-id {
+  font-family: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 12px;
+  color: var(--el-color-primary);
+}
+
+.batch-reason {
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+}
+
+/* Batch confirm dialog: preserve newlines in message */
+.batch-confirm-dialog .el-message-box__message {
+  white-space: pre-wrap;
+  line-height: 1.7;
 }
 
 @media (max-width: 960px) {

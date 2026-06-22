@@ -98,3 +98,27 @@ class TaskListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class BatchTaskCreateRequest(BaseModel):
+    server_ids: list[int] = Field(min_length=1)
+    script_type: TaskType
+    script_path: str = Field(min_length=1, max_length=255)
+    params: dict[str, object] = Field(default_factory=dict)
+
+
+class BatchTaskCreateItem(BaseModel):
+    server_id: int
+    server_name: str
+    task_id: str | None = None
+    success: bool
+    status: str
+    reason: str | None = None
+
+
+class BatchTaskCreateResponse(BaseModel):
+    total: int
+    created: int
+    skipped: int
+    failed: int
+    items: list[BatchTaskCreateItem]

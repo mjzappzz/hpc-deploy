@@ -4,6 +4,7 @@
       <div class="toolbar">
         <el-button type="primary" @click="openCreate">新增服务器</el-button>
         <el-button :loading="isProbingAll" @click="probeAll">{{ isProbingAll ? '探测中' : '探测全部' }}</el-button>
+        <el-checkbox v-model="includeOffline" class="include-offline-checkbox">包含离线服务器</el-checkbox>
         <el-button @click="loadServers">刷新</el-button>
       </div>
 
@@ -220,6 +221,7 @@ const servers = ref<ServerRecord[]>([])
 const testingIds = ref<number[]>([])
 const detectingIds = ref<number[]>([])
 const isProbingAll = ref(false)
+const includeOffline = ref(false)
 const detailVisible = ref(false)
 const activeServer = ref<ServerRecord | null>(null)
 const sshKeys = ref<SSHKeyItem[]>([])
@@ -283,13 +285,22 @@ function resetForm() {
 async function loadServers() {
   loading.value = true
   try {
-    servers.value = (await listServers()).data
+    servers.value = ((await listServers()).data).sort(sortServersByStatus)
   } catch (error) {
     servers.value = []
     ElMessage.error(`加载服务器失败：${getApiErrorMessage(error)}`)
   } finally {
     loading.value = false
   }
+
+function sortServersByStatus(a: { status?: string | null }, b: { status?: string | null }): number {
+  const rank = (s: string | null | undefined): number => {
+    if (s === 'online') return 0
+    if (s === 'unknown' || !s) return 1
+    return 2 // offline
+  }
+  return rank(a.status) - rank(b.status)
+}
 }
 
 async function loadSshKeys() {
@@ -467,14 +478,33 @@ async function detectInfo(server: ServerRecord) {
 
 async function probeAll() {
   isProbingAll.value = true
+
+  // Set loading only for servers that will actually be probed
+  const idsToProbe = includeOffline.value
+    ? servers.value.map((s) => s.id)
+    : servers.value.filter((s) => s.status !== 'offline').map((s) => s.id)
+  for (const id of idsToProbe) {
+    if (!detectingIds.value.includes(id)) {
+      detectingIds.value.push(id)
+    }
+  }
+
   try {
-    const resp: ProbeAllResponse = (await probeAllServers()).data
+    const resp: ProbeAllResponse = (await probeAllServers(includeOffline.value)).data
     await loadServers()
-    ElMessage.success(`探测完成：在线 ${resp.online} 台，离线 ${resp.offline} 台`)
+    let msg = `探测完成：在线 ${resp.online} 台，离线 ${resp.offline} 台`
+    if (resp.skipped > 0) {
+      msg += `，跳过 ${resp.skipped} 台`
+      ElMessage.warning(msg)
+      ElMessage.info('已跳过离线服务器。如需重新检测，请勾选"包含离线服务器"')
+    } else {
+      ElMessage.success(msg)
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : '请求失败'
     ElMessage.error(`批量探测失败：${message}`)
   } finally {
+    detectingIds.value = []
     isProbingAll.value = false
   }
 }
@@ -557,6 +587,10 @@ onMounted(loadServers)
 .ssh-key-option__path {
   color: #94a3b8;
   font-size: 12px;
+}
+
+.include-offline-checkbox {
+  margin-left: 4px;
 }
 
 .detail-section + .detail-section {
