@@ -5,13 +5,25 @@
         <div class="task-card__title" :title="displayName">{{ displayName }}</div>
         <div class="task-card__meta">{{ task.task_id }} / {{ serverLabel }} / {{ moduleLabel }}</div>
       </div>
-      <StatusTag :status="task.status" />
+      <div class="task-card__status-block">
+        <StatusTag :status="task.status" />
+        <span class="task-card__status-label">{{ chineseStatus }}</span>
+      </div>
     </div>
     <div class="task-card__body">
       <span>文件：{{ task.file_name ?? '-' }}</span>
       <span>远程目录：{{ task.remote_work_dir ?? '-' }}</span>
       <span>命令：{{ task.command_preview ?? '-' }}</span>
       <span>退出码：{{ task.exit_code ?? '-' }}</span>
+      <span>运行耗时：{{ formatSeconds(runtime) }}</span>
+      <span v-if="showProgressBar" class="task-card__progress">
+        <el-progress
+          :percentage="progress ?? 0"
+          :status="progress === 100 ? 'success' : undefined"
+          :stroke-width="14"
+          :text-inside="true"
+        />
+      </span>
       <span>创建：{{ formatTime(task.created_at) }}</span>
       <span>开始：{{ formatTime(task.start_time) }}</span>
       <span>结束：{{ formatTime(task.end_time) }}</span>
@@ -41,6 +53,7 @@
       </el-tooltip>
       <el-button v-if="isContinuable" size="small" type="primary" @click="$emit('continueTask', task)">继续查看</el-button>
       <el-button v-if="isStressCompleted" size="small" @click="$emit('viewArtifacts', task)">结果文件</el-button>
+      <el-button v-if="showDiagnoseButton" size="small" type="warning" plain @click="$emit('diagnoseTask', task)">诊断</el-button>
     </div>
   </el-card>
 </template>
@@ -52,6 +65,7 @@ import type { TaskRecord } from '@/api/task'
 import { downloadTaskLogs } from '@/api/task'
 import { formatTaskDisplayName, getTaskModuleLabel } from '@/utils/taskDisplay'
 import { formatDateTime } from '@/utils/time'
+import { calcDurationSeconds, calcProgress, formatSeconds, getTaskDuration, statusLabel } from '@/composables/useTaskProgress'
 import StatusTag from './StatusTag.vue'
 
 defineEmits<{
@@ -64,6 +78,7 @@ defineEmits<{
   prefetchVerifyCommands: [task: TaskRecord]
   cancelTask: [task: TaskRecord]
   deleteTask: [task: TaskRecord]
+  diagnoseTask: [task: TaskRecord]
 }>()
 
 const props = defineProps<{
@@ -98,6 +113,10 @@ const isStressCompleted = computed(() => {
   return props.task.task_type === 'stress' && ['SUCCESS', 'FAILED'].includes(status)
 })
 
+const showDiagnoseButton = computed(() => {
+  return (props.task.status?.toUpperCase() ?? '') === 'FAILED'
+})
+
 const showMpiCommandActions = computed(() => {
   const status = props.task.status?.toUpperCase() ?? ''
   return props.task.task_type === 'mpi' && ['SUCCESS', 'FAILED'].includes(status)
@@ -119,6 +138,26 @@ const showDeleteButton = computed(() => {
 
 const envCommandTooltip = computed(() => props.envCommandTooltip || '未识别到环境变量命令')
 const verifyCommandTooltip = computed(() => props.verifyCommandTooltip || '未识别到验证命令')
+
+const runtime = computed(() => {
+  return calcDurationSeconds(props.task.start_time, props.task.end_time)
+})
+
+const progress = computed(() => {
+  return calcProgress(props.task)
+})
+
+const showProgressBar = computed(() => {
+  return progress.value !== null
+})
+
+const chineseStatus = computed(() => {
+  return statusLabel(props.task.status)
+})
+
+const taskDuration = computed(() => {
+  return getTaskDuration(props.task)
+})
 
 const formatTime = formatDateTime
 
@@ -145,6 +184,17 @@ function handleDownloadLogs(task: TaskRecord) {
   white-space: nowrap;
 }
 
+.task-card__error {
+  font-size: 13px;
+  color: #f56c6c;
+  background: #fef0f0;
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin-top: 4px;
+  word-break: break-all;
+  line-height: 1.5;
+}
+
 .task-card__tooltip {
   max-width: 520px;
   white-space: pre-wrap;
@@ -152,5 +202,39 @@ function handleDownloadLogs(task: TaskRecord) {
   font-family: "JetBrains Mono", "Fira Code", "SFMono-Regular", Consolas, monospace;
   font-size: 12px;
   line-height: 1.5;
+}
+
+.task-card__status-block {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.task-card__status-label {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
+}
+
+.task-card__progress {
+  display: block;
+  padding: 4px 0;
+}
+
+.task-card__body .task-card__progress {
+  grid-column: 1 / -1;
+}
+
+.task-card__body.task-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.task-card__task-duration {
+  font-family: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 13px;
 }
 </style>

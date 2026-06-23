@@ -1,5 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
+import AuditLog from '@/views/AuditLog.vue'
+import CleanupCenter from '@/views/CleanupCenter.vue'
 import Dashboard from '@/views/Dashboard.vue'
 import Servers from '@/views/Servers.vue'
 import TaskRunner from '@/views/TaskRunner.vue'
@@ -14,7 +16,9 @@ const router = createRouter({
     { path: '/servers', component: Servers, meta: { title: '服务器管理' } },
     { path: '/task-runner', component: TaskRunner, meta: { title: '任务执行' }, alias: '/tasks' },
     { path: '/history', component: TaskHistory, meta: { title: '任务历史' } },
+    { path: '/audit-logs', component: AuditLog, meta: { title: '审计日志' } },
     { path: '/scripts', component: Scripts, meta: { title: '脚本知识库' } },
+    { path: '/cleanup', component: CleanupCenter, meta: { title: '清理中心' } },
     { path: '/settings', component: Settings, meta: { title: '系统设置' } }
   ]
 })

@@ -59,6 +59,7 @@ class TaskRead(BaseModel):
     error_message: str | None
     created_at: datetime
     updated_at: datetime
+    duration_seconds: int | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -122,3 +123,72 @@ class BatchTaskCreateResponse(BaseModel):
     skipped: int
     failed: int
     items: list[BatchTaskCreateItem]
+
+
+# ── Structured monitor response (Phase 24B) ──
+
+
+class MonitorCpuMemory(BaseModel):
+    available: bool = False
+    cpu_usage_percent: float | None = None
+    load_avg: str | None = None
+    memory_total: str | None = None
+    memory_used: str | None = None
+    memory_usage_percent: float | None = None
+    message: str | None = None
+
+
+class MonitorDiskItem(BaseModel):
+    mount: str
+    total: str | None = None
+    used: str | None = None
+    available: str | None = None
+    usage_percent: float | None = None
+
+
+class MonitorDisk(BaseModel):
+    available: bool = False
+    disk_usage: list[MonitorDiskItem] = []
+    message: str | None = None
+
+
+class MonitorGpuItem(BaseModel):
+    index: str
+    name: str
+    utilization_gpu: str | None = None
+    memory_used: str | None = None
+    memory_total: str | None = None
+    temperature: str | None = None
+
+
+class MonitorGpu(BaseModel):
+    available: bool = False
+    items: list[MonitorGpuItem] = []
+    message: str | None = None
+
+
+class TaskMonitorResponseStructured(BaseModel):
+    task_id: str
+    status: str
+    sampled_at: datetime
+    cpu_memory: MonitorCpuMemory
+    disk: MonitorDisk
+    gpu: MonitorGpu
+
+
+class TaskDiagnosisItem(BaseModel):
+    level: str
+    category: str
+    title: str
+    summary: str
+    possible_causes: list[str]
+    suggestions: list[str]
+    matched_patterns: list[str]
+    evidence: list[str]
+
+
+class TaskDiagnosisResponse(BaseModel):
+    task_id: str
+    task_name: str
+    status: str
+    diagnosis: TaskDiagnosisItem

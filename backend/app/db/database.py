@@ -51,7 +51,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 def init_db() -> None:
-    from app.models import script, server, task, task_log  # noqa: F401
+    from app.models import audit_log, script, server, settings as settings_model, task, task_log  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
     _ensure_stage5_server_columns()

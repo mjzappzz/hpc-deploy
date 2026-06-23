@@ -24,6 +24,7 @@ export interface TaskRecord {
   error_message: string | null
   created_at: string
   updated_at: string
+  duration_seconds?: number | null
 }
 
 export interface TaskLogRecord {
@@ -57,6 +58,56 @@ export interface TaskMonitorResult {
   output: string | null
   error: string | null
   executed_at: string
+}
+
+// ── Structured monitor (Phase 24B) ──
+
+export interface MonitorCpuMemory {
+  available: boolean
+  cpu_usage_percent: number | null
+  load_avg: string | null
+  memory_total: string | null
+  memory_used: string | null
+  memory_usage_percent: number | null
+  message: string | null
+}
+
+export interface MonitorDiskItem {
+  mount: string
+  total: string | null
+  used: string | null
+  available: string | null
+  usage_percent: number | null
+}
+
+export interface MonitorDisk {
+  available: boolean
+  disk_usage: MonitorDiskItem[]
+  message: string | null
+}
+
+export interface MonitorGpuItem {
+  index: string
+  name: string
+  utilization_gpu: string | null
+  memory_used: string | null
+  memory_total: string | null
+  temperature: string | null
+}
+
+export interface MonitorGpu {
+  available: boolean
+  items: MonitorGpuItem[]
+  message: string | null
+}
+
+export interface TaskMonitorStructuredResponse {
+  task_id: string
+  status: string
+  sampled_at: string
+  cpu_memory: MonitorCpuMemory
+  disk: MonitorDisk
+  gpu: MonitorGpu
 }
 
 export interface ArtifactFileDetail {
@@ -136,6 +187,10 @@ export function deleteTask(taskId: string) {
 
 export function monitorTask(taskId: string, data: TaskMonitorPayload) {
   return request.post<TaskMonitorResult>(`/tasks/${taskId}/monitor`, data)
+}
+
+export function getTaskMonitor(taskId: string) {
+  return request.get<TaskMonitorStructuredResponse>(`/tasks/${taskId}/monitor`)
 }
 
 export function listArtifacts(taskId: string) {

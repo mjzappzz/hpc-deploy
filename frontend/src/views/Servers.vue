@@ -212,6 +212,9 @@ import {
 } from '@/api/server'
 import ServerTable from '@/components/ServerTable.vue'
 import StatusTag from '@/components/StatusTag.vue'
+import { useSettingsStore } from '@/stores/settings'
+
+const settingsStore = useSettingsStore()
 
 const loading = ref(false)
 const saving = ref(false)
@@ -328,7 +331,14 @@ async function reloadAndSelectServer(serverId: number) {
 
 function openCreate() {
   resetForm()
-  void loadSshKeys()
+  void loadSshKeys().then(() => {
+    if (settingsStore.default_ssh_key_name && form.auth_type === 'key' && !form.key_path) {
+      const defaultKey = sshKeys.value.find(k => k.key_name === settingsStore.default_ssh_key_name)
+      if (defaultKey) {
+        form.key_path = defaultKey.private_key_path
+      }
+    }
+  })
   dialogVisible.value = true
 }
 
@@ -541,7 +551,10 @@ function formatTime(value: string | null | undefined) {
   return formatDateTime(value)
 }
 
-onMounted(loadServers)
+onMounted(() => {
+  settingsStore.load()  // silent load for SSH key default
+  loadServers()
+})
 </script>
 
 <style scoped>

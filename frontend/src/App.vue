@@ -27,6 +27,14 @@
           <el-icon><Tickets /></el-icon>
           <span>任务历史</span>
         </el-menu-item>
+        <el-menu-item index="/audit-logs">
+          <el-icon><List /></el-icon>
+          <span>审计日志</span>
+        </el-menu-item>
+        <el-menu-item index="/cleanup">
+          <el-icon><Delete /></el-icon>
+          <span>清理中心</span>
+        </el-menu-item>
         <el-menu-item index="/scripts">
           <el-icon><Document /></el-icon>
           <span>脚本知识库</span>
@@ -57,7 +65,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Cpu, Document, Monitor, Operation, Setting, Tickets } from '@element-plus/icons-vue'
+import { Cpu, Delete, Document, List, Monitor, Operation, Setting, Tickets } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()

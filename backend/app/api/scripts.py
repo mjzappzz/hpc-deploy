@@ -7,6 +7,7 @@ from app.core.script_library import (
     resolve_library_path,
     save_library_file,
 )
+from app.core.audit import write_audit_log
 from app.core.script_validator import ScriptValidationError, normalize_script_path, resolve_script_path
 from app.db.database import get_db
 from app.models.script import Script
@@ -62,10 +63,23 @@ def upload_file(
     category: str = Query(..., min_length=1),
     filename: str = Query(..., min_length=1),
     content: bytes = Body(...),
+    db: Session = Depends(get_db),
 ) -> dict[str, object]:
     try:
-        return save_library_file(category.strip(), filename.strip(), content)
+        result = save_library_file(category.strip(), filename.strip(), content)
+        write_audit_log(
+            db, action="script.upload", target_type="script", status="success",
+            target_name=filename.strip(),
+            message=f"uploaded script {category}/{filename}",
+            detail={"category": category.strip(), "filename": filename.strip()},
+        )
+        return result
     except ScriptValidationError as exc:
+        write_audit_log(
+            db, action="script.upload", target_type="script", status="failed",
+            target_name=filename.strip(),
+            message=f"upload failed: {exc}",
+        )
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
@@ -77,7 +91,17 @@ def remove_file(
     try:
         normalized = normalize_library_path(path)
         deleted = delete_library_file(normalized)
+        write_audit_log(
+            db, action="script.delete", target_type="script", status="success",
+            target_name=path,
+            message=f"deleted script {path}",
+        )
     except ScriptValidationError as exc:
+        write_audit_log(
+            db, action="script.delete", target_type="script", status="failed",
+            target_name=path,
+            message=f"delete failed: {exc}",
+        )
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     if str(deleted["path"]).startswith("scripts/"):

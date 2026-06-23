@@ -69,6 +69,7 @@
         @copy-verify-commands="copyVerifyCommands"
         @cancel-task="cancelHistoryTask"
         @delete-task="handleDelete"
+        @diagnose-task="openDiagnosis"
       />
     </div>
 
@@ -144,6 +145,61 @@
         </div>
       </template>
     </el-dialog>
+
+    <!-- Diagnosis dialog -->
+    <el-dialog v-model="diagnosisVisible" title="任务失败诊断" width="680px" :close-on-click-modal="false" class="diagnosis-dialog">
+      <div v-loading="diagnosisLoading">
+        <template v-if="diagnosisData">
+          <!-- Level tag + category -->
+          <div class="diag-header">
+            <el-tag :type="diagnosisLevelTagType" size="small" effect="dark">
+              {{ diagnosisLevelLabel }}
+            </el-tag>
+            <span class="diag-category">{{ diagnosisData.title }}</span>
+          </div>
+
+          <!-- Summary -->
+          <div class="diag-section">
+            <div class="diag-section-title">摘要</div>
+            <p class="diag-text">{{ diagnosisData.summary }}</p>
+          </div>
+
+          <!-- Possible causes -->
+          <div class="diag-section">
+            <div class="diag-section-title">可能原因</div>
+            <ul class="diag-list">
+              <li v-for="(cause, i) in diagnosisData.possible_causes" :key="i">{{ cause }}</li>
+            </ul>
+          </div>
+
+          <!-- Suggestions -->
+          <div class="diag-section">
+            <div class="diag-section-title">建议处理</div>
+            <ul class="diag-list">
+              <li v-for="(s, i) in diagnosisData.suggestions" :key="i">{{ s }}</li>
+            </ul>
+          </div>
+
+          <!-- Evidence -->
+          <div class="diag-section">
+            <div class="diag-section-title">关键日志片段</div>
+            <div class="diag-evidence">
+              <div v-for="(line, i) in diagnosisData.evidence" :key="i" class="diag-evidence-line">
+                <span class="diag-evidence-num">{{ i + 1 }}</span>
+                <code>{{ line }}</code>
+              </div>
+              <el-empty v-if="!diagnosisData.evidence.length" description="无关键日志片段" :image-size="60" />
+            </div>
+          </div>
+        </template>
+        <el-empty v-else description="暂无诊断结果" :image-size="60" />
+      </div>
+
+      <template #footer>
+        <el-button @click="diagnosisVisible = false">关闭</el-button>
+        <el-button type="primary" @click="downloadLogsFromDiagnosis">下载完整日志</el-button>
+      </template>
+    </el-dialog>
   </section>
 </template>
 
@@ -151,8 +207,9 @@
 import { computed, onMounted, onActivated, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
-import { cancelTask, deleteTask, getTask, getTaskLogs, listArtifacts, listTasks, type ArtifactFileDetail, type TaskLogRecord, type TaskListQuery, type TaskRecord } from '@/api/task'
+import { cancelTask, deleteTask, downloadTaskLogs, getTask, getTaskLogs, listArtifacts, listTasks, type ArtifactFileDetail, type TaskLogRecord, type TaskListQuery, type TaskRecord } from '@/api/task'
 import { buildConfirmContent } from '@/utils/confirm'
+import { getTaskDiagnosis, type TaskDiagnosisResponse } from '@/api/diagnosis'
 import LogViewer from '@/components/LogViewer.vue'
 import TaskCard from '@/components/TaskCard.vue'
 
@@ -171,6 +228,11 @@ const artLoading = ref(false)
 const artDir = ref('')
 const artFiles = ref<ArtifactFileDetail[]>([])
 const activeArtTaskId = ref('')
+
+const diagnosisVisible = ref(false)
+const diagnosisLoading = ref(false)
+const diagnosisData = ref<TaskDiagnosisResponse['diagnosis'] | null>(null)
+const diagnosisTaskId = ref('')
 const artifactGroups = computed(() => {
   const reports: ArtifactFileDetail[] = []
   const rawFiles: ArtifactFileDetail[] = []
@@ -375,6 +437,43 @@ function downloadArtifact(filename: string) {
 function copyArtifactDir() {
   navigator.clipboard.writeText(artDir.value)
 }
+
+async function openDiagnosis(task: TaskRecord) {
+  diagnosisTaskId.value = task.task_id
+  diagnosisData.value = null
+  diagnosisVisible.value = true
+  diagnosisLoading.value = true
+  try {
+    const resp = (await getTaskDiagnosis(task.task_id)).data
+    diagnosisData.value = resp.diagnosis
+  } catch {
+    ElMessage.error('获取诊断失败')
+  } finally {
+    diagnosisLoading.value = false
+  }
+}
+
+function downloadLogsFromDiagnosis() {
+  if (diagnosisTaskId.value) {
+    downloadTaskLogs(diagnosisTaskId.value)
+  }
+}
+
+const diagnosisLevelTagType = computed(() => {
+  if (!diagnosisData.value) return 'info'
+  const level = diagnosisData.value.level
+  if (level === 'error') return 'danger'
+  if (level === 'warning') return 'warning'
+  return 'info'
+})
+
+const diagnosisLevelLabel = computed(() => {
+  if (!diagnosisData.value) return ''
+  const level = diagnosisData.value.level
+  if (level === 'error') return '错误'
+  if (level === 'warning') return '警告'
+  return '信息'
+})
 
 async function ensureTaskLogs(taskId: string) {
   if (taskLogCache[taskId]) {
@@ -645,5 +744,81 @@ onActivated(loadTasks)
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
+}
+
+/* ── Diagnosis dialog ── */
+.diagnosis-dialog .diag-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.diagnosis-dialog .diag-category {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+.diagnosis-dialog .diag-section {
+  margin-bottom: 18px;
+}
+
+.diagnosis-dialog .diag-section-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+  margin-bottom: 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--el-border-color-light);
+}
+
+.diagnosis-dialog .diag-text {
+  font-size: 14px;
+  color: var(--el-text-color-regular);
+  line-height: 1.6;
+  margin: 0;
+}
+
+.diagnosis-dialog .diag-list {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.diagnosis-dialog .diag-list li {
+  font-size: 14px;
+  color: var(--el-text-color-regular);
+  line-height: 1.8;
+}
+
+.diagnosis-dialog .diag-evidence {
+  background: #1e293b;
+  border-radius: 6px;
+  padding: 12px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.diagnosis-dialog .diag-evidence-line {
+  display: flex;
+  gap: 10px;
+  padding: 4px 0;
+  font-family: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.diagnosis-dialog .diag-evidence-num {
+  color: #64748b;
+  min-width: 20px;
+  text-align: right;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.diagnosis-dialog .diag-evidence-line code {
+  color: #e2e8f0;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 </style>

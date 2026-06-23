@@ -20,7 +20,10 @@ from app.core.task_runner import (
     run_task_stage8b,
 )
 from app.core.artifact_collector import ARTIFACTS_DIR
-from app.db.database import get_db
+from app.core.audit import write_audit_log
+from app.core.task_diagnosis import diagnose_task_failure
+from app.core.ws_manager import ws_manager
+from app.db.database import SessionLocal, get_db
 from app.models.server import Server
 from app.models.task import Task
 from app.models.task_log import TaskLog
@@ -34,14 +37,16 @@ from app.schemas.task import (
     TaskCancelResponse,
     TaskCleanupResponse,
     TaskDeleteResponse,
+    TaskDiagnosisResponse,
     TaskListResponse,
     TaskMonitorRequest,
     TaskMonitorResponse,
+    TaskMonitorResponseStructured,
     TaskRead,
     TaskRunRequest,
     TaskRunResponse,
 )
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
@@ -159,6 +164,44 @@ def _validate_stress_params(raw: dict[str, object], script_name: str) -> dict[st
     for key in raw:
         if key not in STRESS_ALL_PARAM_KEYS:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"unknown param: {key}")
+
+    return validated
+
+
+APPTAINER_ALLOWED_PARAM_KEYS: set[str] = {"overwrite"}
+
+
+def _validate_apptainer_params(raw: dict[str, object] | None) -> dict[str, object]:
+    """Validate and sanitize apptainer task params.
+    Only allows the 'overwrite' key (must be bool).
+    Raises HTTPException(400) on any invalid value.
+    Returns a cleaned params dict.
+    """
+    validated: dict[str, object] = {}
+
+    if raw is None or len(raw) == 0:
+        validated["overwrite"] = True
+        return validated
+
+    # Reject unknown keys
+    for key in raw:
+        if key not in APPTAINER_ALLOWED_PARAM_KEYS:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"unknown apptainer param: {key}",
+            )
+
+    # Validate overwrite
+    if "overwrite" in raw:
+        ow = raw["overwrite"]
+        if not isinstance(ow, bool):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="overwrite must be a boolean",
+            )
+        validated["overwrite"] = ow
+    else:
+        validated["overwrite"] = True
 
     return validated
 
@@ -309,10 +352,12 @@ def run_task(
 
         validated = _validate_stress_params(raw_params, str(file_record["name"]))
         params = validated
+    elif payload.task_type == "apptainer":
+        params = _validate_apptainer_params(payload.params)
     elif payload.params is not None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="params is only allowed for stress tasks",
+            detail="params is only allowed for stress and apptainer tasks",
         )
 
     remote_work_dir = _build_remote_work_dir(payload.task_type)
@@ -347,13 +392,24 @@ def run_task(
         )
     )
     db.commit()
+    write_audit_log(
+        db, action="task.create", target_type="task", status="success",
+        target_id=task_id, target_name=f"{server.name} · {file_record['name']}",
+        server_id=server.id, server_name=server.name,
+        task_id=task_id,
+        message=f"created {payload.task_type} task on {server.name}",
+        detail={"task_type": payload.task_type, "file_name": str(file_record["name"])},
+    )
     background_tasks.add_task(run_task_stage8b, task_id)
     return TaskRunResponse(task_id=task_id, status="PENDING")
 
 
 # ───── Batch task creation ─────
 
-FORBIDDEN_PARAM_KEYS: frozenset[str] = frozenset({"command", "raw_args", "shell", "raw_command"})
+FORBIDDEN_PARAM_KEYS: frozenset[str] = frozenset({
+    "command", "raw_args", "shell", "raw_command",
+    "remote_path", "env", "target_dir", "delete", "chmod", "run", "exec",
+})
 
 
 def _start_task_thread(task_id: str) -> None:
@@ -443,7 +499,7 @@ def batch_run_task(
     if payload.script_type == "test" and script_name not in TEST_ALLOWED_FILENAMES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=TEST_TASK_BLOCKED_MESSAGE)
 
-    # Validate params (reuses single-task validation for stress)
+    # Validate params
     params: dict[str, object] | None = None
     if payload.script_type == "stress":
         if "duration_seconds" not in payload.params:
@@ -452,10 +508,12 @@ def batch_run_task(
                 detail="duration_seconds is required for stress tasks",
             )
         params = _validate_stress_params(payload.params, script_name)
+    elif payload.script_type == "apptainer":
+        params = _validate_apptainer_params(payload.params)
     elif payload.params:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="params is only allowed for stress tasks",
+            detail="params is only allowed for stress and apptainer tasks",
         )
 
     # Deduplicate server_ids preserving order
@@ -545,6 +603,13 @@ def batch_run_task(
             )
             failed += 1
 
+    write_audit_log(
+        db, action="task.batch_create", target_type="task", status="success" if failed == 0 else "failed",
+        target_name=script_name,
+        message=f"batch create {script_name}: {created} created, {skipped} skipped, {failed} failed",
+        detail={"script_type": payload.script_type, "script_name": script_name, "server_ids": server_ids,
+                "created": created, "skipped": skipped, "failed": failed},
+    )
     return BatchTaskCreateResponse(
         total=len(server_ids),
         created=created,
@@ -599,6 +664,106 @@ def download_task_logs(task_id: str, db: Session = Depends(get_db)) -> Response:
     )
 
 
+@router.websocket("/{task_id}/logs/ws")
+async def task_logs_websocket(ws: WebSocket, task_id: str) -> None:
+    """WebSocket endpoint for real-time task log streaming."""
+    # Validate task exists (use a short-lived session)
+    db = SessionLocal()
+    try:
+        task = db.query(Task).filter(Task.task_id == task_id).first()
+        if task is None:
+            await ws.accept()
+            await ws.send_json({"type": "error", "message": "task not found"})
+            await ws.close()
+            return
+    finally:
+        db.close()
+
+    await ws_manager.connect(task_id, ws)
+
+    try:
+        # Send existing logs
+        db = SessionLocal()
+        try:
+            existing = (
+                db.query(TaskLog)
+                .filter(TaskLog.task_id == task_id)
+                .order_by(TaskLog.id.asc())
+                .all()
+            )
+            for log in existing:
+                await ws.send_json({
+                    "type": "log",
+                    "task_id": task_id,
+                    "level": log.level,
+                    "line": log.message,
+                    "created_at": str(log.created_at) if log.created_at else None,
+                })
+        finally:
+            db.close()
+
+        # Send current status
+        await ws_manager.broadcast_status(task_id, task.status)
+
+        # Keep connection alive, handle incoming (mostly pings from client)
+        while True:
+            try:
+                data = await ws.receive_text()
+                # Client sent a message — ignore (could be ping/pong)
+            except WebSocketDisconnect:
+                break
+    except Exception:
+        pass
+    finally:
+        ws_manager.disconnect(task_id, ws)
+
+
+@router.get("/{task_id}/diagnosis", response_model=TaskDiagnosisResponse)
+def diagnose_task(task_id: str, db: Session = Depends(get_db)) -> TaskDiagnosisResponse:
+    """Diagnose a task failure based on its logs."""
+    task = _get_task_or_404(db, task_id)
+
+    # Build task display name
+    host = db.query(Server).with_entities(Server.host).filter(Server.id == task.server_id).scalar() or "?"
+    task_name = f"{host} · {task.file_name or task.task_type} · {task.task_id}"
+
+    # Fetch logs
+    log_rows = (
+        db.query(TaskLog)
+        .filter(TaskLog.task_id == task_id)
+        .order_by(TaskLog.id.asc())
+        .all()
+    )
+    log_messages: list[str] = [row.message for row in log_rows] if log_rows else []
+    if not log_messages and task.error_message:
+        log_messages = [task.error_message]
+
+    # Run diagnosis
+    diagnosis = diagnose_task_failure(
+        task_status=task.status,
+        error_message=task.error_message,
+        logs=log_messages,
+    )
+
+    # Audit log (best-effort, must not affect response)
+    try:
+        write_audit_log(
+            db, action="task.diagnose", target_type="task", status="success",
+            task_id=task_id, server_id=task.server_id,
+            message=f"diagnose task {task_id}: {diagnosis.get('category', 'unknown')}",
+            detail={"category": diagnosis.get("category"), "level": diagnosis.get("level")},
+        )
+    except Exception:
+        pass
+
+    return TaskDiagnosisResponse(
+        task_id=task.task_id,
+        task_name=task_name,
+        status=task.status,
+        diagnosis=diagnosis,
+    )
+
+
 @router.post("/{task_id}/cancel", response_model=TaskCancelResponse)
 def cancel_task(task_id: str, db: Session = Depends(get_db)) -> TaskCancelResponse:
     task = _get_task_or_404(db, task_id)
@@ -620,6 +785,11 @@ def cancel_task(task_id: str, db: Session = Depends(get_db)) -> TaskCancelRespon
             task,
             error_message="canceled by user before remote execution",
             log_message="task canceled before remote execution",
+        )
+        write_audit_log(
+            db, action="task.cancel", target_type="task", status="success",
+            task_id=task_id, server_id=task.server_id,
+            message=f"task {task_id} canceled before remote execution",
         )
         return TaskCancelResponse(task_id=task.task_id, status=task.status)
 
@@ -652,6 +822,11 @@ def cancel_task(task_id: str, db: Session = Depends(get_db)) -> TaskCancelRespon
         # Phase 4: Cleanup temp download dirs for known whitelist scripts (best effort)
         _cleanup_temp_dirs(executor, task, db)
 
+        write_audit_log(
+            db, action="task.cancel", target_type="task", status="success",
+            task_id=task_id, server_id=task.server_id,
+            message=f"task {task_id} canceled",
+        )
         return TaskCancelResponse(task_id=task.task_id, status=task.status)
     except SSHExecutorError as exc:
         db.refresh(task)
@@ -659,6 +834,11 @@ def cancel_task(task_id: str, db: Session = Depends(get_db)) -> TaskCancelRespon
             task.status = original_status
             db.commit()
         _add_task_log(db, task_id, "ERROR", f"cancel failed: {exc}")
+        write_audit_log(
+            db, action="task.cancel", target_type="task", status="failed",
+            task_id=task_id, server_id=task.server_id,
+            message=f"cancel failed for {task_id}: {exc}",
+        )
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"cancel failed: {exc}") from exc
     finally:
         executor.close()
@@ -723,8 +903,10 @@ def cleanup_task(task_id: str, db: Session = Depends(get_db)) -> TaskCleanupResp
 @router.delete("/{task_id}", response_model=TaskDeleteResponse)
 def delete_task(task_id: str, db: Session = Depends(get_db)) -> TaskDeleteResponse:
     task = _get_task_or_404(db, task_id)
+    _task_type = task.task_type
+    _task_status = task.status
 
-    if task.status not in TERMINAL_TASK_STATUSES:
+    if _task_status not in TERMINAL_TASK_STATUSES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"task is not completed (current status: {task.status})",
@@ -773,6 +955,14 @@ def delete_task(task_id: str, db: Session = Depends(get_db)) -> TaskDeleteRespon
     db.delete(task)
     db.commit()
     messages.append("task record deleted")
+
+    write_audit_log(
+        db, action="task.delete", target_type="task", status="success",
+        target_id=task_id, target_name=task_id,
+        server_id=task.server_id, task_id=task_id,
+        message=f"deleted task {task_id}",
+        detail={"task_type": _task_type, "task_status": _task_status, "remote_work_dir_removed": remote_work_dir_removed},
+    )
 
     return TaskDeleteResponse(
         task_id=task.task_id,
@@ -978,6 +1168,191 @@ def task_monitor(
         executor.close()
 
 
+# ── Structured monitor (Phase 24B) ──
+
+MONITOR_STRUCTURED_TIMEOUT = 8
+
+
+def _exec_monitor_cmd(executor: SSHExecutor, command: str) -> str | None:
+    """Execute a single monitor command, return output or None on failure."""
+    try:
+        _exit_code, output, _error = executor.exec_capture(command, timeout_seconds=MONITOR_STRUCTURED_TIMEOUT)
+        return output or None
+    except Exception:
+        return None
+
+
+def _parse_cpu_memory(executor: SSHExecutor) -> dict[str, object]:
+    """Parse CPU/memory stats from remote server."""
+    result: dict[str, object] = {"available": False, "message": None}
+    try:
+        # Load average
+        load_out = _exec_monitor_cmd(executor, "cat /proc/loadavg 2>/dev/null || echo 'unavailable'")
+        if load_out:
+            parts = load_out.strip().split()
+            if len(parts) >= 3:
+                result["load_avg"] = f"{parts[0]} {parts[1]} {parts[2]}"
+
+        # Memory
+        mem_out = _exec_monitor_cmd(executor, "free -m 2>/dev/null | grep '^Mem:'")
+        if mem_out:
+            mem_parts = mem_out.split()
+            if len(mem_parts) >= 3:
+                total_mb = int(mem_parts[1])
+                used_mb = int(mem_parts[2])
+                result["memory_total"] = f"{total_mb} MiB"
+                result["memory_used"] = f"{used_mb} MiB"
+                if total_mb > 0:
+                    result["memory_usage_percent"] = round(used_mb / total_mb * 100, 1)
+
+        # CPU usage (short top sample)
+        cpu_out = _exec_monitor_cmd(executor, "top -bn1 2>/dev/null | grep 'Cpu(s)' || head -3 /proc/stat")
+        if cpu_out:
+            m = re.search(r'(\d+\.?\d*)\s*%?\s*id', cpu_out)
+            if m:
+                idle = float(m.group(1))
+                result["cpu_usage_percent"] = round(100.0 - idle, 1)
+
+        # Mark available if at least load or memory or CPU was parsed
+        if result.get("load_avg") or result.get("memory_total") is not None or result.get("cpu_usage_percent") is not None:
+            result["available"] = True
+        else:
+            result["message"] = "无法获取 CPU/内存数据"
+    except Exception as exc:
+        result["message"] = str(exc)
+    return result
+
+
+def _parse_disk(executor: SSHExecutor) -> dict[str, object]:
+    """Parse disk usage from df -h output."""
+    result: dict[str, object] = {"available": False, "disk_usage": [], "message": None}
+    try:
+        df_out = _exec_monitor_cmd(executor, "df -h --local 2>/dev/null || df -h 2>/dev/null")
+        if not df_out:
+            result["message"] = "df 命令不可用"
+            return result
+
+        items: list[dict[str, object]] = []
+        for line in df_out.strip().split("\n"):
+            parts = line.split()
+            if len(parts) >= 6 and parts[0].startswith("/"):
+                usage_str = parts[4].replace("%", "")
+                try:
+                    usage_pct = float(usage_str)
+                except ValueError:
+                    usage_pct = 0.0
+                items.append({
+                    "mount": parts[5],
+                    "total": parts[1],
+                    "used": parts[2],
+                    "available": parts[3],
+                    "usage_percent": usage_pct,
+                })
+
+        result["disk_usage"] = items
+        result["available"] = len(items) > 0
+        if not items:
+            result["message"] = "未检测到本地磁盘挂载点"
+    except Exception as exc:
+        result["message"] = str(exc)
+    return result
+
+
+def _parse_gpu(executor: SSHExecutor) -> dict[str, object]:
+    """Parse GPU stats from nvidia-smi."""
+    result: dict[str, object] = {"available": False, "items": [], "message": None}
+    try:
+        # Check nvidia-smi availability first
+        check = _exec_monitor_cmd(executor, "command -v nvidia-smi 2>/dev/null && echo OK || echo NOT_FOUND")
+        if not check or "NOT_FOUND" in check:
+            result["message"] = "未检测到 NVIDIA GPU 或 nvidia-smi 不可用"
+            return result
+
+        gpu_out = _exec_monitor_cmd(
+            executor,
+            "nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu "
+            "--format=csv,noheader,nounits 2>/dev/null",
+        )
+        if not gpu_out:
+            result["message"] = "nvidia-smi 查询无输出"
+            return result
+
+        items: list[dict[str, object]] = []
+        for line in gpu_out.strip().split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            cols = [c.strip() for c in line.split(",")]
+            if len(cols) >= 3:
+                items.append({
+                    "index": cols[0],
+                    "name": cols[1] if len(cols) > 1 else "",
+                    "utilization_gpu": cols[2] if len(cols) > 2 else None,
+                    "memory_used": cols[3] if len(cols) > 3 else None,
+                    "memory_total": cols[4] if len(cols) > 4 else None,
+                    "temperature": cols[5] if len(cols) > 5 else None,
+                })
+
+        result["items"] = items
+        result["available"] = len(items) > 0
+        if not items:
+            result["message"] = "未检测到 GPU 设备"
+    except Exception as exc:
+        result["message"] = str(exc)
+    return result
+
+
+@router.get("/{task_id}/monitor", response_model=TaskMonitorResponseStructured)
+def task_monitor_structured(
+    task_id: str,
+    db: Session = Depends(get_db),
+) -> TaskMonitorResponseStructured:
+    task = _get_task_or_404(db, task_id)
+    server = _get_server_or_400(db, task.server_id)
+
+    executor = SSHExecutor(timeout=15)
+    try:
+        executor.connect(
+            host=server.host,
+            port=server.port,
+            username=server.username,
+            key_path=server.key_path,
+        )
+        cpu_memory = _parse_cpu_memory(executor)
+        disk = _parse_disk(executor)
+        gpu = _parse_gpu(executor)
+
+        return TaskMonitorResponseStructured(
+            task_id=task.task_id,
+            status=task.status,
+            sampled_at=datetime.utcnow(),
+            cpu_memory=cpu_memory,
+            disk=disk,
+            gpu=gpu,
+        )
+    except SSHCommandTimeoutError:
+        return TaskMonitorResponseStructured(
+            task_id=task.task_id,
+            status=task.status,
+            sampled_at=datetime.utcnow(),
+            cpu_memory={"available": False, "message": "SSH 连接超时"},
+            disk={"available": False, "message": "SSH 连接超时"},
+            gpu={"available": False, "message": "SSH 连接超时"},
+        )
+    except SSHExecutorError as exc:
+        msg = str(exc)
+        return TaskMonitorResponseStructured(
+            task_id=task.task_id,
+            status=task.status,
+            sampled_at=datetime.utcnow(),
+            cpu_memory={"available": False, "message": msg},
+            disk={"available": False, "message": msg},
+            gpu={"available": False, "message": msg},
+        )
+    finally:
+        executor.close()
+
+
 @router.get("/{task_id}/artifacts", response_model=ArtifactListResponse)
 def list_artifacts(task_id: str, db: Session = Depends(get_db)) -> ArtifactListResponse:
     _get_task_or_404(db, task_id)
@@ -1097,6 +1472,11 @@ def _generate_task_id() -> str:
 def _add_task_log(db: Session, task_id: str, level: str, message: str) -> None:
     db.add(TaskLog(task_id=task_id, level=level, message=message))
     db.commit()
+    # Broadcast via WebSocket (best-effort, must not affect main logic)
+    try:
+        ws_manager.broadcast_log_sync(task_id, level, message)
+    except Exception:
+        pass
 
 
 def _mark_task_canceled(db: Session, task: Task, *, error_message: str, log_message: str) -> None:
@@ -1106,6 +1486,12 @@ def _mark_task_canceled(db: Session, task: Task, *, error_message: str, log_mess
     task.error_message = error_message
     db.commit()
     _add_task_log(db, task.task_id, "SYSTEM", log_message)
+    # Broadcast status change
+    try:
+        ws_manager.broadcast_status_sync(task.task_id, "CANCELED")
+        ws_manager.broadcast_done_sync(task.task_id, "CANCELED")
+    except Exception:
+        pass
 
 
 def _read_remote_pid_file(executor: SSHExecutor, pid_file_path: str) -> str | None:
@@ -1215,6 +1601,21 @@ def _cancel_remote_process(executor: SSHExecutor, task: Task, db: Session) -> No
     _add_task_log(db, task_id, "SYSTEM", "no matching remote process found, skipping termination")
 
 
+def _parse_task_duration_seconds(task: Task) -> int | None:
+    """Extract duration_seconds from task params or command_preview."""
+    if task.params and isinstance(task.params, dict):
+        ds = task.params.get("duration_seconds")
+        if isinstance(ds, int) and ds > 0:
+            return ds
+    # Try to parse from command_preview for stress tasks
+    if task.task_type == "stress" and task.command_preview:
+        m = re.search(r'(\d+)', task.command_preview)
+        if m:
+            val = int(m.group(1))
+            return val if val > 0 else None
+    return None
+
+
 def _serialize_task(task: Task, db: Session) -> dict[str, object]:
     server = db.get(Server, task.server_id)
     return {
@@ -1238,6 +1639,7 @@ def _serialize_task(task: Task, db: Session) -> dict[str, object]:
         "error_message": task.error_message,
         "created_at": task.created_at,
         "updated_at": task.updated_at,
+        "duration_seconds": _parse_task_duration_seconds(task),
     }
 
 

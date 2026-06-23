@@ -228,12 +228,18 @@
                   </template>
                 </template>
 
+                <el-form-item v-else-if="selectedFile?.physical_category === 'apptainer'" label="覆盖方式">
+                  <div class="overwrite-control">
+                    <el-checkbox v-model="apptainerOverwrite" :disabled="isFormDisabled">
+                      覆盖远端已有文件
+                    </el-checkbox>
+                    <div class="overwrite-help">
+                      勾选后如果远端已存在同名 .sif 文件将直接覆盖；不勾选则任务失败并提示文件已存在。
+                    </div>
+                  </div>
+                </el-form-item>
                 <el-form-item v-else label="参数">
-                  <el-alert
-                    :title="selectedFile.physical_category === 'apptainer' ? '该类型无需执行参数' : '该类型无需参数'"
-                    type="info"
-                    :closable="false"
-                  />
+                  <el-alert title="该类型无需参数" type="info" :closable="false" />
                 </el-form-item>
               </el-form>
 
@@ -415,7 +421,10 @@
                 class="completion-alert"
               >
                 <template #title>
-                  <div>任务执行成功</div>
+                  <div>
+                    任务执行成功
+                    <span class="alert-duration">（运行耗时 {{ formatSeconds(runningDuration) }}）</span>
+                  </div>
                   <div class="alert-detail">远程工作目录：{{ activeTask.remote_work_dir }}</div>
                   <div class="alert-hint">
                     {{
@@ -423,9 +432,19 @@
                         ? '容器文件已上传到远端固定目录，未执行容器。'
                         : activeTask.task_type === 'mpi'
                           ? '当前 MPI 任务已执行完成。仅显式白名单脚本允许执行。'
-                          : '后续阶段将支持自动回收和下载结果文件。'
+                          : '任务已完成，结果文件可用。'
                     }}
                   </div>
+                </template>
+                <template #action>
+                  <el-button
+                    v-if="activeTask.task_type === 'stress'"
+                    size="small"
+                    type="primary"
+                    @click="goToHistory"
+                  >
+                    查看结果文件
+                  </el-button>
                 </template>
               </el-alert>
 
@@ -439,7 +458,10 @@
                 <template #title>
                   <div>任务执行失败</div>
                   <div v-if="activeTask.error_message" class="alert-detail">{{ activeTask.error_message }}</div>
-                  <div class="alert-hint">请查看右侧日志了解详情。</div>
+                  <div class="alert-hint">请查看右侧日志了解详情，或使用诊断功能分析失败原因。</div>
+                </template>
+                <template #action>
+                  <el-button size="small" type="warning" plain @click="openTaskDiagnosis(activeTask)">查看诊断</el-button>
                 </template>
               </el-alert>
 
@@ -451,16 +473,50 @@
                 class="completion-alert"
               >
                 <template #title>
-                  <div>任务已取消</div>
+                  <div>
+                    任务已取消
+                    <span v-if="runningDuration !== null" class="alert-duration">（运行耗时 {{ formatSeconds(runningDuration) }}）</span>
+                  </div>
                   <div v-if="activeTask.error_message" class="alert-detail">{{ activeTask.error_message }}</div>
                   <div class="alert-hint">远端工作目录已清理，任务记录和日志已保留。</div>
                 </template>
               </el-alert>
 
               <div class="summary-actions">
-                <el-button size="small" @click="mode = 'config-readonly'">展开配置</el-button>
-                <el-button size="small" type="primary" @click="handleNewTask">新建任务</el-button>
-                <el-button size="small" @click="goToHistory">跳转任务历史</el-button>
+                <div class="summary-actions-title">快捷操作</div>
+                <div class="summary-actions-buttons">
+                  <el-button size="small" @click="handleDownloadLogs">下载日志</el-button>
+                  <el-button
+                    v-if="activeTask.task_type === 'stress' && (activeTask.status === 'SUCCESS' || activeTask.status === 'FAILED')"
+                    size="small"
+                    type="primary"
+                    @click="goToHistory"
+                  >
+                    查看结果文件
+                  </el-button>
+                  <el-button
+                    v-if="activeTask.status === 'FAILED'"
+                    size="small"
+                    type="warning"
+                    plain
+                    @click="openTaskDiagnosis(activeTask)"
+                  >
+                    查看诊断
+                  </el-button>
+                  <el-button
+                    v-if="showCancelTaskButton"
+                    size="small"
+                    type="danger"
+                    plain
+                    :disabled="cancelSubmitting"
+                    @click="cancelCurrentTask"
+                  >
+                    取消任务
+                  </el-button>
+                  <el-button size="small" @click="mode = 'config-readonly'">展开配置</el-button>
+                  <el-button size="small" type="primary" @click="handleNewTask">新建任务</el-button>
+                  <el-button size="small" @click="goToHistory">跳转任务历史</el-button>
+                </div>
               </div>
             </div>
             <div v-else class="summary-loading">
@@ -479,6 +535,8 @@
               </div>
               <div class="live-task-actions">
                 <StatusTag :status="activeTask?.status || 'PENDING'" />
+                <el-tag v-if="wsConnected" size="small" type="success">实时日志：已连接</el-tag>
+                <el-tag v-else-if="wsFallback" size="small" type="warning">实时日志：已断开，已切换普通刷新</el-tag>
                 <el-button
                   v-if="showCancelTaskButton"
                   type="danger"
@@ -498,14 +556,25 @@
           </template>
 
           <div class="live-content-wrapper">
-            <div class="live-task-meta-bar" v-loading="polling && !!activeTaskId && !activeTask">
-              <span class="meta-item">{{ activeTaskDisplayName }}</span>
-              <span class="meta-divider">|</span>
-              <span class="meta-item mono">{{ activeTask?.task_id || activeTaskId || '-' }}</span>
-              <span class="meta-divider">|</span>
-              <span class="meta-item">{{ statusLabel(activeTask?.status) }}</span>
-              <span class="meta-divider">|</span>
-              <span class="meta-item">{{ activeTask?.start_time ? formatDate(activeTask.start_time) : '-' }} → {{ activeTask?.end_time ? formatDate(activeTask.end_time) : '-' }}</span>
+            <!-- Progress Summary Bar -->
+            <div class="progress-summary-bar" v-if="activeTaskId">
+              <div class="progress-summary-row">
+                <span class="progress-summary-name">{{ activeTaskDisplayName }}</span>
+                <StatusTag :status="activeTask?.status || 'PENDING'" />
+                <el-tooltip :content="activeTask?.task_id || activeTaskId || '-'" placement="top">
+                  <span class="progress-summary-id mono">{{ activeTask?.task_id || activeTaskId || '-' }}</span>
+                </el-tooltip>
+              </div>
+              <div v-if="showProgress" class="progress-summary-row">
+                <span class="progress-summary-stage">阶段：{{ currentStageLabel(activeTask?.status) }}</span>
+                <span class="progress-summary-sep">|</span>
+                <span class="progress-summary-elapsed">已运行：{{ runningDuration !== null ? formatSeconds(runningDuration) : '-' }}</span>
+                <span v-if="estimatedRemaining !== null" class="progress-summary-sep">|</span>
+                <span v-if="estimatedRemaining !== null" class="progress-summary-remaining">预计剩余：{{ formatSeconds(estimatedRemaining) }}</span>
+              </div>
+              <div v-if="showProgress" class="progress-summary-bar-row">
+                <el-progress :percentage="progressValue ?? 0" :stroke-width="16" :text-inside="true" :status="progressValue === 100 ? 'success' : undefined" />
+              </div>
             </div>
 
             <div class="live-tabs-area">
@@ -520,14 +589,90 @@
 
               <div class="live-content-area">
                 <template v-if="activePanel === 'logs'">
-                  <LogViewer v-if="activeTaskId" :logs="activeLogs" max-height="none" class="log-fill" />
+                  <LogViewer
+                    v-if="activeTaskId"
+                    :logs="activeLogs"
+                    max-height="none"
+                    toolbar
+                    class="log-fill"
+                    @clear="activeLogs = []"
+                    @download="handleDownloadLogs"
+                  />
                   <div v-else class="monitor-terminal-placeholder">尚未开始执行</div>
                 </template>
-                <template v-else>
-                  <div v-if="!activeTaskId" class="monitor-terminal-placeholder">创建任务后可查看远程资源快照。</div>
-                  <div v-else-if="monitorError" class="monitor-terminal-placeholder is-error">{{ monitorError }}</div>
-                  <pre v-else class="monitor-terminal" v-loading="monitorLoading">{{ monitorOutput || '暂无输出' }}</pre>
-                  <div v-if="monitorExecutedAt" class="monitor-meta">最近刷新：{{ formatDate(monitorExecutedAt) }}</div>
+                <!-- CPU/Memory structured -->
+                <template v-else-if="activePanel === 'cpu_mem'">
+                  <div v-if="!activeTaskId" class="monitor-empty">
+                    <el-empty description="创建任务后可查看远程 CPU/内存快照" :image-size="60" />
+                  </div>
+                  <div v-else-if="!monitorData?.cpu_memory.available" class="monitor-empty">
+                    <el-empty description="暂无 CPU/内存实时监控数据" :image-size="60" />
+                    <div v-if="monitorData?.cpu_memory.message" class="monitor-empty-msg">{{ monitorData.cpu_memory.message }}</div>
+                  </div>
+                  <div v-else class="monitor-grid">
+                    <el-card shadow="never" class="monitor-card">
+                      <div class="monitor-card-label">CPU 使用率</div>
+                      <div class="monitor-card-value">{{ monitorData.cpu_memory.cpu_usage_percent ?? '-' }}%</div>
+                    </el-card>
+                    <el-card shadow="never" class="monitor-card">
+                      <div class="monitor-card-label">Load Average</div>
+                      <div class="monitor-card-value mono">{{ monitorData.cpu_memory.load_avg ?? '-' }}</div>
+                    </el-card>
+                    <el-card shadow="never" class="monitor-card">
+                      <div class="monitor-card-label">内存总容量</div>
+                      <div class="monitor-card-value">{{ monitorData.cpu_memory.memory_total ?? '-' }}</div>
+                    </el-card>
+                    <el-card shadow="never" class="monitor-card">
+                      <div class="monitor-card-label">内存使用</div>
+                      <div class="monitor-card-value">{{ monitorData.cpu_memory.memory_used ?? '-' }} ({{ monitorData.cpu_memory.memory_usage_percent ?? '-' }}%)</div>
+                    </el-card>
+                  </div>
+                  <div v-if="monitorData?.sampled_at" class="monitor-sampled-at">采样时间：{{ formatDate(monitorData.sampled_at) }}</div>
+                </template>
+
+                <!-- Disk structured -->
+                <template v-else-if="activePanel === 'disk'">
+                  <div v-if="!activeTaskId" class="monitor-empty">
+                    <el-empty description="创建任务后可查看远程磁盘快照" :image-size="60" />
+                  </div>
+                  <div v-else-if="!monitorData?.disk.available" class="monitor-empty">
+                    <el-empty description="暂无磁盘监控数据" :image-size="60" />
+                    <div v-if="monitorData?.disk.message" class="monitor-empty-msg">{{ monitorData.disk.message }}</div>
+                  </div>
+                  <el-table v-else :data="monitorData.disk.disk_usage" stripe size="small" max-height="400">
+                    <el-table-column prop="mount" label="挂载点" />
+                    <el-table-column prop="total" label="总容量" />
+                    <el-table-column prop="used" label="已用" />
+                    <el-table-column prop="available" label="可用" />
+                    <el-table-column label="使用率" width="180">
+                      <template #default="{ row }">
+                        <el-progress :percentage="row.usage_percent ?? 0" :stroke-width="14" />
+                      </template>
+                    </el-table-column>
+                  </el-table>
+                  <div v-if="monitorData?.sampled_at" class="monitor-sampled-at">采样时间：{{ formatDate(monitorData.sampled_at) }}</div>
+                </template>
+
+                <!-- GPU structured -->
+                <template v-else-if="activePanel === 'gpu'">
+                  <div v-if="!activeTaskId" class="monitor-empty">
+                    <el-empty description="创建任务后可查看远程 GPU 快照" :image-size="60" />
+                  </div>
+                  <div v-else-if="!monitorData?.gpu.available" class="monitor-empty">
+                    <el-empty description="暂无 GPU 实时监控数据" :image-size="60" />
+                    <div v-if="monitorData?.gpu.message" class="monitor-empty-msg">{{ monitorData.gpu.message }}</div>
+                  </div>
+                  <div v-else class="monitor-gpu-grid">
+                    <el-card v-for="gpu in monitorData.gpu.items" :key="gpu.index" shadow="never" class="monitor-card">
+                      <div class="monitor-card-title">{{ gpu.name }} (Index {{ gpu.index }})</div>
+                      <div class="monitor-card-stats">
+                        <span>GPU 利用率：{{ gpu.utilization_gpu ?? '-' }}%</span>
+                        <span>显存：{{ gpu.memory_used ?? '-' }} / {{ gpu.memory_total ?? '-' }} MiB</span>
+                        <span>温度：{{ gpu.temperature ?? '-' }}°C</span>
+                      </div>
+                    </el-card>
+                  </div>
+                  <div v-if="monitorData?.sampled_at" class="monitor-sampled-at">采样时间：{{ formatDate(monitorData.sampled_at) }}</div>
                 </template>
               </div>
             </div>
@@ -566,6 +711,51 @@
         <el-button type="primary" @click="goToHistory">查看任务历史</el-button>
       </template>
     </el-dialog>
+
+    <!-- Diagnosis dialog -->
+    <el-dialog v-model="diagnosisVisible" title="任务失败诊断" width="680px" :close-on-click-modal="false" class="diagnosis-dialog">
+      <div v-loading="diagnosisLoading">
+        <template v-if="diagnosisData">
+          <div class="diag-header">
+            <el-tag :type="diagnosisLevelTagType" size="small" effect="dark">
+              {{ diagnosisLevelLabel }}
+            </el-tag>
+            <span class="diag-category">{{ diagnosisData.title }}</span>
+          </div>
+          <div class="diag-section">
+            <div class="diag-section-title">摘要</div>
+            <p class="diag-text">{{ diagnosisData.summary }}</p>
+          </div>
+          <div class="diag-section">
+            <div class="diag-section-title">可能原因</div>
+            <ul class="diag-list">
+              <li v-for="(cause, i) in diagnosisData.possible_causes" :key="i">{{ cause }}</li>
+            </ul>
+          </div>
+          <div class="diag-section">
+            <div class="diag-section-title">建议处理</div>
+            <ul class="diag-list">
+              <li v-for="(s, i) in diagnosisData.suggestions" :key="i">{{ s }}</li>
+            </ul>
+          </div>
+          <div class="diag-section">
+            <div class="diag-section-title">关键日志片段</div>
+            <div class="diag-evidence">
+              <div v-for="(line, i) in diagnosisData.evidence" :key="i" class="diag-evidence-line">
+                <span class="diag-evidence-num">{{ i + 1 }}</span>
+                <code>{{ line }}</code>
+              </div>
+              <el-empty v-if="!diagnosisData.evidence.length" description="无关键日志片段" :image-size="60" />
+            </div>
+          </div>
+        </template>
+        <el-empty v-else description="暂无诊断结果" :image-size="60" />
+      </div>
+      <template #footer>
+        <el-button @click="diagnosisVisible = false">关闭</el-button>
+        <el-button type="primary" @click="downloadLogsFromDiagnosis">下载完整日志</el-button>
+      </template>
+    </el-dialog>
   </section>
 </template>
 <script setup lang="ts">
@@ -578,18 +768,31 @@ import {
   cancelTask,
   getTask,
   getTaskLogs,
+  getTaskMonitor,
   monitorTask,
   type BatchTaskCreateResponse,
   type MonitorType,
   runTask,
   type RunTaskPayload,
   type TaskLogRecord,
+  type TaskMonitorStructuredResponse,
   type TaskRecord,
   type TaskType as ApiTaskType
 } from '@/api/task'
+import { downloadTaskLogs } from '@/api/task'
+import { getTaskDiagnosis, type TaskDiagnosisResponse } from '@/api/diagnosis'
+import { useTaskWebSocket } from '@/composables/useTaskWebSocket'
 import { formatDateTime } from '@/utils/time'
 import { buildConfirmContent } from '@/utils/confirm'
 import { formatTaskDisplayName } from '@/utils/taskDisplay'
+import {
+  calcDurationSeconds,
+  calcEstimatedRemaining,
+  calcProgress,
+  currentStageLabel,
+  formatSeconds,
+  getTaskDuration,
+} from '@/composables/useTaskProgress'
 import taskTemplates, { type TaskTemplate } from '@/constants/taskTemplates'
 import LogViewer from '@/components/LogViewer.vue'
 import StatusTag from '@/components/StatusTag.vue'
@@ -653,6 +856,7 @@ const cancelSubmitting = ref(false)
 const polling = ref(false)
 const monitorLoading = ref(false)
 const apptainerTargetDir = ref('~/hpcdeploy/apptainer/')
+const apptainerOverwrite = ref(true)
 const activeTaskId = ref('')
 const activeTask = ref<TaskRecord | null>(null)
 const activeLogs = ref<TaskLogRecord[]>([])
@@ -660,6 +864,7 @@ const activePanel = ref<MonitorPanel>('logs')
 const monitorOutput = ref('')
 const monitorError = ref('')
 const monitorExecutedAt = ref('')
+const monitorData = ref<TaskMonitorStructuredResponse | null>(null)
 const stressParamDefaults = {
   intervalSeconds: 10,
   memoryPercent: 85,
@@ -679,6 +884,28 @@ const batchResult = ref<BatchTaskCreateResponse | null>(null)
 const showBatchResult = ref(false)
 const router = useRouter()
 const route = useRoute()
+
+// ── WebSocket ──
+const wsHook = useTaskWebSocket()
+const wsConnected = ref(false)
+const wsFallback = ref(false)  // true when WS failed, using HTTP polling
+
+// ── Real-time clock for live progress ──
+const now = ref(new Date())
+let nowTimer: ReturnType<typeof setInterval> | null = null
+
+function startNowTimer() {
+  stopNowTimer()
+  now.value = new Date()
+  nowTimer = setInterval(() => { now.value = new Date() }, 1000)
+}
+
+function stopNowTimer() {
+  if (nowTimer !== null) {
+    clearInterval(nowTimer)
+    nowTimer = null
+  }
+}
 let pollTimer: number | null = null
 
 const filteredFiles = computed(() => {
@@ -772,7 +999,7 @@ const visibleMonitorTabs = computed<Array<{ name: MonitorPanel; label: string; m
     return [
       { name: 'logs', label: '执行日志' },
       { name: 'cpu_mem', label: 'CPU/内存', monitorType: 'cpu_mem' },
-      { name: 'disk', label: '磁盘 IO', monitorType: 'disk' },
+      { name: 'disk', label: '磁盘', monitorType: 'disk' },
       { name: 'gpu', label: 'GPU', monitorType: 'gpu' }
     ]
   }
@@ -812,6 +1039,40 @@ const showCancelTaskButton = computed(() => {
 
 const showCancelingTaskButton = computed(() => {
   return (activeTask.value?.status?.toUpperCase() ?? '') === 'CANCELING'
+})
+
+// ── Progress & duration computeds ──
+const runningDuration = computed(() => {
+  const t = activeTask.value
+  if (!t) return null
+  return calcDurationSeconds(t.start_time, t.end_time, now.value)
+})
+
+const hasTaskDuration = computed(() => {
+  const t = activeTask.value
+  if (!t) return false
+  return getTaskDuration(t) !== null
+})
+
+const estimatedRemaining = computed(() => {
+  const t = activeTask.value
+  if (!t) return null
+  const dur = getTaskDuration(t)
+  if (dur === null) return null
+  const elapsed = calcDurationSeconds(t.start_time, t.end_time, now.value)
+  if (elapsed === null) return null
+  return calcEstimatedRemaining(t, elapsed)
+})
+
+const progressValue = computed(() => {
+  const t = activeTask.value
+  if (!t) return null
+  const elapsed = calcDurationSeconds(t.start_time, t.end_time, now.value)
+  return calcProgress(t, elapsed ?? undefined)
+})
+
+const showProgress = computed(() => {
+  return progressValue.value !== null
 })
 
 const executeButtonText = computed(() => {
@@ -972,6 +1233,8 @@ async function createTask() {
     }
     if (selectedTaskType.value === 'stress') {
       payload.params = buildStressParams()
+    } else if (selectedTaskType.value === 'apptainer') {
+      payload.params = { overwrite: apptainerOverwrite.value }
     }
     const result = (await runTask(payload)).data
     ElMessage.success(`任务创建成功：${result.task_id}`)
@@ -1029,6 +1292,7 @@ async function handleNewTask() {
   monitorOutput.value = ''
   monitorError.value = ''
   monitorExecutedAt.value = ''
+  monitorData.value = null
   activePanel.value = 'logs'
   mode.value = 'config'
   localStorage.removeItem('hpcdeploy.currentTaskId')
@@ -1091,6 +1355,7 @@ async function recoverTask() {
       return
     }
     polling.value = true
+    startMonitorPolling()
     pollTimer = window.setInterval(() => {
       void fetchTaskRuntime(queryTaskId)
     }, 1000)
@@ -1117,6 +1382,7 @@ async function fetchTaskRuntime(taskId: string) {
     activeLogs.value = logsResp.data
 
     if (['SUCCESS', 'FAILED', 'CANCELED'].includes(taskResp.data.status.toUpperCase())) {
+      stopMonitorPolling()
       stopTaskPolling()
     }
   } catch (error) {
@@ -1134,13 +1400,67 @@ function startTaskPolling(taskId: string) {
   monitorError.value = ''
   monitorExecutedAt.value = ''
   polling.value = true
+  wsConnected.value = false
+  wsFallback.value = false
+  startNowTimer()
+  startMonitorPolling()
+
+  // Try WebSocket first
+  wsHook.connect(
+    taskId,
+    // onLog
+    (level, line, created_at) => {
+      const log: TaskLogRecord = {
+        id: 0,  // fake id for display
+        task_id: taskId,
+        level: level,
+        message: line,
+        created_at: created_at || '',
+      }
+      activeLogs.value = [...activeLogs.value, log]
+    },
+    // onStatus
+    (status) => {
+      if (activeTask.value) {
+        activeTask.value = { ...activeTask.value, status }
+      }
+    },
+    // onDone
+    (status) => {
+      if (activeTask.value) {
+        activeTask.value = { ...activeTask.value, status }
+      }
+      // Final poll to get complete state
+      void fetchTaskRuntime(taskId)
+    },
+  )
+
+  // Monitor WebSocket connection status
+  const wsCheckTimer = window.setInterval(() => {
+    if (wsHook.getIsConnected()) {
+      wsConnected.value = true
+      clearInterval(wsCheckTimer)
+    }
+    if (wsHook.getWsError()) {
+      wsFallback.value = true
+      clearInterval(wsCheckTimer)
+    }
+  }, 500)
+  // Stop checking after 5 seconds
+  setTimeout(() => clearInterval(wsCheckTimer), 5000)
+
+  // HTTP polling as fallback (always on, to catch missed messages)
   void fetchTaskRuntime(taskId)
   pollTimer = window.setInterval(() => {
     void fetchTaskRuntime(taskId)
-  }, 1000)
+  }, 2000)  // 2s interval instead of 1s since WS is primary
 }
 
 function stopTaskPolling() {
+  wsHook.disconnect()
+  wsConnected.value = false
+  stopNowTimer()
+  stopMonitorPolling()
   if (pollTimer !== null) {
     window.clearInterval(pollTimer)
     pollTimer = null
@@ -1162,6 +1482,35 @@ async function fetchMonitorSnapshot(type: MonitorType) {
     monitorError.value = getApiErrorMessage(error)
   } finally {
     monitorLoading.value = false
+  }
+}
+
+// ── Structured monitor polling ──
+let monitorPollTimer: ReturnType<typeof setInterval> | null = null
+
+function startMonitorPolling() {
+  stopMonitorPolling()
+  void fetchMonitorData()
+  monitorPollTimer = setInterval(() => {
+    void fetchMonitorData()
+  }, 5000)
+}
+
+function stopMonitorPolling() {
+  if (monitorPollTimer !== null) {
+    clearInterval(monitorPollTimer)
+    monitorPollTimer = null
+  }
+}
+
+async function fetchMonitorData() {
+  if (!activeTaskId.value) return
+  if (!['cpu_mem', 'disk', 'gpu'].includes(activePanel.value)) return
+  try {
+    const res = await getTaskMonitor(activeTaskId.value)
+    monitorData.value = res.data
+  } catch {
+    // Silent fail — keep previous data
   }
 }
 
@@ -1206,6 +1555,9 @@ function getApiErrorMessage(error: unknown) {
 }
 
 function paramsPreviewString(): string {
+  if (selectedTaskType.value === 'apptainer') {
+    return `覆盖远端文件：${apptainerOverwrite.value ? '是' : '否'}`
+  }
   if (selectedTaskType.value !== 'stress' || !selectedFile.value) return '无'
   const fname = selectedFile.value.name
   const dur = stressDurationSeconds.value
@@ -1233,6 +1585,8 @@ async function batchCreate() {
   let confirmMsg = `将对以下 ${servers.length} 台服务器执行同一个脚本：\n\n${serverNames}\n\n脚本：\n${scriptName}\n`
   if (selectedTaskType.value === 'stress') {
     confirmMsg += `\n参数：\n${paramsPreviewString()}`
+  } else if (selectedTaskType.value === 'apptainer') {
+    confirmMsg += `\n覆盖远端文件：${apptainerOverwrite.value ? '是' : '否'}`
   }
   // MPI install template risk warning handled by template's .warning field
   const isMpiInstall = selectedTaskType.value === 'mpi' && selectedFile.value.name.startsWith('install_')
@@ -1267,7 +1621,11 @@ async function batchCreate() {
       server_ids: selectedServerIds.value,
       script_type: selectedTaskType.value as ApiTaskType,
       script_path: selectedFile.value.path,
-      params: selectedTaskType.value === 'stress' ? buildStressParams() : {},
+      params: selectedTaskType.value === 'stress'
+        ? buildStressParams()
+        : selectedTaskType.value === 'apptainer'
+          ? { overwrite: apptainerOverwrite.value }
+          : {},
     })).data
     batchResult.value = res
     showBatchResult.value = true
@@ -1410,11 +1768,63 @@ watch(visibleMonitorTabs, (tabs) => {
   }
 })
 
+// ── Diagnosis ──
+const diagnosisVisible = ref(false)
+const diagnosisLoading = ref(false)
+const diagnosisData = ref<TaskDiagnosisResponse['diagnosis'] | null>(null)
+const diagnosisTaskId = ref('')
+
+async function openTaskDiagnosis(task: any) {
+  diagnosisTaskId.value = task.task_id
+  diagnosisData.value = null
+  diagnosisVisible.value = true
+  diagnosisLoading.value = true
+  try {
+    const resp = (await getTaskDiagnosis(task.task_id)).data
+    diagnosisData.value = resp.diagnosis
+  } catch {
+    ElMessage.error('获取诊断失败')
+  } finally {
+    diagnosisLoading.value = false
+  }
+}
+
+function handleDownloadLogs() {
+  if (activeTaskId.value) {
+    downloadTaskLogs(activeTaskId.value)
+  }
+}
+
+function downloadLogsFromDiagnosis() {
+  if (diagnosisTaskId.value) {
+    downloadTaskLogs(diagnosisTaskId.value)
+  }
+}
+
+const diagnosisLevelTagType = computed(() => {
+  if (!diagnosisData.value) return 'info'
+  const level = diagnosisData.value.level
+  if (level === 'error') return 'danger'
+  if (level === 'warning') return 'warning'
+  return 'info'
+})
+
+const diagnosisLevelLabel = computed(() => {
+  if (!diagnosisData.value) return ''
+  const level = diagnosisData.value.level
+  if (level === 'error') return '错误'
+  if (level === 'warning') return '警告'
+  return '信息'
+})
+
 onMounted(async () => {
   await loadOptions()
   await recoverTask()
 })
-onBeforeUnmount(stopTaskPolling)
+onBeforeUnmount(() => {
+  stopTaskPolling()
+  stopNowTimer()
+})
 </script>
 <style scoped>
 .page-section {
@@ -1813,35 +2223,6 @@ onBeforeUnmount(stopTaskPolling)
   gap: 12px;
 }
 
-.live-task-meta-bar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 10px;
-  margin-bottom: 4px;
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 10px;
-  background: var(--el-fill-color-blank);
-  flex-wrap: wrap;
-  min-height: 30px;
-}
-
-.meta-divider {
-  color: var(--el-border-color);
-  font-size: 14px;
-}
-
-.meta-item {
-  font-size: 13px;
-  color: var(--el-text-color-primary);
-  white-space: nowrap;
-}
-
-.meta-item.mono {
-  font-family: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
-  font-size: 12px;
-}
-
 /* ===== RIGHT PANEL FLEX LAYOUT ===== */
 .live-content-wrapper {
   flex: 1;
@@ -1849,6 +2230,64 @@ onBeforeUnmount(stopTaskPolling)
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
+}
+
+/* ── Progress Summary Bar ── */
+.progress-summary-bar {
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 10px;
+  padding: 8px 12px;
+  margin-bottom: 6px;
+  background: var(--el-fill-color-blank);
+}
+
+.progress-summary-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 4px;
+  flex-wrap: wrap;
+}
+
+.progress-summary-row:last-of-type {
+  margin-bottom: 0;
+}
+
+.progress-summary-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--el-text-color-primary);
+  white-space: nowrap;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.progress-summary-id {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: default;
+}
+
+.progress-summary-stage,
+.progress-summary-elapsed,
+.progress-summary-remaining {
+  font-size: 13px;
+  color: var(--el-text-color-regular);
+  white-space: nowrap;
+}
+
+.progress-summary-sep {
+  color: var(--el-border-color);
+  font-size: 12px;
+}
+
+.progress-summary-bar-row {
+  margin-top: 2px;
 }
 
 .live-tabs-area {
@@ -1862,6 +2301,16 @@ onBeforeUnmount(stopTaskPolling)
   flex: none;
   display: flex;
   flex-direction: column;
+}
+
+/* Fix white bar: remove default white background from tabs header */
+.live-tabs-area :deep(.el-tabs__header) {
+  margin-bottom: 6px;
+  background: transparent;
+}
+
+.live-tabs-area :deep(.el-tabs__nav-wrap) {
+  background: transparent;
 }
 
 .live-tabs-area :deep(.el-tabs__content) {
@@ -1925,6 +2374,81 @@ onBeforeUnmount(stopTaskPolling)
   margin-top: 8px;
   color: var(--el-text-color-secondary);
   font-size: 13px;
+  flex-shrink: 0;
+}
+
+/* ── Monitor structured grid ── */
+.monitor-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.monitor-card {
+  border-radius: 10px;
+}
+
+.monitor-card-label {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  margin-bottom: 4px;
+}
+
+.monitor-card-value {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--el-text-color-primary);
+}
+
+.monitor-card-value.mono {
+  font-family: 'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace;
+  font-size: 18px;
+}
+
+/* ── Monitor empty state ── */
+.monitor-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  flex: 1;
+}
+
+.monitor-empty-msg {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+  text-align: center;
+}
+
+/* ── GPU grid ── */
+.monitor-gpu-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.monitor-card-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+  margin-bottom: 8px;
+}
+
+.monitor-card-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--el-text-color-regular);
+}
+
+/* ── Monitor sampled timestamp ── */
+.monitor-sampled-at {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  text-align: right;
   flex-shrink: 0;
 }
 
@@ -2036,9 +2560,40 @@ onBeforeUnmount(stopTaskPolling)
 
 .summary-actions {
   display: flex;
-  gap: 12px;
-  justify-content: flex-end;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.summary-actions-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--el-text-color-primary);
+}
+
+.summary-actions-buttons {
+  display: flex;
+  gap: 8px;
   flex-wrap: wrap;
+}
+
+.summary-progress {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+
+.summary-progress-label {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  text-align: center;
+}
+
+.alert-duration {
+  font-size: 13px;
+  font-weight: 400;
+  opacity: 0.85;
 }
 
 .summary-loading {
@@ -2049,6 +2604,18 @@ onBeforeUnmount(stopTaskPolling)
   margin-left: 8px;
   font-size: 12px;
   color: #64748b;
+}
+
+.overwrite-control {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.overwrite-help {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.5;
 }
 
 /* ===== BATCH RESULT DIALOG ===== */
@@ -2107,5 +2674,71 @@ onBeforeUnmount(stopTaskPolling)
     height: auto;
     min-height: 400px;
   }
+}
+
+/* ── Diagnosis dialog ── */
+.diagnosis-dialog :deep(.diag-header) {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+.diagnosis-dialog :deep(.diag-category) {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+.diagnosis-dialog :deep(.diag-section) {
+  margin-bottom: 18px;
+}
+.diagnosis-dialog :deep(.diag-section-title) {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+  margin-bottom: 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--el-border-color-light);
+}
+.diagnosis-dialog :deep(.diag-text) {
+  font-size: 14px;
+  color: var(--el-text-color-regular);
+  line-height: 1.6;
+  margin: 0;
+}
+.diagnosis-dialog :deep(.diag-list) {
+  margin: 0;
+  padding-left: 20px;
+}
+.diagnosis-dialog :deep(.diag-list li) {
+  font-size: 14px;
+  color: var(--el-text-color-regular);
+  line-height: 1.8;
+}
+.diagnosis-dialog :deep(.diag-evidence) {
+  background: #1e293b;
+  border-radius: 6px;
+  padding: 12px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+.diagnosis-dialog :deep(.diag-evidence-line) {
+  display: flex;
+  gap: 10px;
+  padding: 4px 0;
+  font-family: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.diagnosis-dialog :deep(.diag-evidence-num) {
+  color: #64748b;
+  min-width: 20px;
+  text-align: right;
+  flex-shrink: 0;
+  user-select: none;
+}
+.diagnosis-dialog :deep(.diag-evidence-line code) {
+  color: #e2e8f0;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 </style>

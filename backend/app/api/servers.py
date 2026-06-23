@@ -4,8 +4,10 @@ from time import monotonic
 import concurrent.futures
 import logging
 
+from app.core.audit import write_audit_log
 from app.core.config import BACKEND_ROOT
 from app.core.ssh_detector import DEFAULT_DETECT_TIMEOUT, ServerDetectError, detect_server_info, summarize_detect_result
+from app.models.settings import SystemSetting
 from app.core.ssh_executor import SSHExecutor, SSHExecutorError, shell_quote
 from app.core.ssh_tester import SSHTestError, test_ssh_connection
 from app.db.database import SessionLocal, get_db
@@ -19,12 +21,23 @@ from app.schemas.server import (
 )
 from app.schemas.detect import ProbeAllResponse, ProbeAllResult, ServerDetectResponse
 from app.schemas.ssh import SSHTestResponse
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/servers", tags=["servers"])
 KEYS_DIR = (BACKEND_ROOT / "keys").resolve()
+
+
+def _get_probe_timeout(db: Session) -> int:
+    """Read probe_timeout_seconds from system settings, falling back to DEFAULT_DETECT_TIMEOUT."""
+    setting = db.get(SystemSetting, "probe_timeout_seconds")
+    if setting is None:
+        return DEFAULT_DETECT_TIMEOUT
+    try:
+        return int(setting.value)
+    except (ValueError, TypeError):
+        return DEFAULT_DETECT_TIMEOUT
 
 
 def _get_server_or_404(db: Session, server_id: int) -> Server:
@@ -94,6 +107,13 @@ def create_server(payload: ServerCreate, db: Session = Depends(get_db)) -> Serve
     db.add(server)
     db.commit()
     db.refresh(server)
+    write_audit_log(
+        db, action="server.create", target_type="server", status="success",
+        target_id=str(server.id), target_name=server.name,
+        server_id=server.id, server_name=server.name,
+        message=f"created server {server.name} ({server.host})",
+        detail={"host": server.host, "port": server.port, "username": server.username, "auth_type": server.auth_type},
+    )
     return server
 
 
@@ -156,15 +176,17 @@ def probe_all_servers(
             total_elapsed_seconds=total_elapsed,
         )
 
+    probe_timeout = _get_probe_timeout(db)
+
     logger.info(
         "[probe-all] start probed=%d skipped=%d max_workers=%d timeout=%d include_offline=%s",
-        probed_count, skipped_count, max_workers, DEFAULT_DETECT_TIMEOUT, include_offline,
+        probed_count, skipped_count, max_workers, probe_timeout, include_offline,
     )
 
     for s in probe_servers:
         logger.info("[probe-all] submit server_id=%d name=%s", s.id, s.name)
 
-    def _probe_in_thread(sid: int) -> ProbeAllResult:
+    def _probe_in_thread(sid: int, timeout: int) -> ProbeAllResult:
         """Probe one server in a dedicated thread with its own DB session."""
         start = monotonic()
         thread_db = SessionLocal()
@@ -190,7 +212,7 @@ def probe_all_servers(
                     host=server.host,
                     port=server.port,
                     username=server.username,
-                    timeout=DEFAULT_DETECT_TIMEOUT,
+                    timeout=timeout,
                     **_server_auth_kwargs(server),
                 )
                 summary = summarize_detect_result(raw_result)
@@ -270,7 +292,7 @@ def probe_all_servers(
     results: list[ProbeAllResult] = []
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        fut_map = {executor.submit(_probe_in_thread, sid): sid for sid in probed_ids}
+        fut_map = {executor.submit(_probe_in_thread, sid, probe_timeout): sid for sid in probed_ids}
         for future in concurrent.futures.as_completed(fut_map):
             try:
                 result = future.result()
@@ -296,6 +318,12 @@ def probe_all_servers(
         "[probe-all] done total_elapsed=%.3fs online=%d offline=%d skipped=%d",
         total_elapsed, online, offline_probed, skipped_count,
     )
+    _overall_status = "success" if online > 0 or offline_probed == 0 else "failed"
+    write_audit_log(
+        db, action="server.probe_all", target_type="server", status=_overall_status,
+        message=f"probe all: {online} online, {offline_probed} offline, {skipped_count} skipped in {total_elapsed:.1f}s",
+        detail={"total": total, "online": online, "offline": offline_probed, "skipped": skipped_count, "elapsed_seconds": total_elapsed},
+    )
     return ProbeAllResponse(
         total=total,
         probed=probed_count,
@@ -319,18 +347,32 @@ def update_server(
     db: Session = Depends(get_db),
 ) -> Server:
     server = _get_server_or_404(db, server_id)
+    old_name = server.name
     for key, value in payload.model_dump(exclude_unset=True).items():
         setattr(server, key, value)
     db.commit()
     db.refresh(server)
+    write_audit_log(
+        db, action="server.update", target_type="server", status="success",
+        target_id=str(server.id), target_name=server.name,
+        server_id=server.id, server_name=server.name,
+        message=f"updated server {old_name}",
+    )
     return server
 
 
 @router.delete("/{server_id}")
 def delete_server(server_id: int, db: Session = Depends(get_db)) -> dict[str, bool]:
     server = _get_server_or_404(db, server_id)
+    _name = server.name
+    _host = server.host
     db.delete(server)
     db.commit()
+    write_audit_log(
+        db, action="server.delete", target_type="server", status="success",
+        target_id=str(server_id), target_name=_name,
+        message=f"deleted server {_name} ({_host})",
+    )
     return {"deleted": True}
 
 
@@ -342,13 +384,19 @@ def test_server_ssh(server_id: int, db: Session = Depends(get_db)) -> SSHTestRes
             host=server.host,
             port=server.port,
             username=server.username,
-            timeout=DEFAULT_DETECT_TIMEOUT,
+            timeout=_get_probe_timeout(db),
             **_server_auth_kwargs(server),
         )
         server.status = "online"
         server.last_check_at = datetime.utcnow()
         server.last_error = None
         db.commit()
+        write_audit_log(
+            db, action="server.test_ssh", target_type="server", status="success",
+            target_id=str(server.id), target_name=server.name,
+            server_id=server.id, server_name=server.name,
+            message=f"SSH test succeeded for {server.name}",
+        )
         return SSHTestResponse(
             success=True,
             status="online",
@@ -357,9 +405,14 @@ def test_server_ssh(server_id: int, db: Session = Depends(get_db)) -> SSHTestRes
         )
     except SSHTestError as exc:
         server.status = "offline"
-        # Do NOT update last_check_at on failure
         server.last_error = str(exc)
         db.commit()
+        write_audit_log(
+            db, action="server.test_ssh", target_type="server", status="failed",
+            target_id=str(server.id), target_name=server.name,
+            server_id=server.id, server_name=server.name,
+            message=f"SSH test failed for {server.name}: {exc}",
+        )
         return SSHTestResponse(success=False, status="offline", error=str(exc))
 
 
@@ -385,7 +438,7 @@ def _probe_server(db: Session, server: Server) -> ServerDetectResponse:
             host=server.host,
             port=server.port,
             username=server.username,
-            timeout=DEFAULT_DETECT_TIMEOUT,
+            timeout=_get_probe_timeout(db),
             **_server_auth_kwargs(server),
         )
         summary = summarize_detect_result(raw_result)
@@ -400,13 +453,24 @@ def _probe_server(db: Session, server: Server) -> ServerDetectResponse:
         server.network_info = summary["network_info"]
         db.commit()
         db.refresh(server)
+        write_audit_log(
+            db, action="server.probe", target_type="server", status="success",
+            target_id=str(server.id), target_name=server.name,
+            server_id=server.id, server_name=server.name,
+            message=f"probe succeeded for {server.name}",
+        )
         return _build_probe_response(server, success=True, timings=timings)
     except ServerDetectError as exc:
         server.status = "offline"
         server.last_error = str(exc)
-        # Do NOT update last_check_at — keep the last successful check timestamp
         db.commit()
         db.refresh(server)
+        write_audit_log(
+            db, action="server.probe", target_type="server", status="failed",
+            target_id=str(server.id), target_name=server.name,
+            server_id=server.id, server_name=server.name,
+            message=f"probe failed for {server.name}: {exc}",
+        )
         return _build_probe_response(server, success=False, error=str(exc))
 
 
@@ -452,6 +516,12 @@ def deploy_public_key(
         )
         executor.exec_simple(remote_command)
     except (SSHExecutorError, OSError) as exc:
+        write_audit_log(
+            db, action="server.deploy_public_key", target_type="server", status="failed",
+            target_id=str(server.id), target_name=server.name,
+            server_id=server.id, server_name=server.name,
+            message=f"deploy public key failed: {exc}",
+        )
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"deploy public key failed: {exc}") from exc
     finally:
         executor.close()
@@ -461,6 +531,12 @@ def deploy_public_key(
     server.password = None
     db.commit()
     db.refresh(server)
+    write_audit_log(
+        db, action="server.deploy_public_key", target_type="server", status="success",
+        target_id=str(server.id), target_name=server.name,
+        server_id=server.id, server_name=server.name,
+        message=f"deployed public key for {server.name}",
+    )
     return DeployPublicKeyResponse(
         success=True,
         message="public key deployed",

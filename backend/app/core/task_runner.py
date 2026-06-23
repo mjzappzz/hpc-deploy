@@ -5,6 +5,7 @@ import re
 from app.core.script_library import get_library_file_record, resolve_library_path
 from app.core.script_validator import ScriptValidationError
 from app.core.ssh_executor import SSHCommandTimeoutError, SSHExecutor, SSHExecutorError, shell_quote
+from app.core.ws_manager import ws_manager
 from app.db.database import SessionLocal
 from app.models.server import Server
 from app.models.task import Task
@@ -114,6 +115,22 @@ def run_task_stage8b(task_id: str) -> None:
 
         _set_status(db, task, "UPLOADING")
         _ensure_task_not_canceled(db, task)
+
+        # ── Apptainer overwrite check ──
+        if task.task_type == "apptainer":
+            overwrite = task.params.get("overwrite", True) if task.params else True
+            test_cmd = f"test -f {shell_quote(remote_path)}"
+            exit_code, _out, _err = executor.exec_capture(test_cmd, timeout_seconds=10)
+            file_exists = (exit_code == 0)
+            if file_exists:
+                if not overwrite:
+                    _add_log(db, task_id, "ERROR", f"remote file exists and overwrite disabled: {remote_path}")
+                    raise TaskRunnerError(f"remote file already exists: {remote_path}")
+                _add_log(db, task_id, "SYSTEM", f"remote file exists, overwrite enabled: {remote_path}")
+            else:
+                _add_log(db, task_id, "SYSTEM", f"remote file not found, will upload: {remote_path}")
+            _ensure_task_not_canceled(db, task)
+
         _add_log(
             db,
             task_id,
@@ -252,6 +269,7 @@ def _execute_command_task(db, executor: SSHExecutor, task: Task, task_id: str, c
             task.end_time = datetime.utcnow()
             task.error_message = "canceled by user"
             db.commit()
+            _broadcast_done_safe(task_id, "CANCELED")
             return
         _add_log(db, task_id, "ERROR", f"command timed out after {exc.timeout_seconds} seconds")
         task.status = "FAILED"
@@ -259,6 +277,7 @@ def _execute_command_task(db, executor: SSHExecutor, task: Task, task_id: str, c
         task.end_time = datetime.utcnow()
         task.error_message = f"command timed out after {exc.timeout_seconds} seconds"
         db.commit()
+        _broadcast_done_safe(task_id, "FAILED")
         return
 
     _add_log(db, task_id, "SYSTEM", f"command exited with code {exit_code}")
@@ -280,6 +299,15 @@ def _execute_command_task(db, executor: SSHExecutor, task: Task, task_id: str, c
         task.error_message = f"command exited with code {exit_code}"
         _add_log(db, task_id, "ERROR", f"command failed with exit code {exit_code}")
     db.commit()
+    _broadcast_done_safe(task_id, task.status)
+
+
+def _broadcast_done_safe(task_id: str, status: str) -> None:
+    try:
+        ws_manager.broadcast_status_sync(task_id, status)
+        ws_manager.broadcast_done_sync(task_id, status)
+    except Exception:
+        pass
 
 
 def _build_test_command(file_name: str) -> str:
@@ -373,6 +401,11 @@ def _mark_task_started(db, task: Task) -> None:
 def _add_log(db, task_id: str, level: str, message: str) -> None:
     db.add(TaskLog(task_id=task_id, level=level, message=message))
     db.commit()
+    # Broadcast via WebSocket (best-effort)
+    try:
+        ws_manager.broadcast_log_sync(task_id, level, message)
+    except Exception:
+        pass
 
 
 def _classify_stderr_level(message: str) -> str:
@@ -433,24 +466,38 @@ def _mark_task_canceled(db, task: Task, message: str) -> None:
 def _set_status(db, task: Task, status: str) -> None:
     task.status = status
     db.commit()
+    # Broadcast status via WebSocket (best-effort)
+    try:
+        ws_manager.broadcast_status_sync(task.task_id, status)
+        if status in ("SUCCESS", "FAILED", "CANCELED"):
+            ws_manager.broadcast_done_sync(task.task_id, status)
+    except Exception:
+        pass
 
 
 def _fail_task(db, task_id: str, message: str) -> None:
     task = db.query(Task).filter(Task.task_id == task_id).first()
     if task is None:
         return
+    final_status: str | None = None
     if task.status == "CANCELING":
         task.status = "CANCELED"
         task.exit_code = CANCELED_EXIT_CODE
         task.end_time = datetime.utcnow()
         task.error_message = "canceled by user"
+        final_status = "CANCELED"
         db.commit()
-        return
-    if task.status == "CANCELED":
-        return
-    task.status = "FAILED"
-    task.error_message = message[:500]
-    task.end_time = datetime.utcnow()
-    db.commit()
-    db.add(TaskLog(task_id=task_id, level="ERROR", message=message[:1000]))
-    db.commit()
+    elif task.status != "CANCELED":
+        task.status = "FAILED"
+        task.error_message = message[:500]
+        task.end_time = datetime.utcnow()
+        final_status = "FAILED"
+        db.commit()
+        db.add(TaskLog(task_id=task_id, level="ERROR", message=message[:1000]))
+        db.commit()
+    if final_status:
+        try:
+            ws_manager.broadcast_status_sync(task_id, final_status)
+            ws_manager.broadcast_done_sync(task_id, final_status)
+        except Exception:
+            pass
