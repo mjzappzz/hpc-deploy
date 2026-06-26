@@ -2,88 +2,276 @@
   <section class="page-section">
     <div class="toolbar">
       <el-button @click="loadTasks">刷新</el-button>
+      <div class="view-toggle">
+        <el-button :type="viewMode === 'tasks' ? 'primary' : 'default'" size="small" @click="switchView('tasks')">任务视图</el-button>
+        <el-button :type="viewMode === 'batches' ? 'primary' : 'default'" size="small" @click="switchView('batches')">批次视图</el-button>
+      </div>
     </div>
 
-    <div class="filter-bar">
-      <el-select
-        v-model="filters.status"
-        placeholder="全部状态"
-        clearable
-        style="width:140px"
-        @change="handleFilterChange"
-      >
-        <el-option label="全部状态" value="" />
-        <el-option label="等待中" value="PENDING" />
-        <el-option label="连接中" value="CONNECTING" />
-        <el-option label="准备中" value="PREPARING" />
-        <el-option label="上传中" value="UPLOADING" />
-        <el-option label="运行中" value="RUNNING" />
-        <el-option label="取消中" value="CANCELING" />
-        <el-option label="成功" value="SUCCESS" />
-        <el-option label="失败" value="FAILED" />
-        <el-option label="已取消" value="CANCELED" />
-      </el-select>
+    <template v-if="viewMode === 'tasks'">
+      <div class="filter-bar">
+        <el-select
+          v-model="filters.status"
+          placeholder="全部状态"
+          clearable
+          style="width:140px"
+          @change="handleFilterChange"
+        >
+          <el-option label="全部状态" value="" />
+          <el-option label="等待中" value="PENDING" />
+          <el-option label="连接中" value="CONNECTING" />
+          <el-option label="准备中" value="PREPARING" />
+          <el-option label="上传中" value="UPLOADING" />
+          <el-option label="运行中" value="RUNNING" />
+          <el-option label="取消中" value="CANCELING" />
+          <el-option label="成功" value="SUCCESS" />
+          <el-option label="失败" value="FAILED" />
+          <el-option label="已取消" value="CANCELED" />
+        </el-select>
 
-      <el-select
-        v-model="filters.task_type"
-        placeholder="全部类型"
-        clearable
-        style="width:140px"
-        @change="handleFilterChange"
-      >
-        <el-option label="全部类型" value="" />
-        <el-option label="测试脚本" value="test" />
-        <el-option label="压测脚本" value="stress" />
-        <el-option label="编译环境" value="mpi" />
-        <el-option label="Apptainer 容器" value="apptainer" />
-      </el-select>
+        <el-select
+          v-model="filters.task_type"
+          placeholder="全部类型"
+          clearable
+          style="width:140px"
+          @change="handleFilterChange"
+        >
+          <el-option label="全部类型" value="" />
+          <el-option label="测试脚本" value="test" />
+          <el-option label="压测脚本" value="stress" />
+          <el-option label="编译环境" value="mpi" />
+          <el-option label="Apptainer 镜像" value="apptainer" />
+        </el-select>
 
-      <el-input
-        v-model="filters.keyword"
-        placeholder="搜索任务、脚本、目录、错误"
-        clearable
-        class="keyword-input"
-        @keyup.enter="handleFilterChange"
-        @clear="handleFilterClear"
-      />
+        <el-input
+          v-model="filters.keyword"
+          placeholder="搜索任务、脚本、目录、错误"
+          clearable
+          class="keyword-input"
+          @keyup.enter="handleFilterChange"
+          @clear="handleFilterClear"
+        />
 
-      <el-button :type="hasActiveFilters ? 'primary' : 'default'" @click="handleFilterChange">搜索</el-button>
+        <el-button :type="hasActiveFilters ? 'primary' : 'default'" @click="handleFilterChange">搜索</el-button>
 
-      <el-button @click="resetFilters">重置</el-button>
-    </div>
+        <el-button @click="resetFilters">重置</el-button>
+        <el-tag v-if="isAutoRefreshing" type="info" size="small" effect="plain" class="auto-refresh-tag">
+          自动刷新中 (5s)
+        </el-tag>
+      </div>
 
-    <div class="task-list" v-loading="loading">
-      <el-empty v-if="tasks.length === 0 && !loading" description="暂无任务记录" />
-      <TaskCard
-        v-for="task in tasks"
-        :key="task.id"
-        :task="task"
-        :env-command-tooltip="getEnvTooltip(task.task_id)"
-        :verify-command-tooltip="getVerifyTooltip(task.task_id)"
-        @view-logs="openLogs"
-        @continue-task="continueTask"
-        @view-artifacts="openArtifacts"
-        @prefetch-env-commands="prefetchEnvCommands"
-        @prefetch-verify-commands="prefetchVerifyCommands"
-        @copy-env-commands="copyEnvCommands"
-        @copy-verify-commands="copyVerifyCommands"
-        @cancel-task="cancelHistoryTask"
-        @delete-task="handleDelete"
-        @diagnose-task="openDiagnosis"
-      />
-    </div>
+      <div class="task-list" v-loading="loading">
+        <el-empty v-if="tasks.length === 0 && !loading" description="暂无任务记录" />
+        <TaskCard
+          v-for="task in tasks"
+          :key="task.id"
+          :task="task"
+          :env-command-tooltip="getEnvTooltip(task.task_id)"
+          :verify-command-tooltip="getVerifyTooltip(task.task_id)"
+          @view-logs="openLogs"
+          @continue-task="continueTask"
+          @view-artifacts="openArtifacts"
+          @prefetch-env-commands="prefetchEnvCommands"
+          @prefetch-verify-commands="prefetchVerifyCommands"
+          @copy-env-commands="copyEnvCommands"
+          @copy-verify-commands="copyVerifyCommands"
+          @cancel-task="cancelHistoryTask"
+          @delete-task="handleDelete"
+          @diagnose-task="openDiagnosis"
+        />
+      </div>
 
-    <div v-if="total > 0" class="pagination-bar">
-      <el-pagination
-        v-model:page-size="filters.limit"
-        :page-sizes="[20, 50, 100]"
-        :total="total"
-        :current-page="currentPage"
-        layout="total, sizes, prev, pager, next, jumper"
-        @current-change="handlePageChange"
-        @size-change="handleSizeChange"
-      />
-    </div>
+      <div v-if="total > 0" class="pagination-bar">
+        <el-pagination
+          v-model:page-size="filters.limit"
+          :page-sizes="[20, 50, 100]"
+          :total="total"
+          :current-page="currentPage"
+          layout="total, sizes, prev, pager, next, jumper"
+          @current-change="handlePageChange"
+          @size-change="handleSizeChange"
+        />
+      </div>
+    </template>
+
+    <!-- ─── Batch view ─── -->
+    <template v-else-if="viewMode === 'batches'">
+      <div class="filter-bar">
+        <el-select
+          v-model="batchFilters.status"
+          placeholder="全部状态"
+          clearable
+          style="width:160px"
+          @change="loadBatches"
+        >
+          <el-option label="全部状态" value="" />
+          <el-option label="运行中" value="RUNNING" />
+          <el-option label="成功" value="SUCCESS" />
+          <el-option label="部分成功" value="PARTIAL_FAILED" />
+          <el-option label="失败" value="FAILED" />
+          <el-option label="已取消" value="CANCELED" />
+          <el-option label="部分取消" value="PARTIAL_CANCELED" />
+        </el-select>
+        <el-input
+          v-model="batchFilters.keyword"
+          placeholder="搜索批次 ID / 脚本名"
+          clearable
+          class="keyword-input"
+          @keyup.enter="loadBatches"
+          @clear="loadBatches"
+        />
+        <el-button type="primary" @click="loadBatches">搜索</el-button>
+        <el-button @click="resetBatchFilters">重置</el-button>
+        <el-tag v-if="isAutoRefreshing" type="info" size="small" effect="plain" class="auto-refresh-tag">
+          自动刷新中 (5s)
+        </el-tag>
+      </div>
+
+      <div class="batch-list" v-loading="batchLoading">
+        <el-empty v-if="batchItems.length === 0 && !batchLoading" description="暂无批量任务记录" />
+        <el-table
+          v-else
+          ref="batchTableRef"
+          :data="batchItems"
+          stripe
+          size="small"
+          row-key="batch_id"
+          :expand-row-keys="expandedBatchKeys"
+          @expand-change="onBatchExpandChange"
+        >
+          <el-table-column type="expand">
+            <template #default="{ row }">
+              <div class="batch-expand-content">
+                <div v-if="expandedBatchLoading[row.batch_id]" v-loading="true" class="batch-expand-loading" />
+                <template v-else-if="expandedBatchData[row.batch_id]">
+                  <!-- d is a non-null alias for TypeScript narrowing -->
+                  <template v-for="d in [expandedBatchData[row.batch_id]!]" :key="'d'">
+                    <el-table :data="d.tasks" size="small" stripe @row-click.stop>
+                    <el-table-column label="服务器" min-width="150">
+                      <template #default="{ row: t }">
+                        <span>{{ t.server_name }} <span class="batch-expand-host">({{ t.host }})</span></span>
+                      </template>
+                    </el-table-column>
+                    <el-table-column label="脚本" min-width="180" show-overflow-tooltip>
+                      <template #default="{ row: t }">{{ t.task_name }}</template>
+                    </el-table-column>
+                    <el-table-column label="序号" prop="sequence_index" width="55" align="center" />
+                    <el-table-column label="状态" width="100">
+                      <template #default="{ row: t }">
+                        <StatusTag :status="t.status" />
+                      </template>
+                    </el-table-column>
+                    <el-table-column label="退出码" width="65" align="center">
+                      <template #default="{ row: t }">{{ t.exit_code ?? '-' }}</template>
+                    </el-table-column>
+                    <el-table-column label="开始时间" width="145">
+                      <template #default="{ row: t }">{{ formatDate(t.started_at) }}</template>
+                    </el-table-column>
+                    <el-table-column label="结束时间" width="145">
+                      <template #default="{ row: t }">{{ formatDate(t.ended_at) }}</template>
+                    </el-table-column>
+                    <el-table-column label="操作" width="160" fixed="right">
+                      <template #default="{ row: t }">
+                        <el-button size="small" link @click.stop="openBatchTaskLogs(t)">日志</el-button>
+                        <el-button v-if="t.has_artifacts" size="small" link @click.stop="openBatchTaskArtifacts(t)">文件</el-button>
+                        <el-button v-if="t.status === 'FAILED'" size="small" link type="warning" @click.stop="diagnoseBatchTask(t)">诊断</el-button>
+                        <el-button size="small" link @click.stop="continueBatchTask(t)">查看</el-button>
+                      </template>
+                    </el-table-column>
+                    <el-table-column label="错误" min-width="180" show-overflow-tooltip>
+                      <template #default="{ row: t }">
+                        <span v-if="t.error_summary" class="batch-error-text">{{ t.error_summary }}</span>
+                        <span v-else>-</span>
+                      </template>
+                    </el-table-column>
+                  </el-table>
+                    <!-- Summary below subtask table -->
+                    <div class="batch-expand-summary">
+                      <span class="batch-summary-item">总计 {{ d.summary.total }}</span>
+                      <span class="batch-summary-sep">|</span>
+                      <span class="batch-summary-item batch-summary-ok">成功 {{ d.summary.success }}</span>
+                      <span class="batch-summary-sep">|</span>
+                      <span class="batch-summary-item batch-summary-fail">失败 {{ d.summary.failed }}</span>
+                      <span class="batch-summary-sep">|</span>
+                      <span class="batch-summary-item batch-summary-running">运行中 {{ d.summary.running }}</span>
+                      <span class="batch-summary-sep">|</span>
+                      <span class="batch-summary-item">等待 {{ d.summary.pending }}</span>
+                      <span class="batch-summary-sep">|</span>
+                      <span class="batch-summary-item">已取消 {{ d.summary.canceled }}</span>
+                    </div>
+                  </template>
+                </template>
+                <el-empty v-else :description="expandedBatchError[row.batch_id] || '暂无子任务'" />
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column label="批次 ID" min-width="240">
+            <template #default="{ row }">
+              <span class="batch-id-cell">{{ row.batch_id }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="脚本" width="220" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span>{{ (row.script_names || []).join('、') }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="task_type" label="类型" width="80">
+            <template #default="{ row }">
+              <span>{{ taskTypeLabel(row.task_type) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="状态" width="100">
+            <template #default="{ row }">
+              <el-tag :type="batchStatusTagType(row.status)" size="small">
+                {{ batchStatusLabel(row.status) }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="总计" width="55" align="center">
+            <template #default="{ row }">{{ row.total }}</template>
+          </el-table-column>
+          <el-table-column label="成功" width="55" align="center">
+            <template #default="{ row }">
+              <span class="batch-count-success">{{ row.success }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="失败" width="55" align="center">
+            <template #default="{ row }">
+              <span class="batch-count-fail">{{ row.failed }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="运行中" width="60" align="center">
+            <template #default="{ row }">{{ row.running }}</template>
+          </el-table-column>
+          <el-table-column label="等待" width="55" align="center">
+            <template #default="{ row }">{{ row.pending }}</template>
+          </el-table-column>
+          <el-table-column label="已取消" width="60" align="center">
+            <template #default="{ row }">{{ row.canceled }}</template>
+          </el-table-column>
+          <el-table-column label="创建时间" width="160">
+            <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
+          </el-table-column>
+          <el-table-column label="服务器" min-width="180" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span>{{ row.servers.join(', ') }}</span>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+
+      <div v-if="batchTotal > 0" class="pagination-bar">
+        <el-pagination
+          v-model:page-size="batchFilters.page_size"
+          :page-sizes="[10, 20, 50]"
+          :total="batchTotal"
+          :current-page="batchFilters.page"
+          layout="total, sizes, prev, pager, next, jumper"
+          @current-change="handleBatchPageChange"
+          @size-change="handleBatchSizeChange"
+        />
+      </div>
+    </template>
 
     <el-dialog v-model="logDialogVisible" :title="`任务日志 ${activeTaskId}`" width="760px">
       <div v-loading="logLoading">
@@ -147,71 +335,90 @@
     </el-dialog>
 
     <!-- Diagnosis dialog -->
-    <el-dialog v-model="diagnosisVisible" title="任务失败诊断" width="680px" :close-on-click-modal="false" class="diagnosis-dialog">
-      <div v-loading="diagnosisLoading">
-        <template v-if="diagnosisData">
-          <!-- Level tag + category -->
-          <div class="diag-header">
-            <el-tag :type="diagnosisLevelTagType" size="small" effect="dark">
-              {{ diagnosisLevelLabel }}
-            </el-tag>
-            <span class="diag-category">{{ diagnosisData.title }}</span>
-          </div>
+    <TaskDiagnosisDialog
+      v-model="diagnosisVisible"
+      :task-id="diagnosisTaskId"
+    />
 
-          <!-- Summary -->
-          <div class="diag-section">
-            <div class="diag-section-title">摘要</div>
-            <p class="diag-text">{{ diagnosisData.summary }}</p>
-          </div>
-
-          <!-- Possible causes -->
-          <div class="diag-section">
-            <div class="diag-section-title">可能原因</div>
-            <ul class="diag-list">
-              <li v-for="(cause, i) in diagnosisData.possible_causes" :key="i">{{ cause }}</li>
-            </ul>
-          </div>
-
-          <!-- Suggestions -->
-          <div class="diag-section">
-            <div class="diag-section-title">建议处理</div>
-            <ul class="diag-list">
-              <li v-for="(s, i) in diagnosisData.suggestions" :key="i">{{ s }}</li>
-            </ul>
-          </div>
-
-          <!-- Evidence -->
-          <div class="diag-section">
-            <div class="diag-section-title">关键日志片段</div>
-            <div class="diag-evidence">
-              <div v-for="(line, i) in diagnosisData.evidence" :key="i" class="diag-evidence-line">
-                <span class="diag-evidence-num">{{ i + 1 }}</span>
-                <code>{{ line }}</code>
-              </div>
-              <el-empty v-if="!diagnosisData.evidence.length" description="无关键日志片段" :image-size="60" />
+    <!-- ─── Batch detail dialog ─── -->
+    <el-dialog v-model="batchDetailVisible" :title="`批次详情：${batchDetailData?.batch_id || ''}`" width="900px" :close-on-click-modal="false" class="batch-detail-dialog">
+      <div v-loading="batchDetailLoading" class="batch-detail-loading-wrap">
+        <template v-if="batchDetailData">
+          <div class="batch-detail-summary-bar">
+            <div class="batch-detail-summary-row">
+              <span class="bd-label">脚本：</span>
+              <span>{{ (batchDetailData.summary.script_names || []).join('、') || '-' }}</span>
+              <el-tag size="small" style="margin-left:8px">{{ taskTypeLabel(batchDetailData.summary.task_type) }}</el-tag>
+              <el-tag :type="batchStatusTagType(batchDetailData.summary.status)" size="small" style="margin-left:8px">{{ batchStatusLabel(batchDetailData.summary.status) }}</el-tag>
+            </div>
+            <div class="batch-detail-summary-stats">
+              <span class="batch-summary-item batch-summary-total">总计 {{ batchDetailData.summary.total }}</span>
+              <span class="batch-summary-item batch-summary-ok">成功 {{ batchDetailData.summary.success }}</span>
+              <span v-if="batchDetailData.summary.failed > 0" class="batch-summary-item batch-summary-fail">失败 {{ batchDetailData.summary.failed }}</span>
+              <span v-if="batchDetailData.summary.running > 0" class="batch-summary-item batch-summary-total">运行中 {{ batchDetailData.summary.running }}</span>
+              <span v-if="batchDetailData.summary.pending > 0" class="batch-summary-item batch-summary-total">等待 {{ batchDetailData.summary.pending }}</span>
+              <span v-if="batchDetailData.summary.canceled > 0" class="batch-summary-item batch-summary-skip">取消 {{ batchDetailData.summary.canceled }}</span>
+            </div>
+            <div class="batch-detail-servers">
+              <span class="bd-label">目标服务器：</span>
+              <span>{{ batchDetailData.summary.servers.join(', ') }}</span>
+            </div>
+            <div class="batch-detail-time">
+              <span class="bd-label">创建时间：</span>
+              <span>{{ formatDate(batchDetailData.summary.created_at) }}</span>
             </div>
           </div>
-        </template>
-        <el-empty v-else description="暂无诊断结果" :image-size="60" />
-      </div>
 
+          <el-table :data="batchDetailData.tasks" stripe size="small" max-height="400">
+            <el-table-column prop="task_name" label="任务" min-width="200" show-overflow-tooltip />
+            <el-table-column label="状态" width="100">
+              <template #default="{ row }">
+                <StatusTag :status="row.status" />
+              </template>
+            </el-table-column>
+            <el-table-column label="退出码" width="70" align="center">
+              <template #default="{ row }">{{ row.exit_code ?? '-' }}</template>
+            </el-table-column>
+            <el-table-column label="开始时间" width="160">
+              <template #default="{ row }">{{ formatDate(row.started_at) }}</template>
+            </el-table-column>
+            <el-table-column label="结束时间" width="160">
+              <template #default="{ row }">{{ formatDate(row.ended_at) }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="180" fixed="right">
+              <template #default="{ row }">
+                <el-button size="small" link @click="openBatchTaskLogs(row)">日志</el-button>
+                <el-button v-if="row.has_artifacts" size="small" link @click="openBatchTaskArtifacts(row)">文件</el-button>
+                <el-button v-if="row.status === 'FAILED'" size="small" link type="warning" @click="diagnoseBatchTask(row)">诊断</el-button>
+                <el-button size="small" link @click="continueBatchTask(row)">查看</el-button>
+              </template>
+            </el-table-column>
+            <el-table-column label="错误" min-width="200" show-overflow-tooltip>
+              <template #default="{ row }">
+                <span v-if="row.error_summary" class="batch-error-text">{{ row.error_summary }}</span>
+                <span v-else>-</span>
+              </template>
+            </el-table-column>
+          </el-table>
+        </template>
+      </div>
       <template #footer>
-        <el-button @click="diagnosisVisible = false">关闭</el-button>
-        <el-button type="primary" @click="downloadLogsFromDiagnosis">下载完整日志</el-button>
+        <el-button @click="batchDetailVisible = false">关闭</el-button>
       </template>
     </el-dialog>
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onActivated, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, onActivated, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
-import { cancelTask, deleteTask, downloadTaskLogs, getTask, getTaskLogs, listArtifacts, listTasks, type ArtifactFileDetail, type TaskLogRecord, type TaskListQuery, type TaskRecord } from '@/api/task'
+import { cancelTask, deleteTask, getTask, getTaskLogs, listArtifacts, listBatches, getBatchDetail, listTasks, type ArtifactFileDetail, type BatchDetailResponse, type BatchQuery, type BatchSummaryItem, type BatchTaskDetailItem, type TaskLogRecord, type TaskListQuery, type TaskRecord } from '@/api/task'
 import { buildConfirmContent } from '@/utils/confirm'
-import { getTaskDiagnosis, type TaskDiagnosisResponse } from '@/api/diagnosis'
 import LogViewer from '@/components/LogViewer.vue'
+import StatusTag from '@/components/StatusTag.vue'
 import TaskCard from '@/components/TaskCard.vue'
+import TaskDiagnosisDialog from '@/components/TaskDiagnosisDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -230,8 +437,6 @@ const artFiles = ref<ArtifactFileDetail[]>([])
 const activeArtTaskId = ref('')
 
 const diagnosisVisible = ref(false)
-const diagnosisLoading = ref(false)
-const diagnosisData = ref<TaskDiagnosisResponse['diagnosis'] | null>(null)
 const diagnosisTaskId = ref('')
 const artifactGroups = computed(() => {
   const reports: ArtifactFileDetail[] = []
@@ -248,9 +453,58 @@ const artifactGroups = computed(() => {
 })
 const taskLogCache = reactive<Record<string, TaskLogRecord[]>>({})
 
+// ── Batch view (Phase 26A) ──
+const viewMode = ref<'tasks' | 'batches'>('tasks')
+const batchLoading = ref(false)
+const batchItems = ref<BatchSummaryItem[]>([])
+const batchTotal = ref(0)
+const batchDetailVisible = ref(false)
+const batchDetailData = ref<BatchDetailResponse | null>(null)
+const batchDetailLoading = ref(false)
+
+// ── Expandable batch rows ──
+const expandedBatchKeys = ref<string[]>([])
+const expandedBatchData = ref<Record<string, BatchDetailResponse | null>>({})
+const expandedBatchLoading = ref<Record<string, boolean>>({})
+const expandedBatchError = ref<Record<string, string>>({})
+
+/** Ref to the batch el-table instance, used for programmatic toggleRowExpansion. */
+const batchTableRef = ref()
+
+/**
+ * After data refresh, force-re-expand rows that were expanded before.
+ * This works around an Element Plus quirk where replacing :data on a
+ * table makes it lose internal expand state even when :expand-row-keys
+ * is correctly bound.
+ */
+function restoreExpandedRows() {
+  if (!batchTableRef.value) return
+  const expandedSet = new Set(expandedBatchKeys.value)
+  if (!expandedSet.size) return
+  for (const row of batchItems.value) {
+    if (expandedSet.has(row.batch_id)) {
+      batchTableRef.value.toggleRowExpansion(row, true)
+    }
+  }
+}
+
+// ── Auto-refresh ──
+const isAutoRefreshing = ref(false)
+let autoRefreshTimer: ReturnType<typeof setInterval> | null = null
+const TERMINAL_STATUSES = ['SUCCESS', 'FAILED', 'CANCELED']
+const BATCH_TERMINAL_STATUSES = ['SUCCESS', 'FAILED', 'CANCELED', 'PARTIAL_FAILED', 'PARTIAL_CANCELED']
+
+const batchFilters = reactive<BatchQuery>({
+  page: 1,
+  page_size: 20,
+  status: undefined,
+  keyword: undefined,
+})
+
 const filters = reactive<TaskListQuery>({
   status: undefined,
   task_type: undefined,
+  server_id: undefined,
   keyword: undefined,
   limit: 50,
   offset: 0,
@@ -276,15 +530,16 @@ function continueTask(task: TaskRecord) {
   router.push(`/task-runner?task_id=${task.task_id}`)
 }
 
-async function loadTasks() {
-  loading.value = true
+async function loadTasks(silent = false) {
+  if (!silent) loading.value = true
   try {
     const resp = (await listTasks(filters)).data
     tasks.value = resp.items
     total.value = resp.total
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
   }
+  checkAutoRefresh()
 }
 
 function handleFilterChange() {
@@ -313,10 +568,312 @@ function handleSizeChange(size: number) {
 function resetFilters() {
   filters.status = undefined
   filters.task_type = undefined
+  filters.server_id = undefined
   filters.keyword = undefined
   filters.limit = 50
   filters.offset = 0
   loadTasks()
+}
+
+// ── Batch view functions ──
+
+function switchView(mode: 'tasks' | 'batches') {
+  viewMode.value = mode
+  if (mode === 'batches') {
+    expandedBatchKeys.value = []
+    loadBatches()
+  }
+  checkAutoRefresh()
+}
+
+async function loadBatches(silent = false) {
+  if (!silent) batchLoading.value = true
+  try {
+    const resp = (await listBatches(batchFilters)).data
+    // Safety net: group by batch_id in case backend returns duplicate rows
+    const itemsByBatch = new Map<string, BatchSummaryItem[]>()
+    for (const item of resp.items) {
+      const existing = itemsByBatch.get(item.batch_id) || []
+      existing.push(item)
+      itemsByBatch.set(item.batch_id, existing)
+    }
+    const merged: BatchSummaryItem[] = []
+    for (const [, items] of itemsByBatch) {
+      merged.push(items.length === 1 ? items[0] : mergeBatchItems(items))
+    }
+    batchItems.value = merged
+    batchTotal.value = resp.total
+
+    // Clean up expanded keys for batch_ids no longer in visible data
+    const visibleIds = new Set(merged.map(b => b.batch_id))
+    expandedBatchKeys.value = expandedBatchKeys.value.filter(id => visibleIds.has(id))
+
+    // Refresh expanded rows if any
+    if (expandedBatchKeys.value.length > 0) {
+      refreshExpandedBatches()
+    }
+
+    // Re-apply expand state after Vue re-renders, to work around
+    // Element Plus losing internal expand state on :data replacement
+    await nextTick()
+    restoreExpandedRows()
+  } finally {
+    if (!silent) batchLoading.value = false
+  }
+  checkAutoRefresh()
+}
+
+/** Merge multiple BatchSummaryItem with the same batch_id into one. */
+function mergeBatchItems(items: BatchSummaryItem[]): BatchSummaryItem {
+  const first = items[0]
+  const scriptNames = new Set<string>()
+  const servers = new Set<string>()
+  let total = 0, success = 0, failed = 0, running = 0, pending = 0, canceled = 0
+
+  for (const item of items) {
+    for (const s of item.script_names || []) scriptNames.add(s)
+    for (const s of item.servers || []) servers.add(s)
+    total += item.total || 0
+    success += item.success || 0
+    failed += item.failed || 0
+    running += item.running || 0
+    pending += item.pending || 0
+    canceled += item.canceled || 0
+  }
+
+  let status: string
+  if (running > 0) {
+    status = 'RUNNING'
+  } else if (success === total) {
+    status = 'SUCCESS'
+  } else if (failed > 0 && success > 0) {
+    status = 'PARTIAL_FAILED'
+  } else if (failed === total) {
+    status = 'FAILED'
+  } else if (canceled === total) {
+    status = 'CANCELED'
+  } else {
+    status = 'UNKNOWN'
+  }
+
+  return {
+    ...first,
+    script_names: Array.from(scriptNames).sort(),
+    servers: Array.from(servers),
+    total,
+    success,
+    failed,
+    running,
+    pending,
+    canceled,
+    status,
+  }
+}
+
+/**
+ * Synchronously called by Element Plus when the user toggles row expansion.
+ * Sets loading state immediately so the expand slot renders the spinner,
+ * NOT "加载失败". The actual API call happens asynchronously.
+ */
+function onBatchExpandChange(row: BatchSummaryItem, expandedRows: BatchSummaryItem[]) {
+  // Sync expanded keys with Element Plus state
+  expandedBatchKeys.value = expandedRows.map(r => r.batch_id)
+  const isExpanded = expandedRows.some(r => r.batch_id === row.batch_id)
+  const bid = row.batch_id
+  if (isExpanded) {
+    // Set loading synchronously BEFORE Vue re-renders the expand slot,
+    // so the slot sees loading=true and shows spinner, not "暂无子任务"
+    if (!expandedBatchData.value[bid]) {
+      delete expandedBatchError.value[bid]
+      expandedBatchLoading.value[bid] = true
+      loadBatchDetailData(bid)
+    }
+  } else {
+    // Collapsed — clean up cache
+    delete expandedBatchData.value[bid]
+    delete expandedBatchLoading.value[bid]
+    delete expandedBatchError.value[bid]
+  }
+}
+
+async function loadBatchDetailData(batchId: string) {
+  try {
+    const resp = (await getBatchDetail(batchId)).data
+    expandedBatchData.value[batchId] = resp
+    delete expandedBatchError.value[batchId]
+  } catch (err: unknown) {
+    expandedBatchData.value[batchId] = null
+    const msg = err instanceof Error ? err.message : String(err)
+    expandedBatchError.value[batchId] = `加载失败：${msg}`
+    console.error(`[batch] load batch detail failed: ${batchId} — ${msg}`)
+  } finally {
+    expandedBatchLoading.value[batchId] = false
+  }
+}
+
+async function refreshExpandedBatches() {
+  for (const batchId of expandedBatchKeys.value) {
+    try {
+      const resp = (await getBatchDetail(batchId)).data
+      expandedBatchData.value[batchId] = resp
+    } catch {
+      // keep existing data on error
+    }
+  }
+}
+
+async function openBatchDetail(row: BatchSummaryItem) {
+  batchDetailVisible.value = true
+  batchDetailData.value = null
+  batchDetailLoading.value = true
+  try {
+    const resp = (await getBatchDetail(row.batch_id)).data
+    batchDetailData.value = resp
+  } catch {
+    batchDetailData.value = null
+  } finally {
+    batchDetailLoading.value = false
+  }
+}
+
+function handleBatchPageChange(page: number) {
+  batchFilters.page = page
+  loadBatches()
+}
+
+function handleBatchSizeChange(size: number) {
+  batchFilters.page_size = size
+  batchFilters.page = 1
+  loadBatches()
+}
+
+function resetBatchFilters() {
+  batchFilters.status = undefined
+  batchFilters.keyword = undefined
+  batchFilters.page = 1
+  expandedBatchKeys.value = []
+  loadBatches()
+}
+
+// ── Auto-refresh ──
+
+function startAutoRefresh() {
+  stopAutoRefresh()
+  isAutoRefreshing.value = true
+  autoRefreshTimer = setInterval(() => {
+    if (viewMode.value === 'tasks') {
+      loadTasks(true)
+    } else {
+      loadBatches(true)
+    }
+  }, 5000)
+}
+
+function stopAutoRefresh() {
+  if (autoRefreshTimer !== null) {
+    clearInterval(autoRefreshTimer)
+    autoRefreshTimer = null
+  }
+  isAutoRefreshing.value = false
+}
+
+/** Check if auto-refresh should be active based on current view contents. */
+function checkAutoRefresh() {
+  if (viewMode.value === 'tasks') {
+    const hasNonTerminal = tasks.value.some(t => !TERMINAL_STATUSES.includes(t.status))
+    if (hasNonTerminal) {
+      startAutoRefresh()
+    } else {
+      stopAutoRefresh()
+    }
+  } else {
+    const hasRunning = batchItems.value.some(b => b.status === 'RUNNING')
+    if (hasRunning) {
+      startAutoRefresh()
+    } else {
+      stopAutoRefresh()
+    }
+  }
+}
+
+function batchStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    RUNNING: '运行中',
+    SUCCESS: '全部成功',
+    FAILED: '全部失败',
+    PARTIAL_FAILED: '部分失败',
+    CANCELED: '已取消',
+    PARTIAL_CANCELED: '部分取消',
+  }
+  return labels[status] || status
+}
+
+function batchStatusTagType(status: string): string {
+  const types: Record<string, string> = {
+    RUNNING: 'warning',
+    SUCCESS: 'success',
+    FAILED: 'danger',
+    PARTIAL_FAILED: 'danger',
+    CANCELED: 'info',
+    PARTIAL_CANCELED: 'info',
+  }
+  return types[status] || 'info'
+}
+
+function taskTypeLabel(type: string | null): string {
+  const labels: Record<string, string> = {
+    script: '编译环境',
+    stress: '压测脚本',
+    apptainer: 'Apptainer 镜像',
+    mpi: '编译环境',
+    test: '测试脚本',
+  }
+  return labels[type ?? ''] || type || '-'
+}
+
+function formatDate(value: string | null | undefined): string {
+  if (!value) return '-'
+  try {
+    return value.replace('T', ' ').substring(0, 19)
+  } catch {
+    return value
+  }
+}
+
+function openBatchTaskLogs(task: BatchTaskDetailItem) {
+  activeTaskId.value = task.task_id
+  logs.value = []
+  logDialogVisible.value = true
+  logLoading.value = true
+  getTaskLogs(task.task_id).then((resp) => {
+    logs.value = resp.data
+  }).finally(() => {
+    logLoading.value = false
+  })
+}
+
+function openBatchTaskArtifacts(task: BatchTaskDetailItem) {
+  activeArtTaskId.value = task.task_id
+  artFiles.value = []
+  artDir.value = ''
+  artDialogVisible.value = true
+  artLoading.value = true
+  listArtifacts(task.task_id).then((resp) => {
+    artDir.value = resp.data.artifact_dir
+    artFiles.value = resp.data.files
+  }).finally(() => {
+    artLoading.value = false
+  })
+}
+
+function diagnoseBatchTask(task: BatchTaskDetailItem) {
+  diagnosisTaskId.value = task.task_id
+  diagnosisVisible.value = true
+}
+
+function continueBatchTask(task: BatchTaskDetailItem) {
+  localStorage.setItem('hpcdeploy.currentTaskId', task.task_id)
+  router.push(`/task-runner?task_id=${task.task_id}`)
 }
 
 async function openLogs(task: TaskRecord) {
@@ -438,42 +995,11 @@ function copyArtifactDir() {
   navigator.clipboard.writeText(artDir.value)
 }
 
-async function openDiagnosis(task: TaskRecord) {
+function openDiagnosis(task: TaskRecord) {
   diagnosisTaskId.value = task.task_id
-  diagnosisData.value = null
   diagnosisVisible.value = true
-  diagnosisLoading.value = true
-  try {
-    const resp = (await getTaskDiagnosis(task.task_id)).data
-    diagnosisData.value = resp.diagnosis
-  } catch {
-    ElMessage.error('获取诊断失败')
-  } finally {
-    diagnosisLoading.value = false
-  }
 }
 
-function downloadLogsFromDiagnosis() {
-  if (diagnosisTaskId.value) {
-    downloadTaskLogs(diagnosisTaskId.value)
-  }
-}
-
-const diagnosisLevelTagType = computed(() => {
-  if (!diagnosisData.value) return 'info'
-  const level = diagnosisData.value.level
-  if (level === 'error') return 'danger'
-  if (level === 'warning') return 'warning'
-  return 'info'
-})
-
-const diagnosisLevelLabel = computed(() => {
-  if (!diagnosisData.value) return ''
-  const level = diagnosisData.value.level
-  if (level === 'error') return '错误'
-  if (level === 'warning') return '警告'
-  return '信息'
-})
 
 async function ensureTaskLogs(taskId: string) {
   if (taskLogCache[taskId]) {
@@ -597,12 +1123,46 @@ onMounted(() => {
   const qStatus = route.query.status
   const qTaskType = route.query.task_type
   const qKeyword = route.query.keyword
+  const qView = route.query.view
+  const qBatchId = route.query.batch_id
+  const qServerId = route.query.server_id
   if (typeof qStatus === 'string' && qStatus) filters.status = qStatus
   if (typeof qTaskType === 'string' && qTaskType) filters.task_type = qTaskType
   if (typeof qKeyword === 'string' && qKeyword) filters.keyword = qKeyword
+  if (typeof qServerId === 'string' && qServerId) {
+    const sid = parseInt(qServerId, 10)
+    if (!isNaN(sid)) filters.server_id = sid
+  }
+
+  if (qView === 'batch') {
+    viewMode.value = 'batches'
+    loadBatches()
+    // Auto-open batch detail if batch_id provided
+    if (typeof qBatchId === 'string' && qBatchId) {
+      // Find the batch in the loaded list or open directly
+      openBatchDetail({ batch_id: qBatchId } as BatchSummaryItem)
+    }
+    return
+  }
+
+  // Support task_id query param — auto-search
+  const qTaskId = route.query.task_id
+  if (typeof qTaskId === 'string' && qTaskId) {
+    filters.keyword = qTaskId
+  }
+
   loadTasks()
 })
-onActivated(loadTasks)
+onActivated(() => {
+  if (viewMode.value === 'tasks') {
+    loadTasks()
+  } else {
+    loadBatches()
+  }
+})
+onUnmounted(() => {
+  stopAutoRefresh()
+})
 </script>
 
 <style scoped>
@@ -746,79 +1306,135 @@ onActivated(loadTasks)
   min-width: 0;
 }
 
-/* ── Diagnosis dialog ── */
-.diagnosis-dialog .diag-header {
+/* ── Toolbar ── */
+.toolbar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 20px;
+  gap: 12px;
+  margin-bottom: 12px;
 }
 
-.diagnosis-dialog .diag-category {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--el-text-color-primary);
-}
-
-.diagnosis-dialog .diag-section {
-  margin-bottom: 18px;
-}
-
-.diagnosis-dialog .diag-section-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--el-text-color-primary);
-  margin-bottom: 8px;
-  padding-bottom: 4px;
-  border-bottom: 1px solid var(--el-border-color-light);
-}
-
-.diagnosis-dialog .diag-text {
-  font-size: 14px;
-  color: var(--el-text-color-regular);
-  line-height: 1.6;
-  margin: 0;
-}
-
-.diagnosis-dialog .diag-list {
-  margin: 0;
-  padding-left: 20px;
-}
-
-.diagnosis-dialog .diag-list li {
-  font-size: 14px;
-  color: var(--el-text-color-regular);
-  line-height: 1.8;
-}
-
-.diagnosis-dialog .diag-evidence {
-  background: #1e293b;
-  border-radius: 6px;
-  padding: 12px;
-  max-height: 300px;
-  overflow-y: auto;
-}
-
-.diagnosis-dialog .diag-evidence-line {
+.view-toggle {
   display: flex;
-  gap: 10px;
-  padding: 4px 0;
+  gap: 2px;
+  margin-left: 8px;
+}
+
+/* ── Batch view ── */
+.batch-id-cell {
   font-family: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 12px;
+  color: var(--el-color-primary);
+}
+
+.batch-count-success {
+  color: var(--el-color-success);
+  font-weight: 600;
+}
+
+.batch-count-fail {
+  color: var(--el-color-danger);
+  font-weight: 600;
+}
+
+.batch-error-text {
+  font-size: 12px;
+  color: var(--el-color-danger);
+  font-family: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+}
+
+/* ── Batch detail dialog ── */
+.batch-detail-dialog :deep(.batch-detail-summary-bar) {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding: 12px 16px;
+  background: var(--el-fill-color-lighter);
+  border-radius: 10px;
+}
+
+.batch-detail-dialog :deep(.bd-label) {
+  color: var(--el-text-color-secondary);
   font-size: 13px;
-  line-height: 1.5;
 }
 
-.diagnosis-dialog .diag-evidence-num {
-  color: #64748b;
-  min-width: 20px;
-  text-align: right;
-  flex-shrink: 0;
-  user-select: none;
+.batch-detail-dialog :deep(.batch-detail-summary-stats) {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
 }
 
-.diagnosis-dialog .diag-evidence-line code {
-  color: #e2e8f0;
-  white-space: pre-wrap;
-  word-break: break-all;
+.batch-detail-dialog :deep(.batch-detail-loading-wrap) {
+  min-height: 200px;
+}
+
+/* ── Auto-refresh tag ── */
+.auto-refresh-tag {
+  animation: pulse-tag 2s ease-in-out infinite;
+  margin-left: auto;
+}
+
+@keyframes pulse-tag {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+/* ── Batch expand content ── */
+.batch-expand-content {
+  padding: 8px 16px 12px 40px;
+}
+
+.batch-expand-loading {
+  min-height: 60px;
+}
+
+.batch-expand-host {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.batch-expand-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  margin-top: 6px;
+  background: var(--el-fill-color-lighter);
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.batch-summary-sep {
+  color: var(--el-border-color);
+  font-size: 12px;
+}
+
+.batch-summary-item {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.batch-summary-ok {
+  color: var(--el-color-success);
+  font-weight: 600;
+}
+
+.batch-summary-fail {
+  color: var(--el-color-danger);
+  font-weight: 600;
+}
+
+.batch-summary-running {
+  color: var(--el-color-warning);
+  font-weight: 600;
+}
+
+.batch-summary-pending {
+  color: var(--el-text-color-secondary);
+}
+
+.batch-summary-canceled {
+  color: var(--el-text-color-placeholder);
 }
 </style>

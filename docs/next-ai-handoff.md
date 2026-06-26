@@ -1,189 +1,229 @@
 # HPCDeploy AI Handoff
 
-> 下一个 AI 进入项目后，优先读本文件，再看 `docs/progress.md` 和 `docs/architecture.md`。
+> **下一个 AI 进入项目后，优先读本文件，再看 `docs/progress.md` 和 `docs/architecture.md`。**
 
-## 1. 项目一句话定位
+---
 
-HPCDeploy 是一个面向 HPC 运维的轻量级脚本执行控制台，提供服务器接入、白名单脚本执行、日志与结果回收、任务管理和仪表盘总览。
+## 1. 项目路径
 
-## 2. 技术栈
+```
+~/projects/hpc-deploy
+```
 
-| 模块 | 技术 |
+本项目由 `Claude Code` 管理，不依赖其他 IDE。
+
+---
+
+## 2. 当前状态摘要
+
+项目已完成到 **阶段 25B（审计日志完善 + 批次视图展开稳定性）**，当前稳定状态：
+
+- **只保留服务器标签，不做分组** — `group_name` 列仍在数据库但不再使用
+- **标签保存/展示已修复** — 后端 model_validator 显式解析 `tags_json`，前端 `row.tags` 展示，保存后 `loadTags()` 刷新
+- **系统设置只保留 SSH 默认密钥**，远端目录为只读说明
+- **任务执行页已优化** — 进度信息从左侧移到右侧实时面板顶部，移除右侧旧 meta 栏
+- **实时监控已完成** — CPU/内存/磁盘/GPU 结构化卡片展示，5s 轮询
+- **WebSocket 已接入** — 双通道日志推送（WS 主 + HTTP 轮询备），心跳 30s，断线自动切换
+- **清理中心已重排** — 远端优先、本地次之
+- **Apptainer 只读查看和批量分发已完成**
+- **审计日志已完善** — 统一英文 action 命名、中文标签、所有调用点补全 `detail_json` 上下文、过滤密钥/token/命令敏感字段、日志加 `server_id` 和 `target_name`
+- **失败诊断已完成**
+- **仪表盘已完成**
+- **批次视图展开状态已稳定** — 自动刷新不再折叠已展开行，通过 `:expand-row-keys` + `toggleRowExpansion` 保证
+
+---
+
+## 3. 启动命令
+
+```bash
+# 后端
+cd ~/projects/hpc-deploy/backend
+PYTHONPATH=.deps:. .deps/bin/uvicorn main:app --reload --host 0.0.0.0 --port 8000
+
+# 前端
+cd ~/projects/hpc-deploy/frontend
+npm run dev
+```
+
+---
+
+## 4. 构建命令
+
+```bash
+# 后端编译检查
+cd ~/projects/hpc-deploy
+python3 -m compileall backend/app backend/main.py
+
+# 前端 TypeScript + 构建
+cd frontend && npm run build
+```
+
+---
+
+## 5. 当前重要安全边界
+
+> 以下安全边界是**代码级强制**的，不是仅靠约定。
+
+1. **不允许 raw command** — 所有命令由后端按任务类型固定生成，前端不传 `command` / `remote_path`
+2. **不允许任意 shell 执行** — 只执行白名单脚本（文件名白名单 + 目录校验）
+3. **不允许 Apptainer run/exec** — 只上传/分发 `.sif`
+4. **不清理 $HOME/hpcdeploy/apptainer** — 清理 target 代码级硬编码为 `tasks` / `downloads` / `tmp`
+5. **不提交 keys/db/artifacts** — `.gitignore` 已配置，`backend/keys/*`、`*.db`、`backend/data/artifacts/` 被忽略
+6. **不 git add .** — 手动指定要添加的文件
+
+---
+
+## 6. 当前关键目录
+
+```
+backend/scripts/test/          # 测试脚本
+backend/scripts/stress/        # 压测脚本
+backend/scripts/mpi/           # MPI / 编译环境脚本
+backend/apptainer/             # .sif 容器文件
+backend/keys/                  # SSH 私钥和 .pub 公钥（不提交）
+backend/data/artifacts/        # 结果文件回收目录（不提交）
+backend/data/                   # SQLite 数据库文件（不提交）
+```
+
+---
+
+## 7. 当前关键接口
+
+| 端点 | 说明 |
 |------|------|
-| 前端 | Vue 3 + Vite + Element Plus |
-| 后端 | FastAPI + SQLAlchemy + Paramiko |
-| 数据库 | SQLite |
-| 部署 | systemd |
+| `GET /api/servers` | 服务器列表（支持 `tag` / `keyword` / `status` 筛选） |
+| `GET /api/servers/tags` | 标签统计（含 `online_count` / `offline_count`） |
+| `POST /api/servers` | 新增服务器 |
+| `PUT /api/servers/{id}` | 编辑服务器 |
+| `DELETE /api/servers/{id}` | 删除服务器 |
+| `POST /api/servers/probe-all` | 探测全部 |
+| `POST /api/servers/{id}/test` | SSH 测试 |
+| `POST /api/servers/{id}/probe` | 单台探测 |
+| `POST /api/servers/{id}/deploy-public-key` | 部署公钥 |
+| `POST /api/tasks` | 创建任务 |
+| `POST /api/tasks/batch` | 批量创建任务 |
+| `POST /api/tasks/{id}/cancel` | 取消任务 |
+| `DELETE /api/tasks/{id}` | 删除任务 |
+| `GET /api/tasks/{id}/logs` | 任务日志（支持 `offset` / `limit`） |
+| `GET /api/tasks/{id}/logs/download` | 下载日志 |
+| `WS /api/tasks/{id}/logs/ws` | WebSocket 实时日志 |
+| `GET /api/tasks/{id}/monitor` | CPU/内存/磁盘/GPU 结构化监控 |
+| `POST /api/tasks/{id}/diagnosis` | 失败诊断 |
+| `GET /api/tasks` | 任务历史（支持 `status` / `task_type` / `keyword` / `server_id` / `limit` / `offset` / `order`） |
+| `GET /api/scripts` | 脚本知识库列表 |
+| `POST /api/scripts/upload` | 上传脚本 |
+| `GET /api/cleanup/local-artifacts/scan` | 本地结果文件目录扫描 |
+| `POST /api/cleanup/local-artifacts/delete` | 本地结果文件批量删除 |
+| `POST /api/cleanup/remote/scan` | 远端单台扫描 |
+| `POST /api/cleanup/remote/delete` | 远端单台清理 |
+| `POST /api/cleanup/remote/scan-all` | 全部在线服务器远端扫描 |
+| `GET /api/settings` | 系统设置读取 |
+| `PUT /api/settings` | 系统设置保存 |
+| `GET /api/audit-logs` | 审计日志查询（支持分页/筛选） |
 
-## 3. 当前阶段
+---
 
-- 已完成：阶段 1~24B（完整链路全部完成）
-- 当前阶段：**24B 收口 + 文档同步**
+## 8. 最近刚修复的问题
 
-已完成的里程碑：
-- **14A~17A** 服务器健康 / 探测全部 / 参数化 / 模板 / 批量
-- **18A** 应用密码探测处理（SSH 密码过期 / 探测忽略 Password 服务器）
-- **19A** SSH 连接健壮性（重试+退避+超时）
-- **20A** 任务白名单 UI 检查与提示
-- **21A** 批量 Apptainer 分发
-- **22A** AI 任务日志诊断（根据日志匹配失败模式）
-- **23A** WebSocket 实时日志推送（双通道：WS 主 + HTTP 轮询备）
-- **24A** 任务执行体验优化（中文状态标签 / 运行耗时 / 进度条 / 诊断展示）
-- **24B** 任务执行页布局优化 + 实时监控 Tab 结构化展示
+### 8.1 服务器标签列显示为 `-` 的问题已修复
 
-## 4. 当前已完成功能
+**根因**：Pydantic 2.10.4 的 `from_attributes=True` 不读取 `@hybrid_property` 定义的 `tags` 字段，导致 API 返回的 `ServerRead` 中 `tags` 始终为默认值 `[]`，前端 `row.tags` 收到空数组 → 显示 `-`。
 
-1. 服务器管理（CRUD + SSH 测试 + 信息探测）
-2. SSH Key / Password 两种登录方式
-3. 通过密码登录后一键部署公钥，切换为 SSH Key
-4. SSH 私钥/密钥对从 `backend/keys/` 选择
-5. `GET /api/ssh-keys` 只返回密钥元信息，不返回私钥/公钥内容
-6. 脚本知识库（四类分类目录，上传/下载/预览/删除）
-7. test 脚本执行（bash ./script.sh）
-8. stress 压测执行（带时长参数 + 资源快照）
-9. stress 结果文件回收下载
-10. mpi 白名单脚本执行（mpi_env_test.sh / OneAPI / OpenMPI）
-11. Apptainer `.sif` 分发（不做 run/exec）
-12. 实时日志（WebSocket + HTTP 轮询双通道）
-13. 日志下载（task_id.log 格式）
-14. 复制环境变量命令 / 复制验证命令
-15. stderr 日志等级优化为 `STDERR/WARN`
-16. 同服务器防重复提交
-17. 运行中任务取消（PID→PGID 进程组终止 + 远端目录清理）
-18. 取消后按白名单清理远端临时下载目录
-19. 删除终态任务（清理 artifacts / remote_work_dir / task_logs / task）
-20. 任务历史筛选 / 搜索 / 分页
-21. 任务显示名格式：`客户名 · 模块 · 脚本名 · 日期`
-22. 仪表盘数据化总览（服务器/任务/归档统计）
-23. 仪表盘快捷操作（8 个导航按钮）
-24. 仪表盘最近任务行点击跳转任务历史
-25. 结果文件归档目录树查看（el-drawer + el-tree）
-26. 全局布局与导航视觉优化（sidebar/topbar/content 对齐）
-27. 服务器健康状态增强（status/last_check_at/last_error/资源摘要）
-28. 探测全部并发优化（ThreadPoolExecutor + include_offline + 3s timeout + 合并探测脚本）
-29. stress 参数化白名单（禁止 command/raw_args/shell/raw_command）
-30. 任务模板/预设（9 个模板一键填充脚本类型/路径/参数）
-31. 批量执行（多选服务器，独立 task_id/独立线程，部分成功，离线跳过）
-32. 应用密码探测处理（SSH 密码过期 / 探测忽略 Password 服务器）
-33. SSH 连接健壮性（重试+退避+超时参数化）
-34. 任务白名单 UI 检查与提示
-35. 批量 Apptainer 分发
-36. **AI 任务日志诊断**（根据日志匹配失败模式，给出可能原因与建议）
-37. **WebSocket 实时日志**（双通道：WS 主 + HTTP 轮询备，断线自动切换）
-38. **进度可视化**（中文状态标签、运行耗时 HH:mm:ss、预计剩余、进度条 el-progress）
-39. **诊断结果展示**（失败任务自动显示诊断摘要弹窗）
-40. **监控结构化展示**（CPU/内存 4 卡片网格 + 磁盘挂载点表格 + GPU 卡片列表 + 5s 轮询）
+**修复方案**（`backend/app/schemas/server.py`）：
+- 在 `ServerRead` 上增加 `@model_validator(mode="before")`
+- 当输入为 SQLAlchemy ORM 实例时，显式将所有列值转为 dict，并从 `tags_json` 解析出 `tags`
+- 不再依赖 hybrid_property 做 Pydantic 序列化
 
-## 5. 最近完成的 UI / 功能调整
+**前端同步修复**（`frontend/src/views/Servers.vue`）：
+- `saveServer()` 中 `tags` 从条件发送改为始终发送：`tags: form.tags || []`
+- 保存后增加 `await loadTags()` 刷新标签下拉列表
+- 编辑时回填 `tags: server.tags ?? []`
+- 避免用户清空标签时 `tags` 字段被 Axios 忽略（因 `undefined` 被跳过）
 
-- **22A AI 诊断**：`POST /api/tasks/{task_id}/diagnose` → 返回结构化诊断（级别/类别/标题/摘要/可能原因/建议/日志证据）
-- **23A WebSocket**：`/ws/tasks/{task_id}` 双通道日志推送，前端 `useTaskWebSocket` composable，心跳 30s，HTTP 轮询备用
-- **24A 体验优化**：
-  - 中文状态标签（等待中/连接中/准备中/上传中/运行中等）
-  - 运行耗时 HH:mm:ss 动态显示（now timer 每秒刷新）
-  - 压测任务进度条（elapsed / duration * 100）和预计剩余时间
-  - 任务历史卡片显示耗时+进度条+错误信息
-  - 失败任务诊断摘要弹窗
-  - WebSocket 连接状态指示标签（已连接/已断开）
-- **24B 布局+监控**：
-  - 左侧”执行进度”组移除，进度信息右移到实时面板顶部
-  - 右侧面板 meta 栏（name|id|status|time）替换为进度状态栏（任务名+阶段+耗时+剩余+进度条）
-  - CPU/内存 → 4 卡片网格（CPU 使用率/Load Average/内存总容量/内存使用）
-  - 磁盘 → el-table 展示挂载点信息（总容量/已用/可用/使用率进度条）
-  - GPU → 卡片列表（名称/利用率/显存/温度），无 GPU 显示空状态
-  - 所有监控数据 5s 轮询 GET 接口，不接收前端参数
-  - 修复 el-tabs 白色背景横条
+### 8.2 分组功能已取消
 
-## 6. 当前未提交文件摘要
+- 原来同时做了 `group_name` 和 `tags`，用户取消分组只保留标签
+- `group_name` 列仍在数据库（ALTER TABLE 已执行），但不再返回和展示
+- 前端所有 `listGroups()`、`GroupSummary`、`filterGroup` 已移除
 
-当前工作区覆盖从 14B 到 24B 的全部改动。重点包括：
+### 8.3 JSON 编码已修复
 
-- **18A~21A**：密码探测 / SSH 健壮性 / 白名单检查 / 批量 Apptainer
-- **22A AI 诊断**：
-  - `backend/app/core/diagnosis.py` — 失败模式规则引擎
-  - `backend/app/schemas/diagnosis.py` — 诊断 schema
-  - `backend/app/api/diagnosis.py` — 诊断 API 端点
-  - `frontend/src/api/diagnosis.ts` — 前端 API
-  - `frontend/src/views/TaskRunner.vue` — 诊断弹窗
+- `json.dumps(tags_list)` → `json.dumps(tags_list, ensure_ascii=False)` 确保中文标签不转义
 
-- **23A WebSocket**：
-  - `backend/app/core/ws_manager.py` — 连接管理器（心跳 30s + 清理）
-  - `backend/app/api/tasks.py` — `/ws/{task_id}` 端点
-  - `frontend/src/composables/useTaskWebSocket.ts` — composable（断线自动 HTTP 备用）
-  - `frontend/src/views/TaskRunner.vue` — WS 集成
+### 8.4 标签统计已增强
 
-- **24A 体验优化**：
-  - `frontend/src/composables/useTaskProgress.ts` — 进度计算工具函数
-  - `frontend/src/views/TaskRunner.vue` — 状态标签/计时器/进度条/诊断集成
-  - `frontend/src/components/TaskCard.vue` — 卡片进度条/耗时显示
-  - `frontend/src/components/StatusTag.vue` — 中文状态标签
+- `GET /api/servers/tags` 返回含 `online_count` 和 `offline_count`
+- 前端 `TagSummary` 接口已更新
 
-- **24B 布局+监控**：
-  - `backend/app/schemas/task.py` — MonitorCpuMemory/MonitorDisk/MonitorGpu/TaskMonitorResponseStructured
-  - `backend/app/api/tasks.py` — `_exec_monitor_cmd/_parse_cpu_memory/_parse_disk/_parse_gpu` + `GET /{task_id}/monitor`
-  - `frontend/src/api/task.ts` — `getTaskMonitor()` API + 类型定义
-  - `frontend/src/views/TaskRunner.vue` — 进度状态栏 + 结构化监控 Tab + 5s 轮询
+### 8.5 批次视图自动刷新展开状态折叠已修复
 
-- 文档同步：
-  - `README.md`
-  - `docs/architecture.md`
-  - `docs/progress.md`
-  - `docs/development-stages.md`
-  - `docs/mvp-acceptance.md`
-  - `docs/next-ai-handoff.md`
+**根因**：Element Plus el-table 在替换整个 `:data` 数组引用时，内部展开状态丢失。即使 `v-model:expand-row-keys` 正确绑定，组件也不会根据 keys 恢复展开行。
 
-注意：
-- `frontend/tsconfig.tsbuildinfo` 当前有变更，通常不建议提交。
-- `backend/keys/` 下真实私钥/公钥不要提交。
+**修复方案**（`frontend/src/views/TaskHistory.vue`）：
+- 改为 `:expand-row-keys`（单向绑定），Element Plus 不再写回我们的 ref
+- `@expand-change` 中显式更新 `expandedBatchKeys`
+- 新增 `batchTableRef` + `restoreExpandedRows()`，数据刷新后通过 `nextTick` + `toggleRowExpansion` 强制恢复
+- 仅在 `resetBatchFilters()` 中清空 `expandedBatchKeys`，自动刷新/手动刷新不清理
 
-## 7. 当前需要继续处理的问题
+### 8.6 审计日志已完善
 
-阶段 1~24B 的完整主链路全部完成。后端 compileall ✅，前端 npm run build ✅。
+**改动范围**：后端所有审计调用点（tasks.py、servers.py、scripts.py、cleanup.py、settings.py）+ 前端 AuditLog.vue。
 
-待后续阶段推进：
-- 25 远端空间清理策略
-- 26 用户权限
-- 27 审计日志
+**后端改动**：
+- 统一英文 action 命名（`server.create`、`task.cancel` 等），中文标签映射在前端
+- 所有调用点补全 `detail_json` 上下文（含参数、结果、错误信息等）
+- 新增 `server_id` 字段
+- SENSITIVE_FIELDS 过滤：`password`、`private_key`、`secret`、`token`、`command`、`raw_shell`、`raw_args`、`env`
 
-## 8. 下一步建议
+**前端改动**：
+- AuditLog.vue 新增 `task.stress_suite_create`、`task.diagnose` 标签
+- 详情弹窗支持结构化 key-value 表格展示
 
-- 按后续阶段方向依次推进
-- 如果进入新阶段，先跑 `python3 -m compileall backend/app backend/main.py && cd frontend && npm run build`
-- 新阶段开始前确认后端使用 `uvicorn main:app --reload` 启动，避免进程缓存旧代码
+---
 
-## 9. 禁止事项
+## 9. 下一步建议
 
-1. 不要修改任务执行逻辑
-2. 不要修改取消任务逻辑
-3. 不要修改删除任务逻辑
-4. 不要修改真实安装脚本
-5. 不要修改 mpi 白名单
-6. 不要执行真实安装任务
-7. 不要删除数据库
-8. 不要删除 artifacts
-9. 不要让前端传 command / remote_path / local_path / PID
-10. 不要返回私钥内容
-11. 不要返回公钥内容
-12. 不要执行任意远程命令
-13. 不要执行 `apptainer run / exec`
-14. 不要修改 `sshd_config`
-15. 不要重启 `sshd`
-16. 不要执行远端 `systemctl / reboot / shutdown`
+**推荐优先做：压测脚本串行批次任务（阶段 26A）**
 
-## 10. Git 提交注意事项
+理由：当前压测脚本一次只能选一个执行一个。需要支持一次选择 GPU、CPU/内存、磁盘三个压测脚本，按 GPU → CPU/内存 → 磁盘顺序自动串行执行，每台服务器独立线程，每个脚本生成独立日志和报告，归入同一个 batch。
 
-- 不要 `git add .`
-- 不要提交：
-  - `backend/data/*.db`
-  - `backend/data/artifacts/`
-  - `backend/apptainer/*.sif`
-  - `backend/keys/*`
-  - `.env`
-  - `node_modules/`
-  - `.venv/`
-  - `.deps/`
-  - `*.log`
-  - `dist/`
-- 如需保留 `backend/keys/` 空目录，可后续补：
-  - `.gitignore` 中忽略 `backend/keys/*`
-  - 仅提交 `backend/keys/.gitkeep`
+**已在 `docs/development-stages.md` 中规划**，需完成：
+- 后端：`POST /api/tasks/stress-suite` 端点 + 顺序执行 Worker
+- 前端：TaskRunner.vue 多选 stress 卡片 + stress suite 创建流程
+
+**备选方向**：
+- **批量任务结果汇总** — 当前批量视图已有展开查看子任务，可考虑独立汇总页面
+- **任务模板管理 UI** — 当前 9 个模板在代码中硬编码，未提供管理界面
+- **远端空间清理策略** — 任务执行前检查远端磁盘空间，按策略自动清理
+- **服务器详情页优化** — 当前详情为 el-drawer 弹窗，可扩展为独立页面
+
+---
+
+## 10. 给下一个 AI 的工作规则
+
+1. **修改前先读 README 和 next-ai-handoff** — 了解当前状态和安全边界
+2. **不要重构** — 只做当前阶段明确需要的事
+3. **不要删功能** — 原有功能保持不动
+4. **每次只做一个阶段** — 不做跨阶段的大改动
+5. **高风险操作必须确认** — 涉及 rm/restart/chmod/chown 等需用户确认
+6. **修改后必须验证** — 跑 `compileall` 和 `npm run build`
+7. **输出建议 git add 文件列表** — 不要直接 `git add .`
+8. **先计划后执行** — 给出计划等待用户批准后再动手
+
+---
+
+## 11. 不要提交的文件
+
+`.gitignore` 已配置忽略以下内容，但操作时仍需注意不要手动添加：
+
+- `backend/data/*.db`
+- `backend/data/artifacts/`
+- `backend/apptainer/*.sif`
+- `backend/keys/*`
+- `.env`
+- `node_modules/`
+- `.venv/`
+- `.deps/`
+- `*.log`
+- `dist/`
+- `frontend/tsconfig.tsbuildinfo`
