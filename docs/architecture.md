@@ -71,6 +71,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - 当前：SSH 默认私钥名称、远端目录只读说明
 
 ### audit API (`/api/audit-logs`)
+- **需 `require_admin_token()` 保护**（需要管理员密码确认）
 - 审计日志查询与分页（支持 action / target_type / status / keyword 筛选）
 - 统一英文 action 命名（`server.create`、`task.cancel` 等），前端中文标签映射
 - 记录任务创建/删除/取消/诊断、压测套件创建、清理、设置保存、服务器增删改/探测/SSH 测试/公钥部署等操作
@@ -184,7 +185,68 @@ $HOME/hpcdeploy/
 
 ---
 
-## 6. 任务状态机
+## 6. 权限模型（Phase 26）
+
+### 设计原则
+- 不强制全站登录 — 普通访客默认可正常使用平台
+- 不做复杂 RBAC / 多用户管理
+- 高风险操作需要管理员密码确认
+
+### 访客允许操作
+| 操作 | 端点 |
+|------|------|
+| 新增/编辑服务器 | `POST/PUT /api/servers` |
+| SSH 测试、探测 | `POST /api/servers/{id}/test`、`POST /api/servers/{id}/probe` |
+| 执行任务/压测套件 | `POST /api/tasks` |
+| 查看任务历史/日志/报告 | `GET /api/tasks/**` |
+| 查看脚本知识库 | `GET /api/scripts/**` |
+
+所有访客操作审计日志 `actor="visitor"`。
+
+### 需要管理员密码确认的高风险操作
+| 操作 | 端点 | 依赖 |
+|------|------|------|
+| 删除服务器 | `DELETE /api/servers/{id}` | `require_admin_token()` |
+| 删除任务 | `DELETE /api/tasks/{id}` | `require_admin_token()` |
+| 删除脚本 | `DELETE /api/scripts/files` | `require_admin_token()` |
+| 上传/修改脚本 | `POST/PUT /api/scripts/**` | `require_admin_token()` |
+| 清理本地 artifacts | `POST /api/cleanup/local-artifacts/delete` | `require_admin_token()` |
+| 清理远端目录 | `POST /api/cleanup/remote/delete` | `require_admin_token()` |
+| 查看审计日志 | `GET /api/audit-logs` | `require_admin_token()` |
+| 保存系统设置 | `PUT /api/settings` | `require_admin_token()` |
+| 生成默认 SSH 密钥 | `POST /api/settings/ssh-key/generate-default` | `require_admin_token()` |
+
+### 认证流程
+
+```
+前端点击高风险操作
+  → requireAdminConfirm() 检查缓存 admin_token
+    → 过期/为空：弹出 ElMessageBox.prompt 密码输入框
+    → 用户输入密码 → POST /auth/admin/verify
+      → 后端校验密码（plaintext 对比，5 分钟 JWT 签发）
+      → 返回 admin_token → 前端内存缓存 5 分钟
+    → 设置 axios.defaults.headers.common['X-Admin-Token'] = token
+  → 正式调用高风险 API（携带 X-Admin-Token header）
+    → 后端 require_admin_token() 依赖验证 JWT 签名 + scope=admin
+    → 通过后执行操作，审计日志 actor="admin"
+```
+
+### 管理员密码
+- 通过环境变量 `HPCDEPLOY_ADMIN_PASSWORD` 设置
+- 默认值为 `admin123`（启动时 `logger.warning` 提示生产环境必须修改）
+- 密码不返回前端、不打印日志
+- 后端不做 hash 存储（无持久化用户表），直接对比环境变量
+
+### 文件说明
+| 文件 | 说明 |
+|------|------|
+| `backend/app/core/auth.py` | `verify_admin_password()`、`create_admin_token()`(5min JWT)、`require_admin_token()` 依赖 |
+| `backend/app/api/auth.py` | `POST /auth/admin/verify` 端点 |
+| `frontend/src/composables/useAdminConfirm.ts` | 密码弹窗 + admin_token 内存缓存 |
+
+---
+
+## 7. 任务状态机
 
 ```
 PENDING → CONNECTING → PREPARING → UPLOADING → RUNNING → SUCCESS
@@ -196,7 +258,7 @@ PENDING → CONNECTING → PREPARING → UPLOADING → RUNNING → SUCCESS
 
 ---
 
-## 7. WebSocket 实时日志（Phase 23A）
+## 8. WebSocket 实时日志（Phase 23A）
 
 - 端点：`/ws/tasks/{task_id}`
 - 心跳间隔 30s，超时 60s 清理
@@ -206,7 +268,7 @@ PENDING → CONNECTING → PREPARING → UPLOADING → RUNNING → SUCCESS
 
 ---
 
-## 8. 结构化监控（Phase 24B）
+## 9. 结构化监控（Phase 24B）
 
 - 端点：`GET /api/tasks/{task_id}/monitor`
 - 返回独立数据：CPU/内存、磁盘、GPU
@@ -216,7 +278,7 @@ PENDING → CONNECTING → PREPARING → UPLOADING → RUNNING → SUCCESS
 
 ---
 
-## 9. 前端布局架构
+## 10. 前端布局架构
 
 | 元素 | 定位 | 样式 |
 |------|------|------|
@@ -227,7 +289,7 @@ PENDING → CONNECTING → PREPARING → UPLOADING → RUNNING → SUCCESS
 
 ---
 
-## 10. 服务部署
+## 11. 服务部署
 
 ```bash
 # 开发模式 — 后端
