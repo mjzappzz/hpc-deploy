@@ -39,6 +39,30 @@ CategoryDef = dict[str, Any]
 
 CATEGORIES: list[CategoryDef] = [
     {
+        "category": "command_timeout",
+        "level": "error",
+        "title": "任务执行超时",
+        "summary": "任务运行时间超过平台允许的最大执行时间。",
+        "possible_causes": [
+            "压测时长较长，平台 timeout 缓冲不足",
+            "脚本结束后生成报告或回收结果耗时过长",
+            "远端进程没有按预期退出",
+            "依赖安装或结果处理耗时过长",
+        ],
+        "suggestions": [
+            "检查任务日志中压测是否已正常结束",
+            "检查结果文件是否已经生成",
+            "增大 stress 任务 timeout 缓冲",
+            "对长时间压测任务预留更长收尾时间",
+        ],
+        "patterns": [
+            "command timed out after",
+            "TimeoutExpired",
+            "timeout expired",
+            "timed out after",
+        ],
+    },
+    {
         "category": "ssh_auth_failed",
         "level": "error",
         "title": "SSH 认证失败",

@@ -2,9 +2,11 @@ from datetime import datetime
 from pathlib import Path
 from time import monotonic
 import concurrent.futures
+import json
 import logging
 
 from app.core.audit import write_audit_log
+from app.core.auth import require_admin_token
 from app.core.config import BACKEND_ROOT
 from app.core.ssh_detector import DEFAULT_DETECT_TIMEOUT, ServerDetectError, detect_server_info, summarize_detect_result
 from app.models.settings import SystemSetting
@@ -18,6 +20,8 @@ from app.schemas.server import (
     ServerCreate,
     ServerRead,
     ServerUpdate,
+    TagSummaryResponse,
+    TagSummary,
 )
 from app.schemas.detect import ProbeAllResponse, ProbeAllResult, ServerDetectResponse
 from app.schemas.ssh import SSHTestResponse
@@ -67,6 +71,7 @@ def _build_probe_response(server: Server, *, success: bool, error: str | None = 
         memory_info=server.memory_info,
         disk_info=server.disk_info,
         gpu_info=server.gpu_info,
+        gpu_status=server.gpu_status,
         network_info=server.network_info,
         summary={
             "os": server.os_info,
@@ -97,22 +102,72 @@ def _resolve_private_key_path(private_key_path: str) -> Path:
 
 
 @router.get("", response_model=list[ServerRead])
-def list_servers(db: Session = Depends(get_db)) -> list[Server]:
-    return db.query(Server).order_by(Server.id.desc()).all()
+def list_servers(
+    db: Session = Depends(get_db),
+    tag: str | None = Query(None, max_length=30),
+    keyword: str | None = Query(None, max_length=100),
+    status: str | None = Query(None, max_length=20),
+) -> list[Server]:
+    q = db.query(Server)
+    if tag:
+        q = q.filter(Server.tags_json.contains(f'"{tag}"'))
+    if status:
+        q = q.filter(Server.status == status)
+    if keyword:
+        like = f"%{keyword}%"
+        q = q.filter(
+            Server.name.ilike(like)
+            | Server.host.ilike(like)
+        )
+    return q.order_by(Server.id.desc()).all()
+
+
+@router.get("/tags", response_model=TagSummaryResponse)
+def list_server_tags(db: Session = Depends(get_db)) -> TagSummaryResponse:
+    """Return tag summary: extract unique tags, count servers and online/offline per tag."""
+    all_servers = db.query(Server.tags_json, Server.status).all()
+    tag_counter: dict[str, dict[str, int]] = {}
+    for (tj, status) in all_servers:
+        if not tj:
+            continue
+        try:
+            tags = json.loads(tj)
+            if isinstance(tags, list):
+                for t in tags:
+                    entry = tag_counter.setdefault(t, {"server_count": 0, "online_count": 0, "offline_count": 0})
+                    entry["server_count"] += 1
+                    if status == "online":
+                        entry["online_count"] += 1
+                    elif status == "offline":
+                        entry["offline_count"] += 1
+        except (json.JSONDecodeError, TypeError):
+            continue
+    items = [
+        TagSummary(name=name, server_count=counts["server_count"], online_count=counts["online_count"], offline_count=counts["offline_count"])
+        for name, counts in sorted(tag_counter.items(), key=lambda x: -x[1]["server_count"])
+    ]
+    return TagSummaryResponse(items=items)
 
 
 @router.post("", response_model=ServerRead, status_code=status.HTTP_201_CREATED)
-def create_server(payload: ServerCreate, db: Session = Depends(get_db)) -> Server:
-    server = Server(**payload.model_dump())
+def create_server(
+    payload: ServerCreate,
+    db: Session = Depends(get_db),
+) -> Server:
+    data = payload.model_dump()
+    tags_list = data.pop("tags", [])
+    data["tags_json"] = json.dumps(tags_list, ensure_ascii=False)
+    server = Server(**data)
     db.add(server)
     db.commit()
     db.refresh(server)
     write_audit_log(
         db, action="server.create", target_type="server", status="success",
+        actor="visitor",
         target_id=str(server.id), target_name=server.name,
         server_id=server.id, server_name=server.name,
         message=f"created server {server.name} ({server.host})",
-        detail={"host": server.host, "port": server.port, "username": server.username, "auth_type": server.auth_type},
+        detail={"host": server.host, "port": server.port, "username": server.username, "auth_type": server.auth_type, "tags": tags_list},
     )
     return server
 
@@ -224,6 +279,7 @@ def probe_all_servers(
                 server.memory_info = summary["memory_info"]
                 server.disk_info = summary["disk_info"]
                 server.gpu_info = summary["gpu_info"]
+                server.gpu_status = summary["gpu_status"]
                 server.network_info = summary["network_info"]
                 thread_db.commit()
                 thread_db.refresh(server)
@@ -321,6 +377,7 @@ def probe_all_servers(
     _overall_status = "success" if online > 0 or offline_probed == 0 else "failed"
     write_audit_log(
         db, action="server.probe_all", target_type="server", status=_overall_status,
+        target_name=f"{online} online / {offline_probed} offline / {skipped_count} skipped",
         message=f"probe all: {online} online, {offline_probed} offline, {skipped_count} skipped in {total_elapsed:.1f}s",
         detail={"total": total, "online": online, "offline": offline_probed, "skipped": skipped_count, "elapsed_seconds": total_elapsed},
     )
@@ -348,21 +405,38 @@ def update_server(
 ) -> Server:
     server = _get_server_or_404(db, server_id)
     old_name = server.name
-    for key, value in payload.model_dump(exclude_unset=True).items():
+    data = payload.model_dump(exclude_unset=True)
+    # Handle tags: convert list to json string for db column
+    if "tags" in data:
+        tags_list = data.pop("tags")
+        if tags_list is not None:
+            data["tags_json"] = json.dumps(tags_list, ensure_ascii=False)
+        else:
+            data["tags_json"] = "[]"
+    for key, value in data.items():
         setattr(server, key, value)
     db.commit()
     db.refresh(server)
+    detail = {}
+    if "tags" in data or "tags_json" in data:
+        detail["tags"] = json.loads(server.tags_json or "[]")
     write_audit_log(
         db, action="server.update", target_type="server", status="success",
+        actor="visitor",
         target_id=str(server.id), target_name=server.name,
         server_id=server.id, server_name=server.name,
         message=f"updated server {old_name}",
+        detail=detail if detail else None,
     )
     return server
 
 
 @router.delete("/{server_id}")
-def delete_server(server_id: int, db: Session = Depends(get_db)) -> dict[str, bool]:
+def delete_server(
+    server_id: int,
+    db: Session = Depends(get_db),
+    _: str = Depends(require_admin_token),
+) -> dict[str, bool]:
     server = _get_server_or_404(db, server_id)
     _name = server.name
     _host = server.host
@@ -370,8 +444,11 @@ def delete_server(server_id: int, db: Session = Depends(get_db)) -> dict[str, bo
     db.commit()
     write_audit_log(
         db, action="server.delete", target_type="server", status="success",
+        actor="admin",
         target_id=str(server_id), target_name=_name,
+        server_id=server_id, server_name=_name,
         message=f"deleted server {_name} ({_host})",
+        detail={"host": _host, "server_id": server_id},
     )
     return {"deleted": True}
 
@@ -396,6 +473,7 @@ def test_server_ssh(server_id: int, db: Session = Depends(get_db)) -> SSHTestRes
             target_id=str(server.id), target_name=server.name,
             server_id=server.id, server_name=server.name,
             message=f"SSH test succeeded for {server.name}",
+            detail={"host": server.host, "hostname": result["hostname"], "uname": result["uname"]},
         )
         return SSHTestResponse(
             success=True,
@@ -412,6 +490,7 @@ def test_server_ssh(server_id: int, db: Session = Depends(get_db)) -> SSHTestRes
             target_id=str(server.id), target_name=server.name,
             server_id=server.id, server_name=server.name,
             message=f"SSH test failed for {server.name}: {exc}",
+            detail={"host": server.host, "error": str(exc)},
         )
         return SSHTestResponse(success=False, status="offline", error=str(exc))
 
@@ -450,6 +529,7 @@ def _probe_server(db: Session, server: Server) -> ServerDetectResponse:
         server.memory_info = summary["memory_info"]
         server.disk_info = summary["disk_info"]
         server.gpu_info = summary["gpu_info"]
+        server.gpu_status = summary["gpu_status"]
         server.network_info = summary["network_info"]
         db.commit()
         db.refresh(server)
@@ -458,6 +538,8 @@ def _probe_server(db: Session, server: Server) -> ServerDetectResponse:
             target_id=str(server.id), target_name=server.name,
             server_id=server.id, server_name=server.name,
             message=f"probe succeeded for {server.name}",
+            detail={"host": server.host, "os_info": server.os_info, "cpu_info": server.cpu_info,
+                    "memory_info": server.memory_info, "gpu_info": server.gpu_info},
         )
         return _build_probe_response(server, success=True, timings=timings)
     except ServerDetectError as exc:
@@ -470,6 +552,7 @@ def _probe_server(db: Session, server: Server) -> ServerDetectResponse:
             target_id=str(server.id), target_name=server.name,
             server_id=server.id, server_name=server.name,
             message=f"probe failed for {server.name}: {exc}",
+            detail={"host": server.host, "error": str(exc)},
         )
         return _build_probe_response(server, success=False, error=str(exc))
 
@@ -521,6 +604,7 @@ def deploy_public_key(
             target_id=str(server.id), target_name=server.name,
             server_id=server.id, server_name=server.name,
             message=f"deploy public key failed: {exc}",
+            detail={"host": server.host, "error": str(exc)},
         )
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"deploy public key failed: {exc}") from exc
     finally:
@@ -536,6 +620,7 @@ def deploy_public_key(
         target_id=str(server.id), target_name=server.name,
         server_id=server.id, server_name=server.name,
         message=f"deployed public key for {server.name}",
+        detail={"host": server.host, "key_path": server.key_path, "auth_type": server.auth_type},
     )
     return DeployPublicKeyResponse(
         success=True,

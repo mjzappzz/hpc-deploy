@@ -1,7 +1,9 @@
 import logging
+import subprocess
 from pathlib import Path
 
 from app.core.audit import write_audit_log
+from app.core.auth import require_admin_token
 from app.core.config import BACKEND_ROOT
 from app.db.database import get_db
 from app.models.settings import SystemSetting
@@ -11,6 +13,7 @@ from app.schemas.settings import (
     SettingsResponse,
     SettingsUpdate,
 )
+from app.schemas.ssh_key import SSHKeyGenerateResponse
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -67,6 +70,7 @@ def get_settings(db: Session = Depends(get_db)) -> SettingsResponse:
 def update_settings(
     payload: SettingsUpdate,
     db: Session = Depends(get_db),
+    _: str = Depends(require_admin_token),
 ) -> SettingsResponse:
     """Update system settings. Only allowed keys are accepted."""
     update_data = payload.model_dump(exclude_none=True)
@@ -98,6 +102,7 @@ def update_settings(
 
     write_audit_log(
         db, action="settings.update", target_type="settings", status="success",
+        actor="admin",
         message=f"updated keys: {', '.join(update_data.keys())}" if update_data else "no changes",
         detail={"updated_keys": list(update_data.keys())},
     )
@@ -105,3 +110,71 @@ def update_settings(
     # Return full merged state
     merged = _get_settings_dict(db)
     return _db_to_response(merged)
+
+
+@router.post("/ssh-key/generate-default", response_model=SSHKeyGenerateResponse)
+def generate_default_ssh_key(
+    _: str = Depends(require_admin_token),
+) -> SSHKeyGenerateResponse:
+    """Generate default id_ed25519 / id_ed25519.pub in backend/keys/."""
+    KEYS_DIR.mkdir(parents=True, exist_ok=True)
+
+    private_key = KEYS_DIR / "id_ed25519"
+    public_key = KEYS_DIR / "id_ed25519.pub"
+
+    if private_key.is_file() or public_key.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="默认密钥已存在，如需重新生成请手动删除现有密钥文件",
+        )
+
+    if not _ssh_keygen_available():
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="ssh-keygen 不可用，请安装 openssh-client",
+        )
+
+    try:
+        subprocess.run(
+            [
+                "ssh-keygen",
+                "-t", "ed25519",
+                "-f", str(private_key),
+                "-N", "",
+                "-C", "hpcdeploy-default",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"密钥生成失败: {exc.stderr or exc.stdout or str(exc)}",
+        ) from exc
+
+    # Set permissions
+    try:
+        private_key.chmod(0o600)
+        if public_key.is_file():
+            public_key.chmod(0o644)
+    except OSError:
+        pass  # non-fatal
+
+    return SSHKeyGenerateResponse(
+        private_key="id_ed25519",
+        public_key="id_ed25519.pub",
+        message="默认密钥生成成功",
+    )
+
+
+def _ssh_keygen_available() -> bool:
+    try:
+        result = subprocess.run(
+            ["ssh-keygen", "--help"],
+            capture_output=True,
+            text=True,
+        )
+        return result.returncode in (0, 1)
+    except FileNotFoundError:
+        return False

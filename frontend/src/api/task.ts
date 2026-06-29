@@ -1,6 +1,6 @@
 import { request } from './request'
 
-export type TaskType = 'mpi' | 'stress' | 'test' | 'apptainer'
+export type TaskType = 'script' | 'stress' | 'apptainer'
 export type MonitorType = 'top' | 'iostat' | 'nvidia-smi' | 'free' | 'df' | 'ps' | 'cpu_mem' | 'disk' | 'gpu'
 
 export interface TaskRecord {
@@ -17,6 +17,8 @@ export interface TaskRecord {
   remote_work_dir: string | null
   command_preview: string | null
   status: string
+  batch_id: string | null
+  sequence_index: number | null
   params: Record<string, unknown> | null
   start_time: string | null
   end_time: string | null
@@ -214,6 +216,8 @@ export interface BatchTaskCreateItem {
 }
 
 export interface BatchTaskCreateResponse {
+  batch_id: string
+  script_name: string
   total: number
   created: number
   skipped: number
@@ -225,9 +229,96 @@ export function batchRunTask(data: BatchTaskCreatePayload) {
   return request.post<BatchTaskCreateResponse>('/tasks/batch', data)
 }
 
+// ── Stress Suite (Phase 29A) ──
+
+export interface StressSuitePayload {
+  server_ids: number[]
+  script_paths: string[]
+  params: Record<string, unknown>
+}
+
+export interface StressSuiteItem {
+  server_id: number
+  server_name: string
+  task_id: string
+  script_path: string
+  task_name: string
+  status: string
+}
+
+export interface StressSuiteResponse {
+  batch_id: string
+  total: number
+  items: StressSuiteItem[]
+}
+
+export function createStressSuite(data: StressSuitePayload) {
+  return request.post<StressSuiteResponse>('/tasks/stress-suite', data)
+}
+
 export function downloadTaskLogs(taskId: string) {
   const a = document.createElement('a')
   a.href = `/api/tasks/${taskId}/logs/download`
   a.download = `${taskId}.log`
   a.click()
+}
+
+// ── Batch summary / detail (Phase 26A) ──
+
+export interface BatchSummaryItem {
+  batch_id: string
+  task_type: string | null
+  script_names: string[]
+  created_at: string
+  total: number
+  success: number
+  failed: number
+  running: number
+  pending: number
+  canceled: number
+  status: string  // RUNNING / SUCCESS / FAILED / PARTIAL_FAILED / CANCELED / PARTIAL_CANCELED
+  servers: string[]
+}
+
+export interface BatchSummaryListResponse {
+  items: BatchSummaryItem[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export interface BatchQuery {
+  page?: number
+  page_size?: number
+  status?: string
+  keyword?: string
+}
+
+export interface BatchTaskDetailItem {
+  task_id: string
+  task_name: string
+  server_id: number
+  server_name: string
+  host: string
+  status: string
+  sequence_index: number | null
+  started_at: string | null
+  ended_at: string | null
+  exit_code: number | null
+  has_artifacts: boolean
+  error_summary: string | null
+}
+
+export interface BatchDetailResponse {
+  batch_id: string
+  summary: BatchSummaryItem
+  tasks: BatchTaskDetailItem[]
+}
+
+export function listBatches(params?: BatchQuery) {
+  return request.get<BatchSummaryListResponse>('/tasks/batches', { params })
+}
+
+export function getBatchDetail(batchId: string) {
+  return request.get<BatchDetailResponse>(`/tasks/batches/${batchId}`)
 }

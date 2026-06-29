@@ -1,9 +1,8 @@
 #!/bin/bash
-
-set -e
+#set -e  # 不使用 set -e，手工控制每个关键步骤的退出处理
 
 # ===== 自动检测系统并安装依赖 =====
-echo "[INFO] Checking and installing dependencies..."
+echo "[STAGE] dependency_check_start"
 
 install_deps() {
     if [ "$(id -u)" -ne 0 ]; then
@@ -68,8 +67,7 @@ PYCHK
 }
 
 install_deps
-
-echo "[INFO] Dependency check done."
+echo "[STAGE] dependency_check_done"
 
 DURATION=${1:-43200}
 INTERVAL=${2:-2}
@@ -89,7 +87,6 @@ VM_WORKERS=$(( CPU_WORKERS / 8 ))
 [ "$VM_WORKERS" -lt 1 ] && VM_WORKERS=1
 
 VM_BYTES="${MEMORY_PERCENT:-85}%"
-SWAP_FAIL_MB=1024
 
 CRITICAL_ERR_PATTERN="out of memory|oom-killer|killed process|hardware error|machine check error|machine check exception|mce:.*error|edac.*error|ecc.*uncorrected|uncorrected error|thermal thrott|throttling|segfault|general protection fault|verification failed"
 
@@ -107,6 +104,14 @@ CPU_MODEL=$(lscpu | awk -F: '/Model name/ {gsub(/^ +/,"",$2); print $2; exit}')
 MEM_TOTAL=$(free -h | awk '/Mem:/ {print $2}')
 OS_INFO=$(cat /etc/os-release 2>/dev/null | awk -F= '/^PRETTY_NAME=/ {gsub(/"/,"",$2); print $2}')
 
+# Swap 阈值：默认 1024 MB，swap 占用过多视为系统异常
+SWAP_FAIL_MB=${SWAP_FAIL_MB:-1024}
+SWAP_TOTAL=$(free -m | awk '/Swap:/ {print $2}')
+# 若系统总 swap 小于阈值则自动降低（避免小 swap 系统误报）
+if [ "$SWAP_TOTAL" -lt "$SWAP_FAIL_MB" ] 2>/dev/null; then
+    SWAP_FAIL_MB=$(( SWAP_TOTAL * 80 / 100 ))
+fi
+
 echo "======================================"
 echo "CPU + Memory Stress Test Start"
 echo "CPU Workers : ${CPU_WORKERS}"
@@ -116,6 +121,9 @@ echo "Duration    : ${DURATION}s"
 echo "Interval    : ${INTERVAL}s"
 echo "Workdir     : ${WORKDIR}"
 echo "======================================"
+
+# ===== 启动后台监控 =====
+echo "[STAGE] monitor_start"
 
 (
 echo "timestamp,load1,load5,load15,mem_total_MB,mem_used_MB,mem_free_MB,mem_available_MB,swap_total_MB,swap_used_MB"
@@ -131,16 +139,22 @@ while true; do
     sleep "$INTERVAL"
 done
 ) > "$MON_LOG" &
-
 MON_PID=$!
 
-dmesg -w | egrep -i "$CRITICAL_ERR_PATTERN" > "$ERR_LOG" &
+# dmesg -w 可能在没有新消息时阻塞；用 timeout 防止僵尸
+# 3600s 超时后自动退出，覆盖压测全程
+dmesg -w 2>/dev/null | timeout 43200 egrep -i "$CRITICAL_ERR_PATTERN" > "$ERR_LOG" &
 ERR_PID=$!
+
+echo "[STAGE] monitor_started pids=mon:$MON_PID err:$ERR_PID"
 
 sleep 2
 
+# ===== 执行 stress-ng 压测 =====
+echo "[STAGE] stress_start"
 set +e
-stress-ng \
+# 使用 stdbuf 确保 tee 及时刷新输出到日志文件
+stdbuf -oL stress-ng \
   --cpu ${CPU_WORKERS} \
   --cpu-method all \
   --vm ${VM_WORKERS} \
@@ -150,13 +164,45 @@ stress-ng \
   --verify \
   --timeout ${DURATION}s \
   --metrics-brief \
-  2>&1 | tee "$STRESS_LOG"
+  2>&1 | stdbuf -oL tee "$STRESS_LOG"
 STRESS_EXIT=${PIPESTATUS[0]}
 set -e
+echo "[STAGE] stress_done exit_code=${STRESS_EXIT}"
 
-kill "$MON_PID" >/dev/null 2>&1 || true
-kill "$ERR_PID" >/dev/null 2>&1 || true
+# ===== 清理后台进程 =====
+echo "[STAGE] monitor_stop_start"
+
+# 1. 关闭监控循环
+if kill -0 "$MON_PID" 2>/dev/null; then
+    kill "$MON_PID" 2>/dev/null || true
+    # 有限等待，防止挂起
+    (wait "$MON_PID" 2>/dev/null) &  MON_WAIT_PID=$!
+    (sleep 5; kill $MON_WAIT_PID 2>/dev/null) &  TIMEOUT_PID=$!
+    wait $MON_WAIT_PID 2>/dev/null || true
+    kill $TIMEOUT_PID 2>/dev/null || true
+fi
+
+# 2. 关闭 dmesg 监控（先kill dmesg的父进程egrep，再清理dmesg自身）
+#    $ERR_PID 是 egrep 的 PID；还需要清理可能残留的 dmesg -w
+if kill -0 "$ERR_PID" 2>/dev/null; then
+    kill "$ERR_PID" 2>/dev/null || true
+    (wait "$ERR_PID" 2>/dev/null) &  ERR_WAIT_PID=$!
+    (sleep 5; kill $ERR_WAIT_PID 2>/dev/null) &  ERR_TIMEOUT_PID=$!
+    wait $ERR_WAIT_PID 2>/dev/null || true
+    kill $ERR_TIMEOUT_PID 2>/dev/null || true
+fi
+
+# 3. 清理可能残留的 dmesg -w 进程
+DMESG_PID=$(pgrep -f "dmesg -w" 2>/dev/null || true)
+if [ -n "$DMESG_PID" ] && [ "$DMESG_PID" != "$$" ]; then
+    kill "$DMESG_PID" 2>/dev/null || true
+fi
+
 sleep 1
+echo "[STAGE] monitor_stop_done"
+
+# ===== 计算统计指标 =====
+echo "[STAGE] report_txt_start"
 
 LOAD1_AVG=$(awk -F',' 'NR>1 {sum+=$2; n++} END{if(n>0) printf "%.2f",sum/n; else print "0"}' "$MON_LOG")
 LOAD1_MAX=$(awk -F',' 'NR>1 {if($2>max)max=$2} END{printf "%.2f",max+0}' "$MON_LOG")
@@ -168,8 +214,8 @@ MEM_USED_MAX=$(awk -F',' 'NR>1 {if($6>max)max=$6} END{printf "%.0f",max+0}' "$MO
 MEM_AVAIL_MIN=$(awk -F',' 'NR>1 {if(NR==2 || $8<min)min=$8} END{printf "%.0f",min+0}' "$MON_LOG")
 SWAP_USED_MAX=$(awk -F',' 'NR>1 {if($10>max)max=$10} END{printf "%.0f",max+0}' "$MON_LOG")
 
-ERROR_COUNT=$(grep -Ei "$CRITICAL_ERR_PATTERN" "$ERR_LOG" | wc -l)
-STRESS_ERROR=$(grep -Ei "verification failed|aborted|segmentation fault|bus error|out of memory|oom-killer|killed process|stress-ng: fail:" "$STRESS_LOG" || true)
+ERROR_COUNT=$(grep -Ei "$CRITICAL_ERR_PATTERN" "$ERR_LOG" 2>/dev/null | wc -l)
+STRESS_ERROR=$(grep -Ei "verification failed|aborted|segmentation fault|bus error|out of memory|oom-killer|killed process|stress-ng: fail:" "$STRESS_LOG" 2>/dev/null || true)
 
 RESULT="PASS"
 REASON="No critical error detected."
@@ -271,12 +317,249 @@ Excel报告             : ${XLSX_REPORT}
 报告生成时间          : $(date "+%F %T")
 EOR
 
-echo
-echo "======================================"
-echo "Excel 报告生成中..."
-echo "======================================"
+echo "[STAGE] report_txt_done"
 
-python3 - << PYEOF
+# ===== 生成 XLSX 报告 =====
+echo "[STAGE] report_xlsx_start"
+
+set +e  # xlsx 生成可能超时或失败，不影响脚本退出
+# xlsx 生成最多允许 600 秒（10 分钟），超时则跳过但保留其他文件
+XLSX_OK=0
+XLSX_DURATION=0
+XLSX_TIMEOUT=600
+XLSX_PY="/tmp/gen_xlsx_${TIME_TAG}.py"
+
+if command -v timeout >/dev/null 2>&1; then
+XLSX_START_TS=$(date +%s)
+
+# 写入临时 Python 脚本（cat 位置顶格，避免 heredoc 缩进问题）
+cat > "$XLSX_PY" << PYEOF
+import csv
+import sys
+from pathlib import Path
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
+from openpyxl.chart import LineChart, Reference
+from openpyxl.utils import get_column_letter
+
+report = Path("${REPORT}")
+stress_log = Path("${STRESS_LOG}")
+mon_log = Path("${MON_LOG}")
+err_log = Path("${ERR_LOG}")
+xlsx = Path("${XLSX_REPORT}")
+
+result = "${RESULT}"
+reason = "${REASON}"
+
+wb = Workbook()
+ws = wb.active
+ws.title = "Summary"
+raw = wb.create_sheet("RawReport")
+stress = wb.create_sheet("StressLog")
+mon = wb.create_sheet("MonitorCSV")
+err = wb.create_sheet("KernelError")
+
+dark = "1F4E78"
+green = "C6EFCE"
+red = "FFC7CE"
+gray = "F2F2F2"
+white = "FFFFFF"
+
+border = Border(
+    left=Side(style="thin", color="D9D9D9"),
+    right=Side(style="thin", color="D9D9D9"),
+    top=Side(style="thin", color="D9D9D9"),
+    bottom=Side(style="thin", color="D9D9D9")
+)
+
+ws.merge_cells("A1:H1")
+ws["A1"] = "CPU + 内存稳定性压力测试报告"
+ws["A1"].font = Font(size=18, bold=True, color=white)
+ws["A1"].fill = PatternFill("solid", fgColor=dark)
+ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+ws.row_dimensions[1].height = 30
+
+def section(row, title):
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
+    c = ws.cell(row=row, column=1, value=title)
+    c.font = Font(bold=True, color=white)
+    c.fill = PatternFill("solid", fgColor=dark)
+    return row + 1
+
+def kv(row, key, value):
+    ws.cell(row=row, column=1, value=key)
+    ws.cell(row=row, column=2, value=value)
+    for col in range(1, 3):
+        cell = ws.cell(row=row, column=col)
+        cell.border = border
+        cell.alignment = Alignment(vertical="center", wrap_text=True)
+    ws.cell(row=row, column=1).fill = PatternFill("solid", fgColor=gray)
+    ws.cell(row=row, column=1).font = Font(bold=True)
+    return row + 1
+
+r = 3
+r = section(r, "一、测试对象")
+for k, v in [
+    ("操作系统", "${OS_INFO}"),
+    ("CPU型号", "${CPU_MODEL}"),
+    ("逻辑线程数", "${CPU_CORES}"),
+    ("内存总量", "${MEM_TOTAL}"),
+]:
+    r = kv(r, k, v)
+
+r += 1
+r = section(r, "二、测试方法")
+for k, v in [
+    ("测试工具", "stress-ng"),
+    ("CPU压力线程", "${CPU_WORKERS}"),
+    ("CPU测试方法", "all"),
+    ("内存压力线程", "${VM_WORKERS}"),
+    ("内存占用比例", "${VM_BYTES}"),
+    ("内存测试方法", "all"),
+    ("数据校验", "verify enabled"),
+    ("测试时长", "${DURATION} 秒"),
+    ("采样间隔", "${INTERVAL} 秒"),
+    ("Swap失败阈值", "${SWAP_FAIL_MB} MB"),
+]:
+    r = kv(r, k, v)
+
+r += 1
+r = section(r, "三、测试结果汇总")
+
+headers = ["类别", "指标", "数值"]
+for i, h in enumerate(headers, 1):
+    cell = ws.cell(row=r, column=i, value=h)
+    cell.font = Font(bold=True, color=white)
+    cell.fill = PatternFill("solid", fgColor=dark)
+    cell.border = border
+r += 1
+
+rows_data = [
+    ("CPU负载", "平均1分钟负载", "${LOAD1_AVG}"),
+    ("CPU负载", "最高1分钟负载", "${LOAD1_MAX}"),
+    ("CPU负载", "平均5分钟负载", "${LOAD5_AVG}"),
+    ("CPU负载", "平均15分钟负载", "${LOAD15_AVG}"),
+    ("内存表现", "平均已用内存", "${MEM_USED_AVG} MB"),
+    ("内存表现", "最高已用内存", "${MEM_USED_MAX} MB"),
+    ("内存表现", "最低可用内存", "${MEM_AVAIL_MIN} MB"),
+    ("内存表现", "最大Swap使用", "${SWAP_USED_MAX} MB"),
+    ("异常检查", "stress-ng退出码", "${STRESS_EXIT}"),
+    ("异常检查", "重大内核异常数量", "${ERROR_COUNT}"),
+]
+
+for row_data in rows_data:
+    for c, v in enumerate(row_data, 1):
+        cell = ws.cell(row=r, column=c, value=v)
+        cell.border = border
+        cell.alignment = Alignment(vertical="center", wrap_text=True)
+    r += 1
+
+r += 1
+r = section(r, "四、综合判定")
+r = kv(r, "测试结果", result)
+ws.cell(row=r - 1, column=2).fill = PatternFill("solid", fgColor=green if result == "PASS" else red)
+ws.cell(row=r - 1, column=2).font = Font(bold=True)
+r = kv(r, "判定原因", reason)
+r = kv(r, "报告生成时间", "$(date "+%F %T")")
+
+for col, width in {"A": 18, "B": 34, "C": 24, "D": 14, "E": 14, "F": 14, "G": 14, "H": 14}.items():
+    ws.column_dimensions[col].width = width
+
+if report.exists():
+    for line in report.read_text(errors="ignore").splitlines():
+        raw.append([line])
+raw.column_dimensions["A"].width = 130
+
+if stress_log.exists():
+    for line in stress_log.read_text(errors="ignore").splitlines():
+        stress.append([line])
+stress.column_dimensions["A"].width = 130
+
+if err_log.exists() and err_log.stat().st_size > 0:
+    for line in err_log.read_text(errors="ignore").splitlines():
+        err.append([line])
+else:
+    err.append(["No critical kernel error detected."])
+err.column_dimensions["A"].width = 130
+
+def to_number(v):
+    try:
+        return float(str(v).strip())
+    except Exception:
+        return v
+
+if mon_log.exists():
+    with mon_log.open(errors="ignore", newline="") as f:
+        reader = csv.reader(f)
+        for idx, row_data in enumerate(reader, 1):
+            out = []
+            for j, val in enumerate(row_data, 1):
+                if idx > 1 and j >= 2:
+                    out.append(to_number(val))
+                else:
+                    out.append(val.strip() if isinstance(val, str) else val)
+            mon.append(out)
+
+for sheet in [raw, stress, mon, err]:
+    sheet.freeze_panes = "A2"
+    if sheet.max_row >= 1:
+        for cell in sheet[1]:
+            cell.font = Font(bold=True, color=white)
+            cell.fill = PatternFill("solid", fgColor=dark)
+
+for col in range(1, mon.max_column + 1):
+    mon.column_dimensions[get_column_letter(col)].width = 22
+
+# 生成图表（限制数据量，最多采样 500 行避免 xlsx 过大）
+if mon.max_row > 2 and mon.max_column >= 10:
+    chart_row_count = min(mon.max_row, 500)
+
+    def add_chart(title, col, pos):
+        chart = LineChart()
+        chart.title = title
+        chart.y_axis.title = title
+        chart.x_axis.title = "Sample"
+        data = Reference(mon, min_col=col, min_row=1, max_row=chart_row_count)
+        chart.add_data(data, titles_from_data=True)
+        chart.height = 7
+        chart.width = 14
+        ws.add_chart(chart, pos)
+
+    add_chart("Load 1min", 2, "J3")
+    add_chart("Load 5min", 3, "J18")
+    add_chart("Load 15min", 4, "J33")
+    add_chart("Memory Used(MB)", 6, "J48")
+    add_chart("Memory Available(MB)", 8, "J63")
+    add_chart("Swap Used(MB)", 10, "J78")
+
+# 仅对 Summary 和 Monitor 表应用边框（避免全表爆内存）
+for target_sheet in [ws, mon]:
+    for row in target_sheet.iter_rows():
+        for cell in row:
+            cell.border = border
+            cell.alignment = Alignment(wrap_text=True, vertical="center")
+
+wb.save(xlsx)
+print(f"XLSX Report : {xlsx}")
+print("XLSX_GENERATE_OK")
+PYEOF
+
+timeout "$XLSX_TIMEOUT" python3 "$XLSX_PY" 2>&1
+XLSX_EXIT_CODE=$?
+rm -f "$XLSX_PY"
+XLSX_END_TS=$(date +%s)
+XLSX_DURATION=$(( XLSX_END_TS - XLSX_START_TS ))
+if [ "$XLSX_EXIT_CODE" = "124" ]; then
+    echo "[STAGE] report_xlsx_timeout duration=${XLSX_DURATION}s limit=${XLSX_TIMEOUT}s"
+elif [ "$XLSX_EXIT_CODE" = "0" ]; then
+    XLSX_OK=1
+    echo "[STAGE] report_xlsx_done duration=${XLSX_DURATION}s"
+else
+    echo "[STAGE] report_xlsx_failed exit_code=${XLSX_EXIT_CODE} duration=${XLSX_DURATION}s"
+fi
+else
+    echo "[WARN] timeout command not available, running xlsx generation without timeout"
+cat > "$XLSX_PY" << PYEOF
 import csv
 from pathlib import Path
 from openpyxl import Workbook
@@ -376,7 +659,7 @@ for i, h in enumerate(headers, 1):
     cell.border = border
 r += 1
 
-rows = [
+rows_data = [
     ("CPU负载", "平均1分钟负载", "${LOAD1_AVG}"),
     ("CPU负载", "最高1分钟负载", "${LOAD1_MAX}"),
     ("CPU负载", "平均5分钟负载", "${LOAD5_AVG}"),
@@ -389,8 +672,8 @@ rows = [
     ("异常检查", "重大内核异常数量", "${ERROR_COUNT}"),
 ]
 
-for row in rows:
-    for c, v in enumerate(row, 1):
+for row_data in rows_data:
+    for c, v in enumerate(row_data, 1):
         cell = ws.cell(row=r, column=c, value=v)
         cell.border = border
         cell.alignment = Alignment(vertical="center", wrap_text=True)
@@ -399,12 +682,12 @@ for row in rows:
 r += 1
 r = section(r, "四、综合判定")
 r = kv(r, "测试结果", result)
-ws.cell(row=r-1, column=2).fill = PatternFill("solid", fgColor=green if result == "PASS" else red)
-ws.cell(row=r-1, column=2).font = Font(bold=True)
+ws.cell(row=r - 1, column=2).fill = PatternFill("solid", fgColor=green if result == "PASS" else red)
+ws.cell(row=r - 1, column=2).font = Font(bold=True)
 r = kv(r, "判定原因", reason)
 r = kv(r, "报告生成时间", "$(date "+%F %T")")
 
-for col, width in {"A":18, "B":34, "C":24, "D":14, "E":14, "F":14, "G":14, "H":14}.items():
+for col, width in {"A": 18, "B": 34, "C": 24, "D": 14, "E": 14, "F": 14, "G": 14, "H": 14}.items():
     ws.column_dimensions[col].width = width
 
 if report.exists():
@@ -433,9 +716,9 @@ def to_number(v):
 if mon_log.exists():
     with mon_log.open(errors="ignore", newline="") as f:
         reader = csv.reader(f)
-        for idx, row in enumerate(reader, 1):
+        for idx, row_data in enumerate(reader, 1):
             out = []
-            for j, val in enumerate(row, 1):
+            for j, val in enumerate(row_data, 1):
                 if idx > 1 and j >= 2:
                     out.append(to_number(val))
                 else:
@@ -453,17 +736,17 @@ for col in range(1, mon.max_column + 1):
     mon.column_dimensions[get_column_letter(col)].width = 22
 
 if mon.max_row > 2 and mon.max_column >= 10:
+    chart_row_count = min(mon.max_row, 500)
     def add_chart(title, col, pos):
         chart = LineChart()
         chart.title = title
         chart.y_axis.title = title
         chart.x_axis.title = "Sample"
-        data = Reference(mon, min_col=col, min_row=1, max_row=mon.max_row)
+        data = Reference(mon, min_col=col, min_row=1, max_row=chart_row_count)
         chart.add_data(data, titles_from_data=True)
         chart.height = 7
         chart.width = 14
         ws.add_chart(chart, pos)
-
     add_chart("Load 1min", 2, "J3")
     add_chart("Load 5min", 3, "J18")
     add_chart("Load 15min", 4, "J33")
@@ -471,21 +754,36 @@ if mon.max_row > 2 and mon.max_column >= 10:
     add_chart("Memory Available(MB)", 8, "J63")
     add_chart("Swap Used(MB)", 10, "J78")
 
-for sheet in wb.worksheets:
-    for row in sheet.iter_rows():
+for target_sheet in [ws, mon]:
+    for row in target_sheet.iter_rows():
         for cell in row:
             cell.border = border
             cell.alignment = Alignment(wrap_text=True, vertical="center")
 
 wb.save(xlsx)
 print(f"XLSX Report : {xlsx}")
+print("XLSX_GENERATE_OK")
 PYEOF
+
+python3 "$XLSX_PY" 2>&1
+XLSX_EXIT_CODE=$?
+rm -f "$XLSX_PY"
+if [ "$XLSX_EXIT_CODE" = "0" ]; then
+    XLSX_OK=1
+fi
+echo "[STAGE] report_xlsx_done (no-timeout mode) exit_code=${XLSX_EXIT_CODE}"
+fi
+
+# 最终输出
+XLSX_FINAL_STATUS="NOT_GENERATED"
+[ "$XLSX_OK" = "1" ] && XLSX_FINAL_STATUS="GENERATED"
 
 echo
 echo "======================================"
 echo "CPU + Memory Stress Test Finished"
 echo "Result       : ${RESULT}"
 echo "Reason       : ${REASON}"
+echo "XLSX Status  : ${XLSX_FINAL_STATUS} (duration: ${XLSX_DURATION}s)"
 echo "CPU Workers  : ${CPU_WORKERS}"
 echo "VM Workers   : ${VM_WORKERS}"
 echo "Stress Log   : ${STRESS_LOG}"
@@ -494,3 +792,6 @@ echo "Kernel Error : ${ERR_LOG}"
 echo "Text Report  : ${REPORT}"
 echo "XLSX Report  : ${XLSX_REPORT}"
 echo "======================================"
+
+echo "[STAGE] script_exit exit_code=0"
+exit 0

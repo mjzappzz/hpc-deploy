@@ -33,19 +33,6 @@ UNFINISHED_TASK_STATUSES = (
 TERMINAL_TASK_STATUSES = ("SUCCESS", "FAILED", "CANCELED")
 CANCELABLE_TASK_STATUSES = ("PENDING", "CONNECTING", "PREPARING", "UPLOADING", "RUNNING")
 APPTAINER_REMOTE_DIR_SUFFIX = "/hpcdeploy/apptainer"
-MPI_ENV_TEST_FILENAME = "mpi_env_test.sh"
-MPI_ONEAPI_FILENAME = "install_oneapi_2022.sh"
-MPI_OPENMPI_FILENAME = "install_openmpi_4.1.6_aocc_aocl.sh"
-TEST_ALLOWED_FILENAMES = {"hello.sh", "sleep_60.sh"}
-ALLOWED_MPI_FILENAMES = {
-    MPI_ENV_TEST_FILENAME,
-    MPI_ONEAPI_FILENAME,
-    MPI_OPENMPI_FILENAME,
-}
-MPI_TASK_BLOCKED_MESSAGE = (
-    "当前阶段只允许执行 mpi_env_test.sh、install_oneapi_2022.sh、"
-    "install_openmpi_4.1.6_aocc_aocl.sh。"
-)
 STDERR_WARN_PATTERNS = (
     "WARNING:",
     "warning:",
@@ -94,7 +81,7 @@ def run_task_stage8b(task_id: str) -> None:
         _ensure_task_not_canceled(db, task)
         _add_log(db, task_id, "SYSTEM", f"remote HOME detected: {remote_home}")
 
-        remote_dir = _resolve_remote_work_dir(task.task_type, remote_home)
+        remote_dir = _resolve_remote_work_dir(task.task_type, remote_home, task.file_name)
         task.remote_work_dir = remote_dir
         db.commit()
         _ensure_task_not_canceled(db, task)
@@ -148,10 +135,8 @@ def run_task_stage8b(task_id: str) -> None:
             _ensure_task_not_canceled(db, task)
             _add_log(db, task_id, "SYSTEM", "chmod +x completed")
 
-        if task.task_type == "test":
-            _execute_command_task(db, executor, task, task_id, _build_test_command(task.file_name))
-        elif task.task_type == "mpi":
-            _execute_command_task(db, executor, task, task_id, _build_mpi_command(task.file_name))
+        if task.task_type == "script":
+            _execute_command_task(db, executor, task, task_id, f"bash ./{Path(task.file_name or 'script').name}")
         elif task.task_type == "stress":
             _execute_command_task(db, executor, task, task_id, _build_stress_command(task))
             db.refresh(task)
@@ -161,7 +146,12 @@ def run_task_stage8b(task_id: str) -> None:
                 try:
                     from app.core.artifact_collector import collect_artifacts
 
-                    collect_artifacts(db, task_id, task.remote_work_dir, executor)
+                    downloaded = collect_artifacts(db, task_id, task.remote_work_dir, executor)
+
+                    # ── 超时恢复：command timeout 但 xlsx 已生成且 report PASS → 升级为 SUCCESS
+                    db.refresh(task)
+                    if task.status == "FAILED" and task.error_message and "timed out" in task.error_message:
+                        _attempt_timeout_recovery(db, task_id, task, downloaded)
                 except Exception:
                     _add_log(db, task_id, "ERROR", "artifact collection failed")
         elif task.task_type == "apptainer":
@@ -204,7 +194,12 @@ def _resolve_task_library_file(file_path: str | None, task_type: str | None) -> 
         raise TaskRunnerError("task type is empty")
 
     record = get_library_file_record(file_path)
-    if record["physical_category"] != task_type:
+    physical = record["physical_category"]
+    if task_type == "script":
+        # "script" type accepts any non-stress, non-apptainer script
+        if physical in ("stress", "apptainer"):
+            raise TaskRunnerError("script task_type only allows non-stress, non-apptainer scripts")
+    elif physical != task_type:
         raise TaskRunnerError("task_type does not match knowledge base file category")
     return record
 
@@ -212,10 +207,6 @@ def _resolve_task_library_file(file_path: str | None, task_type: str | None) -> 
 def _validate_task_file_type(task: Task, file_record: dict[str, object]) -> None:
     file_name = str(file_record["name"])
     suffix = Path(file_name).suffix.lower()
-    if task.task_type == "test" and file_name not in TEST_ALLOWED_FILENAMES:
-        raise TaskRunnerError("当前阶段只允许执行 hello.sh、sleep_60.sh。")
-    if task.task_type == "mpi" and file_name not in ALLOWED_MPI_FILENAMES:
-        raise TaskRunnerError(MPI_TASK_BLOCKED_MESSAGE)
     if task.task_type == "apptainer" and suffix != ".sif":
         raise TaskRunnerError("apptainer task only allows .sif files")
     if task.task_type == "apptainer" and suffix in {".sh", ".py"}:
@@ -227,14 +218,67 @@ def _build_remote_path(remote_dir: str, file_name: str) -> str:
     return f"{remote_dir_clean}/{Path(file_name).name}"
 
 
-def _resolve_remote_work_dir(task_type: str | None, remote_home: str) -> str:
+def _resolve_remote_work_dir(task_type: str | None, remote_home: str, file_name: str | None = None) -> str:
     if not task_type:
         raise TaskRunnerError("task type is empty")
     base_home = remote_home.rstrip("/")
     if task_type == "apptainer":
         return f"{base_home}{APPTAINER_REMOTE_DIR_SUFFIX}"
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    return f"{base_home}/hpcdeploy/tasks/{task_type}/{timestamp}"
+    dir_name = build_remote_work_dir_name(task_type, file_name, timestamp)
+    return f"{base_home}/hpcdeploy/tasks/{task_type}/{dir_name}"
+
+
+def sanitize_dir_prefix(value: str) -> str:
+    """Sanitize a string for use as a directory name prefix.
+
+    Rules:
+    1. Only allow a-z, A-Z, 0-9, _, -
+    2. Other characters replaced with _
+    3. Consecutive _ merged into one
+    4. Leading and trailing _ removed
+    5. Max length 80
+    6. Empty fallback: "task"
+    """
+    if not value:
+        return "task"
+    result = re.sub(r'[^a-zA-Z0-9_-]', '_', value)
+    result = re.sub(r'_+', '_', result)
+    result = result.strip('_')
+    result = result[:80]
+    return result or "task"
+
+
+def build_remote_work_dir_name(task_type: str, file_name: str | None, timestamp: str) -> str:
+    """Build a human-readable remote work directory name.
+
+    For stress tasks, derives prefix from the script file name
+    (e.g. cpu_mem_stress_report.sh → cpu_mem_stress).
+    For script tasks, uses the sanitized script name as prefix.
+    For apptainer tasks, the caller returns early so this is only
+    a fallback.
+
+    Returns:
+        str: Directory name like "cpu_mem_stress_20260626-091411"
+    """
+    if not file_name:
+        return f"{task_type}_{timestamp}"
+
+    # Strip known extensions
+    name = file_name
+    for ext in ('.sh', '.bash', '.py', '.sif'):
+        if name.endswith(ext):
+            name = name[:-len(ext)]
+            break
+
+    # For stress scripts, strip trailing _report so
+    # "cpu_mem_stress_report" becomes "cpu_mem_stress"
+    if task_type == "stress":
+        if name.endswith('_report'):
+            name = name[:-len('_report')]
+
+    prefix = sanitize_dir_prefix(name)
+    return f"{prefix}_{timestamp}"
 
 
 def _execute_command_task(db, executor: SSHExecutor, task: Task, task_id: str, command: str) -> None:
@@ -250,7 +294,18 @@ def _execute_command_task(db, executor: SSHExecutor, task: Task, task_id: str, c
     _set_status(db, task, "RUNNING")
     pid_file_path = _build_remote_pid_file_path(task.remote_work_dir)
     remote_command = _build_remote_execution_command(command, pid_file_path)
-    _add_log(db, task_id, "SYSTEM", f"command timeout set to {timeout_seconds} seconds")
+    if task.task_type == "stress":
+        params = task.params or {}
+        dur = params.get("duration_seconds", 0)
+        if isinstance(dur, int) and dur > 0:
+            _, _buf = calculate_stress_command_timeout(dur)
+            _add_log(db, task_id, "SYSTEM", f"stress duration seconds: {dur}")
+            _add_log(db, task_id, "SYSTEM", f"stress timeout buffer seconds: {_buf}")
+            _add_log(db, task_id, "SYSTEM", f"command timeout seconds: {timeout_seconds} (stress duration {dur} + buffer {_buf})")
+        else:
+            _add_log(db, task_id, "SYSTEM", f"command timeout seconds: {timeout_seconds}")
+    else:
+        _add_log(db, task_id, "SYSTEM", f"command timeout seconds: {timeout_seconds}")
     _add_log(db, task_id, "SYSTEM", f"remote pid file: {pid_file_path}")
     _add_log(db, task_id, "SYSTEM", f"executing command: {command}")
     try:
@@ -310,19 +365,6 @@ def _broadcast_done_safe(task_id: str, status: str) -> None:
         pass
 
 
-def _build_test_command(file_name: str) -> str:
-    return f"bash ./{Path(file_name).name}"
-
-
-def _build_mpi_command(file_name: str | None) -> str:
-    if not file_name:
-        raise TaskRunnerError("task file_name is empty")
-    script_name = Path(file_name).name
-    if script_name not in ALLOWED_MPI_FILENAMES:
-        raise TaskRunnerError(MPI_TASK_BLOCKED_MESSAGE)
-    return f"bash ./{script_name}"
-
-
 def _build_stress_command(task: Task) -> str:
     if not task.file_name:
         raise TaskRunnerError("task file_name is empty")
@@ -349,6 +391,10 @@ def _build_stress_command(task: Task) -> str:
             env_vars.append(f"TEST_FILE_SIZE={params['disk_file_size']}")
         if "disk_path" in params:
             env_vars.append(f"TEST_DIR={params['disk_path']}")
+        if "disk_test_dir" in params:
+            dtd = params["disk_test_dir"]
+            if dtd:
+                env_vars.append(f"DISK_TEST_DIR={shell_quote(dtd)}")
         if "workers" in params:
             env_vars.append(f"WORKERS={params['workers']}")
 
@@ -367,25 +413,94 @@ def _build_stress_command(task: Task) -> str:
     return f"./{script_name} {duration_seconds} {interval}"
 
 
+def _attempt_timeout_recovery(db, task_id: str, task: Task, downloaded_files: list[str]) -> None:
+    """After command timeout, check if stress report artifacts exist and mark SUCCESS.
+
+    If the txt report exists locally (downloaded from remote) and contains
+    'Result : PASS', the stress test itself completed — only report generation
+    (xlsx) or cleanup was slow.  Upgrade to SUCCESS so the user sees a green
+    result instead of a misleading FAILED caused by platform timeout.
+    """
+    from pathlib import Path
+
+    artifacts_dir = Path(__file__).resolve().parents[2] / "data" / "artifacts" / task_id
+    if not artifacts_dir.is_dir():
+        _add_log(db, task_id, "SYSTEM", "timeout recovery skipped: no artifact directory")
+        return
+
+    # Find any *report*.txt file
+    txt_reports = list(artifacts_dir.glob("*report*.txt"))
+    if not txt_reports:
+        _add_log(db, task_id, "ERROR", "timeout recovery: no report txt found among artifacts")
+        return
+
+    txt_report = txt_reports[0]
+    content = txt_report.read_text(errors="replace", encoding="utf-8")
+
+    has_pass = "测试结果              : PASS" in content
+    has_fail = "测试结果              : FAIL" in content
+
+    if has_pass:
+        # Check if xlsx also exists
+        xlsx_files = list(artifacts_dir.glob("*report*.xlsx"))
+        if xlsx_files:
+            _add_log(db, task_id, "SYSTEM", f"timeout recovery: xlsx artifact found after timeout: {xlsx_files[0].name}")
+        _add_log(db, task_id, "SYSTEM", "timeout recovery: report shows PASS, upgrading to SUCCESS")
+        task.status = "SUCCESS"
+        task.exit_code = 0
+        task.error_message = "command timeout occurred after report generated, treated as success"
+        task.end_time = datetime.utcnow()
+        db.commit()
+        _broadcast_done_safe(task_id, "SUCCESS")
+    elif has_fail:
+        _add_log(db, task_id, "SYSTEM", "timeout recovery: report shows FAIL, keeping FAILED status")
+    else:
+        _add_log(db, task_id, "ERROR", f"timeout recovery: could not parse test result from {txt_report.name}")
+
+
 def _resolve_command_timeout(task: Task) -> int:
     if task.task_type == "stress":
         params = task.params or {}
         duration_seconds = params.get("duration_seconds")
         if not isinstance(duration_seconds, int):
             raise TaskRunnerError("stress duration_seconds is invalid")
-        return max(duration_seconds + 300, 300)
-    if task.task_type == "test":
-        return 120
-    if task.task_type == "mpi":
-        script_name = Path(task.file_name or "").name
-        if script_name == MPI_ENV_TEST_FILENAME:
-            return 120
-        if script_name == MPI_ONEAPI_FILENAME:
-            return 14400
-        if script_name == MPI_OPENMPI_FILENAME:
-            return 21600
-        raise TaskRunnerError(MPI_TASK_BLOCKED_MESSAGE)
+        timeout_seconds, _ = calculate_stress_command_timeout(duration_seconds)
+        return timeout_seconds
+    if task.task_type == "script":
+        return 3600
+    if task.task_type == "apptainer":
+        return 300
     raise TaskRunnerError(f"execution is not supported for task_type: {task.task_type}")
+
+
+def calculate_stress_command_timeout(duration_seconds: int) -> tuple[int, int]:
+    """Calculate command timeout for stress tasks with appropriate buffer.
+
+    stress duration is the user-requested test runtime; command timeout is the
+    platform's protective ceiling.  The timeout MUST exceed the stress duration
+    to allow for report generation (xlsx/txt), monitoring CSV collation,
+    subprocess cleanup, error log review, and final PASS/FAILED output.
+    Do NOT treat command timeout as a substitute for stress duration.
+
+    Buffer tiers (conservative):
+      ≤ 1 h    → 1800 s (30 min)
+      < 12 h   → 3600 s ( 1 h)
+      ≥ 12 h   → 7200 s ( 2 h)
+
+    Returns:
+        tuple[int, int]: (timeout_seconds, buffer_seconds)
+    """
+    if duration_seconds <= 0:
+        return 3600, 0
+
+    if duration_seconds <= 3600:
+        buffer_seconds = 1800
+    elif duration_seconds < 43200:
+        buffer_seconds = 3600
+    else:
+        buffer_seconds = 7200
+
+    return duration_seconds + buffer_seconds, buffer_seconds
 
 
 def _should_chmod(local_path: Path) -> bool:

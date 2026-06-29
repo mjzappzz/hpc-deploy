@@ -12,6 +12,7 @@ class AuditLogItem(BaseModel):
     target_type: str | None = ""
     target_id: str | None = ""
     target_name: str | None = ""
+    server_id: int | None = None
     server_name: str | None = ""
     task_id: str | None = ""
     status: str | None = ""

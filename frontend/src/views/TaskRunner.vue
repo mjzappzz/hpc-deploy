@@ -5,7 +5,7 @@
         <div class="runner-header">
           <div>
             <div class="runner-title">任务执行准备</div>
-            <div class="runner-subtitle">当前阶段会执行 test、stress 和 3 个显式白名单 mpi 脚本；Apptainer 只做容器分发上传，不执行。</div>
+            <div class="runner-subtitle">从脚本知识库中选择脚本执行（stress 支持参数化配置）；Apptainer 只做镜像分发上传，不执行。</div>
           </div>
         </div>
       </template>
@@ -16,231 +16,258 @@
           <!-- Mode: config (editable new task) -->
           <template v-if="mode === 'config'">
             <div class="selection-grid">
+              <!-- ─── STEP 1: TARGET SERVER CARDS ─── -->
               <div class="selection-card">
-                <div class="selection-label">目标服务器</div>
-                <template v-if="onlineServers.length === 0">
-                  <div class="empty-servers-hint">暂无在线服务器，请先在服务器管理页完成探测。</div>
-                  <div class="selection-meta">
-                    <span>无可选服务器</span>
+                <div class="selection-label-row">
+                  <span class="selection-label step-label">① 选择目标服务器</span>
+                  <el-tag v-if="selectedServerIds.length > 0" type="success" size="small" effect="dark" class="step-complete-tag">已完成</el-tag>
+                  <div class="tag-filter-inline">
+                    <el-select v-model="selectedTag" placeholder="全部标签" clearable size="small" style="width:140px" @change="onTagFilterChange">
+                      <el-option v-for="t in tags" :key="t.name" :label="t.name" :value="t.name" />
+                    </el-select>
                   </div>
+                </div>
+
+                <!-- Tip bar when servers available but none selected -->
+                <div v-if="filteredOnlineServers.length > 0 && selectedServerIds.length === 0" class="step-tip-bar">
+                  点击下方服务器卡片选择目标服务器
+                </div>
+
+                <template v-if="allOnlineServers.length === 0">
+                  <div class="empty-servers-hint">暂无在线服务器，请先在服务器管理页完成探测。</div>
+                </template>
+                <template v-else-if="filteredOnlineServers.length === 0">
+                  <div class="empty-servers-hint">当前标签下没有在线服务器。</div>
+                  <el-button size="small" class="clear-tag-btn" @click="selectedTag = ''">清除标签筛选</el-button>
                 </template>
                 <template v-else>
-                  <el-select v-model="selectedServerIds" placeholder="选择服务器（可多选）" multiple filterable collapse-tags collapse-tags-tooltip class="runner-control" :disabled="isFormDisabled">
-                    <el-option
-                      v-for="server in onlineServers"
+                  <div class="server-card-grid">
+                    <div
+                      v-for="server in filteredOnlineServers"
                       :key="server.id"
-                      :label="`${server.name} (${server.host})`"
-                      :value="server.id"
+                      :class="['server-select-card', { 'is-active': selectedServerIds.includes(server.id) }]"
+                      @click="toggleServerCard(server.id)"
                     >
-                      <div class="server-option-checkbox">
-                        <span class="server-opt-check">{{ selectedServerIds.includes(server.id) ? '☑' : '☐' }}</span>
-                        <span class="server-opt-name">{{ server.name }}</span>
-                        <span class="server-opt-host">{{ server.host }}</span>
-                        <StatusTag :status="server.status || 'unknown'" />
+                      <div class="s-card-top">
+                        <span class="s-card-name">{{ server.name }}</span>
+                        <span v-if="selectedServerIds.includes(server.id)" class="s-card-check">✓</span>
                       </div>
-                    </el-option>
-                  </el-select>
+                      <div class="s-card-host">{{ server.host }}</div>
+                      <div class="s-card-user">{{ server.username }}</div>
+                      <div v-if="server.tags && server.tags.length" class="s-card-tags">
+                        <el-tag v-for="tag in server.tags" :key="tag" size="small" round>{{ tag }}</el-tag>
+                      </div>
+                      <div class="s-card-hint">{{ selectedServerIds.includes(server.id) ? '已选择 ✓' : '点击选择' }}</div>
+                    </div>
+                  </div>
+
                   <div class="selection-meta">
                     <template v-if="selectedServerIds.length === 0">
                       <span>请选择服务器</span>
                     </template>
+                    <template v-else-if="selectedServerIds.length === 1">
+                      <span>已选择 1 台服务器</span>
+                    </template>
                     <template v-else>
-                      <span>已选择 {{ selectedServerIds.length }} 台服务器</span>
+                      <span class="selected-multi-text">
+                        已选择 {{ selectedServerIds.length }} 台服务器，将创建批量任务
+                      </span>
                     </template>
                   </div>
                 </template>
               </div>
 
               <div class="selection-card">
-                <div class="selection-label">任务类型</div>
-                <el-select v-model="selectedTaskType" placeholder="选择任务类型" class="runner-control" :disabled="isFormDisabled">
-                  <el-option
-                    v-for="taskType in taskTypes"
-                    :key="taskType.value"
-                    :label="taskType.label"
-                    :value="taskType.value"
-                  />
-                </el-select>
+                <div class="selection-label-row">
+                  <span class="selection-label step-label">② 选择任务类型</span>
+                  <el-tag v-if="selectedTaskType" type="success" size="small" effect="dark" class="step-complete-tag">已完成</el-tag>
+                </div>
+                <div class="task-type-cards">
+                  <div
+                    v-for="tt in taskTypes"
+                    :key="tt.value"
+                    :class="['task-type-card', { 'is-active': selectedTaskType === tt.value }]"
+                    @click="selectTaskType(tt.value)"
+                  >
+                    <div class="task-type-card-title">{{ tt.label }}</div>
+                    <div class="task-type-card-desc">{{ taskTypeCardDesc(tt.value) }}</div>
+                  </div>
+                </div>
                 <div class="selection-meta">
-                  <span>{{ selectedTaskType ? taskTypeLabel(selectedTaskType) : '请先选择任务类型' }}</span>
+                  <span>{{ selectedTaskType ? taskTypeLabel(selectedTaskType) : '请选择任务类型' }}</span>
                 </div>
               </div>
 
               <div class="selection-card">
-                <div class="selection-label">知识库文件</div>
-                <el-select
-                  v-model="selectedFilePath"
-                  placeholder="选择知识库文件"
-                  filterable
-                  class="runner-control"
-                  :disabled="!selectedTaskType || isFormDisabled"
-                >
-                  <el-option
-                    v-for="file in filteredFiles"
-                    :key="file.path"
-                    :label="`${file.displayCategory} / ${file.name}`"
-                    :value="file.path"
-                  >
-                    <div class="file-option">
-                      <span>{{ file.displayCategory }} / {{ file.name }}</span>
-                      <span class="file-option-path">{{ file.relative_path }}</span>
-                    </div>
-                  </el-option>
-                </el-select>
-                <div class="selection-meta">
-                  <span>{{ selectedFile ? selectedFile.relative_path : '按任务类型过滤显示知识库文件' }}</span>
+                <div class="selection-label-row">
+                  <span class="selection-label step-label">③ 选择脚本/镜像</span>
+                  <el-tag v-if="isFileSelected" type="success" size="small" effect="dark" class="step-complete-tag">已完成</el-tag>
                 </div>
-              </div>
-            </div>
 
-            <!-- 任务模板 -->
-            <div class="selection-card">
-              <div class="selection-label">任务模板</div>
-              <el-select v-model="selectedTemplateId" placeholder="选择任务模板（可选）" filterable clearable class="runner-control" :disabled="isFormDisabled">
-                <el-option
-                  v-for="tmpl in taskTemplates"
-                  :key="tmpl.id"
-                  :label="tmpl.name"
-                  :value="tmpl.id"
-                >
-                  <div class="template-option">
-                    <span>{{ tmpl.name }}</span>
-                    <span class="template-option-cat">{{ categoryLabel(tmpl.category) }}</span>
+                <!-- Script type: card grid -->
+                <template v-if="selectedTaskType === 'script'">
+                  <div v-if="filteredFiles.length === 0" class="empty-servers-hint">暂无可选脚本。</div>
+                  <div v-else class="file-card-grid">
+                    <div
+                      v-for="file in filteredFiles"
+                      :key="file.path"
+                      :class="['file-select-card', { 'is-active': selectedFilePath === file.path }]"
+                      @click="selectedFilePath = file.path"
+                    >
+                      <div class="f-card-name">{{ file.name }}</div>
+                      <div class="f-card-path">{{ file.relative_path }}</div>
+                      <div class="f-card-meta">{{ formatSize(file.size) }} · {{ formatDate(file.updated_at) }}</div>
+                    </div>
                   </div>
-                </el-option>
-              </el-select>
-              <div class="selection-meta">
-                <span>{{ selectedTemplate ? selectedTemplate.description : '选择模板可自动填充脚本和参数' }}</span>
+                </template>
+
+                <!-- Stress type: card grid (3 known scripts, toggle single/suite mode) -->
+                <template v-else-if="selectedTaskType === 'stress'">
+                  <!-- Mode toggle -->
+                  <div class="stress-mode-toggle">
+                    <span class="stress-mode-label">执行模式：</span>
+                    <el-radio-group v-model="stressSuiteMode" size="small">
+                      <el-radio-button :value="false">单个脚本</el-radio-button>
+                      <el-radio-button :value="true">压测套件</el-radio-button>
+                    </el-radio-group>
+                  </div>
+                  <div class="stress-mode-desc" v-if="!stressSuiteMode">
+                    选择一个压测脚本执行。
+                  </div>
+                  <div class="stress-mode-desc" v-else>
+                    可选择多个压测脚本，系统会按 GPU → CPU/内存 → 磁盘顺序串行执行，并生成多份报告。
+                  </div>
+                  <div class="file-card-grid stress-cards">
+                    <div
+                      :class="['file-select-card stress-card', { 'is-active': isStressCardActive(file.path) }]"
+                      v-for="file in filteredFiles"
+                      :key="file.path"
+                      @click="onStressCardClick(file.path)"
+                    >
+                      <div class="stress-card-check" v-if="stressSuiteMode && selectedStressScripts.includes(file.path)">✓</div>
+                      <div class="f-card-name">{{ file.name }}</div>
+                      <div class="f-card-desc">{{ stressCardDesc(file.name) }}</div>
+                    </div>
+                  </div>
+                  <!-- Sequential execution hint (suite mode only) -->
+                  <div class="stress-suite-hint" v-if="stressSuiteMode && selectedStressScripts.length >= 2">
+                    已选择 {{ selectedStressScripts.length }} 个压测脚本，
+                    将按 GPU → CPU/内存 → 磁盘顺序执行并生成 {{ selectedStressScripts.length }} 份报告
+                  </div>
+                </template>
+
+                <!-- Apptainer: dropdown -->
+                <template v-else-if="selectedTaskType === 'apptainer'">
+                  <el-select
+                    v-model="selectedFilePath"
+                    placeholder="选择 Apptainer 镜像文件"
+                    filterable
+                    class="runner-control"
+                    :disabled="isFormDisabled"
+                  >
+                    <el-option
+                      v-for="file in filteredFiles"
+                      :key="file.path"
+                      :label="file.name"
+                      :value="file.path"
+                    />
+                  </el-select>
+                </template>
+
+                <template v-else>
+                  <div class="empty-servers-hint">请先选择任务类型。</div>
+                </template>
               </div>
-              <el-alert
-                v-if="selectedTemplate?.warning"
-                :title="selectedTemplate.warning"
-                type="warning"
-                :closable="false"
-                class="template-warning"
-              />
-              <el-alert
-                v-if="templateScriptNotFound"
-                title="模板脚本不存在，请先在脚本知识库中上传或扫描该脚本。"
-                type="error"
-                :closable="false"
-                class="template-warning"
-              />
             </div>
 
-            <el-card v-if="selectedFile" shadow="never" class="info-card action-card">
-              <!-- 文件信息 (compact summary) -->
-              <div class="card-title">文件信息</div>
-              <div class="file-info-compact">
-                <div class="file-info-row file-info-name" :title="selectedFile.name">{{ selectedFile.name }}</div>
-                <div class="file-info-row file-info-sub">{{ selectedFile.displayCategory }} · {{ formatSize(selectedFile.size) }}</div>
-                <div class="file-info-row file-info-path" :title="selectedFile.relative_path">{{ selectedFile.relative_path }}</div>
-                <div class="file-info-row file-info-time">更新时间：{{ formatDate(selectedFile.updated_at) }}</div>
-              </div>
+            <el-card v-if="showParamCard" shadow="never" class="info-card action-card">
+              <div class="card-title step-title">④ 配置参数并执行</div>
+
+              <!-- 文件信息 (compact summary) - single mode -->
+              <template v-if="!stressSuiteMode">
+                <div class="card-title">文件信息</div>
+                <div class="file-info-compact">
+                  <div class="file-info-row file-info-name" :title="selectedFile?.name ?? ''">{{ selectedFile?.name }}</div>
+                  <div class="file-info-row file-info-sub">{{ selectedFile?.displayCategory }} · {{ formatSize(selectedFile?.size ?? 0) }}</div>
+                  <div class="file-info-row file-info-path" :title="selectedFile?.relative_path ?? ''">{{ selectedFile?.relative_path }}</div>
+                  <div class="file-info-row file-info-time">更新时间：{{ formatDate(selectedFile?.updated_at) }}</div>
+                </div>
+              </template>
+              <!-- 套件执行计划 - suite mode -->
+              <template v-else>
+                <div class="card-title">套件执行计划</div>
+                <div class="suite-plan">
+                  <div class="suite-plan-desc">
+                    将按 GPU → CPU/内存 → 磁盘顺序串行执行，每台服务器独立执行序列。
+                  </div>
+                  <div class="suite-plan-scripts">
+                    <div v-for="(item, idx) in suitePlanScripts" :key="item.path" class="suite-plan-item">
+                      <span class="suite-plan-idx">{{ idx + 1 }}</span>
+                      <span class="suite-plan-label">{{ item.label }}</span>
+                      <span class="suite-plan-file">{{ item.name }}</span>
+                    </div>
+                  </div>
+                </div>
+              </template>
 
               <!-- 执行参数 -->
               <div class="card-title" style="margin-top: 18px;">执行参数</div>
               <el-form label-width="110px" label-position="left">
-                <el-form-item :label="selectedFile.physical_category === 'apptainer' ? '目标目录' : '远程工作目录'">
-                  <el-input
-                    v-if="selectedFile.physical_category === 'apptainer'"
-                    :model-value="apptainerTargetDir"
-                    class="runner-control"
-                    readonly
-                  />
-                  <el-input
-                    v-else
-                    :model-value="remoteWorkDirTemplate"
-                    class="runner-control"
-                    readonly
-                  />
+                <el-form-item v-if="!stressSuiteMode" label="远端工作目录">
+                  <div v-if="selectedFile?.physical_category === 'apptainer'" class="readonly-path-hint">
+                    {{ apptainerTargetDir }}
+                  </div>
+                  <div v-else class="readonly-path-hint">
+                    {{ remoteWorkDirExample }}
+                  </div>
                 </el-form-item>
 
-                <div class="workdir-help">
-                  后续阶段会在远端该目录下执行脚本或存放文件。
-                </div>
-
-                <template v-if="selectedFile.physical_category === 'stress'">
+                <template v-if="selectedTaskType === 'stress'">
                   <el-form-item label="压测时长" required>
-                    <div class="duration-parts-vertical">
-                      <div class="duration-part">
-                        <el-input-number v-model="durationParts.hours" :min="0" :step="1" controls-position="right" :disabled="isFormDisabled" size="small" />
-                        <span>小时</span>
-                      </div>
-                      <div class="duration-part">
-                        <el-input-number v-model="durationParts.minutes" :min="0" :max="59" :step="1" controls-position="right" :disabled="isFormDisabled" size="small" />
-                        <span>分钟</span>
-                      </div>
-                      <div class="duration-part">
-                        <el-input-number v-model="durationParts.seconds" :min="0" :max="59" :step="1" controls-position="right" :disabled="isFormDisabled" size="small" />
-                        <span>秒</span>
-                      </div>
+                    <div class="duration-row">
+                      <el-input-number v-model="durationParts.hours" :min="0" :step="1" controls-position="right" :disabled="isFormDisabled" size="small" style="width:120px" />
+                      <span class="duration-unit">小时</span>
+                      <el-input-number v-model="durationParts.minutes" :min="0" :max="59" :step="1" controls-position="right" :disabled="isFormDisabled" size="small" style="width:120px" />
+                      <span class="duration-unit">分钟</span>
                     </div>
                   </el-form-item>
 
-                  <el-form-item label="采样间隔">
-                    <el-select v-model="stressFormParams.intervalSeconds" :disabled="isFormDisabled" style="width:140px">
-                      <el-option label="5 秒" :value="5" />
-                      <el-option label="10 秒" :value="10" />
-                      <el-option label="30 秒" :value="30" />
-                      <el-option label="60 秒" :value="60" />
-                    </el-select>
-                  </el-form-item>
-
-                  <!-- cpu_mem params -->
-                  <template v-if="selectedFile.name === 'cpu_mem_stress_report.sh'">
-                    <el-form-item label="内存占比 (%)">
-                      <el-slider v-model="stressFormParams.memoryPercent" :min="10" :max="95" :disabled="isFormDisabled" style="width:240px" />
-                    </el-form-item>
-                    <el-form-item label="CPU 线程数">
-                      <el-input-number v-model="stressFormParams.workers" :min="0" :max="1024" :disabled="isFormDisabled" controls-position="right" size="small" />
-                      <span class="form-help-inline">0 = 自动（按 CPU 核数）</span>
-                    </el-form-item>
-                  </template>
-
-                  <!-- disk params -->
-                  <template v-else-if="selectedFile.name === 'disk_stress_report.sh'">
-                    <el-form-item label="测试文件大小">
-                      <el-select v-model="stressFormParams.diskFileSize" :disabled="isFormDisabled" style="width:140px">
-                        <el-option label="1 GB" value="1G" />
-                        <el-option label="10 GB" value="10G" />
-                        <el-option label="50 GB" value="50G" />
-                        <el-option label="100 GB" value="100G" />
-                      </el-select>
-                    </el-form-item>
-                    <el-form-item label="测试目录">
-                      <el-input v-model="stressFormParams.diskPath" placeholder="~/ (默认)" :disabled="isFormDisabled" style="width:240px" />
-                    </el-form-item>
-                    <el-form-item label="磁盘线程数">
-                      <el-input-number v-model="stressFormParams.workers" :min="0" :max="1024" :disabled="isFormDisabled" controls-position="right" size="small" />
-                      <span class="form-help-inline">0 = 自动（按 CPU 核数）</span>
-                    </el-form-item>
-                  </template>
-
-                  <!-- gpu params -->
-                  <template v-else-if="selectedFile.name === 'gpu_stress_report.sh'">
-                    <el-form-item label="GPU ID">
-                      <el-input v-model="stressFormParams.gpuIds" placeholder="all 或 0,1,2" :disabled="isFormDisabled" style="width:200px" />
-                    </el-form-item>
-                    <el-form-item label="GPU 内存占比 (%)">
-                      <el-slider v-model="stressFormParams.gpuMemoryPercent" :min="10" :max="95" :disabled="isFormDisabled" style="width:240px" />
+                  <!-- disk_test_dir: only when disk_stress_report.sh is selected -->
+                  <template v-if="showDiskTestDir">
+                    <el-form-item label="远端磁盘测试目录">
+                      <div class="disk-test-dir-control">
+                        <el-input
+                          v-model="diskTestDir"
+                          placeholder="例如：/data 或 /mnt/nvme0；留空则使用远端工作目录"
+                          :disabled="isFormDisabled"
+                          clearable
+                          style="width:380px"
+                        />
+                        <div class="form-help-text">
+                          测试文件会写入该目录以压测对应磁盘；报告仍保存在远端工作目录并回收。请确认目录所在磁盘有足够空间。
+                        </div>
+                      </div>
                     </el-form-item>
                   </template>
                 </template>
 
-                <el-form-item v-else-if="selectedFile?.physical_category === 'apptainer'" label="覆盖方式">
-                  <div class="overwrite-control">
-                    <el-checkbox v-model="apptainerOverwrite" :disabled="isFormDisabled">
-                      覆盖远端已有文件
-                    </el-checkbox>
-                    <div class="overwrite-help">
-                      勾选后如果远端已存在同名 .sif 文件将直接覆盖；不勾选则任务失败并提示文件已存在。
+                <template v-else-if="selectedTaskType === 'apptainer'">
+                  <el-form-item label="覆盖方式">
+                    <div class="overwrite-control">
+                      <el-checkbox v-model="apptainerOverwrite" :disabled="isFormDisabled">
+                        覆盖远端已有文件
+                      </el-checkbox>
+                      <div class="overwrite-help">
+                        勾选后如果远端已存在同名 .sif 文件将直接覆盖；不勾选则任务失败并提示文件已存在。
+                      </div>
                     </div>
-                  </div>
-                </el-form-item>
-                <el-form-item v-else label="参数">
-                  <el-alert title="该类型无需参数" type="info" :closable="false" />
-                </el-form-item>
+                  </el-form-item>
+                </template>
+                <template v-else>
+                  <el-form-item label="参数">
+                    <el-alert title="该类型无需参数" type="info" :closable="false" />
+                  </el-form-item>
+                </template>
               </el-form>
 
               <el-alert
@@ -250,12 +277,6 @@
                 :closable="false"
               />
 
-              <el-alert
-                v-if="selectedTaskType === 'mpi' && selectedFile && !isAllowedMpiFile(selectedFile)"
-                :title="MPI_TASK_BLOCKED_MESSAGE"
-                type="warning"
-                :closable="false"
-              />
 
               <!-- 命令预览 -->
               <div class="preview-pane">
@@ -271,6 +292,13 @@
                     <el-button :loading="submitting" :disabled="isFormDisabled || submitting" @click="createTask">{{ executeButtonText }}</el-button>
                   </span>
                 </el-tooltip>
+              </div>
+            </el-card>
+            <!-- Placeholder when prereqs for step 4 are not met -->
+            <el-card v-else shadow="never" class="info-card action-card disabled-step-card">
+              <div class="card-title step-title">④ 配置参数并执行</div>
+              <div class="step-placeholder">
+                <span>请先完成前面的步骤。</span>
               </div>
             </el-card>
           </template>
@@ -430,9 +458,7 @@
                     {{
                       activeTask.task_type === 'apptainer'
                         ? '容器文件已上传到远端固定目录，未执行容器。'
-                        : activeTask.task_type === 'mpi'
-                          ? '当前 MPI 任务已执行完成。仅显式白名单脚本允许执行。'
-                          : '任务已完成，结果文件可用。'
+                        : '任务已完成，结果文件可用。'
                     }}
                   </div>
                 </template>
@@ -589,21 +615,27 @@
 
               <div class="live-content-area">
                 <template v-if="activePanel === 'logs'">
-                  <LogViewer
-                    v-if="activeTaskId"
-                    :logs="activeLogs"
-                    max-height="none"
-                    toolbar
-                    class="log-fill"
-                    @clear="activeLogs = []"
-                    @download="handleDownloadLogs"
-                  />
-                  <div v-else class="monitor-terminal-placeholder">尚未开始执行</div>
+                  <div class="log-tab-pane">
+                    <LogViewer
+                      v-if="activeTaskId"
+                      :logs="activeLogs"
+                      max-height="none"
+                      toolbar
+                      class="log-fill"
+                      @clear="activeLogs = []"
+                      @download="handleDownloadLogs"
+                    />
+                    <div v-else class="monitor-terminal-placeholder">尚未开始执行</div>
+                  </div>
                 </template>
                 <!-- CPU/Memory structured -->
                 <template v-else-if="activePanel === 'cpu_mem'">
                   <div v-if="!activeTaskId" class="monitor-empty">
                     <el-empty description="创建任务后可查看远程 CPU/内存快照" :image-size="60" />
+                  </div>
+                  <div v-else-if="monitorLoading && !monitorData" class="monitor-loading">
+                    <el-icon class="is-loading"><Loading /></el-icon>
+                    <span>正在获取 CPU/内存实时监控数据…</span>
                   </div>
                   <div v-else-if="!monitorData?.cpu_memory.available" class="monitor-empty">
                     <el-empty description="暂无 CPU/内存实时监控数据" :image-size="60" />
@@ -635,6 +667,10 @@
                   <div v-if="!activeTaskId" class="monitor-empty">
                     <el-empty description="创建任务后可查看远程磁盘快照" :image-size="60" />
                   </div>
+                  <div v-else-if="monitorLoading && !monitorData" class="monitor-loading">
+                    <el-icon class="is-loading"><Loading /></el-icon>
+                    <span>正在获取磁盘实时监控数据…</span>
+                  </div>
                   <div v-else-if="!monitorData?.disk.available" class="monitor-empty">
                     <el-empty description="暂无磁盘监控数据" :image-size="60" />
                     <div v-if="monitorData?.disk.message" class="monitor-empty-msg">{{ monitorData.disk.message }}</div>
@@ -658,9 +694,19 @@
                   <div v-if="!activeTaskId" class="monitor-empty">
                     <el-empty description="创建任务后可查看远程 GPU 快照" :image-size="60" />
                   </div>
+                  <div v-else-if="monitorLoading && !monitorData" class="monitor-loading">
+                    <el-icon class="is-loading"><Loading /></el-icon>
+                    <span>正在获取 GPU 实时监控数据…</span>
+                  </div>
                   <div v-else-if="!monitorData?.gpu.available" class="monitor-empty">
                     <el-empty description="暂无 GPU 实时监控数据" :image-size="60" />
-                    <div v-if="monitorData?.gpu.message" class="monitor-empty-msg">{{ monitorData.gpu.message }}</div>
+                    <div
+                      v-if="monitorData?.gpu.message"
+                      class="monitor-empty-msg"
+                      :class="{ 'monitor-empty-msg--warning': monitorData.gpu.message.includes('驱动不可用') }"
+                    >
+                      {{ monitorData.gpu.message }}
+                    </div>
                   </div>
                   <div v-else class="monitor-gpu-grid">
                     <el-card v-for="gpu in monitorData.gpu.items" :key="gpu.index" shadow="never" class="monitor-card">
@@ -689,6 +735,11 @@
           <span v-if="batchResult.skipped > 0" class="batch-summary-item batch-summary-skip">跳过 {{ batchResult.skipped }} 台</span>
           <span v-if="batchResult.failed > 0" class="batch-summary-item batch-summary-fail">失败 {{ batchResult.failed }} 台</span>
         </div>
+        <div class="batch-id-bar">
+          <span class="batch-id-label">批次 ID：</span>
+          <code class="batch-id-value">{{ batchResult.batch_id }}</code>
+          <span class="batch-script-name" v-if="batchResult.script_name">脚本：{{ batchResult.script_name }}</span>
+        </div>
         <el-table :data="batchResult.items" max-height="360" stripe size="small">
           <el-table-column prop="server_name" label="服务器" width="140" />
           <el-table-column label="结果" width="100">
@@ -708,70 +759,73 @@
       </template>
       <template #footer>
         <el-button @click="showBatchResult = false">关闭</el-button>
-        <el-button type="primary" @click="goToHistory">查看任务历史</el-button>
+        <el-button type="primary" @click="goToBatchHistory">查看批次详情</el-button>
+        <el-button @click="goToHistory">查看任务历史</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 压测套件结果弹窗 -->
+    <el-dialog v-model="showStressSuiteResult" title="压测套件已创建" width="650px" :close-on-click-modal="false">
+      <template v-if="stressSuiteResult">
+        <div class="batch-id-bar">
+          <span class="batch-id-label">批次 ID：</span>
+          <code class="batch-id-value">{{ stressSuiteResult.batch_id }}</code>
+        </div>
+        <div style="margin:10px 0; font-size:13px; color:#909399;">
+          子任务将按 GPU → CPU/内存 → 磁盘顺序串行执行，每台服务器独立执行序列。
+          请到任务历史批次视图查看实时状态和报告。
+        </div>
+        <el-table :data="stressSuiteResult.items" max-height="360" stripe size="small">
+          <el-table-column prop="server_name" label="服务器" width="140" />
+          <el-table-column prop="task_name" label="压测类型" width="120" />
+          <el-table-column label="状态" width="100">
+            <template #default="{ row }">
+              <el-tag v-if="row.status === 'PENDING'" type="info" size="small">等待执行</el-tag>
+              <el-tag v-else-if="row.status === 'RUNNING'" type="warning" size="small">执行中</el-tag>
+              <el-tag v-else-if="row.status === 'SUCCESS'" type="success" size="small">成功</el-tag>
+              <el-tag v-else-if="row.status === 'FAILED'" type="danger" size="small">失败</el-tag>
+              <el-tag v-else-if="row.status === 'SKIPPED'" type="warning" size="small">跳过</el-tag>
+              <el-tag v-else type="info" size="small">{{ row.status }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="task_id" label="任务 ID" min-width="240">
+            <template #default="{ row }">
+              <code v-if="row.task_id" class="batch-task-id">{{ row.task_id }}</code>
+              <span v-else class="batch-reason">—</span>
+            </template>
+          </el-table-column>
+        </el-table>
+      </template>
+      <template #footer>
+        <el-button @click="showStressSuiteResult = false">关闭</el-button>
+        <el-button type="primary" @click="goToBatchHistory">查看批次详情</el-button>
+        <el-button @click="goToHistory">查看任务历史</el-button>
       </template>
     </el-dialog>
 
     <!-- Diagnosis dialog -->
-    <el-dialog v-model="diagnosisVisible" title="任务失败诊断" width="680px" :close-on-click-modal="false" class="diagnosis-dialog">
-      <div v-loading="diagnosisLoading">
-        <template v-if="diagnosisData">
-          <div class="diag-header">
-            <el-tag :type="diagnosisLevelTagType" size="small" effect="dark">
-              {{ diagnosisLevelLabel }}
-            </el-tag>
-            <span class="diag-category">{{ diagnosisData.title }}</span>
-          </div>
-          <div class="diag-section">
-            <div class="diag-section-title">摘要</div>
-            <p class="diag-text">{{ diagnosisData.summary }}</p>
-          </div>
-          <div class="diag-section">
-            <div class="diag-section-title">可能原因</div>
-            <ul class="diag-list">
-              <li v-for="(cause, i) in diagnosisData.possible_causes" :key="i">{{ cause }}</li>
-            </ul>
-          </div>
-          <div class="diag-section">
-            <div class="diag-section-title">建议处理</div>
-            <ul class="diag-list">
-              <li v-for="(s, i) in diagnosisData.suggestions" :key="i">{{ s }}</li>
-            </ul>
-          </div>
-          <div class="diag-section">
-            <div class="diag-section-title">关键日志片段</div>
-            <div class="diag-evidence">
-              <div v-for="(line, i) in diagnosisData.evidence" :key="i" class="diag-evidence-line">
-                <span class="diag-evidence-num">{{ i + 1 }}</span>
-                <code>{{ line }}</code>
-              </div>
-              <el-empty v-if="!diagnosisData.evidence.length" description="无关键日志片段" :image-size="60" />
-            </div>
-          </div>
-        </template>
-        <el-empty v-else description="暂无诊断结果" :image-size="60" />
-      </div>
-      <template #footer>
-        <el-button @click="diagnosisVisible = false">关闭</el-button>
-        <el-button type="primary" @click="downloadLogsFromDiagnosis">下载完整日志</el-button>
-      </template>
-    </el-dialog>
+    <TaskDiagnosisDialog
+      v-model="diagnosisVisible"
+      :task-id="diagnosisTaskId"
+    />
   </section>
 </template>
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { listScriptFiles, type ScriptFileRecord } from '@/api/script'
-import { listServers, type ServerRecord } from '@/api/server'
+import { listServers, listTags, type ServerRecord, type TagSummary } from '@/api/server'
 import {
   batchRunTask,
   cancelTask,
+  createStressSuite,
   getTask,
   getTaskLogs,
   getTaskMonitor,
   monitorTask,
   type BatchTaskCreateResponse,
   type MonitorType,
+  type StressSuiteResponse,
   runTask,
   type RunTaskPayload,
   type TaskLogRecord,
@@ -780,7 +834,6 @@ import {
   type TaskType as ApiTaskType
 } from '@/api/task'
 import { downloadTaskLogs } from '@/api/task'
-import { getTaskDiagnosis, type TaskDiagnosisResponse } from '@/api/diagnosis'
 import { useTaskWebSocket } from '@/composables/useTaskWebSocket'
 import { formatDateTime } from '@/utils/time'
 import { buildConfirmContent } from '@/utils/confirm'
@@ -793,15 +846,15 @@ import {
   formatSeconds,
   getTaskDuration,
 } from '@/composables/useTaskProgress'
-import taskTemplates, { type TaskTemplate } from '@/constants/taskTemplates'
 import LogViewer from '@/components/LogViewer.vue'
 import StatusTag from '@/components/StatusTag.vue'
+import TaskDiagnosisDialog from '@/components/TaskDiagnosisDialog.vue'
+import { Loading } from '@element-plus/icons-vue'
 import { useRoute, useRouter } from 'vue-router'
 
 type DurationParts = {
   hours: number
   minutes: number
-  seconds: number
 }
 
 type TaskType = ApiTaskType
@@ -813,42 +866,37 @@ type TaskRunnerFile = ScriptFileRecord & {
 type MonitorPanel = 'logs' | 'cpu_mem' | 'disk' | 'gpu'
 
 type PageMode = 'config' | 'summary' | 'config-readonly'
-const ALLOWED_MPI_FILENAMES = [
-  'mpi_env_test.sh',
-  'install_oneapi_2022.sh',
-  'install_openmpi_4.1.6_aocc_aocl.sh'
-] as const
-const MPI_TASK_BLOCKED_MESSAGE = '当前阶段只允许执行 mpi_env_test.sh、install_oneapi_2022.sh、install_openmpi_4.1.6_aocc_aocl.sh。'
-
 const taskTypes: Array<{ label: string; value: TaskType }> = [
-  { label: '编译环境', value: 'mpi' },
+  { label: '编译环境', value: 'script' },
   { label: '压测脚本', value: 'stress' },
-  { label: 'Apptainer 容器', value: 'apptainer' },
-  { label: '测试脚本', value: 'test' }
+  { label: 'Apptainer 镜像', value: 'apptainer' },
 ]
+
+function taskTypeCardDesc(value: TaskType): string {
+  const descs: Record<TaskType, string> = {
+    script: '执行脚本知识库中的编译环境/安装/运维脚本',
+    stress: 'CPU/内存、磁盘、GPU 压测，支持参数化配置',
+    apptainer: '仅上传分发 .sif 镜像，不执行容器',
+  }
+  return descs[value] ?? ''
+}
+
+function selectTaskType(value: TaskType) {
+  selectedTaskType.value = value
+  selectedFilePath.value = ''
+  selectedStressScripts.value = []
+  stressSuiteMode.value = false
+  resetParamsForFile()
+}
 
 const mode = ref<PageMode>('config')
 
 const selectedServerIds = ref<number[]>([])
 const selectedTaskType = ref<TaskType | ''>('')
 const selectedFilePath = ref<string>('')
-const selectedTemplateId = ref<string>('')
-const selectedTemplate = computed<TaskTemplate | undefined>(() =>
-  taskTemplates.find((t) => t.id === selectedTemplateId.value)
-)
-const templateScriptNotFound = computed(() => {
-  if (!selectedTemplate.value || !selectedTemplate.value.scriptRelativePath) return false
-  if (!selectedFile.value) return true
-  // Match against both path and relative_path
-  const sp = selectedTemplate.value.scriptRelativePath
-  return !(
-    selectedFile.value.path === sp ||
-    selectedFile.value.path.endsWith('/' + sp) ||
-    selectedFile.value.relative_path === sp
-  )
-})
 const servers = ref<ServerRecord[]>([])
-const onlineServers = computed(() => servers.value.filter((s) => s.status === 'online'))
+const selectedTag = ref('')
+const tags = ref<TagSummary[]>([])
 const files = ref<TaskRunnerFile[]>([])
 const validating = ref(false)
 const submitting = ref(false)
@@ -857,6 +905,7 @@ const polling = ref(false)
 const monitorLoading = ref(false)
 const apptainerTargetDir = ref('~/hpcdeploy/apptainer/')
 const apptainerOverwrite = ref(true)
+const diskTestDir = ref('')
 const activeTaskId = ref('')
 const activeTask = ref<TaskRecord | null>(null)
 const activeLogs = ref<TaskLogRecord[]>([])
@@ -865,23 +914,16 @@ const monitorOutput = ref('')
 const monitorError = ref('')
 const monitorExecutedAt = ref('')
 const monitorData = ref<TaskMonitorStructuredResponse | null>(null)
-const stressParamDefaults = {
-  intervalSeconds: 10,
-  memoryPercent: 85,
-  workers: 0,
-  diskFileSize: '10G',
-  diskPath: '',
-  gpuIds: 'all',
-  gpuMemoryPercent: 85,
-}
 const durationParts = reactive<DurationParts>({
   hours: 0,
-  minutes: 0,
-  seconds: 60
+  minutes: 1
 })
-const stressFormParams = reactive({ ...stressParamDefaults })
 const batchResult = ref<BatchTaskCreateResponse | null>(null)
 const showBatchResult = ref(false)
+const selectedStressScripts = ref<string[]>([])
+const stressSuiteMode = ref(false)
+const stressSuiteResult = ref<StressSuiteResponse | null>(null)
+const showStressSuiteResult = ref(false)
 const router = useRouter()
 const route = useRoute()
 
@@ -908,8 +950,86 @@ function stopNowTimer() {
 }
 let pollTimer: number | null = null
 
+const allOnlineServers = computed(() => servers.value.filter((s) => s.status === 'online'))
+
+const filteredOnlineServers = computed(() => {
+  let list = allOnlineServers.value
+  if (selectedTag.value) {
+    list = list.filter((s) => s.tags?.includes(selectedTag.value))
+  }
+  return list
+})
+
+function onTagFilterChange() {
+  const validIds = new Set(filteredOnlineServers.value.map((s) => s.id))
+  selectedServerIds.value = selectedServerIds.value.filter((id) => validIds.has(id))
+}
+
+function toggleServerCard(id: number) {
+  const idx = selectedServerIds.value.indexOf(id)
+  if (idx >= 0) {
+    selectedServerIds.value.splice(idx, 1)
+  } else {
+    selectedServerIds.value.push(id)
+  }
+}
+
+function isStressCardActive(path: string): boolean {
+  if (stressSuiteMode.value) {
+    return selectedStressScripts.value.includes(path)
+  }
+  return selectedFilePath.value === path
+}
+
+function onStressCardClick(path: string) {
+  if (stressSuiteMode.value) {
+    toggleStressCard(path)
+  } else {
+    selectedFilePath.value = path
+  }
+}
+
+function toggleStressCard(path: string) {
+  const idx = selectedStressScripts.value.indexOf(path)
+  if (idx >= 0) {
+    selectedStressScripts.value.splice(idx, 1)
+  } else {
+    selectedStressScripts.value.push(path)
+  }
+}
+
+function stressCardDesc(name: string): string {
+  const descs: Record<string, string> = {
+    'cpu_mem_stress_report.sh': 'CPU 满载 + 内存压测，生成 XLSX 报告',
+    'disk_stress_report.sh': '磁盘 IO 压测，可指定远端磁盘测试目录',
+    'gpu_stress_report.sh': 'GPU 压测，按脚本默认 GPU 配置执行',
+  }
+  return descs[name] ?? ''
+}
+
+async function loadTags() {
+  try {
+    tags.value = (await listTags()).data.items
+  } catch { /* silent */ }
+}
+
+const STRESS_ORDER: Record<string, number> = {
+  'scripts/stress/gpu_stress_report.sh': 1,
+  'scripts/stress/cpu_mem_stress_report.sh': 2,
+  'scripts/stress/disk_stress_report.sh': 3,
+}
+
 const filteredFiles = computed(() => {
   if (!selectedTaskType.value) return []
+  if (selectedTaskType.value === 'script') {
+    // "script" type covers all non-stress, non-apptainer scripts
+    return files.value.filter((file) => file.physical_category !== 'stress' && file.physical_category !== 'apptainer')
+  }
+  if (selectedTaskType.value === 'stress') {
+    return files.value
+      .filter((file) => file.physical_category === 'stress')
+      .sort((a, b) => (STRESS_ORDER[a.path] || 99) - (STRESS_ORDER[b.path] || 99))
+  }
   return files.value.filter((file) => file.physical_category === selectedTaskType.value)
 })
 
@@ -919,8 +1039,30 @@ const selectedServers = computed(() => {
     .filter((s): s is ServerRecord => s != null)
 })
 const selectedFile = computed(() => filteredFiles.value.find((file) => file.path === selectedFilePath.value) ?? null)
+const showDiskTestDir = computed(() => {
+  if (selectedTaskType.value !== 'stress') return false
+  // Multi-select: check if disk_stress_report.sh is in selected paths
+  if (selectedStressScripts.value.some(p => p.includes('disk_stress_report.sh'))) return true
+  // Single-select legacy: check selectedFile
+  return selectedFile.value?.name === 'disk_stress_report.sh'
+})
+
+const suitePlanScripts = computed(() => {
+  const order = [
+    { path: 'stress/gpu_stress_report.sh', label: 'GPU 压测', name: 'gpu_stress_report.sh' },
+    { path: 'stress/cpu_mem_stress_report.sh', label: 'CPU/内存压测', name: 'cpu_mem_stress_report.sh' },
+    { path: 'stress/disk_stress_report.sh', label: '磁盘压测', name: 'disk_stress_report.sh' },
+  ]
+  return order.filter(item => selectedStressScripts.value.includes(item.path))
+})
 const isSingleServer = computed(() => selectedServerIds.value.length === 1)
 const isMultiServer = computed(() => selectedServerIds.value.length >= 2)
+
+const showParamCard = computed(() => {
+  if (selectedTaskType.value !== 'stress') return !!selectedFile.value
+  if (!stressSuiteMode.value) return !!selectedFile.value
+  return selectedStressScripts.value.length > 0
+})
 const activeTaskDisplayName = computed(() => {
   if (activeTask.value) {
     return formatTaskDisplayName(activeTask.value)
@@ -928,38 +1070,59 @@ const activeTaskDisplayName = computed(() => {
   return activeTaskId.value || '-'
 })
 
-const remoteWorkDirTemplate = computed(() => {
-  if (selectedTaskType.value === 'mpi') return '~/hpcdeploy/tasks/mpi/{datetime}'
-  if (selectedTaskType.value === 'stress') return '~/hpcdeploy/tasks/stress/{datetime}'
-  if (selectedTaskType.value === 'test') return '~/hpcdeploy/tasks/test/{datetime}'
-  return '~/hpcdeploy/apptainer/'
+function deriveRemoteDirPrefix(name: string, taskType: string): string {
+  let prefix = name.replace(/\.(sh|bash|py|sif)$/, '')
+  if (taskType === 'stress' && prefix.endsWith('_report')) {
+    prefix = prefix.slice(0, -'_report'.length)
+  }
+  // Sanitize: only keep a-zA-Z0-9_- , merge consecutive _, strip leading/trailing
+  prefix = prefix.replace(/[^a-zA-Z0-9_-]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '').slice(0, 80)
+  return prefix || 'task'
+}
+
+const remoteWorkDirExample = computed<string>(() => {
+  if (selectedTaskType.value === 'apptainer') return apptainerTargetDir.value
+  const base = selectedTaskType.value === 'stress' ? '~/hpcdeploy/tasks/stress' : '~/hpcdeploy/tasks/script'
+  const fname = selectedFile.value?.name
+  if (!fname) return `${base}/<脚本名>_YYYYMMDD-HHMMSS`
+  const prefix = deriveRemoteDirPrefix(fname, selectedTaskType.value || '')
+  return `${base}/${prefix}_YYYYMMDD-HHMMSS`
 })
 
 const stressDurationSeconds = computed(() => {
   const normalized = normalizeDurationParts(durationParts)
-  return normalized.hours * 3600 + normalized.minutes * 60 + normalized.seconds
+  return normalized.hours * 3600 + normalized.minutes * 60
 })
 
 const commandPreview = computed(() => {
+  // Stress suite: suite mode with 2+ scripts
+  if (selectedTaskType.value === 'stress' && stressSuiteMode.value && selectedStressScripts.value.length >= 2) {
+    const dur = stressDurationSeconds.value
+    const interval = calcStressInterval(dur)
+    const order = [
+      { path: 'stress/gpu_stress_report.sh', label: 'GPU 压测', name: 'gpu_stress_report.sh' },
+      { path: 'stress/cpu_mem_stress_report.sh', label: 'CPU/内存压测', name: 'cpu_mem_stress_report.sh' },
+      { path: 'stress/disk_stress_report.sh', label: '磁盘压测', name: 'disk_stress_report.sh' },
+    ]
+    const selected = order.filter(item => selectedStressScripts.value.some(p => p.includes(item.name)))
+    const lines = selected.map((item, i) => {
+      let prefix = ''
+      if (item.name === 'disk_stress_report.sh' && diskTestDir.value.trim()) {
+        prefix = `DISK_TEST_DIR='${diskTestDir.value.trim()}' `
+      }
+      return `${i + 1}. ${item.label}：\n   ${prefix}./${item.name} ${dur} ${interval}`
+    })
+    return `压测套件串行执行：\n\n${lines.join('\n\n')}`
+  }
+  if (stressSuiteMode.value) return '请选择知识库文件'
   if (!selectedFile.value) return '请选择知识库文件'
   if (selectedFile.value.physical_category === 'stress') {
-    const env: string[] = []
-    const fname = selectedFile.value.name
-    if (fname === 'cpu_mem_stress_report.sh') {
-      if (stressFormParams.memoryPercent !== 85) env.push(`MEMORY_PERCENT=${stressFormParams.memoryPercent}`)
-      if (stressFormParams.workers > 0) env.push(`WORKERS=${stressFormParams.workers}`)
-    } else if (fname === 'disk_stress_report.sh') {
-      if (stressFormParams.diskFileSize !== '10G') env.push(`TEST_FILE_SIZE=${stressFormParams.diskFileSize}`)
-      if (stressFormParams.diskPath) env.push(`TEST_DIR=${stressFormParams.diskPath}`)
-      if (stressFormParams.workers > 0) env.push(`WORKERS=${stressFormParams.workers}`)
-    } else if (fname === 'gpu_stress_report.sh') {
-      if (stressFormParams.gpuIds !== 'all') env.push(`CUDA_VISIBLE_DEVICES=${stressFormParams.gpuIds}`)
-    }
-    const prefix = env.length ? env.join(' ') + ' ' : ''
-    return `${prefix}./${fname} ${stressDurationSeconds.value} ${stressFormParams.intervalSeconds}`
-  }
-  if (selectedFile.value.physical_category === 'mpi' && !isAllowedMpiFile(selectedFile.value)) {
-    return MPI_TASK_BLOCKED_MESSAGE
+    const dur = stressDurationSeconds.value
+    const interval = calcStressInterval(dur)
+    const prefix = selectedFile.value.name === 'disk_stress_report.sh' && diskTestDir.value.trim()
+      ? `DISK_TEST_DIR='${diskTestDir.value.trim()}' `
+      : ''
+    return `${prefix}./${selectedFile.value.name} ${dur} ${interval}`
   }
   if (selectedFile.value.physical_category === 'apptainer') {
     return `复制容器到远程目录：${apptainerTargetDir.value}`
@@ -967,26 +1130,28 @@ const commandPreview = computed(() => {
   return `bash ./${selectedFile.value.name}`
 })
 
+const isFileSelected = computed(() => {
+  if (!selectedTaskType.value) return false
+  if (selectedTaskType.value === 'stress' && stressSuiteMode.value) {
+    return selectedStressScripts.value.length >= 2
+  }
+  return selectedFilePath.value !== ''
+})
+
 const executeTooltip = computed(() => {
+  if (selectedTaskType.value === 'stress' && stressSuiteMode.value && selectedStressScripts.value.length >= 2) {
+    return `${selectedStressScripts.value.length} 个压测脚本按 GPU → CPU/内存 → 磁盘顺序串行执行，每台服务器独立序列`
+  }
   if (isMultiServer.value) {
     return `将在 ${selectedServerIds.value.length} 台服务器上批量创建任务，每台独立执行`
-  }
-  if (selectedTaskType.value === 'test') {
-    return '当前会上传并执行 test 脚本'
   }
   if (selectedTaskType.value === 'stress') {
     return '当前会上传并执行 stress 脚本，时长由参数决定'
   }
-  if (selectedTaskType.value === 'mpi') {
-    if (selectedFile.value && !isAllowedMpiFile(selectedFile.value)) {
-      return MPI_TASK_BLOCKED_MESSAGE
-    }
-    return '当前只允许执行 3 个显式白名单 mpi 脚本，不会放开 mpi 目录下全部 .sh'
-  }
   if (selectedTaskType.value === 'apptainer') {
     return '当前会把 .sif 容器文件上传到固定远端目录，不执行容器'
   }
-  return '当前阶段仅上传，不执行'
+  return `当前会上传并执行 ${selectedTaskType.value || '选择'} 类型的脚本`
 })
 
 const currentTaskType = computed<TaskType | ''>(() => {
@@ -1003,23 +1168,10 @@ const visibleMonitorTabs = computed<Array<{ name: MonitorPanel; label: string; m
       { name: 'gpu', label: 'GPU', monitorType: 'gpu' }
     ]
   }
-  if (currentTaskType.value === 'mpi') {
-    return [
-      { name: 'logs', label: '执行日志' },
-      { name: 'cpu_mem', label: 'CPU/内存', monitorType: 'cpu_mem' },
-      { name: 'disk', label: '磁盘 IO', monitorType: 'disk' }
-    ]
-  }
   if (currentTaskType.value === 'apptainer') {
     return [
       { name: 'logs', label: '执行日志' },
       { name: 'disk', label: '磁盘 IO', monitorType: 'disk' }
-    ]
-  }
-  if (currentTaskType.value === 'test') {
-    return [
-      { name: 'logs', label: '执行日志' },
-      { name: 'cpu_mem', label: 'CPU/内存', monitorType: 'cpu_mem' }
     ]
   }
   return [{ name: 'logs', label: '执行日志' }]
@@ -1078,6 +1230,7 @@ const showProgress = computed(() => {
 const executeButtonText = computed(() => {
   if (submitting.value) return '创建中...'
   if (isFormDisabled.value) return '执行中...'
+  if (selectedTaskType.value === 'stress' && stressSuiteMode.value) return '开始串行压测'
   return '开始执行'
 })
 
@@ -1088,60 +1241,47 @@ async function loadOptions() {
     ...file,
     displayCategory: file.display_category
   }))
+  void loadTags()
 }
 
 function normalizeDurationParts(parts: DurationParts) {
   return {
     hours: Math.max(0, Math.trunc(parts.hours || 0)),
-    minutes: Math.min(59, Math.max(0, Math.trunc(parts.minutes || 0))),
-    seconds: Math.min(59, Math.max(0, Math.trunc(parts.seconds || 0)))
+    minutes: Math.min(59, Math.max(0, Math.trunc(parts.minutes || 0)))
   }
 }
 
-function isAllowedMpiFile(file: TaskRunnerFile | null | undefined): boolean {
-  return Boolean(
-    file &&
-    file.physical_category === 'mpi' &&
-    ALLOWED_MPI_FILENAMES.includes(file.name as (typeof ALLOWED_MPI_FILENAMES)[number])
-  )
+/**
+ * Auto-calculate sampling interval based on total duration.
+ */
+function calcStressInterval(durationSeconds: number): number {
+  if (durationSeconds <= 600) return 10
+  if (durationSeconds <= 3600) return 30
+  if (durationSeconds <= 43200) return 60
+  return 120
 }
 
 function categoryLabel(cat: string): string {
-  const map: Record<string, string> = { stress: '压测', mpi: '安装', apptainer: '容器', test: '测试' }
+  const map: Record<string, string> = { stress: '压测', apptainer: '容器' }
   return map[cat] || cat
 }
 
 function resetParamsForFile() {
-  Object.assign(durationParts, { hours: 0, minutes: 1, seconds: 0 })
-  Object.assign(stressFormParams, { ...stressParamDefaults })
+  Object.assign(durationParts, { hours: 0, minutes: 1 })
   apptainerTargetDir.value = '~/hpcdeploy/apptainer/'
+  diskTestDir.value = ''
 }
 
 function buildStressParams(): Record<string, unknown> {
-  const fname = selectedFile.value?.name ?? ''
+  const dur = stressDurationSeconds.value
   const params: Record<string, unknown> = {
-    duration_seconds: stressDurationSeconds.value,
+    duration_seconds: dur,
+    interval_seconds: calcStressInterval(dur),
   }
-  params.interval_seconds = stressFormParams.intervalSeconds
-
-  if (fname === 'cpu_mem_stress_report.sh') {
-    params.memory_percent = stressFormParams.memoryPercent
-    if (stressFormParams.workers > 0) {
-      params.workers = stressFormParams.workers
-    }
-  } else if (fname === 'disk_stress_report.sh') {
-    params.disk_file_size = stressFormParams.diskFileSize
-    if (stressFormParams.diskPath) {
-      params.disk_path = stressFormParams.diskPath
-    }
-    if (stressFormParams.workers > 0) {
-      params.workers = stressFormParams.workers
-    }
-  } else if (fname === 'gpu_stress_report.sh') {
-    if (stressFormParams.gpuIds !== 'all') {
-      params.gpu_ids = stressFormParams.gpuIds
-    }
-    params.gpu_memory_percent = stressFormParams.gpuMemoryPercent
+  const hasDisk = selectedFile.value?.name === 'disk_stress_report.sh' ||
+    selectedStressScripts.value.some(p => p.includes('disk_stress_report.sh'))
+  if (hasDisk && diskTestDir.value.trim()) {
+    params.disk_test_dir = diskTestDir.value.trim()
   }
   return params
 }
@@ -1157,12 +1297,28 @@ async function validateRunner() {
       ElMessage.error('必须选择任务类型')
       return
     }
-    if (!selectedFile.value) {
-      ElMessage.error('必须选择知识库文件')
+
+    // ── Stress suite mode ──
+    if (selectedTaskType.value === 'stress' && stressSuiteMode.value) {
+      if (selectedStressScripts.value.length === 0) {
+        ElMessage.error('必须选择至少一个压测脚本')
+        return
+      }
+      if (selectedStressScripts.value.length < 2) {
+        ElMessage.warning('只选一个脚本请使用"单个脚本"模式')
+        return
+      }
+      if (stressDurationSeconds.value <= 0) {
+        ElMessage.error('压测脚本总秒数必须大于 0')
+        return
+      }
+      ElMessage.success('参数校验通过，将按 GPU → CPU/内存 → 磁盘顺序执行。')
       return
     }
-    if (selectedTaskType.value === 'mpi' && !isAllowedMpiFile(selectedFile.value)) {
-      ElMessage.error(MPI_TASK_BLOCKED_MESSAGE)
+
+    // ── Single mode (stress single + script + apptainer) ──
+    if (!selectedFile.value) {
+      ElMessage.error('必须选择知识库文件')
       return
     }
     if (selectedFile.value.physical_category === 'stress' && stressDurationSeconds.value <= 0) {
@@ -1171,10 +1327,6 @@ async function validateRunner() {
     }
     if (selectedFile.value.physical_category === 'apptainer' && !apptainerTargetDir.value.trim()) {
       ElMessage.error('Apptainer 目标目录不能为空')
-      return
-    }
-    if (selectedTaskType.value === 'mpi') {
-      ElMessage.success('参数校验通过。当前只允许执行 3 个显式白名单 mpi 脚本。')
       return
     }
     if (selectedTaskType.value === 'apptainer') {
@@ -1200,34 +1352,56 @@ async function createTask() {
     ElMessage.error('必须选择任务类型')
     return
   }
-  if (!selectedFile.value) {
-    ElMessage.error('必须选择知识库文件')
-    return
-  }
-  if (selectedTaskType.value === 'mpi' && !isAllowedMpiFile(selectedFile.value)) {
-    ElMessage.error(MPI_TASK_BLOCKED_MESSAGE)
-    return
-  }
-  if (selectedFile.value.physical_category === 'stress' && stressDurationSeconds.value <= 0) {
-    ElMessage.error('压测脚本总秒数必须大于 0')
-    return
-  }
-  if (selectedFile.value.physical_category === 'apptainer' && !apptainerTargetDir.value.trim()) {
-    ElMessage.error('Apptainer 目标目录不能为空')
+
+  // ── Stress Suite flow (suite mode, 2+ scripts) ──
+  if (selectedTaskType.value === 'stress' && stressSuiteMode.value) {
+    if (selectedStressScripts.value.length < 2) {
+      ElMessage.warning('压测套件模式请选择至少 2 个压测脚本')
+      return
+    }
+    await createStressSuiteTask()
     return
   }
 
-  // ── Multi-server: batch flow ──
-  if (isMultiServer.value) {
+  // ── Single/batch stress file check ──
+  if (selectedTaskType.value === 'stress') {
+    if (!selectedFile.value) {
+      ElMessage.error('必须选择压测脚本')
+      return
+    }
+    if (stressDurationSeconds.value <= 0) {
+      ElMessage.error('压测脚本总秒数必须大于 0')
+      return
+    }
+  } else if (selectedTaskType.value === 'apptainer') {
+    if (!selectedFile.value) {
+      ElMessage.error('必须选择 Apptainer 文件')
+      return
+    }
+    if (!apptainerTargetDir.value.trim()) {
+      ElMessage.error('Apptainer 目标目录不能为空')
+      return
+    }
+  } else {
+    // Script type
+    if (!selectedFile.value) {
+      ElMessage.error('必须选择知识库文件')
+      return
+    }
+  }
+
+  // ── Batch flow (2+ servers) ──
+  if (selectedServerIds.value.length >= 2) {
     await batchCreate()
     return
   }
 
-  // ── Single-server: existing flow ──
+  // ── Single-server flow ──
   submitting.value = true
   try {
+    const serverId = selectedServerIds.value[0]
     const payload: RunTaskPayload = {
-      server_id: selectedServerIds.value[0],
+      server_id: serverId,
       task_type: selectedTaskType.value as TaskType,
       file_path: selectedFile.value.path,
     }
@@ -1267,6 +1441,25 @@ async function createTask() {
         return
       }
     }
+    ElMessage.error(getApiErrorMessage(error))
+  } finally {
+    submitting.value = false
+  }
+}
+
+async function createStressSuiteTask() {
+  submitting.value = true
+  try {
+    const payload = {
+      server_ids: selectedServerIds.value,
+      script_paths: selectedStressScripts.value,
+      params: buildStressParams(),
+    }
+    const result = (await createStressSuite(payload)).data
+    stressSuiteResult.value = result
+    showStressSuiteResult.value = true
+    ElMessage.success(`压测套件已创建，batch_id: ${result.batch_id}`)
+  } catch (error: unknown) {
     ElMessage.error(getApiErrorMessage(error))
   } finally {
     submitting.value = false
@@ -1338,6 +1531,12 @@ function goToHistory() {
   router.push('/history')
 }
 
+function goToBatchHistory() {
+  const batchId = batchResult.value?.batch_id
+  router.push(batchId ? `/history?view=batch&batch_id=${batchId}` : '/history')
+  showBatchResult.value = false
+}
+
 async function recoverTask() {
   const queryTaskId = route.query.task_id
   if (typeof queryTaskId !== 'string' || !queryTaskId) return
@@ -1354,6 +1553,7 @@ async function recoverTask() {
       localStorage.removeItem('hpcdeploy.currentTaskId')
       return
     }
+    startNowTimer()
     polling.value = true
     startMonitorPolling()
     pollTimer = window.setInterval(() => {
@@ -1506,11 +1706,14 @@ function stopMonitorPolling() {
 async function fetchMonitorData() {
   if (!activeTaskId.value) return
   if (!['cpu_mem', 'disk', 'gpu'].includes(activePanel.value)) return
+  monitorLoading.value = true
   try {
     const res = await getTaskMonitor(activeTaskId.value)
     monitorData.value = res.data
   } catch {
     // Silent fail — keep previous data
+  } finally {
+    monitorLoading.value = false
   }
 }
 
@@ -1559,20 +1762,8 @@ function paramsPreviewString(): string {
     return `覆盖远端文件：${apptainerOverwrite.value ? '是' : '否'}`
   }
   if (selectedTaskType.value !== 'stress' || !selectedFile.value) return '无'
-  const fname = selectedFile.value.name
   const dur = stressDurationSeconds.value
-  const parts: string[] = [`时长 ${dur} 秒`]
-  if (fname === 'cpu_mem_stress_report.sh') {
-    if (stressFormParams.memoryPercent) parts.push(`内存占比 ${stressFormParams.memoryPercent}%`)
-    if (stressFormParams.workers > 0) parts.push(`线程数 ${stressFormParams.workers}`)
-  } else if (fname === 'disk_stress_report.sh') {
-    parts.push(`文件大小 ${stressFormParams.diskFileSize}`)
-    if (stressFormParams.diskPath) parts.push(`目录 ${stressFormParams.diskPath}`)
-  } else if (fname === 'gpu_stress_report.sh') {
-    if (stressFormParams.gpuIds !== 'all') parts.push(`GPU ID ${stressFormParams.gpuIds}`)
-    parts.push(`GPU 内存占比 ${stressFormParams.gpuMemoryPercent}%`)
-  }
-  return parts.join('，')
+  return `时长 ${dur} 秒`
 }
 
 async function batchCreate() {
@@ -1588,29 +1779,14 @@ async function batchCreate() {
   } else if (selectedTaskType.value === 'apptainer') {
     confirmMsg += `\n覆盖远端文件：${apptainerOverwrite.value ? '是' : '否'}`
   }
-  // MPI install template risk warning handled by template's .warning field
-  const isMpiInstall = selectedTaskType.value === 'mpi' && selectedFile.value.name.startsWith('install_')
-
   try {
     await ElMessageBox.confirm(confirmMsg, '批量执行任务', {
       confirmButtonText: '确认执行',
       cancelButtonText: '取消',
-      type: isMpiInstall ? 'warning' : 'info',
+      type: 'info',
       dangerouslyUseHTMLString: false,
       customClass: 'batch-confirm-dialog',
     })
-    // Extra confirm for MPI install scripts
-    if (isMpiInstall) {
-      await ElMessageBox.confirm(
-        '该脚本会修改目标服务器编译环境。请确认目标服务器和脚本来源无误后再执行。',
-        '风险确认',
-        {
-          confirmButtonText: '我已确认，继续执行',
-          cancelButtonText: '取消执行',
-          type: 'warning',
-        }
-      )
-    }
   } catch {
     return
   }
@@ -1664,6 +1840,9 @@ const formattedReadonlyDuration = computed(() => {
   if (typeof params.disk_path === 'string') {
     parts.push(`目录 ${params.disk_path}`)
   }
+  if (typeof params.disk_test_dir === 'string') {
+    parts.push(`磁盘测试目录 ${params.disk_test_dir}`)
+  }
   if (typeof params.gpu_ids === 'string') {
     parts.push(`GPU ID ${params.gpu_ids}`)
   }
@@ -1690,6 +1869,8 @@ function statusLabel(status: string | null | undefined): string {
 
 watch(selectedTaskType, () => {
   selectedFilePath.value = ''
+  selectedStressScripts.value = []
+  stressSuiteMode.value = false
   resetParamsForFile()
   activePanel.value = 'logs'
 })
@@ -1698,55 +1879,13 @@ watch(selectedFilePath, () => {
   resetParamsForFile()
 })
 
-watch(selectedTemplateId, (newId) => {
-  if (!newId) return
-  const tmpl = taskTemplates.find((t) => t.id === newId)
-  if (!tmpl) return
-
-  // Find matching script file by path or relative_path
-  const match = files.value.find(
-    (f) =>
-      f.path === tmpl.scriptRelativePath ||
-      f.path.endsWith('/' + tmpl.scriptRelativePath) ||
-      f.relative_path === tmpl.scriptRelativePath
-  )
-  if (!match) {
-    // Script not found — selectedTemplate is set but templateScriptNotFound will show error
-    return
-  }
-
-  // Set task type and file
-  selectedTaskType.value = tmpl.scriptType
-  selectedFilePath.value = match.path
-
-  // Apply params
-  const p = tmpl.params
-  if (Object.keys(p).length > 0) {
-    // Reset durationParts from params (duration_seconds is special)
-    let remaining = true
-    for (const [key, val] of Object.entries(p)) {
-      if (key === 'duration_seconds' && typeof val === 'number' && remaining) {
-        const h = Math.floor(val / 3600)
-        const m = Math.floor((val % 3600) / 60)
-        const s = val % 60
-        Object.assign(durationParts, { hours: h, minutes: m, seconds: s })
-        remaining = false
-      } else if (key === 'interval_seconds' && typeof val === 'number') {
-        stressFormParams.intervalSeconds = val
-      } else if (key === 'memory_percent' && typeof val === 'number') {
-        stressFormParams.memoryPercent = val
-      } else if (key === 'workers' && typeof val === 'number') {
-        stressFormParams.workers = val
-      } else if (key === 'disk_file_size' && typeof val === 'string') {
-        stressFormParams.diskFileSize = val
-      } else if (key === 'disk_path' && typeof val === 'string') {
-        stressFormParams.diskPath = val
-      } else if (key === 'gpu_ids' && typeof val === 'string') {
-        stressFormParams.gpuIds = val
-      } else if (key === 'gpu_memory_percent' && typeof val === 'number') {
-        stressFormParams.gpuMemoryPercent = val
-      }
-    }
+watch(stressSuiteMode, (newMode) => {
+  if (newMode) {
+    // Switching to suite mode: clear single selection
+    selectedFilePath.value = ''
+  } else {
+    // Switching to single mode: clear multi selection
+    selectedStressScripts.value = []
   }
 })
 
@@ -1758,7 +1897,7 @@ watch(activePanel, (panel) => {
   if (panel === 'logs') return
   const selectedPanel = visibleMonitorTabs.value.find((item) => item.name === panel)
   if (selectedPanel?.monitorType && activeTaskId.value) {
-    void fetchMonitorSnapshot(selectedPanel.monitorType)
+    void fetchMonitorData()
   }
 })
 
@@ -1770,23 +1909,11 @@ watch(visibleMonitorTabs, (tabs) => {
 
 // ── Diagnosis ──
 const diagnosisVisible = ref(false)
-const diagnosisLoading = ref(false)
-const diagnosisData = ref<TaskDiagnosisResponse['diagnosis'] | null>(null)
 const diagnosisTaskId = ref('')
 
-async function openTaskDiagnosis(task: any) {
+function openTaskDiagnosis(task: any) {
   diagnosisTaskId.value = task.task_id
-  diagnosisData.value = null
   diagnosisVisible.value = true
-  diagnosisLoading.value = true
-  try {
-    const resp = (await getTaskDiagnosis(task.task_id)).data
-    diagnosisData.value = resp.diagnosis
-  } catch {
-    ElMessage.error('获取诊断失败')
-  } finally {
-    diagnosisLoading.value = false
-  }
 }
 
 function handleDownloadLogs() {
@@ -1795,31 +1922,25 @@ function handleDownloadLogs() {
   }
 }
 
-function downloadLogsFromDiagnosis() {
-  if (diagnosisTaskId.value) {
-    downloadTaskLogs(diagnosisTaskId.value)
-  }
-}
-
-const diagnosisLevelTagType = computed(() => {
-  if (!diagnosisData.value) return 'info'
-  const level = diagnosisData.value.level
-  if (level === 'error') return 'danger'
-  if (level === 'warning') return 'warning'
-  return 'info'
-})
-
-const diagnosisLevelLabel = computed(() => {
-  if (!diagnosisData.value) return ''
-  const level = diagnosisData.value.level
-  if (level === 'error') return '错误'
-  if (level === 'warning') return '警告'
-  return '信息'
-})
-
 onMounted(async () => {
   await loadOptions()
   await recoverTask()
+
+  // Phase 27A: pre-select server from query param
+  const qServerId = route.query.server_id
+  if (typeof qServerId === 'string' && qServerId && !activeTaskId.value) {
+    const sid = parseInt(qServerId, 10)
+    if (!isNaN(sid)) {
+      const target = servers.value.find((s) => s.id === sid)
+      if (target) {
+        if (target.status === 'online') {
+          selectedServerIds.value = [sid]
+        } else {
+          ElMessage.warning(`服务器 ${target.name} 当前离线，请先探测或测试 SSH。`)
+        }
+      }
+    }
+  }
 })
 onBeforeUnmount(() => {
   stopTaskPolling()
@@ -1880,12 +2001,317 @@ onBeforeUnmount(() => {
   align-items: stretch;
 }
 
+.server-filter-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+  align-items: center;
+}
+
+.clear-tag-btn {
+  margin-top: 8px;
+}
+
+.tag-filter-inline {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+}
+
+/* ── Server selection cards ── */
+.server-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px;
+}
+
+.server-select-card {
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 10px;
+  padding: 10px;
+  cursor: pointer;
+  background: var(--el-fill-color-blank);
+  transition: all 0.15s ease;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.server-select-card:hover {
+  border-color: var(--el-color-primary);
+}
+
+.server-select-card.is-active {
+  border-color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+}
+
+.s-card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.s-card-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+.s-card-check {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--el-color-primary);
+  color: #fff;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.s-card-host {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.s-card-user {
+  font-size: 11px;
+  color: var(--el-text-color-placeholder);
+}
+
+.s-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.selected-multi-text {
+  color: var(--el-color-primary);
+  font-weight: 500;
+}
+
+/* ── File selection cards (script / stress) ── */
+.file-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.file-select-card {
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 10px;
+  padding: 10px;
+  cursor: pointer;
+  background: var(--el-fill-color-blank);
+  transition: all 0.15s ease;
+}
+
+.file-select-card:hover {
+  border-color: var(--el-color-primary);
+}
+
+.file-select-card.is-active {
+  border-color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+}
+
+.f-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+  word-break: break-all;
+}
+
+.f-card-path {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  margin-top: 2px;
+  word-break: break-all;
+}
+
+.f-card-meta {
+  font-size: 11px;
+  color: var(--el-text-color-placeholder);
+  margin-top: 4px;
+}
+
+.f-card-desc {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+/* ── Stress mode toggle ── */
+.stress-mode-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.stress-mode-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+  white-space: nowrap;
+}
+
+.stress-mode-desc {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  margin-bottom: 8px;
+  line-height: 1.5;
+}
+
+/* ── Suite execution plan ── */
+.suite-plan {
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: var(--el-color-primary-light-9);
+}
+
+.suite-plan-desc {
+  font-size: 13px;
+  color: var(--el-color-primary);
+  margin-bottom: 10px;
+  line-height: 1.5;
+}
+
+.suite-plan-scripts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.suite-plan-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.suite-plan-idx {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--el-color-primary);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.suite-plan-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+.suite-plan-file {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  font-family: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+}
+
+.stress-card-check {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--el-color-primary);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.stress-card {
+  position: relative;
+}
+
+.stress-suite-hint {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--el-color-primary);
+  padding: 8px 12px;
+  background: var(--el-color-primary-light-9);
+  border-radius: 6px;
+  line-height: 1.4;
+}
+
+/* ── Task type cards ── */
+.task-type-cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.task-type-card {
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 12px;
+  padding: 10px 10px 8px;
+  cursor: pointer;
+  transition: border-color 0.2s, background-color 0.2s;
+  background: var(--el-fill-color-blank);
+}
+
+.task-type-card:hover {
+  border-color: var(--el-color-primary);
+}
+
+.task-type-card.is-active {
+  border-color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+}
+
+.task-type-card-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+  margin-bottom: 4px;
+}
+
+.task-type-card-desc {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.4;
+}
+
+@media (max-width: 640px) {
+  .task-type-cards {
+    grid-template-columns: 1fr;
+  }
+}
+
 .selection-card {
   border: 1px solid var(--el-border-color-light);
   border-radius: 14px;
   padding: 12px 12px 10px;
   background: var(--el-fill-color-blank);
   min-height: 96px;
+}
+
+.selection-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.selection-label-row .selection-label {
+  margin-bottom: 0;
 }
 
 .selection-label {
@@ -1909,51 +2335,6 @@ onBeforeUnmount(() => {
   min-height: 24px;
 }
 
-.server-option-checkbox {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-}
-
-.server-opt-check {
-  font-size: 16px;
-  line-height: 1;
-  min-width: 18px;
-  text-align: center;
-}
-
-.server-opt-name {
-  font-weight: 600;
-  font-size: 14px;
-  color: var(--el-text-color-primary);
-  min-width: 60px;
-}
-
-.server-opt-host {
-  font-size: 13px;
-  color: var(--el-text-color-secondary);
-  font-family: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
-  min-width: 120px;
-}
-
-.empty-servers-hint {
-  color: var(--el-text-color-secondary);
-  font-size: 13px;
-  padding: 20px 0;
-  text-align: center;
-}
-
-.file-option {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.file-option-path {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-}
 
 .template-option {
   display: flex;
@@ -2049,34 +2430,41 @@ onBeforeUnmount(() => {
   color: var(--el-text-color-placeholder);
 }
 
-.duration-parts-vertical {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  width: 100%;
-}
-
-.duration-part {
+.duration-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 4px;
+  flex-wrap: wrap;
 }
 
-.duration-part span {
+.duration-unit {
   font-size: 14px;
   color: var(--el-text-color-primary);
-  min-width: 32px;
+  white-space: nowrap;
+  margin-right: 10px;
 }
 
-.duration-part .el-input-number {
-  width: 160px;
-}
-
-.workdir-help {
-  margin: -4px 0 12px;
-  color: var(--el-text-color-secondary);
+.readonly-path-hint {
+  background: var(--el-fill-color-lighter);
+  color: var(--el-text-color-regular);
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-family: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', Consolas, monospace;
   font-size: 13px;
   line-height: 1.5;
+  width: 100%;
+  position: relative;
+  word-break: break-all;
+}
+
+.readonly-path-hint::before {
+  content: '系统自动生成：';
+  display: block;
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  margin-bottom: 2px;
 }
 
 .preview-pane {
@@ -2099,13 +2487,14 @@ onBeforeUnmount(() => {
   padding: 10px 12px;
   border-radius: 10px;
   background: rgba(15, 23, 42, 0.88);
-  color: #f8fafc;
+  color: #e5eefc;
   font-family: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-x: hidden;
+  overflow-y: auto;
   min-height: 44px;
-  max-height: 56px;
+  max-height: 280px;
   line-height: 1.7;
   font-size: 14px;
 }
@@ -2305,7 +2694,7 @@ onBeforeUnmount(() => {
 
 /* Fix white bar: remove default white background from tabs header */
 .live-tabs-area :deep(.el-tabs__header) {
-  margin-bottom: 6px;
+  margin-bottom: 0;
   background: transparent;
 }
 
@@ -2313,14 +2702,30 @@ onBeforeUnmount(() => {
   background: transparent;
 }
 
+.live-tabs-area :deep(.el-tabs__active-bar) {
+  background: #409eff;
+}
+
+/* Ensure the tabs nav scroll area inherits transparent bg */
+.live-tabs-area :deep(.el-tabs__nav-scroll) {
+  background: transparent;
+}
+
+/* Hide the default bottom border line from tab header */
+.live-tabs-area :deep(.el-tabs__nav-wrap::after) {
+  display: none;
+}
+
 .live-tabs-area :deep(.el-tabs__content) {
   flex: none;
   height: 0;
   overflow: hidden;
+  padding: 0 !important;
 }
 
 .live-tabs-area :deep(.el-tab-pane) {
   display: none;
+  padding: 0 !important;
 }
 
 .monitor-tabs {
@@ -2335,11 +2740,31 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 
+.log-tab-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: #0f172a;
+  border-radius: 0 0 14px 14px;
+}
+
 .log-fill {
   flex: 1;
   min-height: 0;
   max-height: none !important;
   overflow: auto;
+  background: #0f172a;
+  border-radius: 0 0 14px 14px;
+}
+
+.log-fill :deep(.log-viewer__toolbar) {
+  border-radius: 0;
+  border-top: none;
+}
+
+.log-fill :deep(.log-viewer) {
+  border-radius: 0 0 14px 14px;
 }
 
 .monitor-terminal,
@@ -2420,6 +2845,27 @@ onBeforeUnmount(() => {
   font-size: 13px;
   color: var(--el-text-color-secondary);
   text-align: center;
+}
+
+.monitor-empty-msg--warning {
+  color: var(--el-color-warning);
+  font-weight: 500;
+}
+
+/* ── Monitor loading state ── */
+.monitor-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 60px 20px;
+  flex: 1;
+  color: var(--el-text-color-secondary);
+  font-size: 14px;
+}
+
+.monitor-loading .el-icon.is-loading {
+  font-size: 22px;
 }
 
 /* ── GPU grid ── */
@@ -2606,6 +3052,19 @@ onBeforeUnmount(() => {
   color: #64748b;
 }
 
+.form-help-text {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #94a3b8;
+}
+
+.disk-test-dir-control {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .overwrite-control {
   display: flex;
   flex-direction: column;
@@ -2637,6 +3096,33 @@ onBeforeUnmount(() => {
 .batch-summary-ok    { color: var(--el-color-success); }
 .batch-summary-skip  { color: var(--el-color-warning); }
 .batch-summary-fail  { color: var(--el-color-danger); }
+
+.batch-id-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 8px 14px;
+  background: var(--el-fill-color-lighter);
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.batch-id-label {
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
+}
+
+.batch-id-value {
+  font-family: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  color: var(--el-color-primary);
+  font-size: 12px;
+}
+
+.batch-script-name {
+  color: var(--el-text-color-secondary);
+  margin-left: auto;
+}
 
 .batch-task-id {
   font-family: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
@@ -2676,69 +3162,64 @@ onBeforeUnmount(() => {
   }
 }
 
-/* ── Diagnosis dialog ── */
-.diagnosis-dialog :deep(.diag-header) {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 20px;
+/* ── Step UI ── */
+.step-label {
+  font-size: 15px;
 }
-.diagnosis-dialog :deep(.diag-category) {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--el-text-color-primary);
+
+.step-complete-tag {
+  margin-left: 8px;
 }
-.diagnosis-dialog :deep(.diag-section) {
-  margin-bottom: 18px;
-}
-.diagnosis-dialog :deep(.diag-section-title) {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--el-text-color-primary);
-  margin-bottom: 8px;
-  padding-bottom: 4px;
-  border-bottom: 1px solid var(--el-border-color-light);
-}
-.diagnosis-dialog :deep(.diag-text) {
-  font-size: 14px;
-  color: var(--el-text-color-regular);
-  line-height: 1.6;
-  margin: 0;
-}
-.diagnosis-dialog :deep(.diag-list) {
-  margin: 0;
-  padding-left: 20px;
-}
-.diagnosis-dialog :deep(.diag-list li) {
-  font-size: 14px;
-  color: var(--el-text-color-regular);
-  line-height: 1.8;
-}
-.diagnosis-dialog :deep(.diag-evidence) {
-  background: #1e293b;
-  border-radius: 6px;
-  padding: 12px;
-  max-height: 300px;
-  overflow-y: auto;
-}
-.diagnosis-dialog :deep(.diag-evidence-line) {
-  display: flex;
-  gap: 10px;
-  padding: 4px 0;
-  font-family: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+
+.step-tip-bar {
+  background: var(--el-color-warning-light-9);
+  border: 1px solid var(--el-color-warning-light-7);
+  border-radius: 8px;
+  padding: 8px 14px;
+  margin-bottom: 10px;
   font-size: 13px;
+  color: var(--el-color-warning-dark-2);
   line-height: 1.5;
 }
-.diagnosis-dialog :deep(.diag-evidence-num) {
-  color: #64748b;
-  min-width: 20px;
-  text-align: right;
-  flex-shrink: 0;
-  user-select: none;
+
+.s-card-hint {
+  font-size: 11px;
+  color: var(--el-text-color-placeholder);
+  margin-top: 2px;
+  text-align: center;
+  padding-top: 2px;
+  border-top: 1px solid var(--el-border-color-lighter);
 }
-.diagnosis-dialog :deep(.diag-evidence-line code) {
-  color: #e2e8f0;
-  white-space: pre-wrap;
-  word-break: break-all;
+
+.server-select-card.is-active .s-card-hint {
+  color: var(--el-color-primary);
+  border-top-color: var(--el-color-primary-light-5);
+}
+
+.step-title.step-title {
+  font-size: 15px;
+  padding-bottom: 12px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.disabled-step-card {
+  opacity: 0.6;
+}
+
+.step-placeholder {
+  padding: 32px 0;
+  text-align: center;
+  color: var(--el-text-color-secondary);
+  font-size: 14px;
+}
+
+.selection-label-row .step-complete-tag {
+  margin-right: auto;
+  margin-left: 8px;
+}
+
+.selection-label-row .step-label {
+  flex-shrink: 0;
 }
 </style>

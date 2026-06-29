@@ -78,6 +78,7 @@
           @cancel-task="cancelHistoryTask"
           @delete-task="handleDelete"
           @diagnose-task="openDiagnosis"
+          @view-batch="goToBatch"
         />
       </div>
 
@@ -170,12 +171,20 @@
                     <el-table-column label="结束时间" width="145">
                       <template #default="{ row: t }">{{ formatDate(t.ended_at) }}</template>
                     </el-table-column>
-                    <el-table-column label="操作" width="160" fixed="right">
+                    <el-table-column label="操作" width="320" fixed="right">
                       <template #default="{ row: t }">
-                        <el-button size="small" link @click.stop="openBatchTaskLogs(t)">日志</el-button>
-                        <el-button v-if="t.has_artifacts" size="small" link @click.stop="openBatchTaskArtifacts(t)">文件</el-button>
-                        <el-button v-if="t.status === 'FAILED'" size="small" link type="warning" @click.stop="diagnoseBatchTask(t)">诊断</el-button>
-                        <el-button size="small" link @click.stop="continueBatchTask(t)">查看</el-button>
+                        <div class="batch-task-actions">
+                          <el-button size="small" link @click.stop="openBatchTaskLogs(t)">日志</el-button>
+                          <el-button size="small" link :disabled="!t.has_artifacts" @click.stop="openBatchTaskArtifacts(t)">报告</el-button>
+                          <el-button
+                            size="small"
+                            link
+                            :disabled="!isBatchTaskTerminal(t.status)"
+                            @click.stop="batchTaskDownloadReport(t)"
+                          >下载报告</el-button>
+                          <el-button size="small" link @click.stop="continueBatchTask(t)">查看</el-button>
+                          <el-button v-if="isFailureStatus(t.status)" size="small" link type="danger" @click.stop="diagnoseBatchTask(t)">诊断</el-button>
+                        </div>
                       </template>
                     </el-table-column>
                     <el-table-column label="错误" min-width="180" show-overflow-tooltip>
@@ -385,12 +394,20 @@
             <el-table-column label="结束时间" width="160">
               <template #default="{ row }">{{ formatDate(row.ended_at) }}</template>
             </el-table-column>
-            <el-table-column label="操作" width="180" fixed="right">
+            <el-table-column label="操作" width="320" fixed="right">
               <template #default="{ row }">
-                <el-button size="small" link @click="openBatchTaskLogs(row)">日志</el-button>
-                <el-button v-if="row.has_artifacts" size="small" link @click="openBatchTaskArtifacts(row)">文件</el-button>
-                <el-button v-if="row.status === 'FAILED'" size="small" link type="warning" @click="diagnoseBatchTask(row)">诊断</el-button>
-                <el-button size="small" link @click="continueBatchTask(row)">查看</el-button>
+                <div class="batch-task-actions">
+                  <el-button size="small" link @click="openBatchTaskLogs(row)">日志</el-button>
+                  <el-button size="small" link :disabled="!row.has_artifacts" @click="openBatchTaskArtifacts(row)">报告</el-button>
+                  <el-button
+                    size="small"
+                    link
+                    :disabled="!isBatchTaskTerminal(row.status)"
+                    @click="batchTaskDownloadReport(row)"
+                  >下载报告</el-button>
+                  <el-button size="small" link @click="continueBatchTask(row)">查看</el-button>
+                  <el-button v-if="isFailureStatus(row.status)" size="small" link type="danger" @click="diagnoseBatchTask(row)">诊断</el-button>
+                </div>
               </template>
             </el-table-column>
             <el-table-column label="错误" min-width="200" show-overflow-tooltip>
@@ -755,6 +772,37 @@ function resetBatchFilters() {
   loadBatches()
 }
 
+/**
+ * Switch to batch view and expand the batch containing a subtask.
+ * Called when user clicks "查看批次" on a task card.
+ */
+async function goToBatch(task: TaskRecord) {
+  const batchId = task.batch_id
+  if (!batchId) return
+
+  viewMode.value = 'batches'
+  batchFilters.status = undefined
+  batchFilters.keyword = batchId
+  batchFilters.page = 1
+  expandedBatchKeys.value = []
+  expandedBatchData.value = {}
+  expandedBatchError.value = {}
+
+  await loadBatches(true)
+
+  const found = batchItems.value.find(b => b.batch_id === batchId)
+  if (found) {
+    expandedBatchKeys.value = [batchId]
+    expandedBatchLoading.value[batchId] = true
+    loadBatchDetailData(batchId)
+    await nextTick()
+    restoreExpandedRows()
+  } else {
+    ElMessage.warning('当前筛选条件下未显示该批次，请清空筛选后查看')
+  }
+  checkAutoRefresh()
+}
+
 // ── Auto-refresh ──
 
 function startAutoRefresh() {
@@ -837,6 +885,37 @@ function formatDate(value: string | null | undefined): string {
     return value.replace('T', ' ').substring(0, 19)
   } catch {
     return value
+  }
+}
+
+const BATCH_TASK_TERMINAL = new Set(['SUCCESS', 'FAILED', 'CANCELED', 'TIMEOUT'])
+const FAILURE_STATUSES = new Set(['FAILED', 'PARTIAL_FAILED', 'TIMEOUT', 'CANCELED'])
+
+function isBatchTaskTerminal(status: string): boolean {
+  return BATCH_TASK_TERMINAL.has(status)
+}
+
+function isFailureStatus(status: string): boolean {
+  return FAILURE_STATUSES.has(status)
+}
+
+async function batchTaskDownloadReport(task: BatchTaskDetailItem) {
+  if (!isBatchTaskTerminal(task.status)) {
+    ElMessage.warning('报告尚未生成')
+    return
+  }
+  const tid = task.task_id
+  try {
+    const resp = await listArtifacts(tid)
+    const xlsxFiles = resp.data.files.filter(f => f.name.endsWith('.xlsx'))
+    if (xlsxFiles.length === 0) {
+      ElMessage.warning('未找到 xlsx 报告')
+      return
+    }
+    const target = xlsxFiles.find(f => /report/i.test(f.name)) || xlsxFiles[0]
+    window.open(`/api/tasks/${tid}/artifacts/${encodeURIComponent(target.name)}/download`, '_blank')
+  } catch (err) {
+    ElMessage.error(`下载失败：${getApiErrorMessage(err)}`)
   }
 }
 
@@ -1436,5 +1515,18 @@ onUnmounted(() => {
 
 .batch-summary-canceled {
   color: var(--el-text-color-placeholder);
+}
+
+/* ── Batch subtask action buttons ── */
+.batch-task-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  white-space: nowrap;
+}
+
+.batch-task-actions .el-button {
+  margin-left: 0;
+  padding: 0;
 }
 </style>

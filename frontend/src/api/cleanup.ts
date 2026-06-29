@@ -61,6 +61,8 @@ export interface RemoteDirInfo {
 
 export interface RemoteScanResult {
   server_id: number
+  remote_user?: string
+  remote_home?: string
   items: RemoteDirInfo[]
   error: string | null
 }
@@ -96,7 +98,11 @@ export interface RemoteServerScanResult {
   server_id: number
   server_name: string
   host: string
+  remote_user?: string
+  remote_home?: string
   status: string // "success" or "error"
+  server_status?: string // "online" or "offline" — synced server status
+  message?: string | null // human-readable summary for failed servers
   error: string | null
   directories: RemoteDirectoryScan[]
 }
@@ -108,8 +114,8 @@ export interface RemoteScanAllResult {
   items: RemoteServerScanResult[]
 }
 
-export function scanAllRemote() {
-  return request.post<RemoteScanAllResult>('/cleanup/remote/scan-all')
+export function scanAllRemote(params?: { tag?: string }) {
+  return request.post<RemoteScanAllResult>('/cleanup/remote/scan-all', undefined, { params })
 }
 
 // ── Apptainer (read-only) ──

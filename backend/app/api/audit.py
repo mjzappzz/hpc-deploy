@@ -2,6 +2,7 @@ import json
 import logging
 from datetime import datetime
 
+from app.core.auth import require_admin_token
 from app.db.database import get_db
 from app.models.audit_log import AuditLog
 from app.schemas.audit import AuditLogItem, AuditLogPage
@@ -30,6 +31,7 @@ def _row_to_item(row: AuditLog) -> AuditLogItem:
         target_type=row.target_type,
         target_id=row.target_id,
         target_name=row.target_name,
+        server_id=row.server_id,
         server_name=row.server_name,
         task_id=row.task_id,
         status=row.status,
@@ -50,6 +52,7 @@ def list_audit_logs(
     start_time: str | None = Query(None),
     end_time: str | None = Query(None),
     db: Session = Depends(get_db),
+    _: str = Depends(require_admin_token),
 ) -> AuditLogPage:
     """List audit logs with pagination and filtering."""
 

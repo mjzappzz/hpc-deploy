@@ -24,6 +24,7 @@ class ServerDetectResponse(BaseModel):
     memory_info: str | None = None
     disk_info: str | None = None
     gpu_info: str | None = None
+    gpu_status: str | None = None
     network_info: str | None = None
     summary: ServerProbeSummary | None = None
     error: str | None = None

@@ -8,6 +8,7 @@ export interface AuditLogItem {
   target_type: string | null
   target_id: string | null
   target_name: string | null
+  server_id: number | null
   server_name: string | null
   task_id: string | null
   status: string | null

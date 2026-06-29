@@ -6,7 +6,7 @@
       </div>
       <div class="log-viewer__toolbar-right">
         <el-button size="small" :type="autoScroll ? 'default' : 'warning'" plain @click="toggleScroll">
-          {{ autoScroll ? '暂停滚动' : '恢复滚动' }}
+          {{ autoScroll ? '暂停滚动' : '继续滚动' }}
         </el-button>
         <el-button size="small" plain @click="$emit('clear')">清空显示</el-button>
         <el-button size="small" plain @click="handleCopy">复制日志</el-button>
@@ -26,7 +26,7 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue'
+import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import type { TaskLogRecord } from '@/api/task'
 import { formatDateTime } from '@/utils/time'
@@ -74,6 +74,41 @@ function toggleScroll() {
     })
   }
 }
+
+function handleScroll() {
+  const el = containerRef.value
+  if (!el) return
+  const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+  autoScroll.value = distanceToBottom <= 80
+}
+
+function scrollToBottom() {
+  autoScroll.value = true
+  nextTick(() => {
+    const el = containerRef.value
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+  })
+}
+
+onMounted(() => {
+  const el = containerRef.value
+  if (el) {
+    el.addEventListener('scroll', handleScroll, { passive: true })
+  }
+  if (autoScroll.value) {
+    scrollToBottom()
+  }
+})
+
+onUnmounted(() => {
+  const el = containerRef.value
+  if (el) {
+    el.removeEventListener('scroll', handleScroll)
+  }
+})
+
+defineExpose({ scrollToBottom })
 
 function handleCopy() {
   const text = props.logs

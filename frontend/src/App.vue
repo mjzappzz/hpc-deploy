@@ -23,25 +23,25 @@
           <el-icon><Operation /></el-icon>
           <span>任务执行</span>
         </el-menu-item>
-        <el-menu-item index="/history">
-          <el-icon><Tickets /></el-icon>
-          <span>任务历史</span>
-        </el-menu-item>
         <el-menu-item index="/audit-logs">
           <el-icon><List /></el-icon>
-          <span>审计日志</span>
+          <span class="menu-label-row"><span>审计日志</span><el-tag size="small" class="admin-badge">Admin</el-tag></span>
         </el-menu-item>
         <el-menu-item index="/cleanup">
           <el-icon><Delete /></el-icon>
-          <span>清理中心</span>
+          <span class="menu-label-row"><span>清理中心</span><el-tag size="small" class="admin-badge">Admin</el-tag></span>
         </el-menu-item>
         <el-menu-item index="/scripts">
           <el-icon><Document /></el-icon>
           <span>脚本知识库</span>
         </el-menu-item>
+        <el-menu-item index="/history">
+          <el-icon><Tickets /></el-icon>
+          <span>任务历史</span>
+        </el-menu-item>
         <el-menu-item index="/settings">
           <el-icon><Setting /></el-icon>
-          <span>系统设置</span>
+          <span class="menu-label-row"><span>系统设置</span><el-tag size="small" class="admin-badge">Admin</el-tag></span>
         </el-menu-item>
       </el-menu>
     </aside>
@@ -51,7 +51,9 @@
       <!-- topbar -->
       <header class="app-topbar">
         <h1 class="topbar-title">{{ routeTitle }}</h1>
-        <el-tag type="success" effect="plain" size="small">DEV</el-tag>
+        <div class="topbar-right">
+          <el-tag type="success" effect="plain" size="small">DEV</el-tag>
+        </div>
       </header>
 
       <!-- content -->
@@ -200,6 +202,25 @@ html, body, #app {
   color: #1677ff;
 }
 
+/* Admin badge in sidebar */
+.menu-label-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.admin-badge {
+  background: #fef3c7 !important;
+  color: #92400e !important;
+  border: 1px solid #fde68a !important;
+  font-size: 10px !important;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  padding: 0 6px !important;
+  line-height: 18px !important;
+  height: 18px !important;
+}
+
 /* === main area (scroll container) === */
 .app-main-area {
   margin-left: var(--sidebar-width);
@@ -230,6 +251,12 @@ html, body, #app {
   font-size: 18px;
   font-weight: 600;
   color: #1f2937;
+}
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 /* === content === */

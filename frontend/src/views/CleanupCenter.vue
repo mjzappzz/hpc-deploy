@@ -17,7 +17,7 @@
       <div class="cleanup-section-card">
         <div class="cleanup-section-header">
           <div class="cleanup-section-title">远端目录</div>
-          <div class="cleanup-section-desc">扫描在线服务器上的 $HOME/hpcdeploy/tasks、downloads、tmp，不会扫描或清理 Apptainer 镜像目录。</div>
+          <div class="cleanup-section-desc">扫描在线服务器登录用户 HOME 下的 hpcdeploy 临时目录：$HOME/hpcdeploy/tasks、downloads、tmp。不同登录用户对应不同 HOME，例如 root 对应 /root，普通用户对应 /home/&lt;user&gt;。不会扫描或清理 Apptainer 镜像目录。</div>
         </div>
 
         <!-- 远端临时目录 -->
@@ -43,6 +43,9 @@
                     :value="srv.id"
                   />
                 </el-select>
+                <el-select v-model="scanFilterTag" placeholder="标签" clearable size="small" style="width:120px; margin-right:4px;">
+                  <el-option v-for="t in tags" :key="t.name" :label="t.name" :value="t.name" />
+                </el-select>
                 <el-button size="small" :loading="scanSingleRemoteLoading" :disabled="!remoteScanServerId" @click="doScanSingleRemote">扫描选中</el-button>
                 <el-button size="small" :loading="scanAllRemoteLoading" @click="doScanAllRemote">扫描全部在线服务器</el-button>
               </div>
@@ -53,11 +56,15 @@
             <span v-if="onlineServers.length === 0">暂无在线服务器</span>
             <span v-else>点击"扫描全部在线服务器"或选择服务器后点击"扫描选中"</span>
           </div>
+          <div v-else-if="remoteServers.length === 0 && remoteScanned" class="section-placeholder">
+            <span v-if="onlineServers.length === 0">暂无在线服务器可扫描</span>
+            <span v-else>扫描失败，请查看后端日志或重新测试服务器 SSH 连接</span>
+          </div>
           <el-table v-else :data="remoteServers" max-height="400" stripe size="small" style="width: 100%">
             <el-table-column type="expand" width="48">
               <template #default="{ row }">
                 <div v-if="row.status === 'error'" class="expand-placeholder is-error">
-                  扫描失败：{{ row.error }}
+                  <span>{{ row.message || row.error || '扫描失败' }}</span>
                 </div>
                 <div v-else class="remote-dir-expand">
                   <el-table :data="row.directories" size="small" stripe style="width: 100%">
@@ -99,10 +106,24 @@
             </el-table-column>
             <el-table-column prop="server_name" label="服务器" min-width="150" />
             <el-table-column prop="host" label="地址" min-width="180" show-overflow-tooltip />
-            <el-table-column label="扫描状态" width="120">
+            <el-table-column label="远端用户" width="120">
               <template #default="{ row }">
-                <el-tag v-if="row.status === 'success'" type="success" size="small">成功</el-tag>
-                <el-tag v-else type="danger" size="small">失败</el-tag>
+                <el-tooltip v-if="row.remote_user" :content="`用户：${row.remote_user}${row.remote_home ? ' / HOME：' + row.remote_home : ''}`" placement="top">
+                  <span>{{ row.remote_user }}</span>
+                </el-tooltip>
+                <span v-else class="noop-text">-</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="扫描状态" width="140">
+              <template #default="{ row }">
+                <template v-if="row.status === 'success'">
+                  <el-tag type="success" size="small">成功</el-tag>
+                </template>
+                <template v-else>
+                  <el-tooltip :content="row.message || row.error || '扫描失败'" placement="top">
+                    <el-tag type="danger" size="small">失败，已标记离线</el-tag>
+                  </el-tooltip>
+                </template>
               </template>
             </el-table-column>
             <el-table-column label="总大小" width="140" align="right">
@@ -232,6 +253,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { requireAdminConfirm } from '@/composables/useAdminConfirm'
 import {
   deleteLocalArtifacts,
   deleteRemote,
@@ -242,22 +264,30 @@ import {
   type ApptainerImageItem,
   type LocalArtifactDirectory,
   type RemoteDirectoryScan,
+  type RemoteScanAllResult,
   type RemoteServerScanResult,
 } from '@/api/cleanup'
-import { listServers, type ServerRecord } from '@/api/server'
+import { listServers, listTags, type ServerRecord, type TagSummary } from '@/api/server'
 import { formatDateTime } from '@/utils/time'
 
 // ── Servers list ──
 const servers = ref<ServerRecord[]>([])
+const scanFilterTag = ref('')
+const tags = ref<TagSummary[]>([])
 const onlineServers = computed(() => servers.value.filter((s) => s.status === 'online'))
+
+async function loadTags() {
+  try {
+    tags.value = (await listTags()).data.items
+  } catch { /* silent */ }
+}
 
 onMounted(async () => {
   try {
     const res = await listServers()
     servers.value = res.data
-  } catch {
-    // silently fail
-  }
+  } catch { /* silent */ }
+  void loadTags()
 })
 
 // ── Format helpers ──
@@ -311,6 +341,8 @@ function onArtifactDirSelection(selection: LocalArtifactDirectory[]) {
 }
 
 async function doDeleteArtifactDir(dir: LocalArtifactDirectory) {
+  const ok = await requireAdminConfirm('删除任务结果')
+  if (!ok) return
   deletingArtifactDir.value = dir.relative_path
   try {
     await ElMessageBox.confirm(
@@ -339,6 +371,8 @@ async function doDeleteArtifactDir(dir: LocalArtifactDirectory) {
 }
 
 async function doDeleteSelectedArtifacts() {
+  const ok = await requireAdminConfirm('批量删除任务结果')
+  if (!ok) return
   if (selectedArtifactDirPaths.value.length === 0) return
   try {
     await ElMessageBox.confirm(
@@ -419,6 +453,22 @@ function computeRemoteTotalFiles(server: RemoteServerScanResult) {
   return server.directories.reduce((sum, d) => sum + (d.exists ? d.file_count : 0), 0)
 }
 
+/** Internal: call scan-all API and populate table, no messages. Returns result or null. */
+async function _scanAllRemote(): Promise<RemoteScanAllResult | null> {
+  if (onlineServers.value.length === 0) return null
+  const params: Record<string, string> = {}
+  if (scanFilterTag.value) params.tag = scanFilterTag.value
+  const res = (await scanAllRemote(Object.keys(params).length > 0 ? params : undefined)).data
+  remoteServers.value = res.items
+  remoteScanned.value = true
+  // Refresh server list so offline servers are reflected in dropdowns
+  try {
+    const sr = await listServers()
+    servers.value = sr.data
+  } catch { /* silent */ }
+  return res
+}
+
 async function doScanAllRemote() {
   if (onlineServers.value.length === 0) {
     ElMessage.info('暂无在线服务器')
@@ -426,9 +476,17 @@ async function doScanAllRemote() {
   }
   scanAllRemoteLoading.value = true
   try {
-    const res = (await scanAllRemote()).data
-    remoteServers.value = res.items
-    remoteScanned.value = true
+    const res = await _scanAllRemote()
+    if (!res) return
+    if (res.total_servers === 0) {
+      ElMessage.info('暂无在线服务器可扫描')
+    } else if (res.success > 0 && res.failed === 0) {
+      ElMessage.success('扫描完成')
+    } else if (res.success > 0 && res.failed > 0) {
+      ElMessage.warning('部分服务器扫描失败，已同步更新服务器状态')
+    } else {
+      ElMessage.error('扫描全部服务器失败')
+    }
   } catch {
     ElMessage.error('扫描全部服务器失败')
   } finally {
@@ -449,6 +507,8 @@ async function doScanSingleRemote() {
       server_id: res.server_id,
       server_name: serverInfo?.name || `ID:${res.server_id}`,
       host: serverInfo?.host || '',
+      remote_user: res.remote_user,
+      remote_home: res.remote_home,
       status: res.error ? 'error' : 'success',
       error: res.error,
       directories: res.items.map((item) => ({
@@ -468,6 +528,11 @@ async function doScanSingleRemote() {
       remoteServers.value.push(converted)
     }
     remoteScanned.value = true
+    // Refresh server list to reflect online/offline status
+    try {
+      const sr = await listServers()
+      servers.value = sr.data
+    } catch { /* silent */ }
   } catch {
     ElMessage.error('扫描服务器失败')
   } finally {
@@ -480,6 +545,8 @@ function findServerForRemote(serverId: number) {
 }
 
 async function confirmRemoteClean(server: RemoteServerScanResult, dir: RemoteDirectoryScan) {
+  const ok = await requireAdminConfirm('清理远端目录')
+  if (!ok) return
   const srvInfo = findServerForRemote(server.server_id)
   const serverDesc = srvInfo
     ? `${srvInfo.name} / ${srvInfo.host}`
@@ -530,6 +597,8 @@ async function _rescanSingleRemote(serverId: number) {
       server_id: res.server_id,
       server_name: srvInfo?.name || `ID:${res.server_id}`,
       host: srvInfo?.host || '',
+      remote_user: res.remote_user,
+      remote_home: res.remote_home,
       status: res.error ? 'error' : 'success',
       error: res.error,
       directories: res.items.map((item) => ({
@@ -564,18 +633,22 @@ async function doScanAll() {
   scanAllLoading.value = true
   try {
     const promises: Array<Promise<unknown>> = [doScanArtifacts(), doScanApptainer()]
-
     if (onlineServers.value.length > 0) {
-      // If already scanned remotely, re-scan all; otherwise do a fresh scan-all
-      promises.push(doScanAllRemote())
+      promises.push(_scanAllRemote())
     }
+    const results = await Promise.allSettled(promises)
 
-    await Promise.allSettled(promises)
+    const allFulfilled = results.every(r => r.status === 'fulfilled')
+    const someFulfilled = results.some(r => r.status === 'fulfilled')
 
     if (onlineServers.value.length === 0) {
       ElMessage.success('已扫描本地目录。暂无在线服务器，未扫描远端临时目录。')
-    } else {
+    } else if (allFulfilled) {
       ElMessage.success('扫描完成')
+    } else if (someFulfilled) {
+      ElMessage.warning('部分模块扫描失败')
+    } else {
+      ElMessage.error('扫描失败')
     }
   } finally {
     scanAllLoading.value = false

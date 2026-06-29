@@ -72,6 +72,8 @@ class RemoteDirInfo(BaseModel):
 
 class RemoteScanResult(BaseModel):
     server_id: int
+    remote_user: str = ""
+    remote_home: str = ""
     items: list[RemoteDirInfo]
     error: str | None = None
 
@@ -130,7 +132,11 @@ class RemoteServerScanResult(BaseModel):
     server_id: int
     server_name: str
     host: str
+    remote_user: str = ""
+    remote_home: str = ""
     status: str  # "success" or "error"
+    server_status: str = ""  # synced server status: "online" / "offline"
+    message: str | None = None  # human-readable summary for failed servers
     error: str | None = None
     directories: list[RemoteDirectoryScan] = []
 

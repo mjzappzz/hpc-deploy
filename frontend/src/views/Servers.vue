@@ -3,9 +3,17 @@
     <el-card shadow="never" class="server-table-card">
       <div class="toolbar">
         <el-button type="primary" @click="openCreate">新增服务器</el-button>
-        <el-button :loading="isProbingAll" @click="probeAll">{{ isProbingAll ? '探测中' : '探测全部' }}</el-button>
+        <el-button type="warning" :loading="isProbingAll" @click="probeAll">⚡ {{ isProbingAll ? '探测中' : '探测全部' }}</el-button>
         <el-checkbox v-model="includeOffline" class="include-offline-checkbox">包含离线服务器</el-checkbox>
         <el-button @click="loadServers">刷新</el-button>
+      </div>
+
+      <div class="filter-bar">
+        <el-select v-model="filterTag" placeholder="按标签筛选" clearable size="small" style="width:140px" @change="loadServers">
+          <el-option v-for="t in tags" :key="t.name" :label="t.name" :value="t.name" />
+        </el-select>
+        <el-input v-model="filterKeyword" placeholder="搜索名称/主机" clearable size="small" style="width:200px" @clear="loadServers" @keyup.enter="loadServers" />
+        <el-button size="small" @click="clearFilters">清除筛选</el-button>
       </div>
 
       <ServerTable
@@ -74,6 +82,12 @@
             选择 backend/keys/ 下的本地私钥。不会返回私钥内容。
           </div>
         </el-form-item>
+        <el-form-item label="标签">
+          <el-select v-model="form.tags" multiple filterable allow-create default-first-option placeholder="GPU / 5090 / Ubuntu / 客户A" style="width:100%">
+            <el-option v-for="t in availableTagOptions" :key="t" :label="t" :value="t" />
+          </el-select>
+          <div class="form-help-text">最多 10 个标签，每个不超过 30 个字符。禁止特殊字符。</div>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
@@ -126,92 +140,248 @@
 
     <el-drawer
       v-model="detailVisible"
-      :title="activeServer ? `探测信息：${activeServer.name}` : '探测信息'"
-      size="560px"
+      :title="activeServer ? `服务器详情：${activeServer.name}` : '服务器详情'"
+      size="720px"
+      @close="onDetailClose"
     >
       <template v-if="activeServer">
-        <div class="detail-section">
-          <div class="detail-section__title">基础信息</div>
-          <el-descriptions :column="1" border>
-            <el-descriptions-item label="服务器名称">{{ displayValue(activeServer.name) }}</el-descriptions-item>
-            <el-descriptions-item label="地址">
-              {{ activeServer.host }}:{{ activeServer.port }}
-            </el-descriptions-item>
-            <el-descriptions-item label="用户名">
-              {{ displayValue(activeServer.username) }}
-            </el-descriptions-item>
-            <el-descriptions-item label="认证方式">
-              {{ authTypeLabel(activeServer.auth_type) }}
-            </el-descriptions-item>
-            <el-descriptions-item label="状态">
-              <StatusTag :status="activeServer.status" />
-            </el-descriptions-item>
-            <el-descriptions-item label="最后探测时间">
-              {{ formatTime(activeServer.last_check_at) }}
-            </el-descriptions-item>
-            <el-descriptions-item label="最后错误">
-              {{ displayValue(activeServer.last_error) }}
-            </el-descriptions-item>
-          </el-descriptions>
-        </div>
+        <div v-loading="detailActionsLoading" class="detail-body">
 
-        <div class="detail-section">
-          <div class="detail-section__title">资源摘要</div>
-          <el-descriptions :column="1" border>
-            <el-descriptions-item label="OS">{{ displayValue(activeServer.os_info) }}</el-descriptions-item>
-            <el-descriptions-item label="CPU">{{ displayValue(activeServer.cpu_info) }}</el-descriptions-item>
-            <el-descriptions-item label="内存">{{ displayValue(activeServer.memory_info) }}</el-descriptions-item>
-            <el-descriptions-item label="磁盘">{{ displayValue(activeServer.disk_info) }}</el-descriptions-item>
-            <el-descriptions-item label="GPU">{{ displayValue(activeServer.gpu_info) }}</el-descriptions-item>
-          </el-descriptions>
-        </div>
+          <!-- Section 1: Basic Info -->
+          <div class="detail-section">
+            <div class="detail-section__title">基础信息</div>
+            <el-descriptions :column="1" border size="small">
+              <el-descriptions-item label="服务器名称">{{ activeServer.name }}</el-descriptions-item>
+              <el-descriptions-item label="主机地址">{{ activeServer.host }}</el-descriptions-item>
+              <el-descriptions-item label="SSH 端口">{{ activeServer.port }}</el-descriptions-item>
+              <el-descriptions-item label="远端用户">{{ activeServer.username }}</el-descriptions-item>
+              <el-descriptions-item label="状态">
+                <StatusTag :status="activeServer.status" />
+              </el-descriptions-item>
+              <el-descriptions-item label="标签">
+                <template v-if="activeServer.tags && activeServer.tags.length > 0">
+                  <el-tag v-for="tag in activeServer.tags" :key="tag" size="small" style="margin-right:4px">{{ tag }}</el-tag>
+                </template>
+                <span v-else class="detail-empty-text">暂无标签</span>
+              </el-descriptions-item>
+              <el-descriptions-item label="创建时间">{{ formatTime(activeServer.created_at) }}</el-descriptions-item>
+              <el-descriptions-item label="更新时间">{{ formatTime(activeServer.updated_at) }}</el-descriptions-item>
+            </el-descriptions>
+          </div>
 
-        <div class="detail-section">
-          <div class="detail-section__title">原始探测信息</div>
-          <el-collapse>
-            <el-collapse-item title="OS 原始信息" name="os">
-              <pre class="detail-raw">{{ displayValue(activeServer.os_info) }}</pre>
-            </el-collapse-item>
-            <el-collapse-item title="CPU 原始信息" name="cpu">
-              <pre class="detail-raw">{{ displayValue(activeServer.cpu_info) }}</pre>
-            </el-collapse-item>
-            <el-collapse-item title="内存原始信息" name="memory">
-              <pre class="detail-raw">{{ displayValue(activeServer.memory_info) }}</pre>
-            </el-collapse-item>
-            <el-collapse-item title="磁盘原始信息" name="disk">
-              <pre class="detail-raw">{{ displayValue(activeServer.disk_info) }}</pre>
-            </el-collapse-item>
-            <el-collapse-item title="GPU 原始信息" name="gpu">
-              <pre class="detail-raw">{{ displayValue(activeServer.gpu_info) }}</pre>
-            </el-collapse-item>
-          </el-collapse>
+          <!-- Section 2: SSH Info -->
+          <div class="detail-section">
+            <div class="detail-section__title">SSH 信息</div>
+            <el-descriptions :column="1" border size="small">
+              <el-descriptions-item label="认证方式">{{ authTypeLabel(activeServer.auth_type) }}</el-descriptions-item>
+              <el-descriptions-item v-if="activeServer.auth_type === 'key'" label="密钥文件名">
+                {{ activeServer.key_path ? activeServer.key_path.split('/').pop() : '-' }}
+              </el-descriptions-item>
+              <el-descriptions-item label="最近 SSH 测试">
+                <template v-if="activeServer.last_check_at">
+                  {{ formatTime(activeServer.last_check_at) }}
+                  <el-tag v-if="activeServer.status === 'online'" size="small" type="success" style="margin-left:6px">成功</el-tag>
+                  <el-tag v-else size="small" type="danger" style="margin-left:6px">失败</el-tag>
+                </template>
+                <span v-else class="detail-empty-text">尚未测试</span>
+              </el-descriptions-item>
+              <el-descriptions-item v-if="activeServer.last_error" label="SSH 错误">
+                <span class="detail-error-text">{{ activeServer.last_error }}</span>
+              </el-descriptions-item>
+            </el-descriptions>
+          </div>
+
+          <!-- Section 3: Health Status -->
+          <div class="detail-section">
+            <div class="detail-section__title">健康状态</div>
+            <el-descriptions :column="1" border size="small">
+              <el-descriptions-item label="当前状态">
+                <StatusTag :status="activeServer.status" />
+              </el-descriptions-item>
+              <el-descriptions-item label="最后探测时间">
+                {{ formatTime(activeServer.last_check_at) }}
+              </el-descriptions-item>
+              <el-descriptions-item v-if="activeServer.last_error" label="最近错误">
+                <span class="detail-error-text">{{ activeServer.last_error }}</span>
+              </el-descriptions-item>
+            </el-descriptions>
+            <div class="detail-actions">
+              <el-button size="small" :loading="detailActionsLoading" @click="detailTestSsh">测试 SSH</el-button>
+              <el-button size="small" type="warning" :loading="detailActionsLoading" @click="detailDetect">⚡ 探测</el-button>
+              <el-button
+                v-if="activeServer.auth_type === 'password'"
+                size="small"
+                @click="detailDeployPublicKey"
+              >
+                部署公钥
+              </el-button>
+            </div>
+          </div>
+
+          <!-- Section 4: Hardware Info -->
+          <div class="detail-section">
+            <div class="detail-section__title">硬件信息</div>
+            <template v-if="activeServer.os_info || activeServer.cpu_info || activeServer.memory_info || activeServer.gpu_info || activeServer.disk_info">
+              <el-descriptions :column="1" border size="small">
+                <el-descriptions-item v-if="activeServer.os_info" label="OS">
+                  <pre class="detail-hw-text">{{ activeServer.os_info }}</pre>
+                </el-descriptions-item>
+                <el-descriptions-item v-if="activeServer.cpu_info" label="CPU">
+                  <pre class="detail-hw-text">{{ activeServer.cpu_info }}</pre>
+                </el-descriptions-item>
+                <el-descriptions-item v-if="activeServer.memory_info" label="内存">
+                  <pre class="detail-hw-text">{{ activeServer.memory_info }}</pre>
+                </el-descriptions-item>
+                <el-descriptions-item v-if="activeServer.gpu_info || activeServer.gpu_status" label="GPU">
+                  <div class="detail-gpu-row">
+                    <el-tag v-if="activeServer.gpu_status === 'driver_ok'" size="small" type="success">驱动正常</el-tag>
+                    <el-tag v-else-if="activeServer.gpu_status === 'hardware_only'" size="small" type="warning">驱动不可用</el-tag>
+                    <el-tag v-else-if="activeServer.gpu_status === 'none'" size="small" type="info">无 GPU</el-tag>
+                    <el-tag v-else-if="activeServer.gpu_status === 'unknown'" size="small">未知</el-tag>
+                    <pre v-if="activeServer.gpu_info && activeServer.gpu_status && activeServer.gpu_status !== 'none' && activeServer.gpu_status !== 'unknown'" class="detail-hw-text detail-gpu-text">{{ activeServer.gpu_info }}</pre>
+                  </div>
+                </el-descriptions-item>
+                <el-descriptions-item v-if="activeServer.disk_info" label="磁盘">
+                  <pre class="detail-hw-text">{{ activeServer.disk_info }}</pre>
+                </el-descriptions-item>
+                <el-descriptions-item v-if="activeServer.network_info" label="网卡">
+                  <pre class="detail-hw-text">{{ activeServer.network_info }}</pre>
+                </el-descriptions-item>
+              </el-descriptions>
+            </template>
+            <span v-else class="detail-empty-text">暂无硬件信息，请先执行探测。</span>
+          </div>
+
+          <!-- Section 5: Recent Tasks -->
+          <div class="detail-section">
+            <div class="detail-section__title">最近任务</div>
+            <div v-loading="recentTasksLoading">
+              <el-table v-if="recentTasks.length > 0" :data="recentTasks" stripe size="small" max-height="300">
+                <el-table-column label="任务名称" min-width="160" show-overflow-tooltip>
+                  <template #default="{ row }">
+                    <span>{{ row.file_name || row.task_type || '-' }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="task_type" label="类型" width="80">
+                  <template #default="{ row }">{{ taskTypeLabel(row.task_type) }}</template>
+                </el-table-column>
+                <el-table-column label="状态" width="90">
+                  <template #default="{ row }"><StatusTag :status="row.status" /></template>
+                </el-table-column>
+                <el-table-column label="创建时间" width="150">
+                  <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
+                </el-table-column>
+                <el-table-column label="操作" width="160" fixed="right">
+                  <template #default="{ row }">
+                    <el-button size="small" link @click="viewTaskDetail(row)">查看</el-button>
+                    <el-button size="small" link @click="viewTaskLogs(row)">日志</el-button>
+                    <el-button v-if="row.status === 'FAILED'" size="small" link type="warning" @click="openDiagnosis(row)">诊断</el-button>
+                  </template>
+                </el-table-column>
+              </el-table>
+              <span v-else class="detail-empty-text">暂无任务记录</span>
+            </div>
+          </div>
+
+          <!-- Section 6: Remote Directories -->
+          <div class="detail-section">
+            <div class="detail-section__title">远端目录</div>
+            <div class="detail-actions">
+              <el-button size="small" :loading="remoteScanLoading" @click="scanRemoteDir">扫描远端目录</el-button>
+            </div>
+            <template v-if="remoteScanResult">
+              <el-descriptions :column="1" border size="small">
+                <el-descriptions-item label="远程用户">
+                  {{ remoteScanResult.remote_user || '-' }}
+                </el-descriptions-item>
+                <el-descriptions-item label="远程主目录">
+                  {{ remoteScanResult.remote_home || '-' }}
+                </el-descriptions-item>
+                <el-descriptions-item v-for="item in remoteScanResult.items" :key="item.label" :label="item.label">
+                  <div class="detail-remote-dir">
+                    <span v-if="item.exists" class="detail-remote-dir__exists">存在</span>
+                    <span v-else class="detail-remote-dir__missing">不存在</span>
+                    <span class="detail-remote-dir__sep">|</span>
+                    <span>路径：{{ item.remote_path }}</span>
+                    <span v-if="item.size_text" class="detail-remote-dir__sep">|</span>
+                    <span v-if="item.size_text">大小：{{ item.size_text }}</span>
+                    <span v-if="item.file_count > 0" class="detail-remote-dir__sep">|</span>
+                    <span v-if="item.file_count > 0">文件数：{{ item.file_count }}</span>
+                  </div>
+                </el-descriptions-item>
+              </el-descriptions>
+            </template>
+            <span v-else class="detail-empty-text">尚未扫描远程目录，请点击「扫描远端目录」。</span>
+          </div>
+
+          <!-- Quick Actions -->
+          <div class="detail-section detail-quick-actions">
+            <div class="detail-section__title">快捷操作</div>
+            <div class="detail-actions">
+              <el-button size="small" type="primary" @click="goToNewTask(activeServer.id)">新建任务</el-button>
+              <el-button size="small" @click="goToTaskHistory(activeServer.id)">查看任务历史</el-button>
+              <el-button size="small" @click="goToCleanupCenter">打开清理中心</el-button>
+              <el-button size="small" @click="openEditForCurrent">编辑服务器</el-button>
+            </div>
+          </div>
+
         </div>
       </template>
+      <template v-else>
+        <div>加载中...</div>
+      </template>
     </el-drawer>
+
+    <!-- Detail log dialog -->
+    <el-dialog v-model="detailLogVisible" title="任务日志" width="760px">
+      <div v-loading="detailLogLoading">
+        <LogViewer :logs="detailLogs" />
+      </div>
+      <template #footer>
+        <el-button :disabled="detailLogLoading" @click="detailLogVisible = false">关闭</el-button>
+        <el-button :disabled="detailLogLoading || !detailLogTaskId" @click="downloadDetailLog">下载完整日志</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- Detail diagnosis dialog -->
+    <TaskDiagnosisDialog
+      v-model="diagnosisVisible"
+      :task-id="diagnosisTaskId"
+    />
   </section>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useRouter } from 'vue-router'
 import { formatDateTime } from '@/utils/time'
 import {
   createServer,
   deleteServer,
   detectServer,
   deployPublicKey,
+  getServer,
   listServers,
   listSshKeys,
+  listTags,
   probeAllServers,
   testServerSsh,
   updateServer,
   type ProbeAllResponse,
   type SSHKeyItem,
   type ServerPayload,
-  type ServerRecord
+  type ServerRecord,
+  type TagSummary
 } from '@/api/server'
+import { listTasks, getTaskLogs, downloadTaskLogs, type TaskListQuery, type TaskLogRecord, type TaskRecord } from '@/api/task'
+import { getTaskDiagnosis } from '@/api/diagnosis'
+import { scanRemote, type RemoteScanResult } from '@/api/cleanup'
 import ServerTable from '@/components/ServerTable.vue'
 import StatusTag from '@/components/StatusTag.vue'
+import LogViewer from '@/components/LogViewer.vue'
+import TaskDiagnosisDialog from '@/components/TaskDiagnosisDialog.vue'
+import { requireAdminConfirm } from '@/composables/useAdminConfirm'
 import { useSettingsStore } from '@/stores/settings'
 
 const settingsStore = useSettingsStore()
@@ -233,6 +403,28 @@ const deployDialogVisible = ref(false)
 const deployTargetServer = ref<ServerRecord | null>(null)
 const deployPrivateKeyPath = ref('')
 const deployingPublicKey = ref(false)
+const filterTag = ref('')
+const filterKeyword = ref('')
+const tags = ref<TagSummary[]>([])
+
+// ── Detail drawer (Phase 27A) ──
+const router = useRouter()
+const recentTasks = ref<TaskRecord[]>([])
+const recentTasksLoading = ref(false)
+const remoteScanResult = ref<RemoteScanResult | null>(null)
+const remoteScanLoading = ref(false)
+const detailActionsLoading = ref(false)
+const currentServerId = ref<number | null>(null)
+
+// ── Detail log dialog ──
+const detailLogVisible = ref(false)
+const detailLogLoading = ref(false)
+const detailLogs = ref<TaskLogRecord[]>([])
+const detailLogTaskId = ref('')
+
+// ── Detail diagnosis dialog ──
+const diagnosisVisible = ref(false)
+const diagnosisTaskId = ref<string | null>(null)
 
 const form = reactive<ServerPayload>({
   name: '',
@@ -242,7 +434,8 @@ const form = reactive<ServerPayload>({
   auth_type: 'key',
   key_path: '',
   password: '',
-  status: 'unknown'
+  status: 'unknown',
+  tags: []
 })
 
 const availableSshKeyOptions = computed(() => {
@@ -270,6 +463,13 @@ const saveDisabled = computed(() => {
   return !form.key_path?.trim() || (!editingId.value && !hasSelectableSshKey.value)
 })
 const deployDisabled = computed(() => !deployTargetServer.value || !deployPrivateKeyPath.value)
+const availableTagOptions = computed(() => tags.value.map((t) => t.name))
+
+function clearFilters() {
+  filterTag.value = ''
+  filterKeyword.value = ''
+  void loadServers()
+}
 
 function resetForm() {
   editingId.value = null
@@ -281,14 +481,18 @@ function resetForm() {
     auth_type: 'key',
     key_path: '',
     password: '',
-    status: 'unknown'
+    status: 'unknown',
+    tags: []
   })
 }
 
 async function loadServers() {
   loading.value = true
   try {
-    servers.value = ((await listServers()).data).sort(sortServersByStatus)
+    const params: Record<string, string> = {}
+    if (filterTag.value) params.tag = filterTag.value
+    if (filterKeyword.value) params.keyword = filterKeyword.value
+    servers.value = ((await listServers(params)).data).sort(sortServersByStatus)
   } catch (error) {
     servers.value = []
     ElMessage.error(`加载服务器失败：${getApiErrorMessage(error)}`)
@@ -322,6 +526,12 @@ async function loadSshKeys() {
   } finally {
     sshKeysLoading.value = false
   }
+}
+
+async function loadTags() {
+  try {
+    tags.value = (await listTags()).data.items
+  } catch { /* silent */ }
 }
 
 async function reloadAndSelectServer(serverId: number) {
@@ -358,7 +568,8 @@ function openEdit(server: ServerRecord) {
     cpu_info: server.cpu_info,
     memory_info: server.memory_info,
     disk_info: server.disk_info,
-    network_info: server.network_info
+    network_info: server.network_info,
+    tags: server.tags ?? []
   })
   void loadSshKeys()
   dialogVisible.value = true
@@ -391,6 +602,7 @@ async function saveServer() {
       memory_info: form.memory_info,
       disk_info: form.disk_info,
       network_info: form.network_info,
+      tags: form.tags || [],
     }
     if (form.auth_type === 'password') {
       payload.key_path = null
@@ -413,12 +625,19 @@ async function saveServer() {
     ElMessage.success('服务器已保存')
     dialogVisible.value = false
     await loadServers()
+    await loadTags()
+    // Refresh detail drawer if open and matches edited server
+    if (detailVisible.value && editingId.value && activeServer.value?.id === editingId.value) {
+      await refreshDetail()
+    }
   } finally {
     saving.value = false
   }
 }
 
 async function submitDeployPublicKey() {
+  const ok = await requireAdminConfirm('部署公钥')
+  if (!ok) return
   if (!deployTargetServer.value || !deployPrivateKeyPath.value) {
     ElMessage.warning('请先选择带公钥的私钥')
     return
@@ -429,6 +648,9 @@ async function submitDeployPublicKey() {
     ElMessage.success('公钥部署成功，服务器已切换为 SSH Key')
     deployDialogVisible.value = false
     await loadServers()
+    if (detailVisible.value && activeServer.value?.id === deployTargetServer.value?.id) {
+      await refreshDetail()
+    }
   } catch (error) {
     ElMessage.error(`部署公钥失败：${getApiErrorMessage(error)}`)
   } finally {
@@ -437,6 +659,8 @@ async function submitDeployPublicKey() {
 }
 
 async function removeServer(server: ServerRecord) {
+  const ok = await requireAdminConfirm('删除服务器')
+  if (!ok) return
   await ElMessageBox.confirm(`确认删除服务器 ${server.name}？`, '删除确认', { type: 'warning' })
   await deleteServer(server.id)
   ElMessage.success('服务器已删除')
@@ -456,6 +680,10 @@ async function testSsh(server: ServerRecord) {
       ElMessage.error(`SSH 测试失败：${result.error ?? '未知错误'}`)
     }
     await loadServers()
+    // Refresh detail drawer if open
+    if (detailVisible.value && activeServer.value?.id === server.id) {
+      await refreshDetail()
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : '请求失败'
     ElMessage.error(`SSH 测试失败：${message}`)
@@ -475,6 +703,8 @@ async function detectInfo(server: ServerRecord) {
     if (result.success) {
       ElMessage.success('探测完成')
       detailVisible.value = true
+      // Refresh detail drawer after detection
+      await refreshDetail()
     } else {
       ElMessage.error(`探测失败：${result.last_error ?? result.error ?? '未知错误'}`)
     }
@@ -519,9 +749,149 @@ async function probeAll() {
   }
 }
 
+function onDetailClose() {
+  recentTasks.value = []
+  remoteScanResult.value = null
+  currentServerId.value = null
+  detailLogVisible.value = false
+  detailLogs.value = []
+  detailLogTaskId.value = ''
+  diagnosisVisible.value = false
+  diagnosisTaskId.value = null
+}
+
 function openDetail(server: ServerRecord) {
   activeServer.value = server
+  currentServerId.value = server.id
   detailVisible.value = true
+  recentTasks.value = []
+  remoteScanResult.value = null
+  loadRecentTasks(server.id)
+}
+
+function loadRecentTasks(serverId: number) {
+  recentTasksLoading.value = true
+  const params: TaskListQuery = { server_id: serverId, limit: 5, offset: 0 }
+  listTasks(params).then((resp) => {
+    recentTasks.value = resp.data.items
+  }).catch(() => {
+    recentTasks.value = []
+  }).finally(() => {
+    recentTasksLoading.value = false
+  })
+}
+
+async function refreshDetail() {
+  if (!currentServerId.value) return
+  detailActionsLoading.value = true
+  try {
+    const resp = (await getServer(currentServerId.value)).data
+    activeServer.value = resp
+    // Also refresh server list to sync state
+    servers.value = servers.value.map((s) => (s.id === resp.id ? resp : s))
+    loadRecentTasks(currentServerId.value)
+  } finally {
+    detailActionsLoading.value = false
+  }
+}
+
+async function scanRemoteDir() {
+  if (!currentServerId.value) return
+  remoteScanLoading.value = true
+  remoteScanResult.value = null
+  try {
+    const resp = (await scanRemote(currentServerId.value)).data
+    remoteScanResult.value = resp
+  } catch {
+    ElMessage.error('远程目录扫描失败')
+  } finally {
+    remoteScanLoading.value = false
+  }
+}
+
+function goToNewTask(serverId: number) {
+  detailVisible.value = false
+  router.push(`/task-runner?server_id=${serverId}`)
+}
+
+function goToTaskHistory(serverId: number) {
+  detailVisible.value = false
+  router.push(`/history?server_id=${serverId}`)
+}
+
+function goToCleanupCenter() {
+  detailVisible.value = false
+  router.push('/cleanup')
+}
+
+function openEditForCurrent() {
+  if (!activeServer.value) return
+  openEdit(activeServer.value)
+}
+
+function viewTaskDetail(task: TaskRecord) {
+  detailVisible.value = false
+  router.push(`/history?task_id=${task.task_id}`)
+}
+
+function viewTaskLogs(task: TaskRecord) {
+  detailLogTaskId.value = task.task_id
+  detailLogs.value = []
+  detailLogVisible.value = true
+  detailLogLoading.value = true
+  getTaskLogs(task.task_id).then((resp) => {
+    detailLogs.value = resp.data
+  }).catch(() => {
+    detailLogs.value = []
+    ElMessage.error('获取日志失败')
+  }).finally(() => {
+    detailLogLoading.value = false
+  })
+}
+
+function openDiagnosis(task: TaskRecord) {
+  diagnosisTaskId.value = task.task_id
+  diagnosisVisible.value = true
+}
+
+function downloadDetailLog() {
+  if (detailLogTaskId.value) {
+    downloadTaskLogs(detailLogTaskId.value)
+  }
+}
+
+function viewArtifacts(task: TaskRecord) {
+  localStorage.setItem('hpcdeploy.currentTaskId', task.task_id)
+  router.push(`/task-runner?task_id=${task.task_id}`)
+}
+
+async function detailTestSsh() {
+  if (!currentServerId.value) return
+  detailActionsLoading.value = true
+  try {
+    await testSsh(activeServer.value!)
+    await refreshDetail()
+  } finally {
+    detailActionsLoading.value = false
+  }
+}
+
+async function detailDetect() {
+  if (!currentServerId.value) return
+  detailActionsLoading.value = true
+  try {
+    await detectInfo(activeServer.value!)
+    if (activeServer.value) {
+      await refreshDetail()
+    }
+  } finally {
+    detailActionsLoading.value = false
+  }
+}
+
+function detailDeployPublicKey() {
+  if (!activeServer.value) return
+  openDeployPublicKey(activeServer.value)
 }
 
 function displayValue(value: string | null | undefined) {
@@ -551,9 +921,21 @@ function formatTime(value: string | null | undefined) {
   return formatDateTime(value)
 }
 
+function taskTypeLabel(type: string | null | undefined): string {
+  const labels: Record<string, string> = {
+    script: '编译环境',
+    stress: '压测脚本',
+    apptainer: 'Apptainer 镜像',
+    mpi: '编译环境',
+    test: '测试'
+  }
+  return labels[type ?? ''] || type || '-'
+}
+
 onMounted(() => {
   settingsStore.load()  // silent load for SSH key default
   loadServers()
+  loadTags()
 })
 </script>
 
@@ -606,6 +988,14 @@ onMounted(() => {
   margin-left: 4px;
 }
 
+.filter-bar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
 .detail-section + .detail-section {
   margin-top: 20px;
 }
@@ -617,12 +1007,76 @@ onMounted(() => {
   color: #0f172a;
 }
 
-.detail-raw {
+.detail-body {
+  min-height: 200px;
+}
+
+.detail-empty-text {
+  color: var(--el-text-color-placeholder);
+  font-size: 13px;
+}
+
+.detail-error-text {
+  color: var(--el-color-danger);
+  font-size: 13px;
+  word-break: break-all;
+}
+
+.detail-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.detail-hw-text {
   margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 12px;
   line-height: 1.6;
   color: #334155;
+  max-height: 80px;
+  overflow-y: auto;
+}
+
+.detail-gpu-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: flex-start;
+}
+
+.detail-gpu-text {
+  width: 100%;
+  margin-top: 2px;
+}
+
+.detail-remote-dir {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  font-size: 13px;
+}
+
+.detail-remote-dir__exists {
+  color: var(--el-color-success);
+  font-weight: 600;
+}
+
+.detail-remote-dir__missing {
+  color: var(--el-color-danger);
+  font-weight: 600;
+}
+
+.detail-remote-dir__sep {
+  color: var(--el-border-color);
+  font-size: 12px;
+}
+
+.detail-quick-actions {
+  padding-top: 8px;
+  border-top: 1px solid var(--el-border-color-light);
 }
 </style>

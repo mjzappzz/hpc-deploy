@@ -25,6 +25,11 @@
         {{ formatSize(row.size) }}
       </template>
     </el-table-column>
+    <el-table-column label="最新修改时间" width="180">
+      <template #default="{ row }">
+        {{ formatMtime(row.updated_at) }}
+      </template>
+    </el-table-column>
     <el-table-column label="预览" width="90">
       <template #default="{ row }">
         <el-tag :type="row.previewable ? 'success' : 'info'" effect="plain">
@@ -59,6 +64,14 @@ defineEmits<{
   download: [file: ScriptFileRecord]
   delete: [file: ScriptFileRecord]
 }>()
+
+function formatMtime(value?: string | null) {
+  if (!value) return '-'
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return '-'
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
 
 function formatSize(size: number) {
   if (size < 1024) return `${size} B`

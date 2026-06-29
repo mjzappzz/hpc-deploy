@@ -46,10 +46,10 @@ export interface ScriptFileRecord {
   name: string
   path: string
   relative_path: string
-  physical_category: 'mpi' | 'stress' | 'test' | 'apptainer'
+  physical_category: 'mpi' | 'stress' | 'apptainer'
   display_category: string
   size: number
-  updated_at: string
+  updated_at?: string | null
   executable: boolean
   is_text: boolean
   previewable: boolean

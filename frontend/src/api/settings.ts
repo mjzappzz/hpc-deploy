@@ -20,3 +20,13 @@ export function getSettings() {
 export function updateSettings(data: SettingsUpdate) {
   return request.put<SettingsData>('/settings', data)
 }
+
+export interface GenerateSshKeyResult {
+  private_key: string
+  public_key: string
+  message: string
+}
+
+export function generateDefaultSshKey() {
+  return request.post<GenerateSshKeyResult>('/settings/ssh-key/generate-default')
+}

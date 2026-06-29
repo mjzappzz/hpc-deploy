@@ -35,6 +35,13 @@
         </el-tooltip>
       </template>
     </el-table-column>
+    <el-table-column label="标签" min-width="130">
+      <template #default="{ row }">
+        <span v-if="!row.tags || row.tags.length === 0" class="table-ellipsis" style="color:#94a3b8">-</span>
+        <el-tag v-for="tag in (row.tags || []).slice(0, 3)" :key="tag" size="small" style="margin-right:4px; margin-bottom:2px;">{{ tag }}</el-tag>
+        <el-tag v-if="(row.tags || []).length > 3" size="small" type="info">+{{ (row.tags || []).length - 3 }}</el-tag>
+      </template>
+    </el-table-column>
     <el-table-column label="OS" min-width="110" show-overflow-tooltip>
       <template #default="{ row }">
         <el-tooltip :content="displayValue(row.os_info)" placement="top" :disabled="!row.os_info">
@@ -57,7 +64,7 @@
     <el-table-column label="GPU" min-width="170" show-overflow-tooltip>
       <template #default="{ row }">
         <el-tooltip :content="displayValue(row.gpu_info)" placement="top" :disabled="!row.gpu_info">
-          <span class="table-ellipsis">{{ gpuSummary(row.gpu_info) }}</span>
+          <span class="table-ellipsis" :class="gpuStatusClass(row.gpu_status)">{{ gpuSummary(row.gpu_info, row.gpu_status) }}</span>
         </el-tooltip>
       </template>
     </el-table-column>
@@ -86,18 +93,17 @@
             探测
           </el-button>
           <el-button
-            v-if="row.auth_type === 'password'"
             link
             type="primary"
-            @click="$emit('deployPublicKey', row)"
+            @click="$emit('detail', row)"
           >
-            部署公钥
+            服务器详情
           </el-button>
-          <el-button link type="info" @click="$emit('detail', row)">详情</el-button>
           <el-dropdown trigger="click" @command="(command: string) => handleMore(command, row)">
-            <el-button link type="primary">更多</el-button>
+            <el-button link type="info">更多</el-button>
             <template #dropdown>
               <el-dropdown-menu>
+                <el-dropdown-item v-if="row.auth_type === 'password'" command="deployPublicKey">部署公钥</el-dropdown-item>
                 <el-dropdown-item command="edit">编辑</el-dropdown-item>
                 <el-dropdown-item command="delete" class="danger-menu-item">删除</el-dropdown-item>
               </el-dropdown-menu>
@@ -159,10 +165,23 @@ function osSummary(value: string | null | undefined) {
   return text
 }
 
-function gpuSummary(value: string | null | undefined) {
+function gpuSummary(value: string | null | undefined, status: string | null | undefined) {
   const text = displayValue(value)
+  if (status === 'none') return '无 NVIDIA GPU'
+  if (status === 'hardware_only') return text
+  if (status === 'unknown') return '-'
+  // Fallback for null status (old data without gpu_status) or driver_ok
+  if (status === 'driver_ok') return text.split(',')[0].trim() || text
+  // Legacy fallback — parse text for detection keywords
   if (text === '-' || /not detected/i.test(text)) return '无 NVIDIA GPU'
+  if (text.includes('驱动不可用')) return text
   return text.split(',')[0].trim() || text
+}
+
+function gpuStatusClass(status: string | null | undefined) {
+  if (status === 'hardware_only') return 'gpu-status-warning'
+  if (status === 'none' || status === 'unknown') return 'gpu-status-none'
+  return ''
 }
 
 function cpuSummary(value: string | null | undefined) {
@@ -181,6 +200,9 @@ function cpuSummary(value: string | null | undefined) {
 }
 
 function handleMore(command: string, server: ServerRecord) {
+  if (command === 'deployPublicKey') {
+    emit('deployPublicKey', server)
+  }
   if (command === 'edit') {
     emit('edit', server)
   }
@@ -189,3 +211,12 @@ function handleMore(command: string, server: ServerRecord) {
   }
 }
 </script>
+
+<style scoped>
+.gpu-status-warning {
+  color: var(--el-color-warning);
+}
+.gpu-status-none {
+  color: var(--el-text-color-placeholder);
+}
+</style>

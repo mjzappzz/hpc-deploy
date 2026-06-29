@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import Path
 
 from app.core.config import settings
@@ -57,7 +58,12 @@ def init_db() -> None:
     _ensure_stage5_server_columns()
     _ensure_server_auth_columns()
     _ensure_server_health_columns()
+    _ensure_server_group_tags_columns()
     _ensure_stage8_task_columns()
+    _ensure_batch_id_column()
+    _ensure_sequence_index_column()
+    _ensure_depends_on_task_id_column()
+    _ensure_gpu_status_column()
 
 
 def get_db():
@@ -128,6 +134,28 @@ def _ensure_server_health_columns() -> None:
     with engine.begin() as connection:
         for name, column_type in missing:
             connection.execute(text(f"ALTER TABLE servers ADD COLUMN {name} {column_type}"))
+
+
+def _ensure_server_group_tags_columns() -> None:
+    if not normalized_database_url.startswith("sqlite"):
+        return
+
+    inspector = inspect(engine)
+    if "servers" not in inspector.get_table_names():
+        return
+
+    existing = {column["name"] for column in inspector.get_columns("servers")}
+    required = {
+        "group_name": "VARCHAR(50) DEFAULT '默认分组'",
+        "tags_json": "TEXT DEFAULT '[]'",
+    }
+    missing = [(name, col_type) for name, col_type in required.items() if name not in existing]
+    if not missing:
+        return
+
+    with engine.begin() as connection:
+        for name, col_type in missing:
+            connection.execute(text(f"ALTER TABLE servers ADD COLUMN {name} {col_type}"))
 
 
 def _ensure_stage8_task_columns() -> None:
@@ -215,3 +243,77 @@ def _ensure_stage8_task_columns() -> None:
         connection.execute(text("ALTER TABLE tasks_stage8 RENAME TO tasks"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_id ON tasks (id)"))
         connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_tasks_task_id ON tasks (task_id)"))
+
+
+def _ensure_batch_id_column() -> None:
+    """Phase 26A: Add batch_id column to tasks table for batch grouping."""
+    if not normalized_database_url.startswith("sqlite"):
+        return
+
+    inspector = inspect(engine)
+    if "tasks" not in inspector.get_table_names():
+        return
+
+    columns = {column["name"] for column in inspector.get_columns("tasks")}
+    if "batch_id" in columns:
+        return
+
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE tasks ADD COLUMN batch_id TEXT"))
+    print("[HPCDeploy] Added batch_id column to tasks table")
+
+
+def _ensure_sequence_index_column() -> None:
+    """Add sequence_index column to tasks table for stress suite ordering."""
+    if not normalized_database_url.startswith("sqlite"):
+        return
+
+    inspector = inspect(engine)
+    if "tasks" not in inspector.get_table_names():
+        return
+
+    columns = {column["name"] for column in inspector.get_columns("tasks")}
+    if "sequence_index" in columns:
+        return
+
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE tasks ADD COLUMN sequence_index INTEGER"))
+    print("[HPCDeploy] Added sequence_index column to tasks table")
+
+
+def _ensure_depends_on_task_id_column() -> None:
+    """Add depends_on_task_id column to tasks table for task dependency tracking."""
+    if not normalized_database_url.startswith("sqlite"):
+        return
+
+    inspector = inspect(engine)
+    if "tasks" not in inspector.get_table_names():
+        return
+
+    columns = {column["name"] for column in inspector.get_columns("tasks")}
+    if "depends_on_task_id" in columns:
+        return
+
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE tasks ADD COLUMN depends_on_task_id TEXT"))
+    print("[HPCDeploy] Added depends_on_task_id column to tasks table")
+
+
+def _ensure_gpu_status_column() -> None:
+    """Phase 28B: Add gpu_status column to servers table for GPU detection accuracy."""
+    if not normalized_database_url.startswith("sqlite"):
+        return
+
+    inspector = inspect(engine)
+    if "servers" not in inspector.get_table_names():
+        return
+
+    columns = {column["name"] for column in inspector.get_columns("servers")}
+    if "gpu_status" in columns:
+        return
+
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE servers ADD COLUMN gpu_status VARCHAR(20)"))
+    print("[HPCDeploy] Added gpu_status column to servers table")
+
+

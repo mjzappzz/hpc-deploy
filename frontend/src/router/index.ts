@@ -19,8 +19,8 @@ const router = createRouter({
     { path: '/audit-logs', component: AuditLog, meta: { title: '审计日志' } },
     { path: '/scripts', component: Scripts, meta: { title: '脚本知识库' } },
     { path: '/cleanup', component: CleanupCenter, meta: { title: '清理中心' } },
-    { path: '/settings', component: Settings, meta: { title: '系统设置' } }
-  ]
+    { path: '/settings', component: Settings, meta: { title: '系统设置' } },
+  ],
 })
 
 export default router

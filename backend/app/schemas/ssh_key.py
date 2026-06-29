@@ -12,3 +12,9 @@ class SSHKeyItem(BaseModel):
 
 class SSHKeyListResponse(BaseModel):
     items: list[SSHKeyItem] = []
+
+
+class SSHKeyGenerateResponse(BaseModel):
+    private_key: str
+    public_key: str
+    message: str

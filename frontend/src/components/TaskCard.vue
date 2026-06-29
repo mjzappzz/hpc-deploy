@@ -4,6 +4,16 @@
       <div>
         <div class="task-card__title" :title="displayName">{{ displayName }}</div>
         <div class="task-card__meta">{{ task.task_id }} / {{ serverLabel }} / {{ moduleLabel }}</div>
+        <div class="task-card__badges">
+          <el-tag v-if="!task.batch_id" size="small" type="info" effect="plain">单次任务</el-tag>
+          <template v-else>
+            <el-tag size="small" type="warning" effect="plain">批次子任务</el-tag>
+            <el-tag size="small" type="default" effect="plain" class="tag-mono">Batch: {{ task.batch_id }}</el-tag>
+            <el-tag v-if="task.sequence_index" size="small" type="default" effect="plain">
+              步骤 {{ task.sequence_index }}/3 {{ batchStepLabel(task.sequence_index) }}
+            </el-tag>
+          </template>
+        </div>
       </div>
       <div class="task-card__status-block">
         <StatusTag :status="task.status" />
@@ -11,22 +21,18 @@
       </div>
     </div>
     <div class="task-card__body">
-      <span>文件：{{ task.file_name ?? '-' }}</span>
-      <span>远程目录：{{ task.remote_work_dir ?? '-' }}</span>
-      <span>命令：{{ task.command_preview ?? '-' }}</span>
-      <span>退出码：{{ task.exit_code ?? '-' }}</span>
-      <span>运行耗时：{{ formatSeconds(runtime) }}</span>
-      <span v-if="showProgressBar" class="task-card__progress">
-        <el-progress
-          :percentage="progress ?? 0"
-          :status="progress === 100 ? 'success' : undefined"
-          :stroke-width="14"
-          :text-inside="true"
-        />
-      </span>
-      <span>创建：{{ formatTime(task.created_at) }}</span>
-      <span>开始：{{ formatTime(task.start_time) }}</span>
-      <span>结束：{{ formatTime(task.end_time) }}</span>
+      <div class="task-card__info-grid">
+        <span>文件：{{ task.file_name ?? '-' }}</span>
+        <span>远程目录：{{ task.remote_work_dir ?? '-' }}</span>
+        <span>命令：{{ task.command_preview ?? '-' }}</span>
+        <span>退出码：{{ task.exit_code ?? '-' }}</span>
+      </div>
+      <div class="task-card__time-line">
+        创建 {{ formatTime(task.created_at) }}
+        <template v-if="task.start_time"> | 开始 {{ formatTime(task.start_time) }}</template>
+        <template v-if="task.end_time"> | 结束 {{ formatTime(task.end_time) }}</template>
+        <template v-if="runtime"> | 耗时 {{ formatSeconds(runtime) }}</template>
+      </div>
     </div>
     <div v-if="task.error_message" class="task-card__error">{{ task.error_message }}</div>
     <div class="task-card__actions">
@@ -39,21 +45,10 @@
         <el-button size="small" type="danger" plain @click="$emit('cancelTask', task)">取消任务</el-button>
       </el-tooltip>
       <el-button v-if="showCancelingButton" size="small" type="warning" plain disabled>正在取消</el-button>
-      <el-tooltip v-if="showMpiCommandActions" placement="top" :show-after="150">
-        <template #content>
-          <div class="task-card__tooltip">{{ envCommandTooltip }}</div>
-        </template>
-        <el-button size="small" @mouseenter="$emit('prefetchEnvCommands', task)" @click="$emit('copyEnvCommands', task)">复制环境变量命令</el-button>
-      </el-tooltip>
-      <el-tooltip v-if="showMpiCommandActions" placement="top" :show-after="150">
-        <template #content>
-          <div class="task-card__tooltip">{{ verifyCommandTooltip }}</div>
-        </template>
-        <el-button size="small" @mouseenter="$emit('prefetchVerifyCommands', task)" @click="$emit('copyVerifyCommands', task)">复制验证命令</el-button>
-      </el-tooltip>
       <el-button v-if="isContinuable" size="small" type="primary" @click="$emit('continueTask', task)">继续查看</el-button>
       <el-button v-if="isStressCompleted" size="small" @click="$emit('viewArtifacts', task)">结果文件</el-button>
       <el-button v-if="showDiagnoseButton" size="small" type="warning" plain @click="$emit('diagnoseTask', task)">诊断</el-button>
+      <el-button v-if="task.batch_id" size="small" type="default" plain @click="$emit('viewBatch', task)">查看批次</el-button>
     </div>
   </el-card>
 </template>
@@ -65,26 +60,21 @@ import type { TaskRecord } from '@/api/task'
 import { downloadTaskLogs } from '@/api/task'
 import { formatTaskDisplayName, getTaskModuleLabel } from '@/utils/taskDisplay'
 import { formatDateTime } from '@/utils/time'
-import { calcDurationSeconds, calcProgress, formatSeconds, getTaskDuration, statusLabel } from '@/composables/useTaskProgress'
+import { calcDurationSeconds, formatSeconds, statusLabel } from '@/composables/useTaskProgress'
 import StatusTag from './StatusTag.vue'
 
 defineEmits<{
   viewLogs: [task: TaskRecord]
   continueTask: [task: TaskRecord]
   viewArtifacts: [task: TaskRecord]
-  copyEnvCommands: [task: TaskRecord]
-  copyVerifyCommands: [task: TaskRecord]
-  prefetchEnvCommands: [task: TaskRecord]
-  prefetchVerifyCommands: [task: TaskRecord]
   cancelTask: [task: TaskRecord]
   deleteTask: [task: TaskRecord]
   diagnoseTask: [task: TaskRecord]
+  viewBatch: [task: TaskRecord]
 }>()
 
 const props = defineProps<{
   task: TaskRecord
-  envCommandTooltip?: string
-  verifyCommandTooltip?: string
 }>()
 
 const serverLabel = computed(() => {
@@ -117,11 +107,6 @@ const showDiagnoseButton = computed(() => {
   return (props.task.status?.toUpperCase() ?? '') === 'FAILED'
 })
 
-const showMpiCommandActions = computed(() => {
-  const status = props.task.status?.toUpperCase() ?? ''
-  return props.task.task_type === 'mpi' && ['SUCCESS', 'FAILED'].includes(status)
-})
-
 const showCancelButton = computed(() => {
   const status = props.task.status?.toUpperCase() ?? ''
   return ['PENDING', 'CONNECTING', 'PREPARING', 'UPLOADING', 'RUNNING'].includes(status)
@@ -136,28 +121,23 @@ const showDeleteButton = computed(() => {
   return ['SUCCESS', 'FAILED', 'CANCELED'].includes(status)
 })
 
-const envCommandTooltip = computed(() => props.envCommandTooltip || '未识别到环境变量命令')
-const verifyCommandTooltip = computed(() => props.verifyCommandTooltip || '未识别到验证命令')
-
 const runtime = computed(() => {
   return calcDurationSeconds(props.task.start_time, props.task.end_time)
-})
-
-const progress = computed(() => {
-  return calcProgress(props.task)
-})
-
-const showProgressBar = computed(() => {
-  return progress.value !== null
 })
 
 const chineseStatus = computed(() => {
   return statusLabel(props.task.status)
 })
 
-const taskDuration = computed(() => {
-  return getTaskDuration(props.task)
-})
+const BATCH_STEP_LABELS: Record<number, string> = {
+  1: 'GPU',
+  2: 'CPU/内存',
+  3: '磁盘',
+}
+
+function batchStepLabel(seq: number): string {
+  return BATCH_STEP_LABELS[seq] ?? `步骤${seq}`
+}
 
 const formatTime = formatDateTime
 
@@ -195,6 +175,18 @@ function handleDownloadLogs(task: TaskRecord) {
   line-height: 1.5;
 }
 
+.task-card__badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.tag-mono {
+  font-family: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 11px;
+}
+
 .task-card__tooltip {
   max-width: 520px;
   white-space: pre-wrap;
@@ -218,23 +210,33 @@ function handleDownloadLogs(task: TaskRecord) {
   white-space: nowrap;
 }
 
-.task-card__progress {
-  display: block;
-  padding: 4px 0;
-}
-
-.task-card__body .task-card__progress {
-  grid-column: 1 / -1;
-}
-
 .task-card__body.task-card__body {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
 
-.task-card__task-duration {
-  font-family: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+.task-card__info-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
   font-size: 13px;
+  line-height: 1.6;
+}
+
+.task-card__info-grid span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.task-card__time-line {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  font-family: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 </style>

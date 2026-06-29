@@ -8,6 +8,7 @@ from app.core.script_library import (
     save_library_file,
 )
 from app.core.audit import write_audit_log
+from app.core.auth import require_admin_token
 from app.core.script_validator import ScriptValidationError, normalize_script_path, resolve_script_path
 from app.db.database import get_db
 from app.models.script import Script
@@ -64,11 +65,13 @@ def upload_file(
     filename: str = Query(..., min_length=1),
     content: bytes = Body(...),
     db: Session = Depends(get_db),
+    _: str = Depends(require_admin_token),
 ) -> dict[str, object]:
     try:
         result = save_library_file(category.strip(), filename.strip(), content)
         write_audit_log(
             db, action="script.upload", target_type="script", status="success",
+            actor="admin",
             target_name=filename.strip(),
             message=f"uploaded script {category}/{filename}",
             detail={"category": category.strip(), "filename": filename.strip()},
@@ -77,6 +80,7 @@ def upload_file(
     except ScriptValidationError as exc:
         write_audit_log(
             db, action="script.upload", target_type="script", status="failed",
+            actor="admin",
             target_name=filename.strip(),
             message=f"upload failed: {exc}",
         )
@@ -87,20 +91,25 @@ def upload_file(
 def remove_file(
     path: str = Query(..., min_length=1),
     db: Session = Depends(get_db),
+    _: str = Depends(require_admin_token),
 ) -> dict[str, object]:
     try:
         normalized = normalize_library_path(path)
         deleted = delete_library_file(normalized)
         write_audit_log(
             db, action="script.delete", target_type="script", status="success",
+            actor="admin",
             target_name=path,
             message=f"deleted script {path}",
+            detail={"path": path},
         )
     except ScriptValidationError as exc:
         write_audit_log(
             db, action="script.delete", target_type="script", status="failed",
+            actor="admin",
             target_name=path,
             message=f"delete failed: {exc}",
+            detail={"path": path, "error": str(exc)},
         )
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
@@ -112,7 +121,11 @@ def remove_file(
 
 
 @router.post("", response_model=ScriptRead, status_code=status.HTTP_201_CREATED)
-def create_script(payload: ScriptCreate, db: Session = Depends(get_db)) -> Script:
+def create_script(
+    payload: ScriptCreate,
+    db: Session = Depends(get_db),
+    _: str = Depends(require_admin_token),
+) -> Script:
     data = payload.model_dump()
     data["file_path"] = _normalize_or_400(data["file_path"])
     data["params_schema"] = data.get("params_schema") or {}
@@ -133,6 +146,7 @@ def update_script(
     script_id: int,
     payload: ScriptUpdate,
     db: Session = Depends(get_db),
+    _: str = Depends(require_admin_token),
 ) -> Script:
     script = _get_script_or_404(db, script_id)
     data = payload.model_dump(exclude_unset=True)
@@ -148,7 +162,11 @@ def update_script(
 
 
 @router.delete("/{script_id}")
-def delete_script(script_id: int, db: Session = Depends(get_db)) -> dict[str, bool]:
+def delete_script(
+    script_id: int,
+    db: Session = Depends(get_db),
+    _: str = Depends(require_admin_token),
+) -> dict[str, bool]:
     script = _get_script_or_404(db, script_id)
     db.delete(script)
     db.commit()

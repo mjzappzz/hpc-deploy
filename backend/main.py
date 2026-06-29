@@ -1,4 +1,4 @@
-from app.api import audit, cleanup, dashboard, scripts, servers, settings as settings_router_mod, ssh_keys, tasks
+from app.api import audit, auth, cleanup, dashboard, scripts, servers, settings as settings_router_mod, ssh_keys, tasks
 from app.api.health import router as health_router
 from app.core.config import settings
 from app.db.database import init_db
@@ -15,6 +15,7 @@ def create_app() -> FastAPI:
     app.include_router(ssh_keys.router, prefix="/api")
     app.include_router(cleanup.router, prefix="/api")
     app.include_router(settings_router_mod.router, prefix="/api")
+    app.include_router(auth.router, prefix="/api")
     app.include_router(audit.router, prefix="/api")
 
     @app.on_event("startup")

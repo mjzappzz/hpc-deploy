@@ -18,10 +18,10 @@
       style="margin-bottom: 16px"
     />
 
-    <!-- summary cards: 4 in a row -->
+    <!-- summary cards: 3 in a row -->
     <el-row :gutter="16">
       <!-- 服务器 -->
-      <el-col :xs="12" :sm="12" :lg="6" style="margin-bottom: 16px">
+      <el-col :xs="12" :sm="12" :lg="8" style="margin-bottom: 16px">
         <el-card shadow="never" class="stat-card">
           <div class="stat-title">服务器</div>
           <div class="stat-body">
@@ -42,7 +42,7 @@
       </el-col>
 
       <!-- 任务运行 -->
-      <el-col :xs="12" :sm="12" :lg="6" style="margin-bottom: 16px">
+      <el-col :xs="12" :sm="12" :lg="8" style="margin-bottom: 16px">
         <el-card shadow="never" class="stat-card">
           <div class="stat-title">任务运行</div>
           <div class="stat-body">
@@ -63,7 +63,7 @@
       </el-col>
 
       <!-- 任务结果 -->
-      <el-col :xs="12" :sm="12" :lg="6" style="margin-bottom: 16px">
+      <el-col :xs="12" :sm="12" :lg="8" style="margin-bottom: 16px">
         <el-card shadow="never" class="stat-card">
           <div class="stat-title">任务结果</div>
           <div class="stat-body">
@@ -79,28 +79,6 @@
               <span class="stat-label">已取消</span>
               <span class="stat-number stat-orange">{{ summary.tasks.canceled }}</span>
             </div>
-          </div>
-        </el-card>
-      </el-col>
-
-      <!-- 结果文件归档 -->
-      <el-col :xs="12" :sm="12" :lg="6" style="margin-bottom: 16px">
-        <el-card shadow="never" class="stat-card">
-          <div class="stat-title">结果文件归档</div>
-          <div class="stat-body">
-            <div class="stat-line">
-              <span class="stat-label">目录数量</span>
-              <span class="stat-number">{{ summary.artifacts.local_artifacts_count }}</span>
-            </div>
-            <div class="stat-line">
-              <span class="stat-label">占用空间</span>
-              <span class="stat-number">{{ formatBytes(summary.artifacts.local_artifacts_size_bytes) }}</span>
-            </div>
-          </div>
-          <div class="stat-footer">
-            <el-button size="small" @click="openArtifactsTree">
-              查看目录
-            </el-button>
           </div>
         </el-card>
       </el-col>
@@ -122,7 +100,7 @@
         <div class="quick-buttons">
           <el-button @click="goTo('/servers')">服务器管理</el-button>
           <el-button @click="goTo('/scripts')">脚本知识库</el-button>
-          <el-button @click="openArtifactsTree">结果文件归档</el-button>
+          <el-button @click="goTo('/cleanup')">清理中心</el-button>
         </div>
       </div>
     </el-card>
@@ -165,50 +143,7 @@
       </el-table>
     </el-card>
 
-    <!-- artifacts tree drawer -->
-    <el-drawer
-      v-model="treeDrawerVisible"
-      title="结果文件归档目录"
-      size="500px"
-    >
-      <!-- tree summary -->
-      <div v-if="treeLoading" style="text-align:center;padding:40px 0;color:#909399">
-        加载中...
-      </div>
-      <div v-else-if="treeError" style="text-align:center;padding:40px 0;color:#f56c6c">
-        目录加载失败
-      </div>
-      <div v-else-if="treeData.length === 0" style="text-align:center;padding:40px 0;color:#909399">
-        暂无归档结果文件
-      </div>
-      <template v-else>
-        <div class="tree-summary">
-          <span>目录数量：{{ treeTotalDirs }}</span>
-          <span>总占用：{{ formatBytes(treeTotalBytes) }}</span>
-          <span>展示深度：{{ treeDepth }} 层</span>
-        </div>
-        <el-alert
-          v-if="treeTruncated"
-          type="warning"
-          show-icon
-          :closable="false"
-          :title="'目录较多，仅显示部分目录。'"
-          style="margin-bottom: 12px"
-        />
-        <el-tree
-          :data="treeData"
-          :props="treeProps"
-          node-key="relative_path"
-          default-expand-all
-          :expand-on-click-node="false"
-        >
-          <template #default="{ node, data }">
-            <span class="tree-node-label">{{ data.name }}</span>
-            <span class="tree-node-size">{{ formatBytes(data.size_bytes) }}</span>
-          </template>
-        </el-tree>
-      </template>
-    </el-drawer>
+    <!-- artifacts tree drawer (removed) -->
   </section>
 </template>
 
@@ -217,8 +152,6 @@ import { onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   getDashboardSummary,
-  getArtifactsTree,
-  type ArtifactTreeNode,
   type DashboardSummary,
 } from '@/api/dashboard'
 import StatusTag from '@/components/StatusTag.vue'
@@ -236,29 +169,6 @@ const summary = reactive<DashboardSummary>({
   artifacts: { local_artifacts_count: 0, local_artifacts_size_bytes: 0 },
 })
 
-/* artifacts tree drawer */
-const treeDrawerVisible = ref(false)
-const treeLoading = ref(false)
-const treeError = ref(false)
-const treeData = ref<ArtifactTreeNode[]>([])
-const treeTotalBytes = ref(0)
-const treeTotalDirs = ref(0)
-const treeTruncated = ref(false)
-const treeDepth = ref(2)
-
-const treeProps = {
-  children: 'children',
-  label: 'name',
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB']
-  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
-  const val = bytes / Math.pow(1024, i)
-  return (i > 0 ? val.toFixed(1) : val.toFixed(0)) + ' ' + units[i]
-}
-
 function goTo(path: string) {
   router.push(path)
 }
@@ -275,30 +185,11 @@ async function loadDashboard() {
     summary.servers = resp.data.servers
     summary.tasks = resp.data.tasks
     summary.recent_tasks = resp.data.recent_tasks
-    summary.artifacts = resp.data.artifacts
+    // artifacts omitted from display
   } catch {
     loadError.value = true
   } finally {
     loading.value = false
-  }
-}
-
-async function openArtifactsTree() {
-  treeDrawerVisible.value = true
-  treeLoading.value = true
-  treeError.value = false
-  try {
-    const resp = await getArtifactsTree(2)
-    treeData.value = resp.data.items
-    treeTotalBytes.value = resp.data.total_size_bytes
-    treeTotalDirs.value = resp.data.total_dirs
-    treeTruncated.value = resp.data.truncated
-    treeDepth.value = 2
-  } catch {
-    treeError.value = true
-    treeData.value = []
-  } finally {
-    treeLoading.value = false
   }
 }
 
@@ -359,11 +250,6 @@ onMounted(loadDashboard)
 .stat-red    { color: #f56c6c; }
 .stat-orange { color: #e6a23c; }
 .stat-gray   { color: #909399; }
-.stat-footer {
-  margin-top: 10px;
-  display: flex;
-  justify-content: flex-end;
-}
 
 /* quick actions */
 .quick-actions {
@@ -386,23 +272,4 @@ onMounted(loadDashboard)
   margin-top: 16px;
 }
 
-/* tree drawer */
-.tree-summary {
-  display: flex;
-  gap: 16px;
-  font-size: 13px;
-  color: #606266;
-  margin-bottom: 16px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid #ebeef5;
-}
-.tree-node-label {
-  font-size: 13px;
-  color: #303133;
-}
-.tree-node-size {
-  margin-left: 12px;
-  font-size: 12px;
-  color: #909399;
-}
 </style>

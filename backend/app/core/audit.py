@@ -41,7 +41,7 @@ def write_audit_log(
     action: str,
     target_type: str,
     status: str,
-    actor: str = "local-admin",
+    actor: str = "system",
     target_id: str | None = None,
     target_name: str | None = None,
     server_id: int | None = None,

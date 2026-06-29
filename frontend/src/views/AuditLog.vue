@@ -87,13 +87,22 @@
 
     <!-- Detail dialog -->
     <el-dialog v-model="detailVisible" title="操作详情" width="700px" :close-on-click-modal="false">
-      <pre class="detail-json">{{ JSON.stringify(detailData, null, 2) }}</pre>
+      <template v-if="detailData && typeof detailData === 'object' && !Array.isArray(detailData)">
+        <table class="detail-table">
+          <tr v-for="(val, key) in detailData" :key="key">
+            <td class="detail-key">{{ key }}</td>
+            <td class="detail-val">{{ formatDetailValue(val) }}</td>
+          </tr>
+        </table>
+      </template>
+      <pre v-else class="detail-json">{{ JSON.stringify(detailData, null, 2) }}</pre>
     </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { reactive, ref } from 'vue'
+import { requireAdminConfirm } from '@/composables/useAdminConfirm'
 import { listAuditLogs, type AuditLogItem, type AuditLogPage } from '@/api/audit'
 
 const ACTION_LABELS: Record<string, string> = {
@@ -106,7 +115,9 @@ const ACTION_LABELS: Record<string, string> = {
   'server.probe_all': '批量探测',
   'task.create': '创建任务',
   'task.batch_create': '批量创建任务',
+  'task.stress_suite_create': '创建压测套件',
   'task.cancel': '取消任务',
+  'task.diagnose': '诊断任务',
   'task.delete': '删除任务',
   'script.upload': '上传脚本',
   'script.delete': '删除脚本',
@@ -134,6 +145,8 @@ const detailVisible = ref(false)
 const detailData = ref<any>(null)
 
 async function fetchData() {
+  const ok = await requireAdminConfirm('查看审计日志')
+  if (!ok) { page.items = []; page.total = 0; return }
   loading.value = true
   try {
     const params: Record<string, any> = {
@@ -172,6 +185,13 @@ function handleReset() {
 function openDetail(row: AuditLogItem) {
   detailData.value = row.detail_json
   detailVisible.value = true
+}
+
+function formatDetailValue(val: any): string {
+  if (val === null || val === undefined) return '-'
+  if (Array.isArray(val)) return val.join(', ')
+  if (typeof val === 'object') return JSON.stringify(val)
+  return String(val)
 }
 
 function formatTime(ts: string | null): string {
@@ -216,6 +236,36 @@ fetchData()
   overflow-x: auto;
   max-height: 60vh;
   white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.detail-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.detail-table tr {
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.detail-table tr:last-child {
+  border-bottom: none;
+}
+
+.detail-key {
+  width: 180px;
+  padding: 6px 12px;
+  font-weight: 600;
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
+  vertical-align: top;
+}
+
+.detail-val {
+  padding: 6px 12px;
+  color: var(--el-text-color-primary);
   word-break: break-all;
 }
 </style>

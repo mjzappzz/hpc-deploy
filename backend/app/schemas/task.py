@@ -4,7 +4,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
-TaskType = Literal["mpi", "stress", "test", "apptainer"]
+TaskType = Literal["script", "stress", "apptainer"]
 MonitorType = Literal["top", "iostat", "nvidia-smi", "free", "df", "ps", "cpu_mem", "disk", "gpu"]
 
 
@@ -52,6 +52,9 @@ class TaskRead(BaseModel):
     remote_work_dir: str | None
     command_preview: str | None
     status: str
+    batch_id: str | None = None
+    sequence_index: int | None = None
+    depends_on_task_id: str | None = None
     params: dict[str, Any] | None
     start_time: datetime | None
     end_time: datetime | None
@@ -118,11 +121,85 @@ class BatchTaskCreateItem(BaseModel):
 
 
 class BatchTaskCreateResponse(BaseModel):
+    batch_id: str = ""
+    script_name: str = ""
     total: int
     created: int
     skipped: int
     failed: int
     items: list[BatchTaskCreateItem]
+
+
+# ── Stress Suite (Phase 29A) ──
+
+
+class StressSuiteCreateRequest(BaseModel):
+    server_ids: list[int] = Field(min_length=1)
+    script_paths: list[str] = Field(min_length=1, max_length=3)
+    params: dict[str, object] = Field(default_factory=dict)
+
+
+class StressSuiteCreateItem(BaseModel):
+    server_id: int
+    server_name: str = ""
+    task_id: str = ""
+    script_path: str
+    task_name: str = ""
+    status: str = "PENDING"
+
+
+class StressSuiteCreateResponse(BaseModel):
+    batch_id: str = ""
+    total: int = 0
+    items: list[StressSuiteCreateItem] = []
+
+
+# ── Batch summary / detail (Phase 26A) ──
+
+
+class BatchSummaryItem(BaseModel):
+    """One batch group in the batch summary list."""
+    batch_id: str
+    task_type: str | None = None
+    script_names: list[str] = []
+    created_at: datetime
+    total: int
+    success: int
+    failed: int
+    running: int
+    pending: int
+    canceled: int
+    status: str  # RUNNING / SUCCESS / FAILED / PARTIAL_FAILED / CANCELED / PARTIAL_CANCELED
+    servers: list[str] = []
+
+
+class BatchSummaryListResponse(BaseModel):
+    items: list[BatchSummaryItem]
+    total: int
+    page: int
+    page_size: int
+
+
+class BatchTaskDetailItem(BaseModel):
+    """One task inside a batch detail."""
+    task_id: str
+    task_name: str
+    server_id: int
+    server_name: str
+    host: str
+    status: str
+    sequence_index: int | None = None
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    exit_code: int | None = None
+    has_artifacts: bool = False
+    error_summary: str | None = None
+
+
+class BatchDetailResponse(BaseModel):
+    batch_id: str
+    summary: BatchSummaryItem
+    tasks: list[BatchTaskDetailItem]
 
 
 # ── Structured monitor response (Phase 24B) ──

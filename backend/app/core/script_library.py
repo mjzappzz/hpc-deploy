@@ -11,19 +11,16 @@ ALLOWED_LIBRARY_SUFFIXES = TEXT_FILE_SUFFIXES | BINARY_FILE_SUFFIXES
 UPLOAD_DIRECTORIES = {
     "mpi": SCRIPTS_ROOT / "mpi",
     "stress": SCRIPTS_ROOT / "stress",
-    "test": SCRIPTS_ROOT / "test",
     "apptainer": APPTAINER_ROOT,
 }
 ALLOWED_SUFFIXES_BY_CATEGORY = {
     "mpi": {".sh", ".py", ".txt", ".md"},
     "stress": {".sh", ".py", ".txt", ".md"},
-    "test": {".sh", ".py", ".txt", ".md"},
     "apptainer": {".sif"},
 }
 DISPLAY_CATEGORY_LABELS = {
     "mpi": "编译环境",
     "stress": "压测脚本",
-    "test": "测试脚本",
     "apptainer": "Apptainer 容器",
 }
 
@@ -126,6 +123,10 @@ def build_library_file_record(path: Path) -> dict[str, object]:
     ).as_posix()
     suffix = resolved.suffix.lower()
     stat = resolved.stat()
+    try:
+        updated_at = datetime.fromtimestamp(stat.st_mtime)
+    except Exception:
+        updated_at = None
     return {
         "path": relative,
         "relative_path": relative_path,
@@ -133,7 +134,7 @@ def build_library_file_record(path: Path) -> dict[str, object]:
         "physical_category": physical_category,
         "display_category": DISPLAY_CATEGORY_LABELS[physical_category],
         "size": stat.st_size,
-        "updated_at": datetime.fromtimestamp(stat.st_mtime),
+        "updated_at": updated_at,
         "executable": bool(stat.st_mode & 0o111),
         "is_text": suffix in TEXT_FILE_SUFFIXES,
         "previewable": suffix in TEXT_FILE_SUFFIXES,
@@ -150,8 +151,6 @@ def detect_library_category(path: Path) -> str:
         return "mpi"
     if relative.parts and relative.parts[0] == "stress":
         return "stress"
-    if relative.parts and relative.parts[0] == "test":
-        return "test"
     return "mpi"
 
 

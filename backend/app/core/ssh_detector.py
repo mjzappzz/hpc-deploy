@@ -40,10 +40,18 @@ echo '__HPROBE_SECT_B__disk'
 (df -h --local 2>/dev/null || df -h 2>/dev/null)
 echo '__HPROBE_SECT_E__'
 echo '__HPROBE_SECT_B__gpu'
-if command -v nvidia-smi >/dev/null 2>&1; then
-  timeout 3 nvidia-smi --query-gpu=index,name,driver_version,memory.total,memory.used,temperature.gpu,utilization.gpu --format=csv,noheader,nounits 2>/dev/null || echo 'NVIDIA GPU query timed out or failed'
+# --- Step 1: lspci hardware detection ---
+if command -v lspci >/dev/null 2>&1; then
+  lspci | grep -i nvidia || echo '__LSPCI_NO_NVIDIA__'
 else
-  echo 'NVIDIA GPU not detected or nvidia-smi not available'
+  echo '__LSPCI_NOT_AVAILABLE__'
+fi
+echo '---GPU-SPLIT---'
+# --- Step 2: nvidia-smi driver detection ---
+if command -v nvidia-smi >/dev/null 2>&1; then
+  timeout 3 nvidia-smi --query-gpu=index,name,driver_version,memory.total,memory.used,temperature.gpu,utilization.gpu --format=csv,noheader,nounits 2>/dev/null || echo '__NVIDIA_SMI_FAILED__'
+else
+  echo '__NVIDIA_SMI_NOT_FOUND__'
 fi
 echo '__HPROBE_SECT_E__'
 """
@@ -176,13 +184,14 @@ def summarize_detect_result(result: dict[str, str]) -> dict[str, str]:
     cpu_info = _summarize_cpu_info(result.get("cpu_info", ""))
     memory_info = _summarize_memory_info(result.get("memory_info", ""))
     disk_info = _summarize_disk_info(result.get("disk_info", ""))
-    gpu_info = _summarize_gpu_info(result.get("gpu_info", ""))
+    gpu_info, gpu_status = _summarize_gpu_info(result.get("gpu_info", ""))
     return {
         "os_info": _compact(os_info),
         "cpu_info": _compact(cpu_info),
         "memory_info": _compact(memory_info),
         "disk_info": _compact(disk_info),
         "gpu_info": _compact(gpu_info),
+        "gpu_status": gpu_status,
         "network_info": "",
     }
 
@@ -238,18 +247,81 @@ def _summarize_disk_info(raw: str) -> str:
     return raw.strip() or "-"
 
 
-def _summarize_gpu_info(raw: str) -> str:
+def _summarize_gpu_info(raw: str) -> tuple[str, str]:
+    """Parse raw GPU probe data and return (gpu_info, gpu_status).
+
+    gpu_status is one of:
+      "none"          — no NVIDIA PCI device found via lspci
+      "hardware_only" — NVIDIA PCI device found but nvidia-smi unavailable
+      "driver_ok"     — nvidia-smi returned valid GPU data
+      "unknown"       — cannot determine (lspci unavailable, no data)
+    """
     text = raw.strip()
     if not text:
-        return "-"
-    if "not detected" in text.lower() or "not available" in text.lower():
-        return "无 NVIDIA GPU"
+        return "-", "unknown"
 
-    counts: dict[str, int] = {}
-    for line in text.splitlines():
-        parts = [part.strip() for part in line.split(",")]
-        if len(parts) >= 2 and parts[1]:
-            counts[parts[1]] = counts.get(parts[1], 0) + 1
-    if not counts:
-        return text
-    return " / ".join(f"{name} x{count}" for name, count in counts.items())
+    # Split into lspci (hardware) and nvidia-smi (driver) sections
+    parts = text.split("---GPU-SPLIT---")
+    lspci_text = parts[0].strip() if len(parts) >= 1 else ""
+    smi_text = parts[1].strip() if len(parts) >= 2 else ""
+
+    # ── Determine driver availability ──
+    smi_ok = bool(
+        smi_text
+        and "__NVIDIA_SMI_NOT_FOUND__" not in smi_text
+        and "__NVIDIA_SMI_FAILED__" not in smi_text
+    )
+
+    if smi_ok:
+        # Driver is working — parse GPU model names from nvidia-smi CSV
+        counts: dict[str, int] = {}
+        for line in smi_text.splitlines():
+            row = [p.strip() for p in line.split(",")]
+            if len(row) >= 2 and row[1]:
+                counts[row[1]] = counts.get(row[1], 0) + 1
+        if counts:
+            return " / ".join(f"{name} x{c}" for name, c in counts.items()), "driver_ok"
+        return smi_text[:200], "driver_ok"
+
+    # ── nvidia-smi unavailable — check lspci for hardware ──
+    lspci_has_hardware = bool(
+        lspci_text
+        and "__LSPCI_NO_NVIDIA__" not in lspci_text
+        and "__LSPCI_NOT_AVAILABLE__" not in lspci_text
+    )
+
+    if lspci_has_hardware:
+        model = _extract_lspci_model(lspci_text)
+        info = "检测到 NVIDIA GPU，驱动不可用或 nvidia-smi 不存在"
+        return info, "hardware_only"
+
+    if "__LSPCI_NOT_AVAILABLE__" in lspci_text:
+        return "-", "unknown"
+
+    return "无 NVIDIA GPU", "none"
+
+
+def _extract_lspci_model(lspci_text: str) -> str:
+    """Try to extract a human-readable NVIDIA GPU model name from lspci output."""
+    for line in lspci_text.splitlines():
+        line = line.strip()
+        if "nvidia" not in line.lower():
+            continue
+        # Try bracketed model name: "... [GeForce RTX 3080] ..."
+        m = re.search(r"\[([^\]]*)\]", line)
+        if m:
+            candidate = m.group(1).strip()
+            # Skip generic description words
+            if candidate and not candidate.startswith("rev") and not candidate.startswith("NVIDIA"):
+                return candidate
+        # Fallback: extract text after last colon
+        parts = line.split(":")
+        if len(parts) >= 2:
+            desc = parts[-1].strip()
+            # Remove common prefix noise
+            desc = re.sub(r"^.*?NVIDIA\s+Corporation\s+", "", desc)
+            # Take the first meaningful chunk
+            desc = re.sub(r"\s+\(.*$", "", desc)
+            if desc and "nvidia" not in desc.lower():
+                return desc
+    return ""

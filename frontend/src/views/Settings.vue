@@ -31,6 +31,7 @@
                 />
               </el-select>
               <el-button size="small" :loading="keysLoading" @click="loadKeys">刷新</el-button>
+              <el-button size="small" :loading="genKeyLoading" @click="handleGenerateKey">生成默认密钥</el-button>
             </div>
             <div class="form-help">新建服务器时默认选中此私钥。系统只保存文件名，不保存密钥内容。</div>
           </el-form-item>
@@ -77,14 +78,16 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { getSettings, updateSettings } from '@/api/settings'
+import { getSettings, generateDefaultSshKey, updateSettings } from '@/api/settings'
 import { listSshKeys, type SSHKeyItem } from '@/api/server'
+import { requireAdminConfirm } from '@/composables/useAdminConfirm'
 import { useSettingsStore } from '@/stores/settings'
 
 const settingsStore = useSettingsStore()
 const loading = ref(true)
 const saving = ref(false)
 const keysLoading = ref(false)
+const genKeyLoading = ref(false)
 const sshKeys = ref<SSHKeyItem[]>([])
 
 const remoteTaskRootLabel = '$HOME/hpcdeploy/tasks'
@@ -135,6 +138,8 @@ function resetForm() {
 }
 
 async function saveSettings() {
+  const ok = await requireAdminConfirm('保存系统设置')
+  if (!ok) return
   saving.value = true
   try {
     const res = await updateSettings({
@@ -148,6 +153,25 @@ async function saveSettings() {
     ElMessage.error(msg)
   } finally {
     saving.value = false
+  }
+}
+
+async function handleGenerateKey() {
+  const ok = await requireAdminConfirm('生成默认 SSH 密钥')
+  if (!ok) return
+  genKeyLoading.value = true
+  try {
+    const res = await generateDefaultSshKey()
+    ElMessage.success(res.data.message)
+    await loadKeys()
+    if (!form.default_ssh_key_name) {
+      form.default_ssh_key_name = 'id_ed25519'
+    }
+  } catch (err: any) {
+    const msg = err?.response?.data?.detail || '生成密钥失败'
+    ElMessage.warning(msg)
+  } finally {
+    genKeyLoading.value = false
   }
 }
 

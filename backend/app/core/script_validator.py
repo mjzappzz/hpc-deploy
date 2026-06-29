@@ -29,7 +29,7 @@ def resolve_script_path(file_path: str) -> Path:
         raise ScriptValidationError("../ path traversal is not allowed")
 
     if raw_path.parts and raw_path.parts[0] in {"backend", "scripts"}:
-        raise ScriptValidationError("file_path must be relative to backend/scripts, for example test/hello.sh")
+        raise ScriptValidationError("file_path must be relative to backend/scripts, for example stress/cpu_mem_stress_report.sh")
 
     candidate = SCRIPTS_ROOT / raw_path
 

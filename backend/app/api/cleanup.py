@@ -8,9 +8,10 @@ from typing import Any
 
 from app.core.artifact_collector import ARTIFACTS_DIR
 from app.core.audit import write_audit_log
+from app.core.auth import require_admin_token
 from app.core.config import BACKEND_ROOT
 from app.core.ssh_executor import SSHExecutor, SSHExecutorError, shell_quote
-from app.db.database import get_db
+from app.db.database import SessionLocal, get_db
 from app.models.server import Server
 from app.schemas.cleanup import (
     REMOTE_ALLOWED_TARGETS,
@@ -32,7 +33,7 @@ from app.schemas.cleanup import (
     RemoteScanResult,
     RemoteServerScanResult,
 )
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
@@ -256,6 +257,7 @@ def _build_directory_entry(
 def delete_local_artifacts(
     payload: LocalArtifactsDeleteRequest,
     db: Session = Depends(get_db),
+    _: str = Depends(require_admin_token),
 ) -> LocalArtifactsDeleteResponse:
     """Delete specified paths under the artifacts directory."""
     deleted: list[DeleteResultItem] = []
@@ -303,8 +305,10 @@ def delete_local_artifacts(
     logger.info("[cleanup] delete done deleted=%d failed=%d", len(deleted), len(failed))
     write_audit_log(
         db, action="cleanup.local_artifacts.delete", target_type="cleanup", status="success" if deleted else "failed",
+        actor="admin",
+        target_name=f"{len(deleted)} deleted / {len(failed)} failed",
         message=f"deleted {len(deleted)} local artifact dirs, {len(failed)} failed",
-        detail={"paths": payload.paths, "deleted": len(deleted), "failed": len(failed)},
+        detail={"paths": payload.paths, "deleted": len(deleted), "failed": len(failed), "recursive": payload.recursive},
     )
     return LocalArtifactsDeleteResponse(deleted=deleted, failed=failed)
 
@@ -327,8 +331,11 @@ def scan_remote(
 
     items: list[RemoteDirInfo] = []
     error: str | None = None
+    remote_user = server.username or ""
+    remote_home = ""
+    now = datetime.now()
 
-    executor = SSHExecutor(timeout=15)
+    executor = SSHExecutor(timeout=3)
     try:
         executor.connect(
             host=server.host,
@@ -336,7 +343,21 @@ def scan_remote(
             username=server.username,
             **_server_auth_kwargs(server),
         )
-        remote_home = executor.get_remote_home()
+        try:
+            remote_home = executor.get_remote_home()
+        except SSHExecutorError:
+            logger.warning("[cleanup] remote scan get_remote_home failed server_id=%d, using fallback", server.id)
+        try:
+            remote_user = executor.exec_simple("whoami").strip()
+        except SSHExecutorError:
+            logger.warning("[cleanup] remote scan whoami failed server_id=%d, fallback to username=%s", server.id, server.username)
+
+        # Fallback remote_home if it came back empty
+        if not remote_home:
+            if remote_user == "root":
+                remote_home = "/root"
+            else:
+                remote_home = f"/home/{remote_user}"
 
         for target_key in ("tasks", "downloads", "tmp"):
             raw_target = REMOTE_TARGETS[target_key]
@@ -370,25 +391,40 @@ def scan_remote(
 
         logger.info("[cleanup] remote scan done server_id=%d elapsed=%.3fs", server.id, monotonic() - start)
 
+        # Success → online, set last_check_at, clear last_error
+        server.status = "online"
+        server.last_check_at = now
+        server.last_error = None
+        db.commit()
+
     except SSHExecutorError as exc:
         logger.error("[cleanup] remote scan failed server_id=%d error=%s", server.id, exc)
         error = str(exc)
+        # Failure → offline, set last_error, do NOT update last_check_at
+        server.status = "offline"
+        server.last_error = str(exc)
+        db.commit()
     except HTTPException:
         raise
     except Exception as exc:
         logger.error("[cleanup] remote scan unexpected error server_id=%d error=%s", server.id, exc)
         error = str(exc)
+        server.status = "offline"
+        server.last_error = str(exc)
+        db.commit()
     finally:
         executor.close()
 
-    return RemoteScanResult(server_id=server.id, items=items, error=error)
+    return RemoteScanResult(server_id=server.id, remote_user=remote_user, remote_home=remote_home, items=items, error=error)
 
 
 # ───── Remote scan-all (all online servers) ─────
 
 
 def _scan_remote_server_worker(server_data: dict[str, Any]) -> RemoteServerScanResult:
-    """Worker function to scan one remote server. Runs in thread pool."""
+    """Worker function to scan one remote server. Runs in thread pool.
+    Updates server.status / last_check_at / last_error in its own DB session.
+    """
     server_id: int = server_data["id"]
     server_name: str = server_data["name"]
     host: str = server_data["host"]
@@ -399,16 +435,33 @@ def _scan_remote_server_worker(server_data: dict[str, Any]) -> RemoteServerScanR
     key_path: str | None = server_data.get("key_path")
 
     directories: list[RemoteDirectoryScan] = []
-    executor = SSHExecutor(timeout=15)
-
+    remote_user = username or ""
+    remote_home = ""
+    now = datetime.now()
+    db = SessionLocal()
     try:
+        executor = SSHExecutor(timeout=3)
         executor.connect(
             host=host,
             port=port,
             username=username,
             **_server_auth_kwargs_raw(auth_type, password, key_path),
         )
-        remote_home = executor.get_remote_home()
+        try:
+            remote_home = executor.get_remote_home()
+        except SSHExecutorError:
+            logger.warning("[cleanup] scan-all get_remote_home failed server_id=%d, using fallback", server_id)
+        try:
+            remote_user = executor.exec_simple("whoami").strip()
+        except SSHExecutorError:
+            logger.warning("[cleanup] scan-all whoami failed server_id=%d, fallback to username=%s", server_id, username)
+
+        # Fallback remote_home if it came back empty
+        if not remote_home:
+            if remote_user == "root":
+                remote_home = "/root"
+            else:
+                remote_home = f"/home/{remote_user}"
 
         for target_key in ("tasks", "downloads", "tmp"):
             raw_target = REMOTE_TARGETS[target_key]
@@ -442,11 +495,23 @@ def _scan_remote_server_worker(server_data: dict[str, Any]) -> RemoteServerScanR
             ))
 
         executor.close()
+
+        # Update server: success → online, set last_check_at, clear last_error
+        svr = db.query(Server).filter(Server.id == server_id).first()
+        if svr:
+            svr.status = "online"
+            svr.last_check_at = now
+            svr.last_error = None
+            db.commit()
+
         return RemoteServerScanResult(
             server_id=server_id,
             server_name=server_name,
             host=host,
+            remote_user=remote_user,
+            remote_home=remote_home,
             status="success",
+            server_status="online",
             directories=directories,
         )
 
@@ -455,20 +520,39 @@ def _scan_remote_server_worker(server_data: dict[str, Any]) -> RemoteServerScanR
             executor.close()
         except Exception:
             pass
+
+        # Update server: failure → offline, set last_error, do NOT update last_check_at
+        svr = db.query(Server).filter(Server.id == server_id).first()
+        if svr:
+            svr.status = "offline"
+            svr.last_error = str(exc)
+            db.commit()
+
+        err_msg = str(exc)
         return RemoteServerScanResult(
             server_id=server_id,
             server_name=server_name,
             host=host,
             status="error",
-            error=str(exc),
+            server_status="offline",
+            message=f"SSH 连接失败，已标记离线：{err_msg}",
+            error=err_msg,
             directories=[],
         )
+    finally:
+        db.close()
 
 
 @router.post("/remote/scan-all", response_model=RemoteScanAllResult)
-def scan_all_remote(db: Session = Depends(get_db)) -> RemoteScanAllResult:
+def scan_all_remote(
+    db: Session = Depends(get_db),
+    tag: str | None = Query(None, max_length=30),
+) -> RemoteScanAllResult:
     """Scan all online servers' remote directories concurrently."""
-    servers = db.query(Server).filter(Server.status == "online").all()
+    q = db.query(Server).filter(Server.status == "online")
+    if tag:
+        q = q.filter(Server.tags_json.contains(f'"{tag}"'))
+    servers = q.all()
     total = len(servers)
 
     if total == 0:
@@ -530,6 +614,7 @@ def scan_all_remote(db: Session = Depends(get_db)) -> RemoteScanAllResult:
 def delete_remote(
     payload: RemoteDeleteRequest,
     db: Session = Depends(get_db),
+    _: str = Depends(require_admin_token),
 ) -> RemoteDeleteResponse:
     """Delete a fixed remote directory's contents."""
     server = db.get(Server, payload.server_id)
@@ -568,6 +653,7 @@ def delete_remote(
             logger.info("[cleanup] remote delete: %s", msg)
             write_audit_log(
                 db, action="cleanup.remote.delete", target_type="cleanup", status="success",
+                actor="admin",
                 server_id=server.id, server_name=server.name,
                 target_name=payload.target,
                 message=msg,
@@ -588,6 +674,7 @@ def delete_remote(
         logger.info("[cleanup] remote delete success server_id=%d target=%s", server.id, payload.target)
         write_audit_log(
             db, action="cleanup.remote.delete", target_type="cleanup", status="success",
+            actor="admin",
             server_id=server.id, server_name=server.name,
             target_name=payload.target,
             message=f"cleaned: {actual_path}",

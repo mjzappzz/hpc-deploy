@@ -13,10 +13,12 @@ export interface ServerRecord {
   last_error: string | null
   os_info: string | null
   gpu_info: string | null
+  gpu_status: string | null
   cpu_info: string | null
   memory_info: string | null
   disk_info: string | null
   network_info: string | null
+  tags: string[]
   created_at: string
   updated_at: string
 }
@@ -34,10 +36,12 @@ export interface ServerPayload {
   last_error?: string | null
   os_info?: string | null
   gpu_info?: string | null
+  gpu_status?: string | null
   cpu_info?: string | null
   memory_info?: string | null
   disk_info?: string | null
   network_info?: string | null
+  tags?: string[]
 }
 
 export interface SSHKeyItem {
@@ -107,6 +111,7 @@ export interface ServerDetectResult {
   memory_info: string | null
   disk_info: string | null
   gpu_info: string | null
+  gpu_status: string | null
   network_info: string | null
   summary: {
     os: string | null
@@ -118,8 +123,33 @@ export interface ServerDetectResult {
   error: string | null
 }
 
-export function listServers() {
-  return request.get<ServerRecord[]>('/servers')
+export interface TagSummary {
+  name: string
+  server_count: number
+  online_count?: number
+  offline_count?: number
+}
+
+export interface TagSummaryResponse {
+  items: TagSummary[]
+}
+
+export interface ServerListParams {
+  tag?: string
+  keyword?: string
+  status?: string
+}
+
+export function listServers(params?: ServerListParams) {
+  return request.get<ServerRecord[]>('/servers', { params })
+}
+
+export function getServer(id: number) {
+  return request.get<ServerRecord>(`/servers/${id}`)
+}
+
+export function listTags() {
+  return request.get<TagSummaryResponse>('/servers/tags')
 }
 
 export function createServer(data: ServerPayload) {

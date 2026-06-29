@@ -10,7 +10,7 @@ class ScriptFileRead(BaseModel):
     physical_category: str
     display_category: str
     size: int
-    updated_at: datetime
+    updated_at: datetime | None = None
     executable: bool
     is_text: bool
     previewable: bool

@@ -34,8 +34,7 @@
         <el-tab-pane label="全部" name="all" />
         <el-tab-pane :label="`编译环境 (${counts.mpi})`" name="mpi" />
         <el-tab-pane :label="`压测脚本 (${counts.stress})`" name="stress" />
-        <el-tab-pane :label="`Apptainer 容器 (${counts.apptainer})`" name="apptainer" />
-        <el-tab-pane :label="`测试脚本 (${counts.test})`" name="test" />
+        <el-tab-pane :label="`Apptainer 镜像 (${counts.apptainer})`" name="apptainer" />
       </el-tabs>
 
       <ScriptTable
@@ -90,6 +89,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { formatDateTime } from '@/utils/time'
+import { requireAdminConfirm } from '@/composables/useAdminConfirm'
 import ScriptTable from '@/components/ScriptTable.vue'
 import {
   deleteScriptFile,
@@ -101,7 +101,7 @@ import {
   type ScriptFileRecord
 } from '@/api/script'
 
-type KnowledgeCategory = 'all' | 'mpi' | 'stress' | 'apptainer' | 'test'
+type KnowledgeCategory = 'all' | 'mpi' | 'stress' | 'apptainer'
 
 const loading = ref(false)
 const previewVisible = ref(false)
@@ -119,7 +119,6 @@ const counts = computed(() => ({
   mpi: files.value.filter((file) => file.physical_category === 'mpi').length,
   stress: files.value.filter((file) => file.physical_category === 'stress').length,
   apptainer: files.value.filter((file) => file.physical_category === 'apptainer').length,
-  test: files.value.filter((file) => file.physical_category === 'test').length
 }))
 
 const previewTitle = computed(() => previewFile.value?.name ?? '文件预览')
@@ -139,6 +138,8 @@ function triggerUpload() {
 }
 
 async function onFileSelected(event: Event) {
+  const ok = await requireAdminConfirm('上传脚本')
+  if (!ok) return
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   if (!file) return
@@ -178,6 +179,8 @@ function downloadPreviewFile() {
 }
 
 async function removeFile(file: ScriptFileRecord) {
+  const ok = await requireAdminConfirm('删除脚本')
+  if (!ok) return
   await ElMessageBox.confirm(`确认删除文件 ${file.name}？`, '删除确认', { type: 'warning' })
   await deleteScriptFile(file.path)
   ElMessage.success('文件已删除')
@@ -191,8 +194,7 @@ async function removeFile(file: ScriptFileRecord) {
 function categoryLabel(category: KnowledgeCategory | ScriptFileRecord['physical_category']) {
   if (category === 'mpi') return '编译环境'
   if (category === 'stress') return '压测脚本'
-  if (category === 'apptainer') return 'Apptainer 容器'
-  if (category === 'test') return '测试脚本'
+  if (category === 'apptainer') return 'Apptainer 镜像'
   return '编译环境'
 }
 
@@ -203,7 +205,7 @@ function formatSize(size: number) {
   return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`
 }
 
-function formatDate(value: string) {
+function formatDate(value: string | null | undefined) {
   return formatDateTime(value)
 }
 

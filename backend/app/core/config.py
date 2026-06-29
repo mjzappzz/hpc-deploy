@@ -12,6 +12,11 @@ class Settings(BaseSettings):
     app_env: str = "development"
     database_url: str = f"sqlite:///{DEFAULT_DB_PATH.as_posix()}"
 
+    # ── JWT ──
+    # 生产环境必须设置 SECRET_KEY，可以使用 openssl rand -hex 32 生成
+    secret_key: str = "dev-secret-key-change-in-production"
+    access_token_expire_minutes: int = 480  # 8 小时
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
 

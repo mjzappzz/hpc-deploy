@@ -70,7 +70,7 @@ echo "[INFO] Dependency check done."
 
 DURATION=${1:-43200}
 INTERVAL=${2:-2}
-TEST_DIR=${3:-$(pwd)}
+TEST_DIR="${DISK_TEST_DIR:-${3:-$(pwd)}}"
 
 CPU_CORES=$(nproc)
 HDD_WORKERS=${WORKERS:-$(( CPU_CORES / 16 ))}

@@ -88,6 +88,58 @@ install_deps
 
 echo "[INFO] Dependency check done."
 
+# ===== CUDA_HOME 自动检测（解决非交互 SSH 找不到 nvcc） =====
+# 非交互 SSH（Paramiko）不加载 ~/.bashrc / ~/.bash_profile，
+# 导致 command -v nvcc 找不到，即使 CUDA Toolkit 已安装。
+# 此函数先查 PATH，再扫常见安装路径，找到后 export PATH / LD_LIBRARY_PATH。
+find_cuda_home() {
+    # 1) 先试 PATH（交互式登录或已加载 profile 的场景）
+    if command -v nvcc >/dev/null 2>&1; then
+        local nvcc_path
+        nvcc_path=$(command -v nvcc)
+        CUDA_HOME=$(cd "$(dirname "$nvcc_path")/.." && pwd)
+        echo "[INFO] nvcc found in PATH: $nvcc_path"
+        echo "[INFO] CUDA_HOME detected: $CUDA_HOME"
+        export CUDA_HOME
+        export PATH="$CUDA_HOME/bin:$PATH"
+        export LD_LIBRARY_PATH="$CUDA_HOME/lib64:${LD_LIBRARY_PATH:-}"
+        echo "[INFO] nvcc version: $(nvcc --version | grep release | sed -E 's/.*V([0-9.]+).*/\1/')"
+        return 0
+    fi
+
+    # 2) 扫常见 CUDA 安装路径（非交互 SSH 的主要修复路径）
+    for dir in /usr/local/cuda /usr/local/cuda-13.0 /usr/local/cuda-12.8 /usr/local/cuda-12.6 /usr/local/cuda-12.4 /usr/local/cuda-12.2; do
+        if [ -x "$dir/bin/nvcc" ]; then
+            CUDA_HOME="$dir"
+            echo "[INFO] CUDA_HOME detected: $CUDA_HOME"
+            echo "[INFO] nvcc path: $CUDA_HOME/bin/nvcc"
+            export CUDA_HOME
+            export PATH="$CUDA_HOME/bin:$PATH"
+            export LD_LIBRARY_PATH="$CUDA_HOME/lib64:${LD_LIBRARY_PATH:-}"
+            echo "[INFO] nvcc version: $(nvcc --version | grep release | sed -E 's/.*V([0-9.]+).*/\1/')"
+            return 0
+        fi
+    done
+
+    # 3) 兜底 glob：扫 /usr/local/cuda-* 下所有未知版本
+    for dir in /usr/local/cuda-*; do
+        if [ -d "$dir" ] && [ -x "$dir/bin/nvcc" ]; then
+            CUDA_HOME="$dir"
+            echo "[INFO] CUDA_HOME detected: $CUDA_HOME"
+            echo "[INFO] nvcc path: $CUDA_HOME/bin/nvcc"
+            export CUDA_HOME
+            export PATH="$CUDA_HOME/bin:$PATH"
+            export LD_LIBRARY_PATH="$CUDA_HOME/lib64:${LD_LIBRARY_PATH:-}"
+            echo "[INFO] nvcc version: $(nvcc --version | grep release | sed -E 's/.*V([0-9.]+).*/\1/')"
+            return 0
+        fi
+    done
+
+    echo "[WARN] CUDA_HOME not found via PATH or common paths."
+    echo "[WARN] nvcc not found — CUDA Toolkit may not be installed."
+    return 1
+}
+
 DURATION=${1:-43200}
 INTERVAL=${2:-2}
 TIME_TAG=$(date +%F_%H%M%S)
@@ -120,6 +172,13 @@ except Exception:
     raise SystemExit("ERROR: python3-openpyxl not found. Install: apt install -y python3-openpyxl")
 PYCHK
 
+# ==== GPU 环境检测 ====
+NVIDIA_SMI_PATH=$(command -v nvidia-smi)
+echo "[INFO] nvidia-smi path: $NVIDIA_SMI_PATH"
+
+# 自动检测 CUDA_HOME，非交互式 SSH 也保证能找到 nvcc
+find_cuda_home
+
 if [ "$FORCE_REBUILD" = "1" ] || [ ! -x "$GPU_BURN" ]; then
     echo "[INFO] gpu-burn not found or force rebuild, start building..."
 
@@ -131,8 +190,8 @@ if [ "$FORCE_REBUILD" = "1" ] || [ ! -x "$GPU_BURN" ]; then
     fi
 
     if ! command -v nvcc >/dev/null 2>&1; then
-        echo "[ERROR] nvcc not found, CUDA Toolkit 没装，无法编译 gpu-burn"
-        echo "[INFO] 当前只检测到 nvidia-smi，不代表有 CUDA 编译环境"
+        echo "[ERROR] nvcc not found — CUDA Toolkit 未安装或路径异常，无法编译 gpu-burn"
+        echo "[INFO] nvidia-smi 已检测到（NVIDIA 驱动正常），但 nvcc 未找到（CUDA 编译工具链缺失）"
         exit 1
     fi
 
