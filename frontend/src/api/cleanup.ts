@@ -19,6 +19,7 @@ export interface LocalArtifactDirectory {
   size_text: string
   modified_at: string | null
   task_id: string | null
+  task_display_name: string | null
   files: LocalArtifactFile[]
 }
 
@@ -59,12 +60,22 @@ export interface RemoteDirInfo {
   file_count: number
 }
 
+export interface RemoteTaskDirInfo {
+  dir_name: string
+  remote_path: string
+  exists: boolean
+  size_text: string
+  file_count: number
+  task_type_label: string
+}
+
 export interface RemoteScanResult {
   server_id: number
   remote_user?: string
   remote_home?: string
   items: RemoteDirInfo[]
   error: string | null
+  task_dirs: RemoteTaskDirInfo[]
 }
 
 export interface RemoteDeleteResponse {
@@ -75,12 +86,23 @@ export interface RemoteDeleteResponse {
   message: string
 }
 
+export interface RemoteTaskDirDeleteResponse {
+  server_id: number
+  task_dir_path: string
+  success: boolean
+  message: string
+}
+
 export function scanRemote(serverId: number) {
   return request.post<RemoteScanResult>('/cleanup/remote/scan', { server_id: serverId })
 }
 
 export function deleteRemote(serverId: number, target: string) {
   return request.post<RemoteDeleteResponse>('/cleanup/remote/delete', { server_id: serverId, target })
+}
+
+export function deleteRemoteTaskDir(serverId: number, taskDirPath: string) {
+  return request.post<RemoteTaskDirDeleteResponse>('/cleanup/remote/task-dir/delete', { server_id: serverId, task_dir_path: taskDirPath })
 }
 
 // ── Remote scan-all (all online servers) ──

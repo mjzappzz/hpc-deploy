@@ -116,7 +116,7 @@
                     >
                       <div class="f-card-name">{{ file.name }}</div>
                       <div class="f-card-path">{{ file.relative_path }}</div>
-                      <div class="f-card-meta">{{ formatSize(file.size) }} · {{ formatDate(file.updated_at) }}</div>
+                      <div class="f-card-meta">{{ formatSize(file.size) }} · {{ formatScriptUpdatedAt(file.updated_at) }}</div>
                     </div>
                   </div>
                 </template>
@@ -190,7 +190,7 @@
                   <div class="file-info-row file-info-name" :title="selectedFile?.name ?? ''">{{ selectedFile?.name }}</div>
                   <div class="file-info-row file-info-sub">{{ selectedFile?.displayCategory }} · {{ formatSize(selectedFile?.size ?? 0) }}</div>
                   <div class="file-info-row file-info-path" :title="selectedFile?.relative_path ?? ''">{{ selectedFile?.relative_path }}</div>
-                  <div class="file-info-row file-info-time">更新时间：{{ formatDate(selectedFile?.updated_at) }}</div>
+                  <div class="file-info-row file-info-time">更新时间：{{ formatScriptUpdatedAt(selectedFile?.updated_at) }}</div>
                 </div>
               </template>
               <!-- 套件执行计划 - suite mode -->
@@ -282,6 +282,9 @@
               <div class="preview-pane">
                 <div class="preview-label">命令预览</div>
                 <pre class="command-preview">{{ commandPreview }}</pre>
+                <div v-if="showStressParamInfo" class="param-info">
+                  参数说明：第 1 个参数 = 压测时长（秒），第 2 个参数 = 采样间隔（秒）<span v-if="showDiskTestDirInPreview">；DISK_TEST_DIR = 磁盘测试文件写入目录</span>
+                </div>
               </div>
 
               <!-- 操作按钮 -->
@@ -803,6 +806,19 @@
       </template>
     </el-dialog>
 
+    <!-- 取消任务确认弹窗 -->
+    <el-dialog v-model="cancelDialogVisible" title="取消任务" width="420px" :close-on-click-modal="false">
+      <div class="cancel-dialog-body">
+        <p class="cancel-intro">确认取消当前任务？</p>
+        <el-checkbox v-model="cancelDeleteRemote">同时删除远端工作目录和已生成文件</el-checkbox>
+        <p class="cancel-hint">不勾选时会保留远端报告和日志，便于后续查看。</p>
+      </div>
+      <template #footer>
+        <el-button @click="cancelDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="cancelSubmitting" @click="confirmCancelCurrentTask">确认取消任务</el-button>
+      </template>
+    </el-dialog>
+
     <!-- Diagnosis dialog -->
     <TaskDiagnosisDialog
       v-model="diagnosisVisible"
@@ -835,8 +851,8 @@ import {
 } from '@/api/task'
 import { downloadTaskLogs } from '@/api/task'
 import { useTaskWebSocket } from '@/composables/useTaskWebSocket'
-import { formatDateTime } from '@/utils/time'
-import { buildConfirmContent } from '@/utils/confirm'
+import { formatDateTime, formatScriptUpdatedAt } from '@/utils/time'
+
 import { formatTaskDisplayName } from '@/utils/taskDisplay'
 import {
   calcDurationSeconds,
@@ -1128,6 +1144,18 @@ const commandPreview = computed(() => {
     return `复制容器到远程目录：${apptainerTargetDir.value}`
   }
   return `bash ./${selectedFile.value.name}`
+})
+
+const showStressParamInfo = computed(() => {
+  if (selectedTaskType.value !== 'stress') return false
+  if (stressSuiteMode.value) return selectedStressScripts.value.length >= 2
+  return selectedFile.value?.physical_category === 'stress'
+})
+
+const showDiskTestDirInPreview = computed(() => {
+  if (selectedTaskType.value !== 'stress') return false
+  if (stressSuiteMode.value) return selectedStressScripts.value.some(p => p.includes('disk_stress_report.sh')) && diskTestDir.value.trim()
+  return selectedFile.value?.name === 'disk_stress_report.sh' && diskTestDir.value.trim()
 })
 
 const isFileSelected = computed(() => {
@@ -1492,32 +1520,21 @@ async function handleNewTask() {
   await router.replace('/task-runner')
 }
 
-async function cancelCurrentTask() {
-  if (!activeTaskId.value) return
-  try {
-    await ElMessageBox.confirm(
-      buildConfirmContent({
-        intro: '确认取消当前任务？',
-        doTitle: '将执行：',
-        doItems: ['终止远端任务进程', '清理本次任务远端工作目录', '清理允许范围内的临时下载目录'],
-        dontTitle: '不会执行：',
-        dontItems: ['删除任务记录', '删除任务日志', '回滚已安装软件', '删除 Apptainer 容器仓库'],
-      }),
-      '取消任务',
-      {
-        confirmButtonText: '确认取消',
-        cancelButtonText: '取消',
-        type: 'warning',
-        customClass: 'confirm-dialog'
-      }
-    )
-  } catch {
-    return
-  }
+const cancelDialogVisible = ref(false)
+const cancelDeleteRemote = ref(false)
 
+function cancelCurrentTask() {
+  if (!activeTaskId.value) return
+  cancelDeleteRemote.value = false
+  cancelDialogVisible.value = true
+}
+
+async function confirmCancelCurrentTask() {
+  if (!activeTaskId.value) return
+  cancelDialogVisible.value = false
   cancelSubmitting.value = true
   try {
-    await cancelTask(activeTaskId.value)
+    await cancelTask(activeTaskId.value, cancelDeleteRemote.value)
     ElMessage.success('已提交取消请求')
     await fetchTaskRuntime(activeTaskId.value)
   } catch (error) {
@@ -2499,6 +2516,13 @@ onBeforeUnmount(() => {
   font-size: 14px;
 }
 
+.param-info {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #93c5fd;
+  line-height: 1.5;
+}
+
 .runner-actions {
   display: flex;
   gap: 12px;
@@ -3221,5 +3245,21 @@ onBeforeUnmount(() => {
 
 .selection-label-row .step-label {
   flex-shrink: 0;
+}
+
+/* ── Cancel dialog ── */
+.cancel-dialog-body {
+  padding: 8px 0;
+}
+.cancel-intro {
+  margin: 0 0 16px 0;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.cancel-hint {
+  margin: 8px 0 0 0;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.5;
 }
 </style>

@@ -124,7 +124,7 @@ def build_library_file_record(path: Path) -> dict[str, object]:
     suffix = resolved.suffix.lower()
     stat = resolved.stat()
     try:
-        updated_at = datetime.fromtimestamp(stat.st_mtime)
+        updated_at = datetime.utcfromtimestamp(stat.st_mtime)
     except Exception:
         updated_at = None
     return {

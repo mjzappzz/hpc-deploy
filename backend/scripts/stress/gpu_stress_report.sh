@@ -208,7 +208,7 @@ if [ "$FORCE_REBUILD" = "1" ] || [ ! -x "$GPU_BURN" ]; then
             echo "[INFO] Try download gpu-burn from CHFS..."
 
             if wget -T 30 -O gpu-burn-master.zip \
-                "http://171.221.252.54:8573/chfs/shared/1%E7%BC%96%E8%AF%91%E5%99%A8/GPU/gpu-burn-master.zip"; then
+                "http://171.221.252.54:8573/chfs/shared/%E5%85%B6%E4%BB%96%E5%B8%B8%E7%94%A8%E8%BD%AF%E4%BB%B6%EF%BC%88%E5%90%AB%E5%8E%8B%E6%B5%8B%E8%84%9A%E6%9C%AC%E7%AD%89%EF%BC%89/Stress%E5%8E%8B%E6%B5%8B%E7%9B%B8%E5%85%B3%E8%84%9A%E6%9C%AC/gpu-burn-master.zip"; then
 
                 echo "[INFO] CHFS download success"
 

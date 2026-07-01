@@ -65,13 +65,8 @@ defineEmits<{
   delete: [file: ScriptFileRecord]
 }>()
 
-function formatMtime(value?: string | null) {
-  if (!value) return '-'
-  const d = new Date(value)
-  if (Number.isNaN(d.getTime())) return '-'
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
-}
+import { formatDateTime } from '@/utils/time'
+const formatMtime = formatDateTime
 
 function formatSize(size: number) {
   if (size < 1024) return `${size} B`

@@ -22,6 +22,7 @@ class SSHExecutor:
         self.timeout = timeout
         self.client: paramiko.SSHClient | None = None
         self.sftp: paramiko.SFTPClient | None = None
+        self._connect_params: dict[str, object] | None = None
 
     def connect(
         self,
@@ -59,6 +60,13 @@ class SSHExecutor:
             )
             self.client = client
             self.sftp = client.open_sftp()
+            self._connect_params = {
+                "host": host,
+                "port": port,
+                "username": username,
+                "key_path": key_path,
+                "password": password,
+            }
         except (SocketTimeout, TimeoutError) as exc:
             client.close()
             raise SSHExecutorError(f"SSH connection timed out after {self.timeout}s") from exc
@@ -71,6 +79,16 @@ class SSHExecutor:
         except OSError as exc:
             client.close()
             raise SSHExecutorError(f"SSH network error: {exc}") from exc
+
+    def reconnect(self) -> None:
+        """Close existing connection and reconnect using stored params.
+
+        Raises SSHExecutorError if no stored connection params or reconnect fails.
+        """
+        if self._connect_params is None:
+            raise SSHExecutorError("no stored connection params, cannot reconnect")
+        self.close()
+        self.connect(**self._connect_params)
 
     def mkdir_p(self, remote_dir: str) -> None:
         self.exec_simple(f"mkdir -p {shell_quote(remote_dir)}")
@@ -101,6 +119,7 @@ class SSHExecutor:
         timeout_seconds: int,
         on_stdout_line: Callable[[str], None] | None = None,
         on_stderr_line: Callable[[str], None] | None = None,
+        on_tick: Callable[[], bool] | None = None,
     ) -> int:
         if self.client is None:
             raise SSHExecutorError("SSH client is not connected")
@@ -140,6 +159,18 @@ class SSHExecutor:
                 raise SSHCommandTimeoutError(command, timeout_seconds)
 
             sleep(0.2)
+
+            # on_tick 回调：每 ~5s 调用一次，返回 True 时关闭 channel 提前结束
+            if on_tick:
+                _tick_cnt = getattr(on_tick, '_tick_cnt', 0) + 1
+                on_tick._tick_cnt = _tick_cnt
+                if _tick_cnt % 25 == 0:
+                    try:
+                        if on_tick():
+                            channel.close()
+                            raise SSHCommandTimeoutError(command, timeout_seconds)
+                    except Exception:
+                        pass
 
         while channel.recv_ready():
             stdout_buffer = _drain_channel_lines(

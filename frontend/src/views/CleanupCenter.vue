@@ -90,17 +90,57 @@
                     </el-table-column>
                     <el-table-column label="操作" width="140" align="right">
                       <template #default="{ row: d }">
-                        <el-button
-                          v-if="d.exists"
-                          size="small"
-                          type="danger"
-                          plain
-                          :loading="cleaningTarget(row.server_id) === (d.target || labelToTarget(d.label))"
-                          @click="confirmRemoteClean(row, d)"
-                        >清理</el-button>
+                        <template v-if="labelToTarget(d.label) === 'tasks'">
+                          <el-button
+                            v-if="d.exists"
+                            size="small"
+                            type="primary"
+                            plain
+                            @click="toggleTaskDirs(row.server_id)"
+                          >{{ expandedTaskDirs.has(row.server_id) ? '收起' : '展开' }}</el-button>
+                        </template>
+                        <template v-else>
+                          <el-button
+                            v-if="d.exists"
+                            size="small"
+                            type="danger"
+                            plain
+                            :loading="cleaningTarget(row.server_id) === (d.target || labelToTarget(d.label))"
+                            @click="confirmRemoteClean(row, d)"
+                          >清理</el-button>
+                        </template>
                       </template>
                     </el-table-column>
                   </el-table>
+
+                  <!-- 任务级子目录列表 -->
+                  <div v-if="expandedTaskDirs.has(row.server_id) && row.task_dirs && row.task_dirs.length" class="task-dirs-section">
+                    <div class="task-dirs-title">任务目录列表</div>
+                    <el-table :data="row.task_dirs" size="small" stripe style="width: 100%">
+                      <el-table-column prop="dir_name" label="任务目录" min-width="220" show-overflow-tooltip />
+                      <el-table-column prop="task_type_label" label="类型" width="120" />
+                      <el-table-column label="大小" width="120" align="right">
+                        <template #default="{ row: td }">{{ td.size_text || '-' }}</template>
+                      </el-table-column>
+                      <el-table-column label="文件数" width="100" align="right">
+                        <template #default="{ row: td }">{{ td.file_count }}</template>
+                      </el-table-column>
+                      <el-table-column label="操作" width="140" align="right">
+                        <template #default="{ row: td }">
+                          <el-button
+                            size="small"
+                            type="danger"
+                            plain
+                            :loading="deletingTaskDirPath === td.remote_path"
+                            @click="doDeleteTaskDir(row.server_id, td.remote_path)"
+                          >清理</el-button>
+                        </template>
+                      </el-table-column>
+                    </el-table>
+                  </div>
+                  <div v-else-if="expandedTaskDirs.has(row.server_id) && (!row.task_dirs || !row.task_dirs.length)" class="task-dirs-empty">
+                    暂无任务目录
+                  </div>
                 </div>
               </template>
             </el-table-column>
@@ -221,6 +261,13 @@
               </template>
             </el-table-column>
             <el-table-column prop="name" label="任务目录" min-width="200" show-overflow-tooltip />
+            <el-table-column label="任务名称" min-width="240" show-overflow-tooltip>
+              <template #default="{ row }">
+                <span v-if="row.task_display_name" :title="row.task_display_name">{{ row.task_display_name }}</span>
+                <span v-else-if="row.task_id" class="noop-text" :title="row.task_id">未知任务 · {{ row.task_id }}</span>
+                <span v-else class="noop-text">-</span>
+              </template>
+            </el-table-column>
             <el-table-column label="文件数" width="70" align="right">
               <template #default="{ row }">{{ row.file_count }}</template>
             </el-table-column>
@@ -259,6 +306,7 @@ import {
   deleteRemote,
   scanAllRemote,
   scanApptainerImages,
+  deleteRemoteTaskDir,
   scanLocalArtifacts,
   scanRemote,
   type ApptainerImageItem,
@@ -428,6 +476,8 @@ const scanSingleRemoteLoading = ref(false)
 const remoteScanned = ref(false)
 const remoteServers = ref<RemoteServerScanResult[]>([])
 const cleaningTargetMap = ref<Record<string, string>>({}) // "serverId" -> target
+const expandedTaskDirs = ref<Set<number>>(new Set())
+const deletingTaskDirPath = ref<string>('')
 
 function cleaningTarget(serverId: number): string {
   return cleaningTargetMap.value[String(serverId)] || ''
@@ -451,6 +501,32 @@ function computeRemoteTotalSize(server: RemoteServerScanResult) {
 
 function computeRemoteTotalFiles(server: RemoteServerScanResult) {
   return server.directories.reduce((sum, d) => sum + (d.exists ? d.file_count : 0), 0)
+}
+
+function toggleTaskDirs(serverId: number) {
+  const s = new Set(expandedTaskDirs.value)
+  if (s.has(serverId)) {
+    s.delete(serverId)
+  } else {
+    s.add(serverId)
+  }
+  expandedTaskDirs.value = s
+}
+
+async function doDeleteTaskDir(serverId: number, taskDirPath: string) {
+  const ok = await requireAdminConfirm('清理远端任务目录')
+  if (!ok) return
+  deletingTaskDirPath.value = taskDirPath
+  try {
+    await deleteRemoteTaskDir(serverId, taskDirPath)
+    ElMessage.success('远端任务目录已删除')
+    // Refresh scan
+    await _scanAllRemote()
+  } catch (error) {
+    ElMessage.error('删除失败')
+  } finally {
+    deletingTaskDirPath.value = ''
+  }
 }
 
 /** Internal: call scan-all API and populate table, no messages. Returns result or null. */
@@ -794,5 +870,25 @@ async function doScanAll() {
 
 .path-text {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.task-dirs-section {
+  margin-top: 12px;
+  padding: 0 8px;
+}
+
+.task-dirs-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+  margin-bottom: 8px;
+}
+
+.task-dirs-empty {
+  margin-top: 12px;
+  padding: 16px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
 }
 </style>

@@ -22,6 +22,7 @@ class LocalArtifactDirectory(BaseModel):
     size_text: str = ""
     modified_at: datetime | None = None
     task_id: str | None = None
+    task_display_name: str | None = None
     files: list[LocalArtifactFile] = []
 
 
@@ -70,12 +71,23 @@ class RemoteDirInfo(BaseModel):
     file_count: int = 0
 
 
+class RemoteTaskDirInfo(BaseModel):
+    """A single task directory within the tasks root."""
+    dir_name: str
+    remote_path: str
+    exists: bool
+    size_text: str = ""
+    file_count: int = 0
+    task_type_label: str = ""
+
+
 class RemoteScanResult(BaseModel):
     server_id: int
     remote_user: str = ""
     remote_home: str = ""
     items: list[RemoteDirInfo]
     error: str | None = None
+    task_dirs: list[RemoteTaskDirInfo] = []
 
 
 REMOTE_TARGETS: dict[str, str] = {
@@ -96,6 +108,18 @@ class RemoteDeleteResponse(BaseModel):
     server_id: int
     target: str
     remote_path: str
+    success: bool
+    message: str
+
+
+class RemoteTaskDirDeleteRequest(BaseModel):
+    server_id: int = Field(ge=1)
+    task_dir_path: str = Field(min_length=1, max_length=500)
+
+
+class RemoteTaskDirDeleteResponse(BaseModel):
+    server_id: int
+    task_dir_path: str
     success: bool
     message: str
 
@@ -139,6 +163,7 @@ class RemoteServerScanResult(BaseModel):
     message: str | None = None  # human-readable summary for failed servers
     error: str | None = None
     directories: list[RemoteDirectoryScan] = []
+    task_dirs: list[RemoteTaskDirInfo] = []
 
 
 class RemoteScanAllResult(BaseModel):

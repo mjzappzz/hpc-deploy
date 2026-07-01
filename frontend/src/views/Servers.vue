@@ -636,8 +636,6 @@ async function saveServer() {
 }
 
 async function submitDeployPublicKey() {
-  const ok = await requireAdminConfirm('部署公钥')
-  if (!ok) return
   if (!deployTargetServer.value || !deployPrivateKeyPath.value) {
     ElMessage.warning('请先选择带公钥的私钥')
     return

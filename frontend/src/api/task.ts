@@ -175,8 +175,8 @@ export function getTaskLogs(taskId: string) {
   return request.get<TaskLogRecord[]>(`/tasks/${taskId}/logs`)
 }
 
-export function cancelTask(taskId: string) {
-  return request.post<RunTaskResult>(`/tasks/${taskId}/cancel`)
+export function cancelTask(taskId: string, deleteRemoteFiles = false) {
+  return request.post<RunTaskResult>(`/tasks/${taskId}/cancel`, { delete_remote_files: deleteRemoteFiles })
 }
 
 export function cleanupTask(taskId: string) {
@@ -304,6 +304,7 @@ export interface BatchTaskDetailItem {
   sequence_index: number | null
   started_at: string | null
   ended_at: string | null
+  duration_seconds: number | null
   exit_code: number | null
   has_artifacts: boolean
   error_summary: string | null

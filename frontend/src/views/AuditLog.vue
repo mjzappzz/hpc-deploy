@@ -38,7 +38,7 @@
       <el-table :data="page.items" v-loading="loading" stripe style="width:100%">
         <el-table-column prop="created_at" label="时间" width="170">
           <template #default="{ row }">
-            {{ row.created_at ? formatTime(row.created_at) : '-' }}
+            {{ formatDateTime(row.created_at) }}
           </template>
         </el-table-column>
         <el-table-column prop="actor" label="操作人" width="120" />
@@ -102,6 +102,7 @@
 
 <script setup lang="ts">
 import { reactive, ref } from 'vue'
+import { formatDateTime } from '@/utils/time'
 import { requireAdminConfirm } from '@/composables/useAdminConfirm'
 import { listAuditLogs, type AuditLogItem, type AuditLogPage } from '@/api/audit'
 
@@ -192,17 +193,6 @@ function formatDetailValue(val: any): string {
   if (Array.isArray(val)) return val.join(', ')
   if (typeof val === 'object') return JSON.stringify(val)
   return String(val)
-}
-
-function formatTime(ts: string | null): string {
-  if (!ts) return '-'
-  try {
-    const d = new Date(ts)
-    const pad = (n: number) => String(n).padStart(2, '0')
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
-  } catch {
-    return ts
-  }
 }
 
 // Initial load

@@ -21,6 +21,10 @@ class TaskRunResponse(BaseModel):
     status: str
 
 
+class TaskCancelRequest(BaseModel):
+    delete_remote_files: bool = False
+
+
 class TaskCancelResponse(BaseModel):
     task_id: str
     status: str
@@ -191,6 +195,7 @@ class BatchTaskDetailItem(BaseModel):
     sequence_index: int | None = None
     started_at: datetime | None = None
     ended_at: datetime | None = None
+    duration_seconds: int | None = None
     exit_code: int | None = None
     has_artifacts: bool = False
     error_summary: str | None = None

@@ -1,6 +1,7 @@
 from datetime import datetime
 from pathlib import Path
 import re
+from time import monotonic
 
 from app.core.script_library import get_library_file_record, resolve_library_path
 from app.core.script_validator import ScriptValidationError
@@ -138,22 +139,12 @@ def run_task_stage8b(task_id: str) -> None:
         if task.task_type == "script":
             _execute_command_task(db, executor, task, task_id, f"bash ./{Path(task.file_name or 'script').name}")
         elif task.task_type == "stress":
-            _execute_command_task(db, executor, task, task_id, _build_stress_command(task))
-            db.refresh(task)
-            if task.status == "CANCELED":
-                _add_log(db, task_id, "SYSTEM", "task canceled, skip artifact collection")
-            elif task.remote_work_dir:
-                try:
-                    from app.core.artifact_collector import collect_artifacts
-
-                    downloaded = collect_artifacts(db, task_id, task.remote_work_dir, executor)
-
-                    # ── 超时恢复：command timeout 但 xlsx 已生成且 report PASS → 升级为 SUCCESS
-                    db.refresh(task)
-                    if task.status == "FAILED" and task.error_message and "timed out" in task.error_message:
-                        _attempt_timeout_recovery(db, task_id, task, downloaded)
-                except Exception:
-                    _add_log(db, task_id, "ERROR", "artifact collection failed")
+            _execute_stress_async(db, executor, task, task_id, _build_stress_command(task))
+            # _execute_stress_async 内部包含：
+            #   - nohup 后台启动脚本
+            #   - 轮询远程日志和报告
+            #   - 报告生成后自动 artifact collection + 状态更新
+            #   返回时任务已到达终态或不用额外处理
         elif task.task_type == "apptainer":
             _add_log(db, task_id, "SYSTEM", "apptainer distribution completed, file was uploaded but not executed")
             task.status = "SUCCESS"
@@ -172,8 +163,12 @@ def run_task_stage8b(task_id: str) -> None:
         _fail_task(db, task_id, str(exc))
     except TaskCanceledError:
         pass
-    except Exception:
-        _fail_task(db, task_id, "task preparation failed")
+    except Exception as _exc:
+        _add_log(db, task_id, "ERROR", f"task preparation failed: {type(_exc).__name__}: {_exc}")
+        import traceback
+        _tb = traceback.format_exc()[:500]
+        _add_log(db, task_id, "ERROR", f"traceback: {_tb}")
+        _fail_task(db, task_id, f"task preparation failed")
     finally:
         executor.close()
         db.close()
@@ -308,6 +303,32 @@ def _execute_command_task(db, executor: SSHExecutor, task: Task, task_id: str, c
         _add_log(db, task_id, "SYSTEM", f"command timeout seconds: {timeout_seconds}")
     _add_log(db, task_id, "SYSTEM", f"remote pid file: {pid_file_path}")
     _add_log(db, task_id, "SYSTEM", f"executing command: {command}")
+
+    # ── stress 早期 recovery：duration+grace 后主动探测远端报告 ──
+    _stress_grace = 0
+    _stress_dur = 0
+    _stress_cmd_start = monotonic()
+    if task.task_type == "stress":
+        _p = task.params or {}
+        _d = _p.get("duration_seconds", 0)
+        if isinstance(_d, int) and _d > 0:
+            _stress_dur = _d
+            _stress_grace = _calculate_stress_grace(_d)
+    _early_stop = False
+
+    def _stress_tick() -> bool:
+        nonlocal _early_stop
+        if _early_stop:
+            return True
+        if _stress_grace <= 0:
+            return False
+        if monotonic() - _stress_cmd_start > _stress_dur + _stress_grace:
+            _early_stop = True
+            _add_log(db, task_id, "SYSTEM",
+                     f"early recovery: elapsed > duration {_stress_dur}s + grace {_stress_grace}s")
+            return True
+        return False
+
     try:
         exit_code = executor.exec_command_in_dir(
             remote_command,
@@ -315,6 +336,7 @@ def _execute_command_task(db, executor: SSHExecutor, task: Task, task_id: str, c
             timeout_seconds=timeout_seconds,
             on_stdout_line=lambda line: _add_log(db, task_id, "INFO", line),
             on_stderr_line=lambda line: _add_log(db, task_id, _classify_stderr_level(line), line),
+            on_tick=_stress_tick,
         )
     except SSHCommandTimeoutError as exc:
         db.refresh(task)
@@ -326,7 +348,10 @@ def _execute_command_task(db, executor: SSHExecutor, task: Task, task_id: str, c
             db.commit()
             _broadcast_done_safe(task_id, "CANCELED")
             return
-        _add_log(db, task_id, "ERROR", f"command timed out after {exc.timeout_seconds} seconds")
+        _stage_hint = ""
+        if task.task_type == "stress":
+            _stage_hint = " (stress script may be stuck at stress-ng or report stage)"
+        _add_log(db, task_id, "ERROR", f"command timed out after {exc.timeout_seconds} seconds{_stage_hint}")
         task.status = "FAILED"
         task.exit_code = None
         task.end_time = datetime.utcnow()
@@ -361,6 +386,14 @@ def _broadcast_done_safe(task_id: str, status: str) -> None:
     try:
         ws_manager.broadcast_status_sync(task_id, status)
         ws_manager.broadcast_done_sync(task_id, status)
+    except Exception:
+        pass
+
+
+def _broadcast_status_safe(task_id: str, status: str) -> None:
+    """仅广播状态更新（不广播 done），用于轮询期间保持前端刷新。"""
+    try:
+        ws_manager.broadcast_status_sync(task_id, status)
     except Exception:
         pass
 
@@ -413,49 +446,244 @@ def _build_stress_command(task: Task) -> str:
     return f"./{script_name} {duration_seconds} {interval}"
 
 
-def _attempt_timeout_recovery(db, task_id: str, task: Task, downloaded_files: list[str]) -> None:
-    """After command timeout, check if stress report artifacts exist and mark SUCCESS.
+def _exec_with_reconnect(executor: SSHExecutor, cmd: str) -> str | None:
+    """Execute exec_simple with one reconnection attempt on failure.
 
-    If the txt report exists locally (downloaded from remote) and contains
-    'Result : PASS', the stress test itself completed — only report generation
-    (xlsx) or cleanup was slow.  Upgrade to SUCCESS so the user sees a green
-    result instead of a misleading FAILED caused by platform timeout.
+    Returns stripped stdout on success, None if both attempts fail.
+    Logs are not written — caller handles contextual logging.
+    """
+    for attempt in range(2):
+        try:
+            return executor.exec_simple(cmd)
+        except SSHExecutorError:
+            if attempt == 0:
+                try:
+                    executor.reconnect()
+                except SSHExecutorError:
+                    return None
+            else:
+                return None
+    return None
+
+
+def _execute_stress_async(db, executor: SSHExecutor, task: Task, task_id: str, command: str) -> None:
+    """后台启动 stress 脚本 + 轮询远端报告收尾。
+
+    不阻塞等待 SSH channel 关闭，而是：
+    1. nohup 后台启动脚本，保存 PID 到 .hpcdeploy.pid
+    2. 定期轮询远程日志和报告文件
+    3. 报告（xlsx/txt）生成后自动 artifact collection + 状态更新
+    4. duration + grace 过后仍未生成报告则强制收尾
+    """
+    from time import sleep as _poll_sleep
+    from app.core.artifact_collector import collect_artifacts
+
+    params = task.params or {}
+    duration_seconds = params.get("duration_seconds", 0)
+    if not isinstance(duration_seconds, int) or duration_seconds <= 0:
+        raise TaskRunnerError("stress duration_seconds is invalid")
+
+    timeout_seconds, _ = calculate_stress_command_timeout(duration_seconds)
+    grace = _calculate_stress_grace(duration_seconds)
+    poll_interval = 30
+
+    task.start_time = datetime.utcnow()
+    db.commit()
+    _ensure_task_not_canceled(db, task)
+    _set_status(db, task, "RUNNING")
+
+    pid_file = _build_remote_pid_file_path(task.remote_work_dir)
+    log_file = shell_quote(f"{task.remote_work_dir.rstrip('/')}/task.log")
+    work_dir = shell_quote(task.remote_work_dir)
+
+    _add_log(db, task_id, "SYSTEM", f"stress async start: duration={duration_seconds}s grace={grace}s")
+    _add_log(db, task_id, "SYSTEM", f"remote pid file: {pid_file}")
+
+    # 后台启动脚本：nohup 写入 task.log，PID 写入 .hpcdeploy.pid
+    # 使用 bash -c 包装确保整个命令在单次 SSH exec 中完成
+    bg_cmd = (
+        f"cd {work_dir} && nohup bash -c "
+        f"'{command} 2>&1' > {log_file} 2>&1 & echo $! > {shell_quote(pid_file)}"
+    )
+    try:
+        executor.exec_simple(bg_cmd)
+    except SSHExecutorError as exc:
+        raise TaskRunnerError(f"failed to start stress async: {exc}")
+
+    # 确认进程已启动：检查 PID 文件
+    try:
+        _pid_check = executor.exec_simple(
+            f"test -f {shell_quote(pid_file)} && cat {shell_quote(pid_file)} || echo 0"
+        ).strip()
+        if _pid_check == "0":
+            raise TaskRunnerError("stress async: PID file not found after start")
+        _add_log(db, task_id, "SYSTEM", f"stress async: PID {_pid_check}")
+    except SSHExecutorError:
+        raise TaskRunnerError("stress async: failed to verify PID file")
+
+    _add_log(db, task_id, "SYSTEM", "stress script started in background (async mode)")
+
+    # ── 轮询循环 ──
+    deadline = duration_seconds + grace
+    elapsed = 0
+    last_log_pos = 0
+
+    while elapsed < deadline:
+        _poll_sleep(poll_interval)
+        elapsed += poll_interval
+
+        # 1. 检查是否被取消
+        db.refresh(task)
+        if task.status in ("CANCELED", "CANCELING"):
+            _add_log(db, task_id, "SYSTEM", "stress async: task canceled, stopping poll")
+            return
+
+        # 2. 拉取最新日志（含连接失败自动重连）
+        _sz_raw = _exec_with_reconnect(executor, f"wc -c < {log_file} 2>/dev/null || echo 0")
+        if _sz_raw is not None:
+            _cur = int(_sz_raw.strip()) if _sz_raw.strip().isdigit() else 0
+            if _cur > last_log_pos:
+                _seg_raw = _exec_with_reconnect(
+                    executor, f"tail -c +{last_log_pos + 1} {log_file} 2>/dev/null"
+                )
+                if _seg_raw:
+                    for _ln in _seg_raw.strip().split("\n"):
+                        _ln = _ln.strip()
+                        if _ln:
+                            _add_log(db, task_id, "INFO", _ln)
+                last_log_pos = _cur
+
+        # 3. 检查报告是否生成（含连接失败自动重连）
+        _rx_raw = _exec_with_reconnect(
+            executor, f"ls {shell_quote(task.remote_work_dir)}/*report*.xlsx 2>/dev/null | head -1"
+        )
+        if _rx_raw:
+            _rx = _rx_raw.strip()
+            if _rx:
+                _add_log(db, task_id, "SYSTEM", f"stress async: xlsx report found ({_rx})")
+                collect_artifacts(db, task_id, task.remote_work_dir, executor)
+                db.refresh(task)
+                if task.status not in ("CANCELED", "CANCELING", "SUCCESS"):
+                    _attempt_stress_recovery(db, task_id, task)
+                    _add_log(db, task_id, "SYSTEM", "stress async: completed via report detection")
+                return
+
+        # 4. 保持 RUNNING 广播（前端进度可见）
+        _broadcast_status_safe(task_id, "RUNNING")
+
+    # ── deadline 超时 ──
+    _add_log(db, task_id, "SYSTEM", f"stress async: deadline exceeded ({deadline}s), final check")
+    db.refresh(task)
+    if task.status not in ("CANCELED", "CANCELING", "SUCCESS"):
+        try:
+            collect_artifacts(db, task_id, task.remote_work_dir, executor)
+        except Exception:
+            pass
+        if not _attempt_stress_recovery(db, task_id, task):
+            task.status = "FAILED"
+            task.exit_code = None
+            task.end_time = datetime.utcnow()
+            task.error_message = f"stress deadline exceeded ({deadline}s), no report found"
+            db.commit()
+            _broadcast_done_safe(task_id, "FAILED")
+
+
+def _attempt_stress_recovery(db, task_id: str, task: Task) -> bool:
+    """检查 stress 报告 artifact 并根据产物结果更新任务状态。
+
+    ── 核心原则 ──
+    平台任务状态 task.status = "脚本有没有跑完 / 产物有没有生成"。
+    压测结果（PASS/FAIL）是报告内的判断，不直接决定 task.status。
+
+    ── 判定规则 ──
+    1. xlsx 已生成 → 产物已完备 → task = SUCCESS
+       - txt 同步存在 + PASS → SUCCESS，无特殊说明
+       - txt 同步存在 + FAIL → SUCCESS，error_message 记录"压测结果为 FAIL"
+       - txt 不存在 → SUCCESS，error_message 记录"xlsx 已生成但未找到 txt 摘要"
+    2. xlsx 不存在，txt 存在 → 同规则（可能 txt-only 场景）
+    3. 无任何报告 → 返回 False（调用方可尝试远端重取）
+
+    Returns:
+        True 已尝试恢复，False 无报告可解析。
     """
     from pathlib import Path
 
     artifacts_dir = Path(__file__).resolve().parents[2] / "data" / "artifacts" / task_id
     if not artifacts_dir.is_dir():
-        _add_log(db, task_id, "SYSTEM", "timeout recovery skipped: no artifact directory")
-        return
+        return False
 
-    # Find any *report*.txt file
+    xlsx_files = list(artifacts_dir.glob("*report*.xlsx"))
     txt_reports = list(artifacts_dir.glob("*report*.txt"))
-    if not txt_reports:
-        _add_log(db, task_id, "ERROR", "timeout recovery: no report txt found among artifacts")
-        return
 
-    txt_report = txt_reports[0]
-    content = txt_report.read_text(errors="replace", encoding="utf-8")
+    has_xlsx = bool(xlsx_files)
+    has_txt = bool(txt_reports)
 
-    has_pass = "测试结果              : PASS" in content
-    has_fail = "测试结果              : FAIL" in content
+    if not has_xlsx and not has_txt:
+        return False
 
-    if has_pass:
-        # Check if xlsx also exists
-        xlsx_files = list(artifacts_dir.glob("*report*.xlsx"))
-        if xlsx_files:
-            _add_log(db, task_id, "SYSTEM", f"timeout recovery: xlsx artifact found after timeout: {xlsx_files[0].name}")
-        _add_log(db, task_id, "SYSTEM", "timeout recovery: report shows PASS, upgrading to SUCCESS")
+    # 解析 txt（如果存在）
+    report_result: str | None = None  # "PASS" | "FAIL" | None
+    if has_txt:
+        content = txt_reports[0].read_text(errors="replace", encoding="utf-8")
+        if "测试结果              : PASS" in content:
+            report_result = "PASS"
+        elif "测试结果              : FAIL" in content:
+            report_result = "FAIL"
+
+    # 构建诊断信息
+    detail_parts: list[str] = []
+    if has_xlsx:
+        detail_parts.append(f"xlsx: {xlsx_files[0].name}")
+    if report_result:
+        detail_parts.append(f"report: {report_result}")
+
+    # 根据报告产物更新 task 状态
+    if task.status != "SUCCESS":
         task.status = "SUCCESS"
         task.exit_code = 0
-        task.error_message = "command timeout occurred after report generated, treated as success"
         task.end_time = datetime.utcnow()
+
+        if report_result == "FAIL":
+            task.error_message = f"报告已生成，压测结果为 FAIL，请查看报告（{' '.join(detail_parts)}）"
+        elif not has_txt and has_xlsx:
+            task.error_message = f"xlsx 已生成，未找到 txt 结果摘要（{xlsx_files[0].name}）"
+        else:
+            task.error_message = None
+
         db.commit()
         _broadcast_done_safe(task_id, "SUCCESS")
-    elif has_fail:
-        _add_log(db, task_id, "SYSTEM", "timeout recovery: report shows FAIL, keeping FAILED status")
-    else:
-        _add_log(db, task_id, "ERROR", f"timeout recovery: could not parse test result from {txt_report.name}")
+
+    msg = f"stress recovery: completed with {' '.join(detail_parts)}"
+    _add_log(db, task_id, "SYSTEM", msg)
+    return True
+
+
+def _connect_recovery_executor(task: Task) -> SSHExecutor | None:
+    """创建一个新的 SSH 连接到任务的目标服务器，用于故障恢复。
+
+    当主执行器的连接已断开时（如 command timeout 后 connection dropped），
+    用此函数重建连接去远端取 artifact。
+    """
+    from app.db.database import SessionLocal
+    from app.models.server import Server
+
+    db = SessionLocal()
+    try:
+        server = db.get(Server, task.server_id)
+        if server is None:
+            return None
+        fresh = SSHExecutor()
+        fresh.connect(
+            host=server.host,
+            port=server.port,
+            username=server.username,
+            key_path=server.key_path,
+        )
+        return fresh
+    except Exception:
+        return None
+    finally:
+        db.close()
 
 
 def _resolve_command_timeout(task: Task) -> int:
@@ -501,6 +729,21 @@ def calculate_stress_command_timeout(duration_seconds: int) -> tuple[int, int]:
         buffer_seconds = 7200
 
     return duration_seconds + buffer_seconds, buffer_seconds
+
+
+def _calculate_stress_grace(duration_seconds: int) -> int:
+    """stress 早期 recovery 的宽限时间。
+
+    在 duration 到期后额外等待的时间，超过此时间仍未结束则主动探测远端报告。
+    远小于外层 timeout buffer，用于提前 recovery。
+    """
+    if duration_seconds <= 0:
+        return 120
+    if duration_seconds <= 600:       # ≤ 10 分钟
+        return 120
+    if duration_seconds <= 3600:      # ≤ 1 小时
+        return 300
+    return 600                         # > 1 小时
 
 
 def _should_chmod(local_path: Path) -> bool:

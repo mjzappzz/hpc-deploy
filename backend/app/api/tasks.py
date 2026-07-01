@@ -40,6 +40,7 @@ from app.schemas.task import (
     StressSuiteCreateItem,
     StressSuiteCreateRequest,
     StressSuiteCreateResponse,
+    TaskCancelRequest,
     TaskCancelResponse,
     TaskCleanupResponse,
     TaskDeleteResponse,
@@ -1097,6 +1098,12 @@ def get_batch_detail(
             artifact_dir = ARTIFACTS_DIR / t.task_id
             has_artifacts = artifact_dir.is_dir()
 
+        # 计算耗时（秒）
+        _dur: int | None = None
+        if t.start_time and t.end_time:
+            _delta = t.end_time - t.start_time
+            _dur = int(_delta.total_seconds())
+
         task_name = f"{srv_name} · {t.task_type or 'task'} · {t.file_name or 'unknown'}"
 
         detail_items.append(BatchTaskDetailItem(
@@ -1109,6 +1116,7 @@ def get_batch_detail(
             sequence_index=t.sequence_index,
             started_at=t.start_time,
             ended_at=t.end_time,
+            duration_seconds=_dur,
             exit_code=t.exit_code,
             has_artifacts=has_artifacts,
             error_summary=t.error_message,
@@ -1294,6 +1302,7 @@ def diagnose_task(task_id: str, db: Session = Depends(get_db)) -> TaskDiagnosisR
 @router.post("/{task_id}/cancel", response_model=TaskCancelResponse)
 def cancel_task(
     task_id: str,
+    payload: TaskCancelRequest = TaskCancelRequest(),
     db: Session = Depends(get_db),
 ) -> TaskCancelResponse:
     task = _get_task_or_404(db, task_id)
@@ -1348,8 +1357,20 @@ def cancel_task(
                 log_message="task canceled",
             )
 
-        # Phase 3: Cleanup remote work dir (best effort)
-        _cleanup_remote_work_dir(executor, task, db)
+        # Phase 3: 先尝试回收 artifact（无论是否删除，先拉回报告）
+        _add_task_log(db, task_id, "SYSTEM", f"cancel: delete_remote_files={payload.delete_remote_files} (type={type(payload.delete_remote_files).__name__})")
+        try:
+            from app.core.artifact_collector import collect_artifacts
+            collect_artifacts(db, task_id, task.remote_work_dir, executor)
+        except Exception:
+            _add_task_log(db, task_id, "SYSTEM", "cancel: artifact collection skipped (best effort)")
+
+        # Phase 3b: 只有用户明确勾选时才删除远端工作目录
+        if payload.delete_remote_files is True:
+            _add_task_log(db, task_id, "SYSTEM", "cancel: user requested remote work dir deletion")
+            _cleanup_remote_work_dir(executor, task, db)
+        else:
+            _add_task_log(db, task_id, "SYSTEM", "cancel: preserving remote work dir (user opted to keep files)")
 
         # Phase 4: Cleanup temp download dirs for known whitelist scripts (best effort)
         _cleanup_temp_dirs(executor, task, db)
@@ -1360,7 +1381,7 @@ def cancel_task(
             target_id=task_id, target_name=task.file_name or "unknown",
             task_id=task_id, server_id=task.server_id,
             message=f"task {task_id} canceled",
-            detail={"server_id": task.server_id},
+            detail={"server_id": task.server_id, "delete_remote_files": payload.delete_remote_files},
         )
         return TaskCancelResponse(task_id=task.task_id, status=task.status)
     except SSHExecutorError as exc:

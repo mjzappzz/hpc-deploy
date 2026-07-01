@@ -32,6 +32,9 @@ from app.schemas.cleanup import (
     RemoteScanRequest,
     RemoteScanResult,
     RemoteServerScanResult,
+    RemoteTaskDirDeleteRequest,
+    RemoteTaskDirDeleteResponse,
+    RemoteTaskDirInfo,
 )
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
@@ -117,7 +120,7 @@ def _server_auth_kwargs_raw(
 
 
 @router.get("/local-artifacts/scan", response_model=LocalArtifactsScanResult)
-def scan_local_artifacts() -> LocalArtifactsScanResult:
+def scan_local_artifacts(db: Session = Depends(get_db)) -> LocalArtifactsScanResult:
     """
     Scan local artifacts directory.
     Returns directories grouped, with file details under each directory.
@@ -143,7 +146,7 @@ def scan_local_artifacts() -> LocalArtifactsScanResult:
 
     for entry in first_level:
         if entry.is_dir():
-            fc, sz = _build_directory_entry(entry, directories)
+            fc, sz = _build_directory_entry(entry, directories, db=db)
             total_files += fc
             total_size += sz
         # Files handled below as "未归档文件"
@@ -202,9 +205,41 @@ def scan_local_artifacts() -> LocalArtifactsScanResult:
     )
 
 
+def _build_task_display_name(task_id: str, db: Session) -> str | None:
+    """Query task table and build a readable display name."""
+    try:
+        from app.models.task import Task
+        t = db.query(Task).filter(Task.task_id == task_id).first()
+        if t is None:
+            logger.warning("[cleanup] task_name: %s not found in DB", task_id)
+            return None
+        server_name = ""
+        if t.server_id:
+            svr = db.query(Server).filter(Server.id == t.server_id).first()
+            if svr:
+                server_name = svr.name or ""
+        task_type_label = {
+            "stress": "压测",
+            "script": "脚本",
+            "apptainer": "容器",
+        }.get(t.task_type or "", t.task_type or "")
+        script_name = (t.file_name or "").replace(".sh", "").replace(".py", "")
+        date_str = ""
+        if t.created_at:
+            date_str = t.created_at.strftime("%Y%m%d")
+        parts = [p for p in [server_name, task_type_label, script_name, date_str] if p]
+        result = " · ".join(parts)
+        logger.info("[cleanup] task_name: %s -> %s", task_id, result)
+        return result
+    except Exception as exc:
+        logger.error("[cleanup] task_name error for %s: %s", task_id, exc)
+        return None
+
+
 def _build_directory_entry(
     entry: Path,
     directories: list[LocalArtifactDirectory],
+    db: Session | None = None,
 ) -> tuple[int, int]:
     """Build a LocalArtifactDirectory from a first-level directory entry.
     Returns (file_count, size_bytes) for this directory.
@@ -236,6 +271,9 @@ def _build_directory_entry(
 
     dir_files.sort(key=lambda x: x.name)
     task_id = entry.name if entry.name.startswith("task-") else None
+    task_display_name = None
+    if task_id and db is not None:
+        task_display_name = _build_task_display_name(task_id, db)
 
     directories.append(LocalArtifactDirectory(
         name=entry.name,
@@ -245,6 +283,7 @@ def _build_directory_entry(
         size_text=_format_size_text(dir_size),
         modified_at=latest_mtime,
         task_id=task_id,
+        task_display_name=task_display_name,
         files=dir_files,
     ))
     return dir_file_count, dir_size
@@ -389,6 +428,60 @@ def scan_remote(
                 file_count=file_count,
             ))
 
+        # ── 扫描任务级子目录 ──
+        tasks_path = REMOTE_TARGETS["tasks"].replace("$HOME", remote_home.rstrip("/"))
+        task_dirs: list[RemoteTaskDirInfo] = []
+        if tasks_path:
+            try:
+                test_cmd = f"test -d {shell_quote(tasks_path)}"
+                ec, _o, _e = executor.exec_capture(test_cmd, timeout_seconds=5)
+                if ec == 0:
+                    # 使用 find 扫描 tasks/ 下二级子目录（stress/xxx, script/xxx 等）
+                    find_cmd = f"find {shell_quote(tasks_path)} -mindepth 2 -maxdepth 2 -type d 2>/dev/null"
+                    try:
+                        find_out = executor.exec_simple(find_cmd).strip()
+                    except SSHExecutorError:
+                        find_out = ""
+                    if find_out:
+                        for _fp in find_out.split("\n"):
+                            _fp = _fp.strip()
+                            if not _fp:
+                                continue
+                            _dn = _fp.rstrip("/").split("/")[-1]
+                            _parent = _fp.rstrip("/").split("/")[-2] if "/" in _fp else ""
+                            # 识别任务类型
+                            _task_type_label = ""
+                            if _dn.startswith("gpu_stress_"):
+                                _task_type_label = "GPU"
+                            elif _dn.startswith("cpu_mem_stress_"):
+                                _task_type_label = "CPU/内存"
+                            elif _dn.startswith("disk_stress_"):
+                                _task_type_label = "磁盘"
+                            elif _parent in ("stress", "script", "apptainer"):
+                                _task_type_label = {"stress": "压测", "script": "脚本", "apptainer": "容器"}.get(_parent, _parent)
+                            else:
+                                _task_type_label = "其他"
+                            _d_size = ""
+                            _d_count = 0
+                            try:
+                                _du = f"du -sh {shell_quote(_fp)} 2>/dev/null | cut -f1"
+                                _d_size = executor.exec_simple(_du).strip()
+                                _cnt = f"find {shell_quote(_fp)} -type f 2>/dev/null | wc -l"
+                                _co = executor.exec_simple(_cnt).strip()
+                                _d_count = int(_co) if _co.isdigit() else 0
+                            except SSHExecutorError:
+                                pass
+                            task_dirs.append(RemoteTaskDirInfo(
+                                dir_name=_dn,
+                                remote_path=_fp,
+                                exists=True,
+                                size_text=_d_size,
+                                file_count=_d_count,
+                                task_type_label=_task_type_label,
+                            ))
+            except SSHExecutorError:
+                logger.warning("[cleanup] remote scan task dirs failed server_id=%d", server.id)
+
         logger.info("[cleanup] remote scan done server_id=%d elapsed=%.3fs", server.id, monotonic() - start)
 
         # Success → online, set last_check_at, clear last_error
@@ -415,7 +508,7 @@ def scan_remote(
     finally:
         executor.close()
 
-    return RemoteScanResult(server_id=server.id, remote_user=remote_user, remote_home=remote_home, items=items, error=error)
+    return RemoteScanResult(server_id=server.id, remote_user=remote_user, remote_home=remote_home, items=items, error=error, task_dirs=task_dirs)
 
 
 # ───── Remote scan-all (all online servers) ─────
@@ -494,6 +587,44 @@ def _scan_remote_server_worker(server_data: dict[str, Any]) -> RemoteServerScanR
                 file_count=file_count,
             ))
 
+        # ── 扫描任务级子目录 ──
+        _task_dirs: list[RemoteTaskDirInfo] = []
+        _tp = REMOTE_TARGETS["tasks"].replace("$HOME", remote_home.rstrip("/"))
+        if _tp:
+            try:
+                _tc = f"test -d {shell_quote(_tp)}"
+                _ec, _o, _e = executor.exec_capture(_tc, timeout_seconds=5)
+                if _ec == 0:
+                    _find = f"find {shell_quote(_tp)} -mindepth 2 -maxdepth 2 -type d 2>/dev/null"
+                    _out = executor.exec_simple(_find).strip()
+                    if _out:
+                        for _fp in _out.split(chr(10)):
+                            _fp = _fp.strip()
+                            if not _fp:
+                                continue
+                            _dn = _fp.rstrip("/").split("/")[-1]
+                            _parent = _fp.rstrip("/").split("/")[-2] if "/" in _fp else ""
+                            _tl = ""
+                            if _dn.startswith("gpu_stress_"): _tl = "GPU"
+                            elif _dn.startswith("cpu_mem_stress_"): _tl = "CPU/内存"
+                            elif _dn.startswith("disk_stress_"): _tl = "磁盘"
+                            elif _parent in ("stress", "script", "apptainer"):
+                                _tl = {"stress": "压测", "script": "脚本", "apptainer": "容器"}.get(_parent, _parent)
+                            else: _tl = "其他"
+                            _ds, _dc = "", 0
+                            try:
+                                _ds = executor.exec_simple(f"du -sh {shell_quote(_fp)} 2>/dev/null | cut -f1").strip()
+                                _co = executor.exec_simple(f"find {shell_quote(_fp)} -type f 2>/dev/null | wc -l").strip()
+                                _dc = int(_co) if _co.isdigit() else 0
+                            except SSHExecutorError:
+                                pass
+                            _task_dirs.append(RemoteTaskDirInfo(
+                                dir_name=_dn, remote_path=_fp, exists=True,
+                                size_text=_ds, file_count=_dc, task_type_label=_tl,
+                            ))
+            except SSHExecutorError:
+                pass
+
         executor.close()
 
         # Update server: success → online, set last_check_at, clear last_error
@@ -513,6 +644,7 @@ def _scan_remote_server_worker(server_data: dict[str, Any]) -> RemoteServerScanR
             status="success",
             server_status="online",
             directories=directories,
+            task_dirs=_task_dirs,
         )
 
     except Exception as exc:
@@ -721,6 +853,115 @@ def delete_remote(
             remote_path="",
             success=False,
             message=str(exc),
+        )
+    finally:
+        executor.close()
+
+
+# ───── Remote task dir delete (single task directory) ─────
+
+_TASK_DIR_ALLOWED_PREFIXES = (
+    "gpu_stress_",
+    "cpu_mem_stress_",
+    "disk_stress_",
+    "task-",
+)
+
+
+def _is_safe_task_dir_path(remote_path: str) -> bool:
+    """Validate that a path is a safe, task-level directory for deletion."""
+    if not remote_path:
+        return False
+    if remote_path == "/":
+        return False
+    if ".." in remote_path.split("/"):
+        return False
+    for bad in (";", "&", "|", "`", "$("):
+        if bad in remote_path:
+            return False
+    # Must contain hpcdeploy/tasks/ in the path
+    if "/hpcdeploy/tasks/" not in remote_path:
+        return False
+    # Must not be the tasks root itself
+    parts = remote_path.rstrip("/").split("/")
+    if parts[-1] in ("tasks", "stress", "script", "apptainer", "downloads", "tmp"):
+        return False
+    # Directory name must match an allowed prefix
+    dir_name = parts[-1]
+    if not any(dir_name.startswith(p) for p in _TASK_DIR_ALLOWED_PREFIXES):
+        return False
+    return True
+
+
+@router.post("/remote/task-dir/delete", response_model=RemoteTaskDirDeleteResponse)
+def delete_remote_task_dir(
+    payload: RemoteTaskDirDeleteRequest,
+    db: Session = Depends(get_db),
+    _: str = Depends(require_admin_token),
+) -> RemoteTaskDirDeleteResponse:
+    """Delete a single task directory on a remote server. Path is validated server-side."""
+    server = db.get(Server, payload.server_id)
+    if server is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="server not found")
+
+    task_dir_path = payload.task_dir_path.strip()
+    logger.info("[cleanup] remote task-dir delete start server_id=%d host=%s path=%s",
+                server.id, server.host, task_dir_path)
+
+    if not _is_safe_task_dir_path(task_dir_path):
+        logger.warning("[cleanup] remote task-dir delete refused: unsafe path %s", task_dir_path)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"unsafe task directory path: {task_dir_path}",
+        )
+
+    executor = SSHExecutor(timeout=30)
+    try:
+        executor.connect(
+            host=server.host,
+            port=server.port,
+            username=server.username,
+            **_server_auth_kwargs(server),
+        )
+
+        # Check dir exists
+        test_cmd = f"test -d {shell_quote(task_dir_path)}"
+        ec, _o, _e = executor.exec_capture(test_cmd, timeout_seconds=10)
+        if ec != 0:
+            msg = f"directory does not exist: {task_dir_path}"
+            logger.info("[cleanup] remote task-dir delete: %s", msg)
+            return RemoteTaskDirDeleteResponse(
+                server_id=server.id, task_dir_path=task_dir_path,
+                success=True, message=msg,
+            )
+
+        cmd = f"rm -rf -- {shell_quote(task_dir_path)}"
+        executor.exec_simple(cmd)
+
+        logger.info("[cleanup] remote task-dir delete success server_id=%d path=%s", server.id, task_dir_path)
+        write_audit_log(
+            db, action="cleanup.remote.delete", target_type="cleanup", status="success",
+            actor="admin",
+            server_id=server.id, server_name=server.name,
+            target_name=Path(task_dir_path).name,
+            message=f"deleted task dir: {task_dir_path}",
+            detail={"task_dir_path": task_dir_path, "server_id": server.id},
+        )
+        return RemoteTaskDirDeleteResponse(
+            server_id=server.id, task_dir_path=task_dir_path,
+            success=True, message=f"deleted: {task_dir_path}",
+        )
+    except SSHExecutorError as exc:
+        return RemoteTaskDirDeleteResponse(
+            server_id=server.id, task_dir_path=task_dir_path,
+            success=False, message=str(exc),
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return RemoteTaskDirDeleteResponse(
+            server_id=server.id, task_dir_path=task_dir_path,
+            success=False, message=str(exc),
         )
     finally:
         executor.close()

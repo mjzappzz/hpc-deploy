@@ -171,6 +171,9 @@
                     <el-table-column label="结束时间" width="145">
                       <template #default="{ row: t }">{{ formatDate(t.ended_at) }}</template>
                     </el-table-column>
+                    <el-table-column label="总耗时" width="100" align="center">
+                      <template #default="{ row: t }">{{ formatDuration(t.duration_seconds) }}</template>
+                    </el-table-column>
                     <el-table-column label="操作" width="320" fixed="right">
                       <template #default="{ row: t }">
                         <div class="batch-task-actions">
@@ -394,6 +397,9 @@
             <el-table-column label="结束时间" width="160">
               <template #default="{ row }">{{ formatDate(row.ended_at) }}</template>
             </el-table-column>
+            <el-table-column label="总耗时" width="100" align="center">
+              <template #default="{ row }">{{ formatDuration(row.duration_seconds) }}</template>
+            </el-table-column>
             <el-table-column label="操作" width="320" fixed="right">
               <template #default="{ row }">
                 <div class="batch-task-actions">
@@ -423,6 +429,19 @@
         <el-button @click="batchDetailVisible = false">关闭</el-button>
       </template>
     </el-dialog>
+
+    <!-- 取消任务确认弹窗 -->
+    <el-dialog v-model="cancelDialogVisible" title="取消任务" width="420px" :close-on-click-modal="false">
+      <div class="cancel-dialog-body">
+        <p class="cancel-intro">确认取消当前任务？</p>
+        <el-checkbox v-model="cancelDeleteRemote">同时删除远端工作目录和已生成文件</el-checkbox>
+        <p class="cancel-hint">不勾选时会保留远端报告和日志，便于后续查看。</p>
+      </div>
+      <template #footer>
+        <el-button @click="cancelDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="cancelSubmitting" @click="confirmCancelTask">确认取消任务</el-button>
+      </template>
+    </el-dialog>
   </section>
 </template>
 
@@ -431,6 +450,8 @@ import { computed, nextTick, onMounted, onActivated, onUnmounted, reactive, ref 
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
 import { cancelTask, deleteTask, getTask, getTaskLogs, listArtifacts, listBatches, getBatchDetail, listTasks, type ArtifactFileDetail, type BatchDetailResponse, type BatchQuery, type BatchSummaryItem, type BatchTaskDetailItem, type TaskLogRecord, type TaskListQuery, type TaskRecord } from '@/api/task'
+import { formatDateTime } from '@/utils/time'
+import { requireAdminConfirm } from '@/composables/useAdminConfirm'
 import { buildConfirmContent } from '@/utils/confirm'
 import LogViewer from '@/components/LogViewer.vue'
 import StatusTag from '@/components/StatusTag.vue'
@@ -879,13 +900,21 @@ function taskTypeLabel(type: string | null): string {
   return labels[type ?? ''] || type || '-'
 }
 
-function formatDate(value: string | null | undefined): string {
-  if (!value) return '-'
-  try {
-    return value.replace('T', ' ').substring(0, 19)
-  } catch {
-    return value
-  }
+const formatDate = formatDateTime
+
+/** 秒数 → 可读耗时格式（如 1h 23m 45s / 23m 45s / 45s） */
+function formatDuration(seconds: number | null | undefined): string {
+  if (seconds === null || seconds === undefined) return '-'
+  const s = Math.round(seconds)
+  if (s <= 0) return '0s'
+  const h = Math.floor(s / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  const sec = s % 60
+  const parts: string[] = []
+  if (h > 0) parts.push(`${h}h`)
+  if (m > 0) parts.push(`${m}m`)
+  if (sec > 0 || parts.length === 0) parts.push(`${sec}s`)
+  return parts.join(' ')
 }
 
 const BATCH_TASK_TERMINAL = new Set(['SUCCESS', 'FAILED', 'CANCELED', 'TIMEOUT'])
@@ -967,45 +996,43 @@ async function openLogs(task: TaskRecord) {
   }
 }
 
-async function cancelHistoryTask(task: TaskRecord) {
-  try {
-    await ElMessageBox.confirm(
-      buildConfirmContent({
-        intro: '确认取消当前任务？',
-        doTitle: '将执行：',
-        doItems: ['终止远端任务进程', '清理本次任务远端工作目录', '清理允许范围内的临时下载目录'],
-        dontTitle: '不会执行：',
-        dontItems: ['删除任务记录', '删除任务日志', '回滚已安装软件', '删除 Apptainer 容器仓库'],
-      }),
-      '取消任务',
-      {
-        confirmButtonText: '确认取消',
-        cancelButtonText: '取消',
-        type: 'warning',
-        customClass: 'confirm-dialog'
-      }
-    )
-  } catch {
-    return
-  }
+const cancelDialogVisible = ref(false)
+const cancelDeleteRemote = ref(false)
+const cancelSubmitting = ref(false)
+let cancelTargetTask: TaskRecord | null = null
 
+function cancelHistoryTask(task: TaskRecord) {
+  cancelTargetTask = task
+  cancelDeleteRemote.value = false
+  cancelDialogVisible.value = true
+}
+
+async function confirmCancelTask() {
+  if (!cancelTargetTask) return
+  cancelDialogVisible.value = false
+  cancelSubmitting.value = true
   try {
-    await cancelTask(task.task_id)
+    await cancelTask(cancelTargetTask.task_id, cancelDeleteRemote.value)
     ElMessage.success('已提交取消请求')
     await loadTasks()
-    if (activeTaskId.value === task.task_id) {
-      const [taskResp, logsResp] = await Promise.all([getTask(task.task_id), getTaskLogs(task.task_id)])
-      taskLogCache[task.task_id] = logsResp.data
+    if (activeTaskId.value === cancelTargetTask.task_id) {
+      const [taskResp, logsResp] = await Promise.all([getTask(cancelTargetTask.task_id), getTaskLogs(cancelTargetTask.task_id)])
+      taskLogCache[cancelTargetTask.task_id] = logsResp.data
       logs.value = logsResp.data
       activeTaskId.value = taskResp.data.task_id
     }
   } catch (error) {
     console.error(error)
     ElMessage.error('取消任务失败')
+  } finally {
+    cancelSubmitting.value = false
+    cancelTargetTask = null
   }
 }
 
 async function handleDelete(task: TaskRecord) {
+  const ok = await requireAdminConfirm('删除任务')
+  if (!ok) return
   try {
     await ElMessageBox.confirm(
       buildConfirmContent({
@@ -1528,5 +1555,21 @@ onUnmounted(() => {
 .batch-task-actions .el-button {
   margin-left: 0;
   padding: 0;
+}
+
+/* ── Cancel dialog ── */
+.cancel-dialog-body {
+  padding: 8px 0;
+}
+.cancel-intro {
+  margin: 0 0 16px 0;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.cancel-hint {
+  margin: 8px 0 0 0;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.5;
 }
 </style>

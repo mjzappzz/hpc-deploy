@@ -56,7 +56,7 @@
             <el-descriptions-item label="相对路径">{{ previewFile.relative_path }}</el-descriptions-item>
             <el-descriptions-item label="类型">{{ previewFile.is_text ? '文本' : '二进制' }}</el-descriptions-item>
             <el-descriptions-item label="大小">{{ formatSize(previewFile.size) }}</el-descriptions-item>
-            <el-descriptions-item label="最后更新">{{ formatDate(previewFile.updated_at) }}</el-descriptions-item>
+            <el-descriptions-item label="最后更新">{{ formatScriptUpdatedAt(previewFile.updated_at) }}</el-descriptions-item>
             <el-descriptions-item label="可预览">{{ previewFile.previewable ? '是' : '否' }}</el-descriptions-item>
           </el-descriptions>
         </div>
@@ -88,7 +88,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { formatDateTime } from '@/utils/time'
+import { formatDateTime, formatScriptUpdatedAt } from '@/utils/time'
 import { requireAdminConfirm } from '@/composables/useAdminConfirm'
 import ScriptTable from '@/components/ScriptTable.vue'
 import {
