@@ -473,6 +473,7 @@
                   >
                     查看结果文件
                   </el-button>
+                  <el-button size="small" type="warning" plain @click="openTaskDiagnosis(activeTask)">查看诊断</el-button>
                 </template>
               </el-alert>
 
@@ -507,6 +508,9 @@
                   </div>
                   <div v-if="activeTask.error_message" class="alert-detail">{{ activeTask.error_message }}</div>
                   <div class="alert-hint">远端工作目录已清理，任务记录和日志已保留。</div>
+                </template>
+                <template #action>
+                  <el-button size="small" type="warning" plain @click="openTaskDiagnosis(activeTask)">查看诊断</el-button>
                 </template>
               </el-alert>
 

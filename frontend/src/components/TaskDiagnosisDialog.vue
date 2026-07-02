@@ -1,14 +1,28 @@
 <template>
   <el-dialog
     :model-value="modelValue"
-    title="任务失败诊断"
+    title="任务诊断"
     width="680px"
+    top="6vh"
     :close-on-click-modal="false"
     class="diagnosis-dialog"
     @update:model-value="$emit('update:modelValue', $event)"
   >
     <div v-loading="loading">
       <template v-if="diagnosisData">
+        <!-- Attribution tag + Conclusion -->
+        <div class="diag-attribution-bar">
+          <el-tag
+            :type="attributionTagType"
+            size="small"
+            effect="dark"
+            class="diag-attribution-tag"
+          >
+            {{ attributionLabel }}
+          </el-tag>
+          <span class="diag-conclusion">{{ diagnosisData.conclusion }}</span>
+        </div>
+
         <!-- Level tag + category -->
         <div class="diag-header">
           <el-tag :type="levelTagType" size="small" effect="dark">
@@ -36,6 +50,14 @@
           <div class="diag-section-title">建议处理</div>
           <ul class="diag-list">
             <li v-for="(s, i) in diagnosisData.suggestions" :key="i">{{ s }}</li>
+          </ul>
+        </div>
+
+        <!-- Risk tips -->
+        <div v-if="diagnosisData.risk_tips && diagnosisData.risk_tips.length" class="diag-section">
+          <div class="diag-section-title diag-risk-title">⚠ 风险提示</div>
+          <ul class="diag-list diag-risk-list">
+            <li v-for="(tip, i) in diagnosisData.risk_tips" :key="i">{{ tip }}</li>
           </ul>
         </div>
 
@@ -84,9 +106,48 @@ const emit = defineEmits<{
 
 const loading = ref(false)
 const diagnosisData = ref<TaskDiagnosisResponse['diagnosis'] | null>(null)
+const taskStatus = ref('')
 const errorMsg = ref('')
 
 const computedTaskId = computed(() => props.taskId)
+
+const statusTagMap: Record<string, { label: string; type: string }> = {
+  'SUCCESS': { label: '成功', type: 'success' },
+  'FAILED': { label: '失败', type: 'danger' },
+  'CANCELED': { label: '已取消', type: 'warning' },
+  'RUNNING': { label: '运行中', type: 'primary' },
+  'PENDING': { label: '等待中', type: 'info' },
+  'CONNECTING': { label: '连接中', type: 'info' },
+  'PREPARING': { label: '准备中', type: 'info' },
+  'UPLOADING': { label: '上传中', type: 'info' },
+  'CANCELING': { label: '取消中', type: 'warning' },
+  'TIMEOUT': { label: '超时', type: 'warning' },
+}
+
+const attributionMap: Record<string, { label: string; type: string }> = {
+  'platform': { label: '平台问题', type: 'warning' },
+  'script': { label: '脚本问题', type: 'danger' },
+  'environment': { label: '远端环境', type: 'danger' },
+  'user_cancel': { label: '用户取消', type: 'info' },
+  'timeout': { label: '任务超时', type: 'danger' },
+  'artifact_failed': { label: '回收失败', type: 'warning' },
+}
+
+const attributionTagType = computed(() => {
+  if (!diagnosisData.value) return 'info'
+  // Prefer status-based tag, fall back to attribution
+  const status = taskStatus.value.toUpperCase()
+  if (statusTagMap[status]) return statusTagMap[status].type
+  return attributionMap[diagnosisData.value.attribution]?.type || 'info'
+})
+
+const attributionLabel = computed(() => {
+  if (!diagnosisData.value) return ''
+  // Prefer status-based label, fall back to attribution
+  const status = taskStatus.value.toUpperCase()
+  if (statusTagMap[status]) return statusTagMap[status].label
+  return attributionMap[diagnosisData.value.attribution]?.label || diagnosisData.value.attribution || '未分类'
+})
 
 const levelTagType = computed(() => {
   if (!diagnosisData.value) return 'info'
@@ -136,6 +197,7 @@ async function loadDiagnosis() {
   try {
     const resp = (await getTaskDiagnosis(props.taskId)).data
     diagnosisData.value = resp.diagnosis
+    taskStatus.value = resp.status || ''
   } catch {
     errorMsg.value = '诊断加载失败，请查看完整日志。'
     ElMessage.error('获取诊断失败')
@@ -146,6 +208,29 @@ async function loadDiagnosis() {
 </script>
 
 <style scoped>
+.diag-attribution-bar {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  background: var(--el-fill-color-lighter);
+  border-radius: 8px;
+  border-left: 4px solid var(--el-color-primary);
+}
+
+.diag-attribution-tag {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.diag-conclusion {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+  line-height: 1.5;
+}
+
 .diag-header {
   display: flex;
   align-items: center;
@@ -170,6 +255,15 @@ async function loadDiagnosis() {
   margin-bottom: 8px;
   padding-bottom: 4px;
   border-bottom: 1px solid var(--el-border-color-light);
+}
+
+.diag-risk-title {
+  color: var(--el-color-warning);
+  border-bottom-color: var(--el-color-warning-light-5);
+}
+
+.diag-risk-list li {
+  color: var(--el-color-warning-dark-2) !important;
 }
 
 .diag-text {
@@ -219,5 +313,16 @@ async function loadDiagnosis() {
   color: #e2e8f0;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+/* ── Dialog position ── */
+:deep(.el-dialog) {
+  margin-top: 6vh !important;
+  max-height: 86vh;
+}
+
+:deep(.el-dialog__body) {
+  max-height: calc(86vh - 120px);
+  overflow-y: auto;
 }
 </style>

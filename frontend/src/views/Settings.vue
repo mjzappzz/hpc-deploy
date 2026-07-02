@@ -38,6 +38,51 @@
         </el-form>
       </el-card>
 
+      <!-- ═══ 管理员密码 ═══ -->
+      <el-card shadow="never" class="settings-card">
+        <template #header>
+          <div class="card-header">
+            <span class="card-title">管理员密码</span>
+          </div>
+        </template>
+        <el-form label-width="180px">
+          <el-form-item label="当前密码">
+            <el-input
+              v-model="passwordForm.current_password"
+              type="password"
+              show-password
+              placeholder="输入当前管理员密码"
+              style="width:360px"
+            />
+          </el-form-item>
+          <el-form-item label="新密码">
+            <el-input
+              v-model="passwordForm.new_password"
+              type="password"
+              show-password
+              placeholder="至少 6 位字符"
+              style="width:360px"
+            />
+          </el-form-item>
+          <el-form-item label="确认新密码">
+            <el-input
+              v-model="passwordForm.confirm_password"
+              type="password"
+              show-password
+              placeholder="再次输入新密码"
+              style="width:360px"
+            />
+          </el-form-item>
+          <el-form-item>
+            <div class="inline-group">
+              <el-button type="warning" :loading="passwordSaving" @click="handleChangePassword">修改密码</el-button>
+              <span v-if="form.admin_password_configured" class="password-hint">密码已通过系统设置配置</span>
+              <span v-else class="password-hint">当前使用环境变量默认密码</span>
+            </div>
+          </el-form-item>
+        </el-form>
+      </el-card>
+
       <!-- ═══ 远端目录说明 ═══ -->
       <el-card shadow="never" class="settings-card">
         <template #header>
@@ -78,7 +123,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { getSettings, generateDefaultSshKey, updateSettings } from '@/api/settings'
+import { changePassword, getSettings, generateDefaultSshKey, updateSettings } from '@/api/settings'
 import { listSshKeys, type SSHKeyItem } from '@/api/server'
 import { requireAdminConfirm } from '@/composables/useAdminConfirm'
 import { useSettingsStore } from '@/stores/settings'
@@ -97,13 +142,28 @@ interface SettingsForm {
   default_ssh_key_name: string
   ssh_key_dir: string
   ssh_key_dir_absolute: string
+  admin_password_configured: boolean
+}
+
+interface PasswordForm {
+  current_password: string
+  new_password: string
+  confirm_password: string
 }
 
 const form = reactive<SettingsForm>({
   default_ssh_key_name: '',
   ssh_key_dir: 'backend/keys',
   ssh_key_dir_absolute: '',
+  admin_password_configured: false,
 })
+
+const passwordForm = reactive<PasswordForm>({
+  current_password: '',
+  new_password: '',
+  confirm_password: '',
+})
+const passwordSaving = ref(false)
 
 async function loadKeys() {
   keysLoading.value = true
@@ -124,6 +184,7 @@ async function loadSettings() {
     form.default_ssh_key_name = res.data.default_ssh_key_name
     form.ssh_key_dir = res.data.ssh_key_dir
     form.ssh_key_dir_absolute = res.data.ssh_key_dir_absolute
+    form.admin_password_configured = res.data.admin_password_configured
     settingsStore.$patch({ default_ssh_key_name: res.data.default_ssh_key_name })
   } catch {
     ElMessage.warning('加载设置失败，使用默认值')
@@ -172,6 +233,46 @@ async function handleGenerateKey() {
     ElMessage.warning(msg)
   } finally {
     genKeyLoading.value = false
+  }
+}
+
+async function handleChangePassword() {
+  if (!passwordForm.current_password) {
+    ElMessage.warning('请输入当前密码')
+    return
+  }
+  if (!passwordForm.new_password) {
+    ElMessage.warning('请输入新密码')
+    return
+  }
+  if (passwordForm.new_password.length < 6) {
+    ElMessage.warning('新密码至少 6 位字符')
+    return
+  }
+  if (passwordForm.new_password !== passwordForm.confirm_password) {
+    ElMessage.warning('两次输入的新密码不一致')
+    return
+  }
+
+  const ok = await requireAdminConfirm('修改管理员密码')
+  if (!ok) return
+
+  passwordSaving.value = true
+  try {
+    const res = await changePassword({
+      current_password: passwordForm.current_password,
+      new_password: passwordForm.new_password,
+    })
+    ElMessage.success(res.data.message)
+    passwordForm.current_password = ''
+    passwordForm.new_password = ''
+    passwordForm.confirm_password = ''
+    form.admin_password_configured = true
+  } catch (err: any) {
+    const msg = err?.response?.data?.detail || '修改密码失败'
+    ElMessage.error(msg)
+  } finally {
+    passwordSaving.value = false
   }
 }
 
@@ -238,6 +339,12 @@ onMounted(async () => {
   padding: 1px 4px;
   border-radius: 3px;
   font-size: 12px;
+}
+
+.password-hint {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  margin-left: 8px;
 }
 
 .form-note {

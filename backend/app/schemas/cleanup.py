@@ -23,6 +23,19 @@ class LocalArtifactDirectory(BaseModel):
     modified_at: datetime | None = None
     task_id: str | None = None
     task_display_name: str | None = None
+    display_title: str = ""
+    server_name: str = ""
+    task_type_label: str = ""
+    script_label: str = ""
+    date_label: str = ""
+    dir_name: str = ""
+    path: str = ""
+    source: str = "local_artifact"
+    found_in_db: bool = False
+    batch_id: str | None = None
+    inferred_batch_key: str | None = None
+    is_batch_task: bool = False
+    task_source_label: str = "未匹配"
     files: list[LocalArtifactFile] = []
 
 
@@ -59,6 +72,18 @@ class LocalArtifactsDeleteResponse(BaseModel):
     failed: list[DeleteResultItem]
 
 
+class AutoCleanupStatusResponse(BaseModel):
+    enabled: bool = False
+    retention_days: int = 30
+    cleanup_time: str = "03:00"
+    last_run_at: str = ""
+    last_deleted_dirs: int = 0
+    last_freed_bytes: int = 0
+    last_failed_count: int = 0
+    last_status: str = ""
+    last_message: str = ""
+
+
 class RemoteScanRequest(BaseModel):
     server_id: int = Field(ge=1)
 
@@ -78,7 +103,24 @@ class RemoteTaskDirInfo(BaseModel):
     exists: bool
     size_text: str = ""
     file_count: int = 0
+    modified_at: datetime | None = None
     task_type_label: str = ""
+    task_id: str | None = None
+    task_id_display: str = "未匹配"
+    remote_title: str = ""
+    display_title: str = ""
+    server_name: str = ""
+    script_label: str = ""
+    date_label: str = ""
+    path: str = ""
+    source: str = "remote_task_dir"
+    found_in_db: bool = False
+    matched: bool = False
+    batch_id: str | None = None
+    inferred_batch_key: str | None = None
+    is_batch_task: bool = False
+    task_source_label: str = "未匹配"
+    delete_key: str = ""
 
 
 class RemoteScanResult(BaseModel):
@@ -114,7 +156,7 @@ class RemoteDeleteResponse(BaseModel):
 
 class RemoteTaskDirDeleteRequest(BaseModel):
     server_id: int = Field(ge=1)
-    task_dir_path: str = Field(min_length=1, max_length=500)
+    delete_key: str = Field(min_length=1, max_length=2000)
 
 
 class RemoteTaskDirDeleteResponse(BaseModel):

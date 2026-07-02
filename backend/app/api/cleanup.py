@@ -1,7 +1,12 @@
+import base64
+import hashlib
+import hmac
+import json
 import logging
+import re
 import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from time import monotonic
 from typing import Any
@@ -9,15 +14,18 @@ from typing import Any
 from app.core.artifact_collector import ARTIFACTS_DIR
 from app.core.audit import write_audit_log
 from app.core.auth import require_admin_token
-from app.core.config import BACKEND_ROOT
+from app.core.config import BACKEND_ROOT, settings
 from app.core.ssh_executor import SSHExecutor, SSHExecutorError, shell_quote
 from app.db.database import SessionLocal, get_db
 from app.models.server import Server
+from app.models.settings import SystemSetting
+from app.models.task import Task
 from app.schemas.cleanup import (
     REMOTE_ALLOWED_TARGETS,
     REMOTE_TARGETS,
     ApptainerImageItem,
     ApptainerImageScanResult,
+    AutoCleanupStatusResponse,
     DeleteResultItem,
     LocalArtifactDirectory,
     LocalArtifactFile,
@@ -116,6 +124,273 @@ def _server_auth_kwargs_raw(
     return {"key_path": key_path, "password": None}
 
 
+def _strip_script_ext(name: str | None) -> str:
+    if not name:
+        return ""
+    return Path(name).name.removesuffix(".sh").removesuffix(".py")
+
+
+def _infer_date_label(*values: str | None) -> str:
+    for value in values:
+        if not value:
+            continue
+        match = re.search(r"(20\d{6})", value)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def _sort_timestamp_from_remote_dir(item: RemoteTaskDirInfo) -> float:
+    if item.modified_at:
+        return item.modified_at.timestamp()
+    date_label = item.date_label or _infer_date_label(item.dir_name)
+    time_match = re.search(r"20\d{6}[-_]?(\d{6})", item.dir_name)
+    if date_label:
+        try:
+            time_part = time_match.group(1) if time_match else "000000"
+            return datetime.strptime(f"{date_label}{time_part}", "%Y%m%d%H%M%S").timestamp()
+        except ValueError:
+            return 0
+    return 0
+
+
+def _infer_task_type_label(*values: str | None) -> str:
+    text = " ".join(v or "" for v in values).lower()
+    if "cpu_mem" in text or "stress_cpu_mem" in text:
+        return "CPU/内存"
+    if "gpu_stress" in text or "gpu_report" in text or "gpu" in text:
+        return "GPU"
+    if "disk_stress" in text or "disk_report" in text or "fio" in text:
+        return "磁盘"
+    if "stress" in text:
+        return "压测"
+    return "任务"
+
+
+def _long_task_type_label(label: str) -> str:
+    return {
+        "GPU": "GPU压测",
+        "CPU/内存": "CPU/内存压测",
+        "磁盘": "磁盘压测",
+    }.get(label, label)
+
+
+def _task_type_label_from_task(task: Task) -> str:
+    script_label = _strip_script_ext(task.file_name)
+    inferred = _infer_task_type_label(script_label)
+    if inferred != "任务":
+        return inferred
+    return {
+        "stress": "压测",
+        "script": "脚本",
+        "apptainer": "容器",
+    }.get(task.task_type or "", task.task_type or "任务")
+
+
+def _build_display_title(parts: list[str]) -> str:
+    return " · ".join([p for p in parts if p])
+
+
+def _build_task_display_metadata(
+    task: Task | None,
+    db: Session,
+    *,
+    dir_name: str,
+    path: str,
+    source: str,
+    fallback_origin: str,
+    file_names: list[str] | None = None,
+) -> dict[str, Any]:
+    file_names = file_names or []
+    if task is not None:
+        server_name = ""
+        if task.server_id:
+            server = db.query(Server).filter(Server.id == task.server_id).first()
+            if server:
+                server_name = server.name or ""
+        script_label = _strip_script_ext(task.file_name)
+        task_type_label = _task_type_label_from_task(task)
+        display_type_label = _long_task_type_label(task_type_label)
+        date_label = task.created_at.strftime("%Y%m%d") if task.created_at else _infer_date_label(task.task_id, dir_name)
+        display_title = _build_display_title([server_name, display_type_label, script_label, date_label])
+        return {
+            "task_id": task.task_id,
+            "display_title": display_title,
+            "server_name": server_name,
+            "task_type_label": task_type_label,
+            "script_label": script_label,
+            "date_label": date_label,
+            "dir_name": dir_name,
+            "path": path,
+            "source": source,
+            "found_in_db": True,
+            "batch_id": task.batch_id,
+            "inferred_batch_key": None,
+            "is_batch_task": bool(task.batch_id),
+            "task_source_label": "批次任务" if task.batch_id else "单次任务",
+        }
+
+    task_type_label = _infer_task_type_label(dir_name, *file_names)
+    script_label = _infer_script_label(dir_name, file_names)
+    date_label = _infer_date_label(dir_name, *file_names)
+    display_parts = [fallback_origin, _long_task_type_label(task_type_label)]
+    if source == "local_artifact" and script_label:
+        display_parts.append(script_label)
+    display_parts.append(date_label)
+    return {
+        "task_id": dir_name if dir_name.startswith("task-") else None,
+        "display_title": _build_display_title(display_parts),
+        "server_name": fallback_origin,
+        "task_type_label": task_type_label,
+        "script_label": script_label,
+        "date_label": date_label,
+        "dir_name": dir_name,
+        "path": path,
+        "source": source,
+        "found_in_db": False,
+        "batch_id": None,
+        "inferred_batch_key": None,
+        "is_batch_task": False,
+        "task_source_label": "未匹配",
+    }
+
+
+def _infer_script_label(dir_name: str, file_names: list[str]) -> str:
+    candidates = [dir_name, *file_names]
+    text = " ".join(candidates).lower()
+    if "cpu_mem_stress_report" in text:
+        return "cpu_mem_stress_report"
+    if "gpu_stress_report" in text:
+        return "gpu_stress_report"
+    if "disk_stress_report" in text:
+        return "disk_stress_report"
+    if "cpu_mem" in text:
+        return "cpu_mem_stress_report"
+    if "gpu" in text:
+        return "gpu_stress_report"
+    if "disk" in text or "fio" in text:
+        return "disk_stress_report"
+    return ""
+
+
+def _script_name_for_remote_dir(dir_name: str) -> str:
+    if dir_name.startswith("gpu_stress_"):
+        return "gpu_stress_report.sh"
+    if dir_name.startswith("cpu_mem_stress_"):
+        return "cpu_mem_stress_report.sh"
+    if dir_name.startswith("disk_stress_"):
+        return "disk_stress_report.sh"
+    return ""
+
+
+def _task_id_batch_prefix(task_id: str | None) -> str | None:
+    if not task_id:
+        return None
+    match = re.match(r"^(task-20\d{6}-\d{6})-", task_id)
+    return match.group(1) if match else None
+
+
+def _apply_inferred_batch_flags(directories: list[LocalArtifactDirectory]) -> None:
+    groups: dict[str, list[LocalArtifactDirectory]] = {}
+    for item in directories:
+        if item.is_batch_task or not item.task_id:
+            continue
+        prefix = _task_id_batch_prefix(item.task_id)
+        if prefix:
+            groups.setdefault(prefix, []).append(item)
+
+    required = {"GPU", "CPU/内存", "磁盘"}
+    for prefix, items in groups.items():
+        types = {item.task_type_label for item in items}
+        if len(items) >= 3 and required.issubset(types):
+            inferred_key = prefix.removeprefix("task-")
+            for item in items:
+                item.is_batch_task = True
+                item.task_source_label = "疑似批次"
+                item.inferred_batch_key = inferred_key
+
+
+def _normalize_remote_dir_path(path: str | None) -> str:
+    if not path:
+        return ""
+    stripped = path.strip().rstrip("/")
+    while "//" in stripped:
+        stripped = stripped.replace("//", "/")
+    return stripped
+
+
+def _find_task_by_remote_dir(db: Session, remote_path: str, dir_name: str) -> Task | None:
+    normalized_remote_path = _normalize_remote_dir_path(remote_path)
+    task = db.query(Task).filter(Task.remote_work_dir == remote_path).first()
+    if task is not None:
+        return task
+    for candidate in db.query(Task).filter(Task.remote_work_dir.isnot(None)).all():
+        candidate_path = _normalize_remote_dir_path(candidate.remote_work_dir)
+        if candidate_path == normalized_remote_path:
+            return candidate
+    like_suffix = f"%/{dir_name}"
+    task = db.query(Task).filter(Task.remote_work_dir.like(like_suffix)).first()
+    if task is not None:
+        return task
+    basename_matches = [
+        candidate for candidate in db.query(Task).filter(Task.remote_work_dir.isnot(None)).all()
+        if Path(_normalize_remote_dir_path(candidate.remote_work_dir)).name == dir_name
+    ]
+    if len(basename_matches) == 1:
+        return basename_matches[0]
+
+    script_name = _script_name_for_remote_dir(dir_name)
+    date_label = _infer_date_label(dir_name)
+    if not script_name or not date_label:
+        return None
+
+    start = datetime.strptime(date_label, "%Y%m%d")
+    end = start + timedelta(days=1)
+    candidates = (
+        db.query(Task)
+        .filter(Task.file_name == script_name)
+        .filter(Task.created_at >= start)
+        .filter(Task.created_at < end)
+        .all()
+    )
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _build_task_dir_delete_key(server_id: int, task_dir_path: str) -> str:
+    payload = json.dumps(
+        {"server_id": server_id, "path": task_dir_path},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode()
+    body = base64.urlsafe_b64encode(payload).decode().rstrip("=")
+    sig = hmac.new(settings.secret_key.encode(), body.encode(), hashlib.sha256).hexdigest()
+    return f"{body}.{sig}"
+
+
+def _parse_task_dir_delete_key(delete_key: str, server_id: int) -> str:
+    try:
+        body, sig = delete_key.rsplit(".", 1)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid delete key")
+
+    expected = hmac.new(settings.secret_key.encode(), body.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, expected):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid delete key")
+
+    padded = body + "=" * (-len(body) % 4)
+    try:
+        data = json.loads(base64.urlsafe_b64decode(padded.encode()).decode())
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid delete key") from exc
+
+    if int(data.get("server_id", 0)) != server_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="delete key server mismatch")
+    task_dir_path = str(data.get("path") or "").strip()
+    if not _is_safe_task_dir_path(task_dir_path):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unsafe task directory path")
+    return task_dir_path
+
+
 # ───── Local artifacts scan (directory-aggregated) ─────
 
 
@@ -188,8 +463,16 @@ def scan_local_artifacts(db: Session = Depends(get_db)) -> LocalArtifactsScanRes
             files=root_files,
         ))
 
-    # Sort: "未归档文件" last, the rest by name
-    directories.sort(key=lambda d: (1 if d.name == "未归档文件" else 0, d.name))
+    _apply_inferred_batch_flags(directories)
+
+    # Sort local task result directories by modified time desc; keep root-level files last.
+    directories.sort(
+        key=lambda d: (
+            1 if d.name == "未归档文件" else 0,
+            -(d.modified_at.timestamp() if d.modified_at else 0),
+            d.name,
+        )
+    )
 
     elapsed = monotonic() - start
     logger.info(
@@ -205,10 +488,37 @@ def scan_local_artifacts(db: Session = Depends(get_db)) -> LocalArtifactsScanRes
     )
 
 
+@router.get("/auto-cleanup/status", response_model=AutoCleanupStatusResponse)
+def get_auto_cleanup_status(db: Session = Depends(get_db)) -> AutoCleanupStatusResponse:
+    settings_rows = db.query(SystemSetting).all()
+    values = {row.key: row.value for row in settings_rows}
+    return AutoCleanupStatusResponse(
+        enabled=_str_to_bool(values.get("auto_cleanup_enabled", "false")),
+        retention_days=_str_to_int(values.get("local_artifact_retention_days"), 30),
+        cleanup_time=values.get("auto_cleanup_time", "03:00"),
+        last_run_at=values.get("auto_cleanup_last_run_at", ""),
+        last_deleted_dirs=_str_to_int(values.get("auto_cleanup_last_deleted_dirs"), 0),
+        last_freed_bytes=_str_to_int(values.get("auto_cleanup_last_freed_bytes"), 0),
+        last_failed_count=_str_to_int(values.get("auto_cleanup_last_failed_count"), 0),
+        last_status=values.get("auto_cleanup_last_status", ""),
+        last_message=values.get("auto_cleanup_last_message", ""),
+    )
+
+
+def _str_to_bool(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _str_to_int(value: str | None, default: int) -> int:
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return default
+
+
 def _build_task_display_name(task_id: str, db: Session) -> str | None:
     """Query task table and build a readable display name."""
     try:
-        from app.models.task import Task
         t = db.query(Task).filter(Task.task_id == task_id).first()
         if t is None:
             logger.warning("[cleanup] task_name: %s not found in DB", task_id)
@@ -271,9 +581,16 @@ def _build_directory_entry(
 
     dir_files.sort(key=lambda x: x.name)
     task_id = entry.name if entry.name.startswith("task-") else None
-    task_display_name = None
-    if task_id and db is not None:
-        task_display_name = _build_task_display_name(task_id, db)
+    task = db.query(Task).filter(Task.task_id == task_id).first() if task_id and db is not None else None
+    metadata = _build_task_display_metadata(
+        task,
+        db,
+        dir_name=entry.name,
+        path=entry.name,
+        source="local_artifact",
+        fallback_origin="本地遗留结果",
+        file_names=[f.name for f in dir_files],
+    ) if db is not None else {}
 
     directories.append(LocalArtifactDirectory(
         name=entry.name,
@@ -283,7 +600,20 @@ def _build_directory_entry(
         size_text=_format_size_text(dir_size),
         modified_at=latest_mtime,
         task_id=task_id,
-        task_display_name=task_display_name,
+        task_display_name=metadata.get("display_title", ""),
+        display_title=metadata.get("display_title", ""),
+        server_name=metadata.get("server_name", ""),
+        task_type_label=metadata.get("task_type_label", ""),
+        script_label=metadata.get("script_label", ""),
+        date_label=metadata.get("date_label", ""),
+        dir_name=entry.name,
+        path=entry.name,
+        source="local_artifact",
+        found_in_db=bool(metadata.get("found_in_db", False)),
+        batch_id=metadata.get("batch_id"),
+        inferred_batch_key=metadata.get("inferred_batch_key"),
+        is_batch_task=bool(metadata.get("is_batch_task", False)),
+        task_source_label=metadata.get("task_source_label", "未匹配"),
         files=dir_files,
     ))
     return dir_file_count, dir_size
@@ -449,40 +779,58 @@ def scan_remote(
                                 continue
                             _dn = _fp.rstrip("/").split("/")[-1]
                             _parent = _fp.rstrip("/").split("/")[-2] if "/" in _fp else ""
-                            # 识别任务类型
-                            _task_type_label = ""
-                            if _dn.startswith("gpu_stress_"):
-                                _task_type_label = "GPU"
-                            elif _dn.startswith("cpu_mem_stress_"):
-                                _task_type_label = "CPU/内存"
-                            elif _dn.startswith("disk_stress_"):
-                                _task_type_label = "磁盘"
-                            elif _parent in ("stress", "script", "apptainer"):
-                                _task_type_label = {"stress": "压测", "script": "脚本", "apptainer": "容器"}.get(_parent, _parent)
-                            else:
-                                _task_type_label = "其他"
                             _d_size = ""
                             _d_count = 0
+                            _d_mtime: datetime | None = None
                             try:
                                 _du = f"du -sh {shell_quote(_fp)} 2>/dev/null | cut -f1"
                                 _d_size = executor.exec_simple(_du).strip()
                                 _cnt = f"find {shell_quote(_fp)} -type f 2>/dev/null | wc -l"
                                 _co = executor.exec_simple(_cnt).strip()
                                 _d_count = int(_co) if _co.isdigit() else 0
+                                _mt = executor.exec_simple(f"stat -c %Y {shell_quote(_fp)} 2>/dev/null").strip()
+                                _d_mtime = datetime.fromtimestamp(int(_mt)) if _mt.isdigit() else None
                             except SSHExecutorError:
                                 pass
+                            task = _find_task_by_remote_dir(db, _fp, _dn)
+                            metadata = _build_task_display_metadata(
+                                task,
+                                db,
+                                dir_name=_dn,
+                                path=_fp,
+                                source="remote_task_dir",
+                                fallback_origin="远端遗留结果",
+                            )
                             task_dirs.append(RemoteTaskDirInfo(
                                 dir_name=_dn,
                                 remote_path=_fp,
                                 exists=True,
                                 size_text=_d_size,
                                 file_count=_d_count,
-                                task_type_label=_task_type_label,
+                                modified_at=_d_mtime,
+                                task_type_label=metadata["task_type_label"],
+                                task_id=metadata["task_id"],
+                                task_id_display=metadata["task_id"] or "未匹配",
+                                remote_title=_dn,
+                                display_title=metadata["display_title"],
+                                server_name=metadata["server_name"],
+                                script_label=metadata["script_label"],
+                                date_label=metadata["date_label"],
+                                path=_fp,
+                                source="remote_task_dir",
+                                found_in_db=metadata["found_in_db"],
+                                matched=bool(metadata["task_id"]),
+                                batch_id=metadata["batch_id"],
+                                inferred_batch_key=metadata["inferred_batch_key"],
+                                is_batch_task=metadata["is_batch_task"],
+                                task_source_label=metadata["task_source_label"],
+                                delete_key=_build_task_dir_delete_key(server.id, _fp),
                             ))
             except SSHExecutorError:
                 logger.warning("[cleanup] remote scan task dirs failed server_id=%d", server.id)
 
         logger.info("[cleanup] remote scan done server_id=%d elapsed=%.3fs", server.id, monotonic() - start)
+        task_dirs.sort(key=_sort_timestamp_from_remote_dir, reverse=True)
 
         # Success → online, set last_check_at, clear last_error
         server.status = "online"
@@ -603,29 +951,51 @@ def _scan_remote_server_worker(server_data: dict[str, Any]) -> RemoteServerScanR
                             if not _fp:
                                 continue
                             _dn = _fp.rstrip("/").split("/")[-1]
-                            _parent = _fp.rstrip("/").split("/")[-2] if "/" in _fp else ""
-                            _tl = ""
-                            if _dn.startswith("gpu_stress_"): _tl = "GPU"
-                            elif _dn.startswith("cpu_mem_stress_"): _tl = "CPU/内存"
-                            elif _dn.startswith("disk_stress_"): _tl = "磁盘"
-                            elif _parent in ("stress", "script", "apptainer"):
-                                _tl = {"stress": "压测", "script": "脚本", "apptainer": "容器"}.get(_parent, _parent)
-                            else: _tl = "其他"
                             _ds, _dc = "", 0
+                            _dm: datetime | None = None
                             try:
                                 _ds = executor.exec_simple(f"du -sh {shell_quote(_fp)} 2>/dev/null | cut -f1").strip()
                                 _co = executor.exec_simple(f"find {shell_quote(_fp)} -type f 2>/dev/null | wc -l").strip()
                                 _dc = int(_co) if _co.isdigit() else 0
+                                _mt = executor.exec_simple(f"stat -c %Y {shell_quote(_fp)} 2>/dev/null").strip()
+                                _dm = datetime.fromtimestamp(int(_mt)) if _mt.isdigit() else None
                             except SSHExecutorError:
                                 pass
+                            task = _find_task_by_remote_dir(db, _fp, _dn)
+                            metadata = _build_task_display_metadata(
+                                task,
+                                db,
+                                dir_name=_dn,
+                                path=_fp,
+                                source="remote_task_dir",
+                                fallback_origin="远端遗留结果",
+                            )
                             _task_dirs.append(RemoteTaskDirInfo(
                                 dir_name=_dn, remote_path=_fp, exists=True,
-                                size_text=_ds, file_count=_dc, task_type_label=_tl,
+                                size_text=_ds, file_count=_dc, modified_at=_dm,
+                                task_type_label=metadata["task_type_label"],
+                                task_id=metadata["task_id"],
+                                task_id_display=metadata["task_id"] or "未匹配",
+                                remote_title=_dn,
+                                display_title=metadata["display_title"],
+                                server_name=metadata["server_name"],
+                                script_label=metadata["script_label"],
+                                date_label=metadata["date_label"],
+                                path=_fp,
+                                source="remote_task_dir",
+                                found_in_db=metadata["found_in_db"],
+                                matched=bool(metadata["task_id"]),
+                                batch_id=metadata["batch_id"],
+                                inferred_batch_key=metadata["inferred_batch_key"],
+                                is_batch_task=metadata["is_batch_task"],
+                                task_source_label=metadata["task_source_label"],
+                                delete_key=_build_task_dir_delete_key(server_id, _fp),
                             ))
             except SSHExecutorError:
                 pass
 
         executor.close()
+        _task_dirs.sort(key=_sort_timestamp_from_remote_dir, reverse=True)
 
         # Update server: success → online, set last_check_at, clear last_error
         svr = db.query(Server).filter(Server.id == server_id).first()
@@ -904,7 +1274,7 @@ def delete_remote_task_dir(
     if server is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="server not found")
 
-    task_dir_path = payload.task_dir_path.strip()
+    task_dir_path = _parse_task_dir_delete_key(payload.delete_key, server.id)
     logger.info("[cleanup] remote task-dir delete start server_id=%d host=%s path=%s",
                 server.id, server.host, task_dir_path)
 

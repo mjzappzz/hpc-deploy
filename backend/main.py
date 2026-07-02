@@ -1,5 +1,6 @@
 from app.api import audit, auth, cleanup, dashboard, scripts, servers, settings as settings_router_mod, ssh_keys, tasks
 from app.api.health import router as health_router
+from app.core.auto_cleanup import start_auto_cleanup_scheduler
 from app.core.config import settings
 from app.db.database import init_db
 from fastapi import FastAPI
@@ -19,8 +20,15 @@ def create_app() -> FastAPI:
     app.include_router(audit.router, prefix="/api")
 
     @app.on_event("startup")
-    def on_startup() -> None:
+    async def on_startup() -> None:
         init_db()
+        app.state.auto_cleanup_task = start_auto_cleanup_scheduler()
+
+    @app.on_event("shutdown")
+    async def on_shutdown() -> None:
+        task = getattr(app.state, "auto_cleanup_task", None)
+        if task is not None:
+            task.cancel()
 
     return app
 

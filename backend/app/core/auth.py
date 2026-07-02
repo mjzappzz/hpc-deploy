@@ -4,8 +4,10 @@ from datetime import datetime, timedelta
 
 import jwt
 from fastapi import Depends, HTTPException, Header, status
+from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.db.database import SessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -19,8 +21,18 @@ if ADMIN_PASSWORD == "admin123":
     )
 
 
-def verify_admin_password(password: str) -> bool:
-    """Validate the provided password against the configured admin password."""
+def verify_admin_password(password: str, db: Session | None = None) -> bool:
+    """Validate the provided password.
+
+    Priority:
+    1. DB-stored admin_password (if db is provided and key exists)
+    2. Environment variable HPCDEPLOY_ADMIN_PASSWORD
+    """
+    if db is not None:
+        from app.models.settings import SystemSetting
+        row = db.get(SystemSetting, "admin_password")
+        if row is not None and row.value:
+            return password == row.value
     return password == ADMIN_PASSWORD
 
 

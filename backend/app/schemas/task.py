@@ -261,10 +261,13 @@ class TaskMonitorResponseStructured(BaseModel):
 class TaskDiagnosisItem(BaseModel):
     level: str
     category: str
+    attribution: str = ""
     title: str
+    conclusion: str = ""
     summary: str
     possible_causes: list[str]
     suggestions: list[str]
+    risk_tips: list[str] = []
     matched_patterns: list[str]
     evidence: list[str]
 

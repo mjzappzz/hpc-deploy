@@ -7,9 +7,12 @@ from app.core.auth import require_admin_token
 from app.core.config import BACKEND_ROOT
 from app.db.database import get_db
 from app.models.settings import SystemSetting
+from app.core.auth import verify_admin_password
 from app.schemas.settings import (
     DEFAULT_SETTINGS,
     FORBIDDEN_KEYS,
+    ChangePasswordRequest,
+    ChangePasswordResponse,
     SettingsResponse,
     SettingsUpdate,
 )
@@ -44,7 +47,28 @@ def _db_to_response(merged: dict[str, str]) -> SettingsResponse:
         remote_apptainer_dir="$HOME/hpcdeploy/apptainer",
         ssh_key_dir="backend/keys",
         ssh_key_dir_absolute=str(KEYS_DIR.resolve()),
+        auto_cleanup_enabled=_str_to_bool(merged.get("auto_cleanup_enabled", "false")),
+        local_artifact_retention_days=_str_to_int(merged.get("local_artifact_retention_days"), 30),
+        auto_cleanup_time=merged.get("auto_cleanup_time", "03:00"),
+        auto_cleanup_last_run_at=merged.get("auto_cleanup_last_run_at", ""),
+        auto_cleanup_last_deleted_dirs=_str_to_int(merged.get("auto_cleanup_last_deleted_dirs"), 0),
+        auto_cleanup_last_freed_bytes=_str_to_int(merged.get("auto_cleanup_last_freed_bytes"), 0),
+        auto_cleanup_last_failed_count=_str_to_int(merged.get("auto_cleanup_last_failed_count"), 0),
+        auto_cleanup_last_status=merged.get("auto_cleanup_last_status", ""),
+        auto_cleanup_last_message=merged.get("auto_cleanup_last_message", ""),
+        admin_password_configured=bool(merged.get("admin_password", "")),
     )
+
+
+def _str_to_bool(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _str_to_int(value: str | None, default: int) -> int:
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return default
 
 
 def _validate_ssh_key_name(key_name: str) -> None:
@@ -110,6 +134,40 @@ def update_settings(
     # Return full merged state
     merged = _get_settings_dict(db)
     return _db_to_response(merged)
+
+
+@router.post("/change-password", response_model=ChangePasswordResponse)
+def change_admin_password(
+    payload: ChangePasswordRequest,
+    db: Session = Depends(get_db),
+    _: str = Depends(require_admin_token),
+) -> ChangePasswordResponse:
+    """Change the admin password. Saves to DB; env var still works as fallback."""
+    # Verify current password first
+    if not verify_admin_password(payload.current_password, db):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="当前密码错误",
+        )
+
+    # Save new password to DB
+    setting = db.get(SystemSetting, "admin_password")
+    if setting is None:
+        setting = SystemSetting(key="admin_password", value=payload.new_password)
+        db.add(setting)
+    else:
+        setting.value = payload.new_password
+    db.commit()
+
+    write_audit_log(
+        db, action="settings.change_password", target_type="settings", status="success",
+        actor="admin",
+        message="管理员密码已修改",
+        detail={},
+    )
+
+    logger.info("[settings] admin password changed")
+    return ChangePasswordResponse(success=True, message="管理员密码修改成功")
 
 
 @router.post("/ssh-key/generate-default", response_model=SSHKeyGenerateResponse)

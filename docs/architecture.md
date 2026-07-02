@@ -62,14 +62,21 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - 按类型筛选（test/stress/mpi/apptainer）
 
 ### cleanup API (`/api/cleanup`)
-- 本地结果文件目录扫描与删除（按 task 目录聚合）
+- 本地结果文件目录扫描与删除（按 task 目录聚合），每个目录返回显示元数据（服务器名称/任务类型/脚本名/日期标签）
+- 本地结果按目录 mtime 降序排列（最新在前）；批量推断批次归属（同时包含 GPU/CPU内存/磁盘 三种类型时自动标记"疑似批次"）
+- 本地报告自动清理状态查询（`GET /api/cleanup/auto-cleanup/status`），配置保存走 settings API
 - Apptainer 镜像目录只读查看
-- 远端单台/全部在线服务器临时目录扫描与清理
-- 清理 target 白名单：只允许 `tasks` / `downloads` / `tmp`
+- 远端单台/全部在线服务器临时目录扫描与清理，自动匹配数据库任务记录，返回显示元数据（display_title、server_name、batch_id 等）
+- 远端任务目录按 mtime 降序排列
+- 远端整体目录清理（`POST /api/cleanup/remote/delete`），只允许 `tasks` / `downloads` / `tmp` 三个 target
+- 远端单个任务目录删除（`POST /api/cleanup/remote/task-dir/delete`），使用 HMAC-SHA256 签名的 `delete_key` 代替原始路径防篡改
 
 ### settings API (`/api/settings`)
 - 系统设置读写
-- 当前：SSH 默认私钥名称、远端目录只读说明
+- 当前：SSH 默认私钥名称、远端目录只读说明、本地报告自动清理开关/保留天数/执行时间
+- 修改管理员密码（`POST /api/settings/change-password`），需要 admin_token + 当前密码验证
+- `admin_password` 在 `FORBIDDEN_KEYS` 中，不能通过 PUT /settings 读写
+- GET /settings 返回 `admin_password_configured: bool`，不返回密码明文
 
 ### audit API (`/api/audit-logs`)
 - **需 `require_admin_token()` 保护**（需要管理员密码确认）
@@ -97,9 +104,18 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - 解析 OS/CPU/内存/磁盘/GPU 信息
 - 不依赖前端输入
 
-### diagnosis rules
-- 根据任务日志匹配失败模式
-- GPU/CUDA 错误、SSH 连接错误、磁盘空间不足、远端路径错误
+### diagnosis rules（规则引擎，无外部 AI）
+- 16 条诊断规则，按优先级排序：5 条元数据预检查 + 11 条日志模式匹配
+- 元数据预检查（优先匹配）：
+  - 用户取消（`exit_code == -15` / `status == CANCELED`）
+  - Artifact 回收失败（`error_message` 含 "artifact recovery failed"）
+  - 报告已生成但状态未收尾（artifacts 有报告 + 任务仍 RUNNING）
+  - 超时无报告（日志匹配超时模式 + artifacts 无报告）
+  - Stress 卡在 stress-ng 阶段（日志含 stress-ng 标记 + 未终态）
+- 状态分流：SUCCESS / RUNNING / PENDING 不进入错误模式匹配，分别返回对应结论
+- 每个诊断结果包含：归因（`attribution`）、结论（`conclusion`）、风险提示（`risk_tips`）
+- 诊断端点 `GET /tasks/{task_id}/diagnosis` 接受全量任务元数据（exit_code、artifacts 存在性、params、报告结果等）
+- 报告内容解析：自动读取本地 txt 报告判断 PASS/FAIL，SUCCESS+FAIL 时标注"平台任务已成功完成，但报告内压测结果为 FAIL"
 - evidence 不泄露敏感字段
 
 ---
@@ -180,6 +196,21 @@ $HOME/hpcdeploy/
 ### 清理中心 target 白名单
 - 远端清理 target 代码级硬编码：`tasks` / `downloads` / `tmp`
 - 不清理系统目录（`/root`、`/home`、`/tmp`、`/opt`、`/usr`、`/etc`）
+- 远端单个任务目录删除使用 HMAC-SHA256 签名 `delete_key`：后端对 `{"server_id": <id>, "path": "<path>"}` JSON 序列化 → base64url 编码 → `secret_key` HMAC 签名 → `body.sig` 格式传递给前端；删除时前端回传 key，后端验签后解析路径，防止路径篡改
+
+### 本地报告自动清理（Phase 29）
+- 后端启动入口 `start_auto_cleanup_scheduler()`（`backend/app/core/auto_cleanup.py`），`main.py` startup event 中调用
+- 轻量 asyncio `asyncio.create_task()` 循环，每隔约 1 分钟检查一次
+- 每次检查流程：读配置 → 判断是否启用 → 判断是否到达设定时间 → 尝试获取文件锁（`fcntl.LOCK_EX|LOCK_NB`，文件 `.auto_cleanup.lock`） → 判断当天是否已执行过
+- 实际清理函数 `run_local_artifacts_auto_cleanup()`：
+  - 只扫描 `backend/data/artifacts` 一级任务结果目录
+  - 按目录 mtime 判断是否超过保留天数
+  - 删除前通过 `resolve()` + `relative_to(ARTIFACTS_DIR)` 确认路径仍在 artifacts 根目录内
+  - RUNNING / PENDING / CONNECTING / PREPARING / UPLOADING 任务对应目录跳过
+  - 每个目录操作写入一条 `actor=system`、`action=auto_cleanup_local_artifacts` 审计日志，最后汇总写入一条
+  - 执行结果保存到 `system_settings` 表（`auto_cleanup_last_run_at` / `last_deleted_dirs` / ...），前端通过 settings API 或 auto-cleanup/status 端点读取
+- 默认关闭，默认保留 30 天，默认每日 03:00 执行
+- 不自动清理远端服务器目录、downloads/tmp、Apptainer 镜像、数据库、keys、scripts
 
 ### 敏感信息过滤
 - `GET /api/ssh-keys` 不返回私钥/公钥内容
@@ -235,10 +266,11 @@ $HOME/hpcdeploy/
 ```
 
 ### 管理员密码
-- 通过环境变量 `HPCDEPLOY_ADMIN_PASSWORD` 设置
-- 默认值为 `admin123`（启动时 `logger.warning` 提示生产环境必须修改）
-- 密码不返回前端、不打印日志
-- 后端不做 hash 存储（无持久化用户表），直接对比环境变量
+- 通过环境变量 `HPCDEPLOY_ADMIN_PASSWORD` 设置，默认值 `admin123`
+- 可通过系统设置页面修改密码，修改后保存到 `system_settings` 表 `admin_password` 键
+- 密码验证优先级：DB 存储密码 → 环境变量 `HPCDEPLOY_ADMIN_PASSWORD`
+- 删除 DB 配置后自动回退到环境变量密码，不会锁死
+- 密码不返回前端、不打印日志；GET /settings 只返回 `admin_password_configured: bool`
 
 ### 文件说明
 | 文件 | 说明 |

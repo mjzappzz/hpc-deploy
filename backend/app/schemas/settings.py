@@ -1,4 +1,6 @@
-from pydantic import BaseModel, field_validator, model_validator
+import re
+
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # ── Remote task root validation ──
 
@@ -60,10 +62,18 @@ FORBIDDEN_KEYS = frozenset({
     "probe_all_skip_offline_default",
     "task_history_page_size",
     "cleanup_artifacts_table_height",
+    "auto_cleanup_last_run_at",
+    "auto_cleanup_last_deleted_dirs",
+    "auto_cleanup_last_freed_bytes",
+    "auto_cleanup_last_failed_count",
+    "auto_cleanup_last_status",
+    "auto_cleanup_last_message",
+    "auto_cleanup_last_run_date",
     "remote_apptainer_dir",
     "remote_task_root",
     "ssh_key_dir",
     "ssh_key_dir_absolute",
+    "admin_password",
 })
 
 # ── Defaults ──
@@ -72,6 +82,9 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "default_ssh_key_name": "",
     "remote_task_root": "$HOME/hpcdeploy/tasks",
     "remote_apptainer_dir": "$HOME/hpcdeploy/apptainer",
+    "auto_cleanup_enabled": "false",
+    "local_artifact_retention_days": "30",
+    "auto_cleanup_time": "03:00",
 }
 
 
@@ -115,6 +128,26 @@ class SettingsResponse(BaseModel):
     remote_apptainer_dir: str = "$HOME/hpcdeploy/apptainer"
     ssh_key_dir: str = "backend/keys"
     ssh_key_dir_absolute: str = ""
+    auto_cleanup_enabled: bool = False
+    local_artifact_retention_days: int = 30
+    auto_cleanup_time: str = "03:00"
+    auto_cleanup_last_run_at: str = ""
+    auto_cleanup_last_deleted_dirs: int = 0
+    auto_cleanup_last_freed_bytes: int = 0
+    auto_cleanup_last_failed_count: int = 0
+    auto_cleanup_last_status: str = ""
+    auto_cleanup_last_message: str = ""
+    admin_password_configured: bool = False
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=6, max_length=128)
+
+
+class ChangePasswordResponse(BaseModel):
+    success: bool
+    message: str
 
 
 class SettingsUpdate(BaseModel):
@@ -122,6 +155,9 @@ class SettingsUpdate(BaseModel):
     model_config = {"extra": "forbid"}
 
     default_ssh_key_name: str | None = None
+    auto_cleanup_enabled: bool | None = None
+    local_artifact_retention_days: int | None = Field(default=None, ge=1, le=3650)
+    auto_cleanup_time: str | None = None
 
     @model_validator(mode="after")
     def _check_no_forbidden(self) -> "SettingsUpdate":
@@ -138,3 +174,13 @@ class SettingsUpdate(BaseModel):
             if "/" in v or "\\" in v:
                 raise ValueError("default_ssh_key_name must be a filename, not a path")
         return v
+
+    @field_validator("auto_cleanup_time")
+    @classmethod
+    def _validate_cleanup_time(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        stripped = v.strip()
+        if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", stripped):
+            raise ValueError("auto_cleanup_time must use HH:mm format")
+        return stripped

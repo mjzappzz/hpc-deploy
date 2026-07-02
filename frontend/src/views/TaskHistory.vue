@@ -186,7 +186,7 @@
                             :disabled="!isBatchTaskTerminal(t.status)"
                             @click.stop="batchTaskDownloadReport(t)"
                           >下载报告</el-button>
-                          <el-button v-if="isFailureStatus(t.status)" size="small" link type="danger" @click.stop="diagnoseBatchTask(t)">诊断</el-button>
+                          <el-button size="small" link type="warning" @click.stop="diagnoseBatchTask(t)">诊断</el-button>
                         </div>
                       </template>
                     </el-table-column>
@@ -412,7 +412,7 @@
                     :disabled="!isBatchTaskTerminal(row.status)"
                     @click="batchTaskDownloadReport(row)"
                   >下载报告</el-button>
-                  <el-button v-if="isFailureStatus(row.status)" size="small" link type="danger" @click="diagnoseBatchTask(row)">诊断</el-button>
+                  <el-button size="small" link type="warning" @click="diagnoseBatchTask(row)">诊断</el-button>
                 </div>
               </template>
             </el-table-column>

@@ -101,7 +101,7 @@ const isStressCompleted = computed(() => {
 })
 
 const showDiagnoseButton = computed(() => {
-  return (props.task.status?.toUpperCase() ?? '') === 'FAILED'
+  return !!props.task.task_id
 })
 
 const showCancelButton = computed(() => {

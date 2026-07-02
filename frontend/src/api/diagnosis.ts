@@ -3,10 +3,13 @@ import { request } from './request'
 export interface TaskDiagnosisItem {
   level: string
   category: string
+  attribution: string
   title: string
+  conclusion: string
   summary: string
   possible_causes: string[]
   suggestions: string[]
+  risk_tips: string[]
   matched_patterns: string[]
   evidence: string[]
 }

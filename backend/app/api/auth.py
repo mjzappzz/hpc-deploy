@@ -1,9 +1,11 @@
 import logging
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
 from app.core.auth import create_admin_token, verify_admin_password
+from app.db.database import get_db
 
 logger = logging.getLogger(__name__)
 
@@ -20,13 +22,13 @@ class AdminVerifyResponse(BaseModel):
 
 
 @router.post("/admin/verify", response_model=AdminVerifyResponse)
-def admin_verify(payload: AdminVerifyRequest) -> AdminVerifyResponse:
+def admin_verify(payload: AdminVerifyRequest, db: Session = Depends(get_db)) -> AdminVerifyResponse:
     """Verify admin password and return a short-lived admin token.
 
     The token expires in 5 minutes (300 seconds). Subsequent admin
     operations must include the token via the X-Admin-Token header.
     """
-    if not verify_admin_password(payload.password):
+    if not verify_admin_password(payload.password, db):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="管理员密码错误",

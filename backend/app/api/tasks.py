@@ -1356,14 +1356,14 @@ async def task_logs_websocket(ws: WebSocket, task_id: str) -> None:
 
 @router.get("/{task_id}/diagnosis", response_model=TaskDiagnosisResponse)
 def diagnose_task(task_id: str, db: Session = Depends(get_db)) -> TaskDiagnosisResponse:
-    """Diagnose a task failure based on its logs."""
+    """Diagnose a task failure based on its logs and metadata."""
     task = _get_task_or_404(db, task_id)
 
     # Build task display name
     host = db.query(Server).with_entities(Server.host).filter(Server.id == task.server_id).scalar() or "?"
     task_name = f"{host} · {task.file_name or task.task_type} · {task.task_id}"
 
-    # Fetch logs
+    # Fetch logs (limit to recent entries for performance)
     log_rows = (
         db.query(TaskLog)
         .filter(TaskLog.task_id == task_id)
@@ -1374,11 +1374,42 @@ def diagnose_task(task_id: str, db: Session = Depends(get_db)) -> TaskDiagnosisR
     if not log_messages and task.error_message:
         log_messages = [task.error_message]
 
-    # Run diagnosis
+    # Check for report files in local artifacts directory
+    artifacts_present = False
+    report_result: str | None = None  # "PASS", "FAIL", or None
+    try:
+        task_artifact_dir = ARTIFACTS_DIR / task_id
+        if task_artifact_dir.is_dir():
+            for f in task_artifact_dir.iterdir():
+                if f.suffix.lower() in {".xlsx", ".txt", ".csv", ".json", ".log"}:
+                    artifacts_present = True
+                    break
+            # Parse txt report for PASS/FAIL (used by SUCCESS task diagnosis)
+            txt_reports = list(task_artifact_dir.glob("*report*.txt"))
+            if txt_reports:
+                content = txt_reports[0].read_text(errors="replace", encoding="utf-8")
+                if "测试结果              : PASS" in content:
+                    report_result = "PASS"
+                elif "测试结果              : FAIL" in content:
+                    report_result = "FAIL"
+    except Exception:
+        pass  # non-fatal
+
+    # Run diagnosis with rich context
     diagnosis = diagnose_task_failure(
         task_status=task.status,
         error_message=task.error_message,
         logs=log_messages,
+        exit_code=task.exit_code,
+        task_type=task.task_type,
+        server_name=host,
+        file_name=task.file_name,
+        params=task.params,
+        start_time=task.start_time,
+        end_time=task.end_time,
+        batch_id=task.batch_id,
+        artifacts_present=artifacts_present,
+        report_result=report_result,
     )
 
     # Audit log (best-effort, must not affect response)
@@ -1388,8 +1419,9 @@ def diagnose_task(task_id: str, db: Session = Depends(get_db)) -> TaskDiagnosisR
             target_id=task_id, target_name=task_name,
             task_id=task_id, server_id=task.server_id,
             message=f"diagnose task {task_id}: {diagnosis.get('category', 'unknown')}",
-            detail={"category": diagnosis.get("category"), "level": diagnosis.get("level"),
-                    "file_name": task.file_name, "task_status": task.status},
+            detail={"category": diagnosis.get("category"), "attribution": diagnosis.get("attribution"),
+                    "level": diagnosis.get("level"), "file_name": task.file_name,
+                    "task_status": task.status, "artifacts_present": artifacts_present},
         )
     except Exception:
         pass

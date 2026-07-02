@@ -20,6 +20,19 @@ export interface LocalArtifactDirectory {
   modified_at: string | null
   task_id: string | null
   task_display_name: string | null
+  display_title: string
+  server_name: string
+  task_type_label: string
+  script_label: string
+  date_label: string
+  dir_name: string
+  path: string
+  source: string
+  found_in_db: boolean
+  batch_id: string | null
+  inferred_batch_key: string | null
+  is_batch_task: boolean
+  task_source_label: string
   files: LocalArtifactFile[]
 }
 
@@ -50,6 +63,22 @@ export function deleteLocalArtifacts(paths: string[], recursive = false) {
   return request.post<LocalArtifactsDeleteResponse>('/cleanup/local-artifacts/delete', { paths, recursive })
 }
 
+export interface AutoCleanupStatus {
+  enabled: boolean
+  retention_days: number
+  cleanup_time: string
+  last_run_at: string
+  last_deleted_dirs: number
+  last_freed_bytes: number
+  last_failed_count: number
+  last_status: string
+  last_message: string
+}
+
+export function getAutoCleanupStatus() {
+  return request.get<AutoCleanupStatus>('/cleanup/auto-cleanup/status')
+}
+
 // ── Remote (single server) ──
 
 export interface RemoteDirInfo {
@@ -66,7 +95,24 @@ export interface RemoteTaskDirInfo {
   exists: boolean
   size_text: string
   file_count: number
+  modified_at: string | null
   task_type_label: string
+  task_id: string | null
+  task_id_display: string
+  remote_title: string
+  display_title: string
+  server_name: string
+  script_label: string
+  date_label: string
+  path: string
+  source: string
+  found_in_db: boolean
+  matched: boolean
+  batch_id: string | null
+  inferred_batch_key: string | null
+  is_batch_task: boolean
+  task_source_label: string
+  delete_key: string
 }
 
 export interface RemoteScanResult {
@@ -94,15 +140,15 @@ export interface RemoteTaskDirDeleteResponse {
 }
 
 export function scanRemote(serverId: number) {
-  return request.post<RemoteScanResult>('/cleanup/remote/scan', { server_id: serverId })
+  return request.post<RemoteScanResult>('/cleanup/remote/scan', { server_id: serverId }, { timeout: 60000 })
 }
 
 export function deleteRemote(serverId: number, target: string) {
   return request.post<RemoteDeleteResponse>('/cleanup/remote/delete', { server_id: serverId, target })
 }
 
-export function deleteRemoteTaskDir(serverId: number, taskDirPath: string) {
-  return request.post<RemoteTaskDirDeleteResponse>('/cleanup/remote/task-dir/delete', { server_id: serverId, task_dir_path: taskDirPath })
+export function deleteRemoteTaskDir(serverId: number, deleteKey: string) {
+  return request.post<RemoteTaskDirDeleteResponse>('/cleanup/remote/task-dir/delete', { server_id: serverId, delete_key: deleteKey })
 }
 
 // ── Remote scan-all (all online servers) ──
@@ -127,6 +173,7 @@ export interface RemoteServerScanResult {
   message?: string | null // human-readable summary for failed servers
   error: string | null
   directories: RemoteDirectoryScan[]
+  task_dirs: RemoteTaskDirInfo[]
 }
 
 export interface RemoteScanAllResult {
@@ -137,7 +184,7 @@ export interface RemoteScanAllResult {
 }
 
 export function scanAllRemote(params?: { tag?: string }) {
-  return request.post<RemoteScanAllResult>('/cleanup/remote/scan-all', undefined, { params })
+  return request.post<RemoteScanAllResult>('/cleanup/remote/scan-all', undefined, { params, timeout: 60000 })
 }
 
 // ── Apptainer (read-only) ──
