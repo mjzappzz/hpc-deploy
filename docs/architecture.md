@@ -42,10 +42,13 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 
 ### servers API (`/api/servers`)
 - 服务器 CRUD
-- SSH 测试（`/test`）
-- 信息探测（`/probe`、`/detect`）
-- 一键部署公钥（`/deploy-public-key`）
-- 探测全部（`/probe-all`），默认跳过离线服务器
+- SSH 测试（`/test`、`/test-ssh-all`）
+- 信息探测（`/probe`、`/detect`、`/probe-all`）
+- 批量公钥检测（`/public-key/check`）— 按每台服务器自身 `auth_type` 独立认证登录，检测远端 `$HOME/.ssh/authorized_keys` 是否包含当前公钥。SSH 连不上/认证失败 → CHECK_FAILED，文件不存在或不含公钥 → NOT_INSTALLED
+- 批量公钥部署（`/public-key/deploy`）— 按每台服务器自身认证方式登录，创建 `$HOME/.ssh` + `authorized_keys`，公钥已存在不重复追加。单台失败不影响其他
+- 单台公钥部署（`/{id}/deploy-public-key`）
+- 单台/批量 SSH 测试（`/{id}/test`、`/test-ssh-all`）
+- 探测全部（`/probe-all`），默认跳过离线服务器，支持显式指定 server_ids
 - 标签管理（`/tags` 统计、`tag` 参数筛选）
 - 标签基于 `tags_json TEXT` 列存储，包含在线/离线计数
 
@@ -188,6 +191,13 @@ $HOME/hpcdeploy/
 ### 禁止 raw command
 - 前端不传 `command`、`remote_path`
 - 所有命令由后端按任务类型固定生成
+
+### 公钥检测/部署安全
+- 前端只传 `private_key_path`，不传远端路径、不传原始 shell 命令
+- 远端路径固定为 `$HOME/.ssh/authorized_keys`，后端硬编码，不接收前端参数
+- 公钥内容从本地 `.pub` 文件读取，不接收前端传入的 key 内容
+- 每台服务器按自身 `auth_type` 独立认证（key 用 `key_path`，password 用 `password`），不固定同一私钥
+- `key_path` 通过 `_resolve_server_key_path()` 统一解析为 `KEYS_DIR` 下的绝对路径，防止相对路径/前缀问题
 
 ### Apptainer 不执行
 - 不执行 `apptainer run` / `apptainer exec`

@@ -106,7 +106,9 @@ cd frontend && npm run build
 - 自动清理只作用于 `backend/data/artifacts` 本地任务结果目录，不清理远端目录、Apptainer 镜像、数据库、keys、scripts
 - 路径防逃逸（`resolve()` + `startswith()`）
 - 取消任务基于 PID 文件 + PGID 进程组终止，不依赖前端输入
-- 部署公钥只写远端 `~/.ssh/authorized_keys`，不覆盖、不修改 `sshd_config`、不重启 `sshd`
+- 部署公钥只写远端 `$HOME/.ssh/authorized_keys`，不覆盖、不修改 `sshd_config`、不重启 `sshd`
+- 部署公钥按每台服务器自身 `auth_type` 独立认证登录，不固定同一私钥
+- 密钥路径统一解析为 `KEYS_DIR` 下绝对路径，防止相对路径/CWD 问题
 - 管理员密码通过 `HPCDEPLOY_ADMIN_PASSWORD` 环境变量设置，不返回前端、不打印日志
 - 高风险接口通过 `X-Admin-Token` 5 分钟短期 JWT 保护
 

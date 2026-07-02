@@ -15,6 +15,12 @@ from app.core.ssh_tester import SSHTestError, test_ssh_connection
 from app.db.database import SessionLocal, get_db
 from app.models.server import Server
 from app.schemas.server import (
+    CheckPublicKeyItem,
+    CheckPublicKeyRequest,
+    CheckPublicKeyResponse,
+    DeployPublicKeyAllItem,
+    DeployPublicKeyAllRequest,
+    DeployPublicKeyAllResponse,
     DeployPublicKeyRequest,
     DeployPublicKeyResponse,
     ServerCreate,
@@ -23,8 +29,8 @@ from app.schemas.server import (
     TagSummaryResponse,
     TagSummary,
 )
-from app.schemas.detect import ProbeAllResponse, ProbeAllResult, ServerDetectResponse
-from app.schemas.ssh import SSHTestResponse
+from app.schemas.detect import ProbeAllRequest, ProbeAllResponse, ProbeAllResult, ServerDetectResponse
+from app.schemas.ssh import SSHTestAllRequest, SSHTestAllResponse, SSHTestAllResult, SSHTestResponse
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 
@@ -51,10 +57,33 @@ def _get_server_or_404(db: Session, server_id: int) -> Server:
     return server
 
 
+def _resolve_server_key_path(key_path: str | None) -> str | None:
+    """Resolve a server's key_path to an absolute path.
+
+    处理 /backend/keys/xxx 前缀和相对路径，统一解析为绝对路径，
+    避免 systemd 下 CWD 不同导致密钥找不到。
+    """
+    if not key_path:
+        return None
+    if key_path.startswith("/backend/keys/"):
+        return str((KEYS_DIR / key_path.removeprefix("/backend/keys/")).resolve())
+    return str(Path(key_path).expanduser().resolve())
+
+
 def _server_auth_kwargs(server: Server) -> dict[str, str | None]:
     if server.auth_type == "password":
         return {"key_path": None, "password": server.password}
-    return {"key_path": server.key_path, "password": None}
+    return {"key_path": _resolve_server_key_path(server.key_path), "password": None}
+
+
+def _server_public_key_auth_kwargs(server: Server) -> dict[str, str | None]:
+    if server.auth_type == "password":
+        if not server.password:
+            raise SSHExecutorError("密码为空，无法登录")
+        return {"key_path": None, "password": server.password}
+    if not server.key_path:
+        raise SSHExecutorError("私钥文件未配置，无法登录")
+    return {"key_path": _resolve_server_key_path(server.key_path), "password": None}
 
 
 def _build_probe_response(server: Server, *, success: bool, error: str | None = None, timings: dict[str, float] | None = None) -> ServerDetectResponse:
@@ -177,10 +206,15 @@ PROBE_ALL_MAX_WORKERS = 8
 
 @router.post("/probe-all", response_model=ProbeAllResponse)
 def probe_all_servers(
+    payload: ProbeAllRequest | None = None,
     db: Session = Depends(get_db),
     include_offline: bool = Query(False, description="if false, skip known-offline servers"),
 ) -> ProbeAllResponse:
-    all_servers = db.query(Server).order_by(Server.id.desc()).all()
+    if payload and payload.server_ids:
+        server_ids = list(dict.fromkeys(payload.server_ids))
+        all_servers = db.query(Server).filter(Server.id.in_(server_ids)).order_by(Server.id.desc()).all()
+    else:
+        all_servers = db.query(Server).order_by(Server.id.desc()).all()
     total = len(all_servers)
 
     if total == 0:
@@ -189,8 +223,11 @@ def probe_all_servers(
 
     probe_all_start = monotonic()
 
-    # Split servers into "to probe" and "skipped"
-    if include_offline:
+    # server_ids requests always probe the explicit current list.
+    if payload and payload.server_ids:
+        probe_servers = list(all_servers)
+        skipped_results = []
+    elif include_offline:
         probe_servers = list(all_servers)
         skipped_results: list[ProbeAllResult] = []
     else:
@@ -392,6 +429,107 @@ def probe_all_servers(
     )
 
 
+@router.post("/test-ssh-all", response_model=SSHTestAllResponse)
+@router.post("/test-all", response_model=SSHTestAllResponse)
+def test_all_server_ssh(
+    payload: SSHTestAllRequest,
+    db: Session = Depends(get_db),
+) -> SSHTestAllResponse:
+    server_ids = list(dict.fromkeys(payload.server_ids))
+    if not server_ids:
+        return SSHTestAllResponse(total=0, tested=0, online=0, offline=0, results=[])
+
+    existing_ids = [row[0] for row in db.query(Server.id).filter(Server.id.in_(server_ids)).all()]
+    timeout = _get_probe_timeout(db)
+    max_workers = min(PROBE_ALL_MAX_WORKERS, len(existing_ids)) if existing_ids else 1
+
+    def _test_in_thread(sid: int) -> SSHTestAllResult:
+        thread_db = SessionLocal()
+        try:
+            server = thread_db.get(Server, sid)
+            if server is None:
+                return SSHTestAllResult(
+                    server_id=sid,
+                    name="(deleted)",
+                    host="",
+                    success=False,
+                    status="offline",
+                    error="server not found at test time",
+                )
+            try:
+                result = test_ssh_connection(
+                    host=server.host,
+                    port=server.port,
+                    username=server.username,
+                    timeout=timeout,
+                    **_server_auth_kwargs(server),
+                )
+                server.status = "online"
+                server.last_check_at = datetime.utcnow()
+                server.last_error = None
+                thread_db.commit()
+                return SSHTestAllResult(
+                    server_id=server.id,
+                    name=server.name,
+                    host=server.host,
+                    success=True,
+                    status="online",
+                    hostname=result["hostname"],
+                    uname=result["uname"],
+                )
+            except SSHTestError as exc:
+                server.status = "offline"
+                server.last_error = str(exc)
+                thread_db.commit()
+                return SSHTestAllResult(
+                    server_id=server.id,
+                    name=server.name,
+                    host=server.host,
+                    success=False,
+                    status="offline",
+                    error=str(exc),
+                )
+        finally:
+            thread_db.close()
+
+    results: list[SSHTestAllResult] = []
+    if existing_ids:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            fut_map = {executor.submit(_test_in_thread, sid): sid for sid in existing_ids}
+            for future in concurrent.futures.as_completed(fut_map):
+                sid = fut_map[future]
+                try:
+                    results.append(future.result())
+                except Exception as exc:
+                    results.append(
+                        SSHTestAllResult(
+                            server_id=sid,
+                            name="(error)",
+                            host="",
+                            success=False,
+                            status="offline",
+                            error=f"SSH test thread error: {exc}",
+                        )
+                    )
+
+    online = sum(1 for result in results if result.success)
+    offline = len(results) - online
+    overall_status = "success" if online > 0 or offline == 0 else "failed"
+    write_audit_log(
+        db, action="server.test_ssh_all", target_type="server", status=overall_status,
+        target_name=f"{online} online / {offline} offline",
+        message=f"SSH test all: {online} online, {offline} offline",
+        detail={"total": len(server_ids), "tested": len(results), "online": online, "offline": offline},
+    )
+    return SSHTestAllResponse(
+        total=len(server_ids),
+        tested=len(results),
+        online=online,
+        offline=offline,
+        results=results,
+    )
+
+
 @router.get("/{server_id}", response_model=ServerRead)
 def get_server(server_id: int, db: Session = Depends(get_db)) -> Server:
     return _get_server_or_404(db, server_id)
@@ -562,6 +700,68 @@ def _run_server_probe(server_id: int, db: Session) -> ServerDetectResponse:
     return _probe_server(db, server)
 
 
+def _deploy_public_key_to_server(db: Session, server: Server, private_key_file: Path, public_key: str) -> None:
+    executor = SSHExecutor(timeout=10)
+    try:
+        executor.connect(
+            host=server.host,
+            port=server.port,
+            username=server.username,
+            **_server_public_key_auth_kwargs(server),
+        )
+        quoted_key = shell_quote(public_key)
+        remote_command = (
+            "mkdir -p \"$HOME/.ssh\" && chmod 700 \"$HOME/.ssh\" && "
+            "touch \"$HOME/.ssh/authorized_keys\" && "
+            f"(grep -qxF {quoted_key} \"$HOME/.ssh/authorized_keys\" || printf '%s\\n' {quoted_key} >> \"$HOME/.ssh/authorized_keys\") && "
+            "chmod 600 \"$HOME/.ssh/authorized_keys\""
+        )
+        executor.exec_simple(remote_command)
+    finally:
+        executor.close()
+
+    server.auth_type = "key"
+    server.key_path = str(private_key_file)
+    server.password = None
+    db.commit()
+    db.refresh(server)
+
+
+def _check_public_key_on_server(server: Server, public_key: str) -> tuple[bool, str]:
+    executor = SSHExecutor(timeout=10)
+    try:
+        executor.connect(
+            host=server.host,
+            port=server.port,
+            username=server.username,
+            **_server_public_key_auth_kwargs(server),
+        )
+        # 使用 exec_capture 避免非零退出码抛异常，使用 || true 确保退出码 0
+        _exit_code, output, _error = executor.exec_capture(
+            "test -f \"$HOME/.ssh/authorized_keys\" && cat \"$HOME/.ssh/authorized_keys\" || true",
+            timeout_seconds=10,
+        )
+        lines = output.strip().splitlines()
+        if public_key in lines:
+            return True, "已安装当前公钥"
+        return False, "未安装当前公钥"
+    finally:
+        executor.close()
+
+
+def _load_public_key(private_key_path: str) -> tuple[Path, str]:
+    private_key_file = _resolve_private_key_path(private_key_path)
+    public_key_file = private_key_file.with_name(f"{private_key_file.name}.pub")
+    if not public_key_file.is_file():
+        public_key_display = f"backend/keys/{public_key_file.name}"
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"本地公钥文件不存在：{public_key_display}")
+
+    public_key = public_key_file.read_text(encoding="utf-8").strip()
+    if not public_key:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="public key file is empty")
+    return private_key_file, public_key
+
+
 @router.post("/{server_id}/deploy-public-key", response_model=DeployPublicKeyResponse)
 def deploy_public_key(
     server_id: int,
@@ -569,35 +769,9 @@ def deploy_public_key(
     db: Session = Depends(get_db),
 ) -> DeployPublicKeyResponse:
     server = _get_server_or_404(db, server_id)
-    if not server.password:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="server password is not configured")
-
-    private_key_file = _resolve_private_key_path(payload.private_key_path)
-    public_key_file = private_key_file.with_name(f"{private_key_file.name}.pub")
-    if not public_key_file.is_file():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="matching public key file not found")
-
-    public_key = public_key_file.read_text(encoding="utf-8").strip()
-    if not public_key:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="public key file is empty")
-
-    executor = SSHExecutor(timeout=10)
+    private_key_file, public_key = _load_public_key(payload.private_key_path)
     try:
-        executor.connect(
-            host=server.host,
-            port=server.port,
-            username=server.username,
-            key_path=None,
-            password=server.password,
-        )
-        quoted_key = shell_quote(public_key)
-        remote_command = (
-            "mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
-            "touch ~/.ssh/authorized_keys && "
-            f"(grep -qxF {quoted_key} ~/.ssh/authorized_keys || printf '%s\\n' {quoted_key} >> ~/.ssh/authorized_keys) && "
-            "chmod 600 ~/.ssh/authorized_keys"
-        )
-        executor.exec_simple(remote_command)
+        _deploy_public_key_to_server(db, server, private_key_file, public_key)
     except (SSHExecutorError, OSError) as exc:
         write_audit_log(
             db, action="server.deploy_public_key", target_type="server", status="failed",
@@ -607,14 +781,7 @@ def deploy_public_key(
             detail={"host": server.host, "error": str(exc)},
         )
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"deploy public key failed: {exc}") from exc
-    finally:
-        executor.close()
 
-    server.auth_type = "key"
-    server.key_path = str(private_key_file)
-    server.password = None
-    db.commit()
-    db.refresh(server)
     write_audit_log(
         db, action="server.deploy_public_key", target_type="server", status="success",
         target_id=str(server.id), target_name=server.name,
@@ -628,3 +795,172 @@ def deploy_public_key(
         auth_type=server.auth_type,
         private_key_path=server.key_path or str(private_key_file),
     )
+
+
+@router.post("/deploy-key-all", response_model=DeployPublicKeyAllResponse)
+@router.post("/public-key/deploy", response_model=DeployPublicKeyAllResponse)
+def deploy_public_key_all(
+    payload: DeployPublicKeyAllRequest,
+    db: Session = Depends(get_db),
+) -> DeployPublicKeyAllResponse:
+    server_ids = list(dict.fromkeys(payload.server_ids))
+    private_key_file, public_key = _load_public_key(payload.private_key_path)
+    if not server_ids:
+        return DeployPublicKeyAllResponse(total=0, success=0, failed=0, items=[])
+
+    existing_ids = [row[0] for row in db.query(Server.id).filter(Server.id.in_(server_ids)).all()]
+    max_workers = min(PROBE_ALL_MAX_WORKERS, len(existing_ids)) if existing_ids else 1
+
+    def _deploy_in_thread(sid: int) -> DeployPublicKeyAllItem:
+        thread_db = SessionLocal()
+        try:
+            server = thread_db.get(Server, sid)
+            if server is None:
+                return DeployPublicKeyAllItem(server_id=sid, server_name="(deleted)", success=False, message="server not found")
+            try:
+                _deploy_public_key_to_server(thread_db, server, private_key_file, public_key)
+                write_audit_log(
+                    thread_db, action="server.deploy_public_key", target_type="server", status="success",
+                    target_id=str(server.id), target_name=server.name,
+                    server_id=server.id, server_name=server.name,
+                    message=f"deployed public key for {server.name}",
+                    detail={"host": server.host, "key_path": server.key_path, "auth_type": server.auth_type},
+                )
+                return DeployPublicKeyAllItem(server_id=server.id, server_name=server.name, success=True, message="已安装当前公钥")
+            except (SSHExecutorError, OSError) as exc:
+                write_audit_log(
+                    thread_db, action="server.deploy_public_key", target_type="server", status="failed",
+                    target_id=str(server.id), target_name=server.name,
+                    server_id=server.id, server_name=server.name,
+                    message=f"deploy public key failed: {exc}",
+                    detail={"host": server.host, "error": str(exc)},
+                )
+                return DeployPublicKeyAllItem(server_id=server.id, server_name=server.name, success=False, message=str(exc))
+            except Exception as exc:
+                return DeployPublicKeyAllItem(server_id=server.id, server_name=server.name, success=False, message=f"部署异常：{exc}")
+        finally:
+            thread_db.close()
+
+    items: list[DeployPublicKeyAllItem] = []
+    if existing_ids:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            fut_map = {executor.submit(_deploy_in_thread, sid): sid for sid in existing_ids}
+            for future in concurrent.futures.as_completed(fut_map):
+                sid = fut_map[future]
+                try:
+                    items.append(future.result())
+                except Exception as exc:
+                    items.append(DeployPublicKeyAllItem(server_id=sid, server_name="(error)", success=False, message=str(exc)))
+
+    missing_ids = [sid for sid in server_ids if sid not in set(existing_ids)]
+    for sid in missing_ids:
+        items.append(DeployPublicKeyAllItem(server_id=sid, server_name="(missing)", success=False, message="server not found"))
+
+    success_count = sum(1 for item in items if item.success)
+    failed_count = len(items) - success_count
+    write_audit_log(
+        db, action="server.deploy_public_key_all", target_type="server",
+        status="success" if success_count > 0 or failed_count == 0 else "failed",
+        target_name=f"{success_count} success / {failed_count} failed",
+        message=f"deploy public key all: {success_count} success, {failed_count} failed",
+        detail={"total": len(server_ids), "success": success_count, "failed": failed_count},
+    )
+    return DeployPublicKeyAllResponse(total=len(server_ids), success=success_count, failed=failed_count, items=items)
+
+
+@router.post("/public-key/check", response_model=CheckPublicKeyResponse)
+def check_public_key_all(
+    payload: CheckPublicKeyRequest,
+    db: Session = Depends(get_db),
+) -> CheckPublicKeyResponse:
+    server_ids = list(dict.fromkeys(payload.server_ids))
+    _private_key_file, public_key = _load_public_key(payload.private_key_path)
+    if not server_ids:
+        return CheckPublicKeyResponse(total=0, items=[])
+
+    existing_ids = [row[0] for row in db.query(Server.id).filter(Server.id.in_(server_ids)).all()]
+    max_workers = min(PROBE_ALL_MAX_WORKERS, len(existing_ids)) if existing_ids else 1
+
+    def _check_in_thread(sid: int) -> CheckPublicKeyItem:
+        thread_db = SessionLocal()
+        try:
+            server = thread_db.get(Server, sid)
+            if server is None:
+                return CheckPublicKeyItem(
+                    server_id=sid,
+                    server_name="(deleted)",
+                    host="",
+                    success=False,
+                    deployed=False,
+                    status="CHECK_FAILED",
+                    message="server not found",
+                )
+            try:
+                deployed, message = _check_public_key_on_server(server, public_key)
+                return CheckPublicKeyItem(
+                    server_id=server.id,
+                    server_name=server.name,
+                    host=server.host,
+                    success=True,
+                    deployed=deployed,
+                    status="INSTALLED" if deployed else "NOT_INSTALLED",
+                    message=message,
+                )
+            except (SSHExecutorError, OSError) as exc:
+                return CheckPublicKeyItem(
+                    server_id=server.id,
+                    server_name=server.name,
+                    host=server.host,
+                    success=False,
+                    deployed=False,
+                    status="CHECK_FAILED",
+                    message=str(exc),
+                )
+            except Exception as exc:
+                return CheckPublicKeyItem(
+                    server_id=server.id,
+                    server_name=server.name,
+                    host=server.host,
+                    success=False,
+                    deployed=False,
+                    status="CHECK_FAILED",
+                    message=f"检测异常：{exc}",
+                )
+        finally:
+            thread_db.close()
+
+    items: list[CheckPublicKeyItem] = []
+    if existing_ids:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            fut_map = {executor.submit(_check_in_thread, sid): sid for sid in existing_ids}
+            for future in concurrent.futures.as_completed(fut_map):
+                sid = fut_map[future]
+                try:
+                    items.append(future.result())
+                except Exception as exc:
+                    items.append(
+                        CheckPublicKeyItem(
+                            server_id=sid,
+                            server_name="(error)",
+                            host="",
+                            success=False,
+                            deployed=False,
+                            status="CHECK_FAILED",
+                            message=str(exc),
+                        )
+                    )
+
+    for sid in [sid for sid in server_ids if sid not in set(existing_ids)]:
+        items.append(
+            CheckPublicKeyItem(
+                server_id=sid,
+                server_name="(missing)",
+                host="",
+                success=False,
+                deployed=False,
+                status="CHECK_FAILED",
+                message="server not found",
+            )
+        )
+
+    return CheckPublicKeyResponse(total=len(server_ids), items=items)

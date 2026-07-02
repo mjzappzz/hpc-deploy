@@ -3,8 +3,9 @@
     <el-card shadow="never" class="server-table-card">
       <div class="toolbar">
         <el-button type="primary" @click="openCreate">新增服务器</el-button>
-        <el-button type="warning" :loading="isProbingAll" @click="probeAll">⚡ {{ isProbingAll ? '探测中' : '探测全部' }}</el-button>
-        <el-checkbox v-model="includeOffline" class="include-offline-checkbox">包含离线服务器</el-checkbox>
+        <el-button type="primary" plain :loading="isTestingAll" :disabled="isProbingAll" @click="testAllSsh">SSH 测试全部</el-button>
+        <el-button type="primary" plain :loading="isProbingAll" :disabled="isTestingAll" @click="probeAll">⚡ {{ isProbingAll ? '探测中' : '探测全部' }}</el-button>
+        <el-button class="page-deploy-key-button" :disabled="isTestingAll || isProbingAll" @click="openPublicKeyManager">部署公钥</el-button>
         <el-button class="page-refresh-button" @click="loadServers">刷新</el-button>
       </div>
 
@@ -28,7 +29,6 @@
           @test="testSsh"
           @detect="detectInfo"
           @detail="openDetail"
-          @deploy-public-key="openDeployPublicKey"
         />
       </div>
     </el-card>
@@ -107,46 +107,82 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="deployDialogVisible" title="部署公钥" width="560px">
+    <el-dialog v-model="deployDialogVisible" title="部署公钥" width="1040px" class="public-key-dialog">
       <div class="deploy-hint">
-        <div>将使用当前服务器保存的账号密码登录远端，并写入所选密钥对的公钥。</div>
-        <div class="deploy-path">写入位置：~/.ssh/authorized_keys</div>
-        <div>部署成功后，该服务器会切换为 SSH Key 登录。</div>
+        <div>用于检查各服务器是否已安装当前选择的本机公钥。未安装的服务器可以在这里一键安装。</div>
+        <div class="deploy-path">写入位置固定为远端登录用户的 ~/.ssh/authorized_keys。</div>
       </div>
-      <el-form label-width="110px">
-        <el-form-item label="目标服务器">
-          <span>{{ deployTargetServer ? `${deployTargetServer.name} (${deployTargetServer.host})` : '-' }}</span>
-        </el-form-item>
-        <el-form-item label="SSH 密钥对" required>
-          <div class="ssh-key-row">
-            <el-select
-              v-model="deployPrivateKeyPath"
-              placeholder="选择可部署的 SSH 密钥对"
-              :loading="sshKeysLoading"
-              class="ssh-key-select"
+
+      <div class="public-key-toolbar">
+        <el-select
+          v-model="deployPrivateKeyPath"
+          placeholder="选择可部署的 SSH 密钥对"
+          :loading="sshKeysLoading"
+          class="ssh-key-select"
+        >
+          <el-option
+            v-for="item in sshKeysWithPublicKey"
+            :key="item.private_key_path"
+            :label="item.display_name"
+            :value="item.private_key_path"
+          >
+            <div class="ssh-key-option">
+              <span>{{ item.display_name }}</span>
+              <span class="ssh-key-option__path">{{ item.private_key_path }}</span>
+            </div>
+          </el-option>
+        </el-select>
+        <el-button :loading="publicKeyChecking" @click="checkPublicKeyStatuses">检测全部</el-button>
+        <el-button type="primary" plain :loading="publicKeyDeploying" @click="deployMissingPublicKeys">安装到未安装服务器</el-button>
+        <el-button @click="refreshPublicKeyPanel">刷新</el-button>
+      </div>
+
+      <el-empty v-if="publicKeyRows.length === 0" description="当前没有可操作的服务器" />
+      <el-table v-else :data="publicKeyRows" size="small" border class="public-key-table">
+        <el-table-column prop="server.name" label="服务器名称" min-width="120" show-overflow-tooltip />
+        <el-table-column label="地址" min-width="150">
+          <template #default="{ row }">{{ row.server.host }}:{{ row.server.port }}</template>
+        </el-table-column>
+        <el-table-column prop="server.username" label="用户" width="80" />
+        <el-table-column label="标签" min-width="120">
+          <template #default="{ row }">
+            <span v-if="!row.server.tags || row.server.tags.length === 0" class="detail-empty-text">-</span>
+            <el-tag v-for="tag in row.server.tags" :key="tag" size="small" style="margin-right:4px">{{ tag }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="SSH 状态" width="90">
+          <template #default="{ row }"><StatusTag :status="row.server.status" /></template>
+        </el-table-column>
+        <el-table-column label="公钥状态" width="110">
+          <template #default="{ row }">
+            <el-tag size="small" :type="publicKeyStatusType(row.status)">{{ publicKeyStatusLabel(row.status) }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="最近检测时间" width="150">
+          <template #default="{ row }">{{ formatTime(row.server.last_check_at) }}</template>
+        </el-table-column>
+        <el-table-column label="说明" min-width="220">
+          <template #default="{ row }">
+            <span class="public-key-message">{{ row.message || '-' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="90" fixed="right">
+          <template #default="{ row }">
+            <el-button
+              v-if="canDeployPublicKeyRow(row)"
+              link
+              type="primary"
+              :loading="row.status === 'DEPLOYING' || row.status === 'CHECKING'"
+              @click="handlePublicKeyRowAction(row)"
             >
-              <el-option
-                v-for="item in sshKeysWithPublicKey"
-                :key="item.private_key_path"
-                :label="item.display_name"
-                :value="item.private_key_path"
-              >
-                <div class="ssh-key-option">
-                  <span>{{ item.display_name }}</span>
-                  <span class="ssh-key-option__path">{{ item.private_key_path }}</span>
-                </div>
-              </el-option>
-            </el-select>
-            <el-button class="ssh-key-refresh-button" :loading="sshKeysLoading" @click="refreshSshKeys">刷新私钥</el-button>
-          </div>
-          <div class="form-help-text">
-            只会写入 .pub 公钥，私钥不会上传到远端。
-          </div>
-        </el-form-item>
-      </el-form>
+              {{ publicKeyActionLabel(row.status) }}
+            </el-button>
+            <span v-else class="detail-empty-text">{{ isPublicKeyInstalled(row.status) ? '已完成' : '-' }}</span>
+          </template>
+        </el-table-column>
+      </el-table>
       <template #footer>
-        <el-button @click="deployDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="deployingPublicKey" :disabled="deployDisabled" @click="submitDeployPublicKey">部署</el-button>
+        <el-button @click="deployDialogVisible = false">关闭</el-button>
       </template>
     </el-dialog>
 
@@ -220,13 +256,6 @@
             <div class="detail-actions">
               <el-button size="small" :loading="detailActionsLoading" @click="detailTestSsh">测试 SSH</el-button>
               <el-button size="small" type="warning" :loading="detailActionsLoading" @click="detailDetect">⚡ 探测</el-button>
-              <el-button
-                v-if="activeServer.auth_type === 'password'"
-                size="small"
-                @click="detailDeployPublicKey"
-              >
-                部署公钥
-              </el-button>
             </div>
           </div>
 
@@ -369,17 +398,22 @@ import { useRouter } from 'vue-router'
 import { formatDateTime } from '@/utils/time'
 import {
   createServer,
+  checkPublicKey,
   deleteServer,
   detectServer,
-  deployPublicKey,
+  deployPublicKeyAll,
   getServer,
   listServers,
   listSshKeys,
   listTags,
   probeAllServers,
+  testAllServerSsh,
   testServerSsh,
   updateServer,
   type ProbeAllResponse,
+  type CheckPublicKeyResponse,
+  type DeployPublicKeyAllResponse,
+  type SSHTestAllResponse,
   type SSHKeyItem,
   type ServerPayload,
   type ServerRecord,
@@ -397,6 +431,14 @@ import { useSettingsStore } from '@/stores/settings'
 
 const settingsStore = useSettingsStore()
 
+type PublicKeyStatus = 'UNDETECTED' | 'CHECKING' | 'INSTALLED' | 'DEPLOYED' | 'NOT_INSTALLED' | 'NOT_DEPLOYED' | 'CHECK_FAILED' | 'DEPLOYING' | 'DEPLOY_FAILED'
+
+interface PublicKeyRow {
+  server: ServerRecord
+  status: PublicKeyStatus
+  message: string
+}
+
 const loading = ref(false)
 const saving = ref(false)
 const dialogVisible = ref(false)
@@ -405,15 +447,16 @@ const servers = ref<ServerRecord[]>([])
 const testingIds = ref<number[]>([])
 const detectingIds = ref<number[]>([])
 const isProbingAll = ref(false)
-const includeOffline = ref(false)
+const isTestingAll = ref(false)
 const detailVisible = ref(false)
 const activeServer = ref<ServerRecord | null>(null)
 const sshKeys = ref<SSHKeyItem[]>([])
 const sshKeysLoading = ref(false)
 const deployDialogVisible = ref(false)
-const deployTargetServer = ref<ServerRecord | null>(null)
 const deployPrivateKeyPath = ref('')
-const deployingPublicKey = ref(false)
+const publicKeyChecking = ref(false)
+const publicKeyDeploying = ref(false)
+const publicKeyStatusMap = ref<Record<number, { status: PublicKeyStatus; message: string }>>({})
 const filterTag = ref('')
 const filterKeyword = ref('')
 const tags = ref<TagSummary[]>([])
@@ -474,8 +517,16 @@ const saveDisabled = computed(() => {
   }
   return !form.key_path?.trim() || (!editingId.value && !hasSelectableSshKey.value)
 })
-const deployDisabled = computed(() => !deployTargetServer.value || !deployPrivateKeyPath.value)
 const availableTagOptions = computed(() => tags.value.map((t) => t.name))
+const publicKeyTargetServers = computed(() => servers.value)
+const publicKeyRows = computed<PublicKeyRow[]>(() => publicKeyTargetServers.value.map((server) => {
+  const state = publicKeyStatusMap.value[server.id]
+  return {
+    server,
+    status: state?.status ?? 'UNDETECTED',
+    message: state?.message ?? '未检测'
+  }
+}))
 
 function handleFormTagChange() {
   nextTick(() => {
@@ -597,13 +648,6 @@ function openEdit(server: ServerRecord) {
   dialogVisible.value = true
 }
 
-async function openDeployPublicKey(server: ServerRecord) {
-  deployTargetServer.value = server
-  deployPrivateKeyPath.value = ''
-  await loadSshKeys()
-  deployDialogVisible.value = true
-}
-
 async function refreshSshKeys() {
   await loadSshKeys()
 }
@@ -657,25 +701,179 @@ async function saveServer() {
   }
 }
 
-async function submitDeployPublicKey() {
-  if (!deployTargetServer.value || !deployPrivateKeyPath.value) {
-    ElMessage.warning('请先选择带公钥的私钥')
+async function openPublicKeyManager() {
+  deployDialogVisible.value = true
+  publicKeyStatusMap.value = {}
+  await loadSshKeys()
+  const selectedKey = sshKeysWithPublicKey.value.find((item) => item.key_name === settingsStore.default_ssh_key_name)
+    ?? sshKeysWithPublicKey.value[0]
+  deployPrivateKeyPath.value = selectedKey?.private_key_path ?? ''
+
+  // 直接根据服务器已有 auth_type 判断，不 SSH 检测全部
+  // auth_type=key → 已安装，auth_type=password → 未安装
+  const initial: Record<number, { status: PublicKeyStatus; message: string }> = {}
+  for (const s of servers.value) {
+    if (s.auth_type === 'key') {
+      initial[s.id] = { status: 'INSTALLED', message: 'SSH Key 认证，无需部署' }
+    } else if (s.auth_type === 'password') {
+      initial[s.id] = { status: 'NOT_INSTALLED', message: '密码认证，待部署公钥' }
+    }
+    // 其他状态（unknown 等）保持 UNDETECTED，不填 initial
+  }
+  publicKeyStatusMap.value = initial
+}
+
+function setPublicKeyStatus(serverIds: number[], status: PublicKeyStatus, message: string) {
+  publicKeyStatusMap.value = {
+    ...publicKeyStatusMap.value,
+    ...Object.fromEntries(serverIds.map((id) => [id, { status, message }]))
+  }
+}
+
+async function checkPublicKeyStatuses() {
+  const targetIds = publicKeyRows.value.map((row) => row.server.id)
+  if (targetIds.length === 0) {
+    ElMessage.warning('当前没有可检测的服务器')
     return
   }
-  deployingPublicKey.value = true
+  if (!deployPrivateKeyPath.value) {
+    ElMessage.warning('请先选择带公钥的 SSH 密钥对')
+    return
+  }
+
+  publicKeyChecking.value = true
+  setPublicKeyStatus(targetIds, 'CHECKING', '检测中')
   try {
-    await deployPublicKey(deployTargetServer.value.id, { private_key_path: deployPrivateKeyPath.value })
-    ElMessage.success('公钥部署成功，服务器已切换为 SSH Key')
-    deployDialogVisible.value = false
+    const resp: CheckPublicKeyResponse = (await checkPublicKey(targetIds, { private_key_path: deployPrivateKeyPath.value })).data
+    const next = { ...publicKeyStatusMap.value }
+    for (const item of resp.items) {
+      next[item.server_id] = {
+        status: item.status as PublicKeyStatus,
+        message: item.message
+      }
+    }
+    publicKeyStatusMap.value = next
+  } catch (error) {
+    setPublicKeyStatus(targetIds, 'CHECK_FAILED', getApiErrorMessage(error))
+  } finally {
+    publicKeyChecking.value = false
+  }
+}
+
+async function deployPublicKeyByIds(targetIds: number[]) {
+  if (targetIds.length === 0) {
+    ElMessage.warning('没有需要部署的服务器')
+    return
+  }
+  if (!deployPrivateKeyPath.value) {
+    ElMessage.warning('请先选择带公钥的 SSH 密钥对')
+    return
+  }
+
+  publicKeyDeploying.value = true
+  setPublicKeyStatus(targetIds, 'DEPLOYING', '部署中')
+  try {
+    const resp: DeployPublicKeyAllResponse = (await deployPublicKeyAll(targetIds, { private_key_path: deployPrivateKeyPath.value })).data
+    const next = { ...publicKeyStatusMap.value }
+    for (const item of resp.items) {
+      next[item.server_id] = {
+        status: item.success ? 'INSTALLED' : 'DEPLOY_FAILED',
+        message: item.message
+      }
+    }
+    publicKeyStatusMap.value = next
     await loadServers()
-    if (detailVisible.value && activeServer.value?.id === deployTargetServer.value?.id) {
-      await refreshDetail()
+    const message = `部署公钥完成：成功 ${resp.success} 台，失败 ${resp.failed} 台`
+    if (resp.failed > 0) {
+      ElMessage.warning(message)
+    } else {
+      ElMessage.success(message)
     }
   } catch (error) {
-    ElMessage.error(`部署公钥失败：${getApiErrorMessage(error)}`)
+    setPublicKeyStatus(targetIds, 'DEPLOY_FAILED', getApiErrorMessage(error))
   } finally {
-    deployingPublicKey.value = false
+    publicKeyDeploying.value = false
   }
+}
+
+async function deployMissingPublicKeys() {
+  const ids = publicKeyRows.value
+    .filter((row) => ['NOT_INSTALLED', 'NOT_DEPLOYED', 'DEPLOY_FAILED'].includes(row.status))
+    .map((row) => row.server.id)
+  await deployPublicKeyByIds(ids)
+}
+
+async function checkPublicKeyRow(server: ServerRecord) {
+  if (!deployPrivateKeyPath.value) {
+    ElMessage.warning('请先选择带公钥的 SSH 密钥对')
+    return
+  }
+  setPublicKeyStatus([server.id], 'CHECKING', '检测中')
+  try {
+    const resp: CheckPublicKeyResponse = (await checkPublicKey([server.id], { private_key_path: deployPrivateKeyPath.value })).data
+    const item = resp.items[0]
+    if (item) {
+      publicKeyStatusMap.value = {
+        ...publicKeyStatusMap.value,
+        [item.server_id]: {
+          status: item.status as PublicKeyStatus,
+          message: item.message
+        }
+      }
+    }
+  } catch (error) {
+    setPublicKeyStatus([server.id], 'CHECK_FAILED', getApiErrorMessage(error))
+  }
+}
+
+async function refreshPublicKeyPanel() {
+  await loadServers()
+  await checkPublicKeyStatuses()
+}
+
+function canDeployPublicKeyRow(row: PublicKeyRow) {
+  return ['UNDETECTED', 'NOT_INSTALLED', 'NOT_DEPLOYED', 'CHECK_FAILED', 'DEPLOY_FAILED'].includes(row.status)
+}
+
+function handlePublicKeyRowAction(row: PublicKeyRow) {
+  if (row.status === 'UNDETECTED' || row.status === 'CHECK_FAILED') {
+    void checkPublicKeyRow(row.server)
+    return
+  }
+  void deployPublicKeyByIds([row.server.id])
+}
+
+function publicKeyActionLabel(status: PublicKeyStatus) {
+  if (status === 'UNDETECTED') return '检测'
+  if (status === 'CHECK_FAILED') return '重试检测'
+  if (status === 'DEPLOY_FAILED') return '重试安装'
+  return '安装'
+}
+
+function isPublicKeyInstalled(status: PublicKeyStatus) {
+  return status === 'INSTALLED' || status === 'DEPLOYED'
+}
+
+function publicKeyStatusLabel(status: PublicKeyStatus) {
+  const labels: Record<PublicKeyStatus, string> = {
+    UNDETECTED: '未检测',
+    CHECKING: '检测中',
+    INSTALLED: '已安装',
+    DEPLOYED: '已安装',
+    NOT_INSTALLED: '未安装',
+    NOT_DEPLOYED: '未安装',
+    CHECK_FAILED: '检测失败',
+    DEPLOYING: '安装中',
+    DEPLOY_FAILED: '安装失败'
+  }
+  return labels[status]
+}
+
+function publicKeyStatusType(status: PublicKeyStatus) {
+  if (status === 'INSTALLED' || status === 'DEPLOYED') return 'success'
+  if (status === 'NOT_INSTALLED' || status === 'NOT_DEPLOYED' || status === 'UNDETECTED') return 'warning'
+  if (status === 'CHECK_FAILED' || status === 'DEPLOY_FAILED') return 'danger'
+  return 'primary'
 }
 
 async function removeServer(server: ServerRecord) {
@@ -712,6 +910,27 @@ async function testSsh(server: ServerRecord) {
   }
 }
 
+async function testAllSsh() {
+  const targetIds = servers.value.map((server) => server.id)
+  if (targetIds.length === 0) {
+    ElMessage.warning('当前没有可测试的服务器')
+    return
+  }
+
+  isTestingAll.value = true
+  testingIds.value = Array.from(new Set([...testingIds.value, ...targetIds]))
+  try {
+    const resp: SSHTestAllResponse = (await testAllServerSsh(targetIds)).data
+    await loadServers()
+    ElMessage.success(`SSH 测试完成：成功 ${resp.online} 台，失败 ${resp.offline} 台`)
+  } catch (error) {
+    ElMessage.error(`批量 SSH 测试失败：${getApiErrorMessage(error)}`)
+  } finally {
+    testingIds.value = []
+    isTestingAll.value = false
+  }
+}
+
 async function detectInfo(server: ServerRecord) {
   if (!detectingIds.value.includes(server.id)) {
     detectingIds.value.push(server.id)
@@ -737,12 +956,15 @@ async function detectInfo(server: ServerRecord) {
 }
 
 async function probeAll() {
+  if (isTestingAll.value) return
   isProbingAll.value = true
 
-  // Set loading only for servers that will actually be probed
-  const idsToProbe = includeOffline.value
-    ? servers.value.map((s) => s.id)
-    : servers.value.filter((s) => s.status !== 'offline').map((s) => s.id)
+  const idsToProbe = servers.value.map((s) => s.id)
+  if (idsToProbe.length === 0) {
+    ElMessage.warning('当前没有可探测的服务器')
+    isProbingAll.value = false
+    return
+  }
   for (const id of idsToProbe) {
     if (!detectingIds.value.includes(id)) {
       detectingIds.value.push(id)
@@ -750,16 +972,9 @@ async function probeAll() {
   }
 
   try {
-    const resp: ProbeAllResponse = (await probeAllServers(includeOffline.value)).data
+    const resp: ProbeAllResponse = (await probeAllServers(idsToProbe)).data
     await loadServers()
-    let msg = `探测完成：在线 ${resp.online} 台，离线 ${resp.offline} 台`
-    if (resp.skipped > 0) {
-      msg += `，跳过 ${resp.skipped} 台`
-      ElMessage.warning(msg)
-      ElMessage.info('已跳过离线服务器。如需重新检测，请勾选"包含离线服务器"')
-    } else {
-      ElMessage.success(msg)
-    }
+    ElMessage.success(`探测完成：在线 ${resp.online} 台，离线 ${resp.offline} 台`)
   } catch (error) {
     const message = error instanceof Error ? error.message : '请求失败'
     ElMessage.error(`批量探测失败：${message}`)
@@ -909,11 +1124,6 @@ async function detailDetect() {
   }
 }
 
-function detailDeployPublicKey() {
-  if (!activeServer.value) return
-  openDeployPublicKey(activeServer.value)
-}
-
 function displayValue(value: string | null | undefined) {
   return value?.trim() || '-'
 }
@@ -977,6 +1187,28 @@ onMounted(() => {
   color: #475569;
 }
 
+.public-key-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 12px 0;
+}
+
+.public-key-toolbar .ssh-key-select {
+  max-width: 420px;
+}
+
+.public-key-table {
+  width: 100%;
+}
+
+.public-key-message {
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  color: #475569;
+}
+
 .ssh-key-row {
   display: flex;
   gap: 8px;
@@ -1004,16 +1236,16 @@ onMounted(() => {
   font-size: 12px;
 }
 
-.include-offline-checkbox {
-  margin-left: 4px;
-}
-
 .server-table-card {
   width: 100%;
 }
 
-.page-refresh-button {
+.page-deploy-key-button {
   margin-left: auto;
+}
+
+.page-refresh-button {
+  margin-left: 0;
 }
 
 .filter-bar {
@@ -1027,7 +1259,7 @@ onMounted(() => {
 
 .server-table-wrap {
   width: 100%;
-  overflow-x: auto;
+  overflow-x: hidden;
 }
 
 .detail-section + .detail-section {
