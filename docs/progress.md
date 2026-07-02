@@ -80,13 +80,28 @@ HPCDeploy 已形成完整闭环，端到端链路全部打通：
 - 最近任务行点击跳转任务历史
 - 结果文件目录树查看
 
-### 管理员密码确认式高风险操作保护（Phase 26 — 当前阶段）
+### 管理员密码确认式高风险操作保护（Phase 26）
 - 移除用户账号体系（User 模型、login/logout/me 端点、登录页）
 - 替换为管理员密码确认弹窗（ElMessageBox.prompt）
 - 5 分钟 admin_token 缓存（内存，不存 localStorage）
 - 高风险接口通过 `X-Admin-Token` header 保护
 - 管理员密码通过 `HPCDEPLOY_ADMIN_PASSWORD` 环境变量配置
 - 侧边栏菜单 admin 标签标记
+
+### WebSocket 多进程广播（Phase 28 — 已完成）
+- WebSocket 连接所在 worker 每秒 tail 数据库 `task_logs`
+- 状态变化从数据库补发 `status`，终态补发 `done`
+- 同进程内仍保留 `ws_manager` 即时广播
+- 不引入 Redis / Celery，不改变前端协议和 HTTP 轮询备用链路
+
+### 稳定性与交互优化（Phase 28B — 已完成）
+- stress-suite 同服务器串行锁，严格按 GPU → CPU/内存 → 磁盘推进
+- 后台启动成功仅表示任务进入 RUNNING，suite 调度只在任务终态后推进
+- stress 远端启动后立即写 RUNNING / started_at，避免远端已跑但页面仍 PENDING
+- 失败、取消、超时任务只要 artifacts 已回收即可显示结果文件入口
+- 审计日志进入页面不再自动弹管理员确认，点击“查看审计日志”后再确认
+- 管理菜单移动到底部区域，服务器管理和任务执行页做表格/卡片/日志弹窗交互优化
+- GPU 压测报告脚本支持多卡元数据、每卡统计和 XLSX 报告
 
 ---
 
@@ -101,16 +116,24 @@ HPCDeploy 已形成完整闭环，端到端链路全部打通：
 7. **SSH 执行器重连机制** — `SSHExecutor.reconnect()` 自动重连，`_execute_stress_async` 轮询中 SSH 闪断自动重连一次再试
 8. **批次视图总耗时列** — 后端计算 `duration_seconds`，前端展示 `1h 23m 45s` 格式
 9. **取消/超时远端文件不删除** — 确认 `TaskCancelRequest.delete_remote_files` 默认 `False`，超时/失败流程无自动远程目录清理
-7. **清理中心布局优化** — 远端优先、本地次之的重排
-8. **WebSocket 实时日志** — 双通道日志推送，心跳 30s，断线自动 HTTP 轮询
-9. **审计日志全面完善** — 统一英文 action 命名、全调用点 detail_json 上下文、敏感字段过滤、新增 server_id
-10. **批次视图展开状态修复** — 自动刷新不再折叠已展开行，通过 `:expand-row-keys` + `toggleRowExpansion` 恢复
+10. **WebSocket 多进程广播** — WS endpoint 主动 tail 数据库日志和任务状态，多 uvicorn worker 下可补发日志与终态
+11. **清理中心布局优化** — 远端优先、本地次之的重排
+12. **WebSocket 实时日志** — 双通道日志推送，心跳 30s，断线自动 HTTP 轮询
+13. **审计日志全面完善** — 统一英文 action 命名、全调用点 detail_json 上下文、敏感字段过滤、新增 server_id
+14. **批次视图展开状态修复** — 自动刷新不再折叠已展开行，通过 `:expand-row-keys` + `toggleRowExpansion` 恢复
+15. **stress-suite 串行调度修复** — 同服务器加锁，后续子任务只在前序任务终态后启动，后台启动成功不再被误判为完成
+16. **任务结果入口修复** — 失败/取消任务 artifacts 可见时显示结果文件，结果弹窗显示远端服务器目录
+17. **任务历史跳转定位修复** — 压测套件弹窗“查看批次详情”跳转批次视图、自动搜索并展开 batch
+18. **任务执行页压测脚本选择优化** — 压测脚本统一多选，选 1 个走单任务，选 2/3 个自动按 GPU→CPU/内存→磁盘创建套件
+19. **服务器管理 UI 优化** — 部署公钥外置、表格列宽重分配、标签选择后自动收起、新增服务器默认密码认证
+20. **日志查看体验优化** — 下载日志并入查看日志弹窗，去除日志工具栏白色间隙
+21. **侧边栏与审计日志体验优化** — 审计日志/系统设置/清理中心下移到底部管理区，审计日志延迟管理员确认
+22. **GPU 多卡报告脚本更新** — GPU 压测脚本按卡统计利用率、温度、功耗、显存，输出 TXT/XLSX 报告
 
 ---
 
 ## 当前暂未做
 
-- WebSocket 多进程广播
 - 自动定时清理
 - 外部 AI API / AI 小助手
 - 调度器集群集成（Slurm 等）
@@ -120,17 +143,16 @@ HPCDeploy 已形成完整闭环，端到端链路全部打通：
 
 ## 下一步优先级
 
-1. **WebSocket 多进程广播** — 当前 WS 连接仅在单进程生效，多 uvicorn worker 时日志推送会丢失
-2. **自动定时清理** — 远端任务目录自动清理策略
-3. **外部 AI API / AI 小助手** — 接入 AI 辅助诊断
+1. **自动定时清理** — 远端任务目录自动清理策略
+2. **外部 AI API / AI 小助手** — 接入 AI 辅助诊断
 
 ---
 
 ## 明天继续的明确入口
 
 1. 先读 `README.md`、`docs/architecture.md`、`docs/development-stages.md`、`docs/progress.md`
-2. 当前阶段已经完成的是：管理员密码确认式高风险操作保护
-3. 下一阶段：WebSocket 多进程广播
+2. 当前阶段已经完成的是：WebSocket 多进程广播 + 稳定性与交互优化
+3. 下一阶段：自动定时清理
 4. 不要做强制全站登录、复杂 RBAC、多用户管理
 5. 修改后必须跑 `compileall` + `npm run build`
 6. 前端不传 raw command / raw_args / remote_path / remote_work_dir
@@ -143,7 +165,7 @@ HPCDeploy 已形成完整闭环，端到端链路全部打通：
 ```
 继续 HPCDeploy 项目。
 请先读取 README.md、docs/progress.md、docs/development-stages.md、docs/architecture.md。
-当前下一阶段是：WebSocket 多进程广播。
+当前下一阶段是：自动定时清理。
 不要做强制全站登录。
 不要做复杂 RBAC。
 不要做多用户管理。

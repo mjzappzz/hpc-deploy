@@ -1,11 +1,11 @@
 <template>
   <section class="page-section">
     <div class="toolbar">
-      <el-button @click="loadTasks">刷新</el-button>
       <div class="view-toggle">
         <el-button :type="viewMode === 'tasks' ? 'primary' : 'default'" size="small" @click="switchView('tasks')">任务视图</el-button>
         <el-button :type="viewMode === 'batches' ? 'primary' : 'default'" size="small" @click="switchView('batches')">批次视图</el-button>
       </div>
+      <el-button class="page-refresh-button" @click="refreshCurrentView">刷新</el-button>
     </div>
 
     <template v-if="viewMode === 'tasks'">
@@ -177,6 +177,7 @@
                     <el-table-column label="操作" width="320" fixed="right">
                       <template #default="{ row: t }">
                         <div class="batch-task-actions">
+                          <el-button size="small" link type="primary" class="batch-view-button" @click.stop="continueBatchTask(t)">查看</el-button>
                           <el-button size="small" link @click.stop="openBatchTaskLogs(t)">日志</el-button>
                           <el-button size="small" link :disabled="!t.has_artifacts" @click.stop="openBatchTaskArtifacts(t)">报告</el-button>
                           <el-button
@@ -185,7 +186,6 @@
                             :disabled="!isBatchTaskTerminal(t.status)"
                             @click.stop="batchTaskDownloadReport(t)"
                           >下载报告</el-button>
-                          <el-button size="small" link @click.stop="continueBatchTask(t)">查看</el-button>
                           <el-button v-if="isFailureStatus(t.status)" size="small" link type="danger" @click.stop="diagnoseBatchTask(t)">诊断</el-button>
                         </div>
                       </template>
@@ -287,16 +287,16 @@
 
     <el-dialog v-model="logDialogVisible" :title="`任务日志 ${activeTaskId}`" width="760px">
       <div v-loading="logLoading">
-        <LogViewer :logs="logs" />
+        <LogViewer :logs="logs" toolbar @download="downloadActiveTaskLogs" />
       </div>
     </el-dialog>
 
     <el-dialog v-model="artDialogVisible" title="结果文件" width="700px">
       <div v-if="artLoading" v-loading="artLoading" class="art-loading-wrap" />
       <template v-else>
-        <!-- 平台本地保存目录 -->
+        <!-- 远端服务器目录 -->
         <div v-if="artDir" class="art-dir-bar">
-          <span class="art-dir-label">平台本地保存目录：</span>
+          <span class="art-dir-label">远端服务器目录：</span>
           <code class="art-dir-path">{{ artDir }}</code>
           <el-button size="small" text @click="copyArtifactDir">复制路径</el-button>
         </div>
@@ -403,6 +403,7 @@
             <el-table-column label="操作" width="320" fixed="right">
               <template #default="{ row }">
                 <div class="batch-task-actions">
+                  <el-button size="small" link type="primary" class="batch-view-button" @click="continueBatchTask(row)">查看</el-button>
                   <el-button size="small" link @click="openBatchTaskLogs(row)">日志</el-button>
                   <el-button size="small" link :disabled="!row.has_artifacts" @click="openBatchTaskArtifacts(row)">报告</el-button>
                   <el-button
@@ -411,7 +412,6 @@
                     :disabled="!isBatchTaskTerminal(row.status)"
                     @click="batchTaskDownloadReport(row)"
                   >下载报告</el-button>
-                  <el-button size="small" link @click="continueBatchTask(row)">查看</el-button>
                   <el-button v-if="isFailureStatus(row.status)" size="small" link type="danger" @click="diagnoseBatchTask(row)">诊断</el-button>
                 </div>
               </template>
@@ -449,7 +449,7 @@
 import { computed, nextTick, onMounted, onActivated, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
-import { cancelTask, deleteTask, getTask, getTaskLogs, listArtifacts, listBatches, getBatchDetail, listTasks, type ArtifactFileDetail, type BatchDetailResponse, type BatchQuery, type BatchSummaryItem, type BatchTaskDetailItem, type TaskLogRecord, type TaskListQuery, type TaskRecord } from '@/api/task'
+import { cancelTask, deleteTask, downloadTaskLogs, getTask, getTaskLogs, listArtifacts, listBatches, getBatchDetail, listTasks, type ArtifactFileDetail, type BatchDetailResponse, type BatchQuery, type BatchSummaryItem, type BatchTaskDetailItem, type TaskLogRecord, type TaskListQuery, type TaskRecord } from '@/api/task'
 import { formatDateTime } from '@/utils/time'
 import { requireAdminConfirm } from '@/composables/useAdminConfirm'
 import { buildConfirmContent } from '@/utils/confirm'
@@ -619,9 +619,21 @@ function switchView(mode: 'tasks' | 'batches') {
   viewMode.value = mode
   if (mode === 'batches') {
     expandedBatchKeys.value = []
+    expandedBatchData.value = {}
+    expandedBatchError.value = {}
     loadBatches()
+  } else {
+    loadTasks()
   }
   checkAutoRefresh()
+}
+
+function refreshCurrentView() {
+  if (viewMode.value === 'batches') {
+    loadBatches()
+  } else {
+    loadTasks()
+  }
 }
 
 async function loadBatches(silent = false) {
@@ -800,7 +812,10 @@ function resetBatchFilters() {
 async function goToBatch(task: TaskRecord) {
   const batchId = task.batch_id
   if (!batchId) return
+  await locateBatch(batchId)
+}
 
+async function locateBatch(batchId: string) {
   viewMode.value = 'batches'
   batchFilters.status = undefined
   batchFilters.keyword = batchId
@@ -815,11 +830,11 @@ async function goToBatch(task: TaskRecord) {
   if (found) {
     expandedBatchKeys.value = [batchId]
     expandedBatchLoading.value[batchId] = true
-    loadBatchDetailData(batchId)
+    await loadBatchDetailData(batchId)
     await nextTick()
     restoreExpandedRows()
   } else {
-    ElMessage.warning('当前筛选条件下未显示该批次，请清空筛选后查看')
+    ElMessage.warning('未找到该批次，请刷新或清空筛选条件')
   }
   checkAutoRefresh()
 }
@@ -966,9 +981,9 @@ function openBatchTaskArtifacts(task: BatchTaskDetailItem) {
   artDir.value = ''
   artDialogVisible.value = true
   artLoading.value = true
-  listArtifacts(task.task_id).then((resp) => {
-    artDir.value = resp.data.artifact_dir
-    artFiles.value = resp.data.files
+  Promise.all([listArtifacts(task.task_id), getTask(task.task_id)]).then(([artResp, taskResp]) => {
+    artDir.value = taskResp.data.remote_work_dir || ''
+    artFiles.value = artResp.data.files
   }).finally(() => {
     artLoading.value = false
   })
@@ -993,6 +1008,12 @@ async function openLogs(task: TaskRecord) {
     logs.value = await ensureTaskLogs(task.task_id)
   } finally {
     logLoading.value = false
+  }
+}
+
+function downloadActiveTaskLogs() {
+  if (activeTaskId.value) {
+    downloadTaskLogs(activeTaskId.value)
   }
 }
 
@@ -1086,7 +1107,7 @@ async function openArtifacts(task: TaskRecord) {
   artLoading.value = true
   try {
     const resp = (await listArtifacts(task.task_id)).data
-    artDir.value = resp.artifact_dir
+    artDir.value = task.remote_work_dir || ''
     artFiles.value = resp.files
   } finally {
     artLoading.value = false
@@ -1224,7 +1245,7 @@ function formatFileSize(size: number): string {
   return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`
 }
 
-onMounted(() => {
+onMounted(async () => {
   // apply route.query params to filters
   const qStatus = route.query.status
   const qTaskType = route.query.task_type
@@ -1241,12 +1262,11 @@ onMounted(() => {
   }
 
   if (qView === 'batch') {
-    viewMode.value = 'batches'
-    loadBatches()
-    // Auto-open batch detail if batch_id provided
     if (typeof qBatchId === 'string' && qBatchId) {
-      // Find the batch in the loaded list or open directly
-      openBatchDetail({ batch_id: qBatchId } as BatchSummaryItem)
+      await locateBatch(qBatchId)
+    } else {
+      viewMode.value = 'batches'
+      await loadBatches()
     }
     return
   }
@@ -1420,10 +1440,13 @@ onUnmounted(() => {
   margin-bottom: 12px;
 }
 
+.page-refresh-button {
+  margin-left: auto;
+}
+
 .view-toggle {
   display: flex;
   gap: 2px;
-  margin-left: 8px;
 }
 
 /* ── Batch view ── */
@@ -1555,6 +1578,10 @@ onUnmounted(() => {
 .batch-task-actions .el-button {
   margin-left: 0;
   padding: 0;
+}
+
+.batch-task-actions .batch-view-button {
+  color: var(--el-color-primary-light-3);
 }
 
 /* ── Cancel dialog ── */

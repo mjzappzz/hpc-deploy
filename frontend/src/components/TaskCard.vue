@@ -37,7 +37,6 @@
     <div v-if="task.error_message" class="task-card__error">{{ task.error_message }}</div>
     <div class="task-card__actions">
       <el-button size="small" @click="$emit('viewLogs', task)">查看日志</el-button>
-      <el-button size="small" @click="handleDownloadLogs(task)">下载日志</el-button>
       <el-tooltip v-if="showDeleteButton" content="删除任务记录、日志、本地结果文件和远端工作目录。此操作不可恢复。" placement="top">
         <el-button size="small" type="danger" @click="$emit('deleteTask', task)">删除任务</el-button>
       </el-tooltip>
@@ -55,9 +54,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { ElMessage } from 'element-plus'
 import type { TaskRecord } from '@/api/task'
-import { downloadTaskLogs } from '@/api/task'
 import { formatTaskDisplayName, getTaskModuleLabel } from '@/utils/taskDisplay'
 import { formatDateTime } from '@/utils/time'
 import { calcDurationSeconds, formatSeconds, statusLabel } from '@/composables/useTaskProgress'
@@ -100,7 +97,7 @@ const isContinuable = computed(() => {
 
 const isStressCompleted = computed(() => {
   const status = props.task.status?.toUpperCase() ?? ''
-  return props.task.task_type === 'stress' && ['SUCCESS', 'FAILED'].includes(status)
+  return props.task.task_type === 'stress' && ['SUCCESS', 'FAILED', 'CANCELED'].includes(status)
 })
 
 const showDiagnoseButton = computed(() => {
@@ -140,14 +137,6 @@ function batchStepLabel(seq: number): string {
 }
 
 const formatTime = formatDateTime
-
-function handleDownloadLogs(task: TaskRecord) {
-  try {
-    downloadTaskLogs(task.task_id)
-  } catch {
-    ElMessage.error('日志下载失败')
-  }
-}
 </script>
 
 <style scoped>

@@ -5,7 +5,7 @@
         <el-button type="primary" @click="openCreate">新增服务器</el-button>
         <el-button type="warning" :loading="isProbingAll" @click="probeAll">⚡ {{ isProbingAll ? '探测中' : '探测全部' }}</el-button>
         <el-checkbox v-model="includeOffline" class="include-offline-checkbox">包含离线服务器</el-checkbox>
-        <el-button @click="loadServers">刷新</el-button>
+        <el-button class="page-refresh-button" @click="loadServers">刷新</el-button>
       </div>
 
       <div class="filter-bar">
@@ -16,19 +16,21 @@
         <el-button size="small" @click="clearFilters">清除筛选</el-button>
       </div>
 
-      <ServerTable
-        :servers="servers"
-        :loading="loading"
-        :testing-ids="testingIds"
-        :detecting-ids="detectingIds"
-        :is-probing-all="isProbingAll"
-        @edit="openEdit"
-        @delete="removeServer"
-        @test="testSsh"
-        @detect="detectInfo"
-        @detail="openDetail"
-        @deploy-public-key="openDeployPublicKey"
-      />
+      <div class="server-table-wrap">
+        <ServerTable
+          :servers="servers"
+          :loading="loading"
+          :testing-ids="testingIds"
+          :detecting-ids="detectingIds"
+          :is-probing-all="isProbingAll"
+          @edit="openEdit"
+          @delete="removeServer"
+          @test="testSsh"
+          @detect="detectInfo"
+          @detail="openDetail"
+          @deploy-public-key="openDeployPublicKey"
+        />
+      </div>
     </el-card>
 
     <el-dialog v-model="dialogVisible" :title="editingId ? '编辑服务器' : '新增服务器'" width="560px">
@@ -83,7 +85,17 @@
           </div>
         </el-form-item>
         <el-form-item label="标签">
-          <el-select v-model="form.tags" multiple filterable allow-create default-first-option placeholder="GPU / 5090 / Ubuntu / 客户A" style="width:100%">
+          <el-select
+            ref="tagSelectRef"
+            v-model="form.tags"
+            multiple
+            filterable
+            allow-create
+            default-first-option
+            placeholder="GPU / 5090 / Ubuntu / 客户A"
+            style="width:100%"
+            @change="handleFormTagChange"
+          >
             <el-option v-for="t in availableTagOptions" :key="t" :label="t" :value="t" />
           </el-select>
           <div class="form-help-text">最多 10 个标签，每个不超过 30 个字符。禁止特殊字符。</div>
@@ -335,11 +347,10 @@
     <!-- Detail log dialog -->
     <el-dialog v-model="detailLogVisible" title="任务日志" width="760px">
       <div v-loading="detailLogLoading">
-        <LogViewer :logs="detailLogs" />
+        <LogViewer :logs="detailLogs" toolbar @download="downloadDetailLog" />
       </div>
       <template #footer>
         <el-button :disabled="detailLogLoading" @click="detailLogVisible = false">关闭</el-button>
-        <el-button :disabled="detailLogLoading || !detailLogTaskId" @click="downloadDetailLog">下载完整日志</el-button>
       </template>
     </el-dialog>
 
@@ -352,7 +363,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { formatDateTime } from '@/utils/time'
@@ -406,6 +417,7 @@ const deployingPublicKey = ref(false)
 const filterTag = ref('')
 const filterKeyword = ref('')
 const tags = ref<TagSummary[]>([])
+const tagSelectRef = ref()
 
 // ── Detail drawer (Phase 27A) ──
 const router = useRouter()
@@ -431,7 +443,7 @@ const form = reactive<ServerPayload>({
   host: '',
   port: 22,
   username: '',
-  auth_type: 'key',
+  auth_type: 'password',
   key_path: '',
   password: '',
   status: 'unknown',
@@ -465,6 +477,16 @@ const saveDisabled = computed(() => {
 const deployDisabled = computed(() => !deployTargetServer.value || !deployPrivateKeyPath.value)
 const availableTagOptions = computed(() => tags.value.map((t) => t.name))
 
+function handleFormTagChange() {
+  nextTick(() => {
+    const select = tagSelectRef.value as { blur?: () => void; toggleMenu?: () => void; expanded?: boolean; visible?: boolean } | undefined
+    select?.blur?.()
+    if (select?.expanded || select?.visible) {
+      select.toggleMenu?.()
+    }
+  })
+}
+
 function clearFilters() {
   filterTag.value = ''
   filterKeyword.value = ''
@@ -478,7 +500,7 @@ function resetForm() {
     host: '',
     port: 22,
     username: '',
-    auth_type: 'key',
+    auth_type: 'password',
     key_path: '',
     password: '',
     status: 'unknown',
@@ -986,12 +1008,26 @@ onMounted(() => {
   margin-left: 4px;
 }
 
+.server-table-card {
+  width: 100%;
+}
+
+.page-refresh-button {
+  margin-left: auto;
+}
+
 .filter-bar {
   display: flex;
   gap: 8px;
   align-items: center;
   margin-bottom: 12px;
   flex-wrap: wrap;
+  width: 100%;
+}
+
+.server-table-wrap {
+  width: 100%;
+  overflow-x: auto;
 }
 
 .detail-section + .detail-section {

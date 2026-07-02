@@ -51,6 +51,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 
 ### tasks API (`/api/tasks`)
 - 任务创建、批量创建（`/batch`）
+- 压测套件创建（`/stress-suite`），同服务器内按 GPU → CPU/内存 → 磁盘串行推进
 - 状态查询、取消、删除
 - 日志查询、日志下载、WebSocket 实时日志（`/logs/ws`）
 - 失败诊断（`/{task_id}/diagnosis`）
@@ -88,6 +89,8 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - 基于 `setsid --wait` 启动进程组
 - PID 写入 `.hpcdeploy.pid` 文件
 - SSH executor 封装 Paramiko 连接、重试、超时
+- stress 后台执行使用完全 detach 的 `setsid bash -lc ... < /dev/null`，远端启动成功只代表任务进入 `RUNNING`
+- stress-suite 调度按 `server_id` 加锁，只有前序子任务进入终态后才启动下一子任务
 
 ### ssh detector
 - 执行固定的安全探测命令
@@ -265,6 +268,7 @@ PENDING → CONNECTING → PREPARING → UPLOADING → RUNNING → SUCCESS
 - 消息格式：`{ "type": "log|status|done", "data": {...} }`
 - 前端 `useTaskWebSocket` composable 管理生命周期
 - HTTP 轮询作为备用通道，WS 断线自动切换
+- 多 uvicorn worker 场景下，WebSocket 连接所在 worker 每秒 tail 数据库 `task_logs` 和任务状态；同进程 `ws_manager` 即时广播仍保留
 
 ---
 

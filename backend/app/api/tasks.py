@@ -1,3 +1,4 @@
+import asyncio
 import shutil
 import re
 import threading
@@ -77,6 +78,8 @@ _SAFE_DISK_DIR_BLOCKLIST: tuple[str, ...] = (
     "/", "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64",
     "/boot", "/dev", "/proc", "/sys", "/run", "/var", "/tmp",
 )
+
+WS_DB_POLL_INTERVAL_SECONDS = 1.0
 
 _DISK_DIR_DANGEROUS_CHARS: re.Pattern = re.compile(r"[;&|`$()\n\r\0 \*\?]")
 _DISK_DIR_TRAVERSAL: str = ".."
@@ -723,6 +726,36 @@ STRESS_SUITE_SCRIPTS: list[dict[str, str | int]] = [
     {"path": "scripts/stress/disk_stress_report.sh",    "name": "disk_stress_report.sh",    "seq": 3, "label": "磁盘压测"},
 ]
 STRESS_SUITE_ALLOWED_PATHS: set[str] = {s["path"] for s in STRESS_SUITE_SCRIPTS}  # type: ignore
+_STRESS_SUITE_SERVER_LOCKS: dict[int, threading.Lock] = {}
+_STRESS_SUITE_SERVER_LOCKS_GUARD = threading.Lock()
+
+
+def _get_stress_suite_server_lock(server_id: int) -> threading.Lock:
+    with _STRESS_SUITE_SERVER_LOCKS_GUARD:
+        lock = _STRESS_SUITE_SERVER_LOCKS.get(server_id)
+        if lock is None:
+            lock = threading.Lock()
+            _STRESS_SUITE_SERVER_LOCKS[server_id] = lock
+        return lock
+
+
+def _mark_suite_task_failed(db: Session, task: Task, message: str) -> None:
+    task.status = "FAILED"
+    task.end_time = datetime.utcnow()
+    task.error_message = message[:500]
+    db.commit()
+    db.add(TaskLog(task_id=task.task_id, level="ERROR", message=message[:1000]))
+    db.commit()
+    try:
+        ws_manager.broadcast_status_sync(task.task_id, "FAILED")
+        ws_manager.broadcast_done_sync(task.task_id, "FAILED")
+    except Exception:
+        pass
+
+
+def _is_suite_task_terminal(db: Session, task_id: str) -> bool:
+    status_value = db.query(Task.status).filter(Task.task_id == task_id).scalar()
+    return status_value in TERMINAL_TASK_STATUSES
 
 
 def _run_stress_suite_for_server(server_id: int, batch_id: str) -> None:
@@ -732,22 +765,43 @@ def _run_stress_suite_for_server(server_id: int, batch_id: str) -> None:
     Each task runs in series; failure of one does not stop subsequent tasks.
     Different server threads run in parallel (daemon threads).
     """
-    db = SessionLocal()
-    try:
-        task_records = (
-            db.query(Task)
-            .filter(Task.batch_id == batch_id, Task.server_id == server_id)
-            .order_by(Task.sequence_index)
-            .all()
-        )
-    finally:
-        db.close()
-
-    for task in task_records:
+    lock = _get_stress_suite_server_lock(server_id)
+    with lock:
+        db = SessionLocal()
         try:
-            run_task_stage8b(task.task_id)
-        except Exception:
-            pass  # run_task_stage8b handles its own error logging
+            task_records = (
+                db.query(Task)
+                .filter(Task.batch_id == batch_id, Task.server_id == server_id)
+                .order_by(Task.sequence_index)
+                .all()
+            )
+
+            for task_record in task_records:
+                db.refresh(task_record)
+
+                if task_record.depends_on_task_id and not _is_suite_task_terminal(db, task_record.depends_on_task_id):
+                    _mark_suite_task_failed(
+                        db,
+                        task_record,
+                        f"previous suite task is not terminal: {task_record.depends_on_task_id}",
+                    )
+                    break
+
+                try:
+                    run_task_stage8b(task_record.task_id)
+                except Exception:
+                    pass  # run_task_stage8b handles its own error logging
+
+                db.refresh(task_record)
+                if task_record.status not in TERMINAL_TASK_STATUSES:
+                    _mark_suite_task_failed(
+                        db,
+                        task_record,
+                        f"stress suite task returned before terminal status: {task_record.status}",
+                    )
+                    break
+        finally:
+            db.close()
 
 
 @router.post("/stress-suite", response_model=StressSuiteCreateResponse, status_code=status.HTTP_201_CREATED)
@@ -1092,11 +1146,8 @@ def get_batch_detail(
         elif t.status == "PENDING":
             pending += 1
 
-        has_artifacts = bool(t.status == "SUCCESS" and t.task_id)
-        # Quick check if artifact dir exists
-        if has_artifacts:
-            artifact_dir = ARTIFACTS_DIR / t.task_id
-            has_artifacts = artifact_dir.is_dir()
+        artifact_dir = ARTIFACTS_DIR / t.task_id
+        has_artifacts = artifact_dir.is_dir() and any(entry.is_file() for entry in artifact_dir.iterdir())
 
         # 计算耗时（秒）
         _dur: int | None = None
@@ -1214,6 +1265,9 @@ async def task_logs_websocket(ws: WebSocket, task_id: str) -> None:
 
     await ws_manager.connect(task_id, ws)
 
+    last_log_id = 0
+    last_status = task.status
+
     try:
         # Send existing logs
         db = SessionLocal()
@@ -1232,19 +1286,68 @@ async def task_logs_websocket(ws: WebSocket, task_id: str) -> None:
                     "line": log.message,
                     "created_at": str(log.created_at) if log.created_at else None,
                 })
+                last_log_id = max(last_log_id, log.id)
         finally:
             db.close()
 
         # Send current status
-        await ws_manager.broadcast_status(task_id, task.status)
+        await ws.send_json({
+            "type": "status",
+            "task_id": task_id,
+            "status": last_status,
+        })
 
-        # Keep connection alive, handle incoming (mostly pings from client)
+        # Keep connection alive, handle incoming pings, and tail DB-backed updates.
+        # The DB tail keeps WebSocket usable when uvicorn has multiple workers:
+        # task logs may be written by one worker while the browser is connected to another.
         while True:
             try:
-                data = await ws.receive_text()
+                await asyncio.wait_for(ws.receive_text(), timeout=WS_DB_POLL_INTERVAL_SECONDS)
                 # Client sent a message — ignore (could be ping/pong)
+                continue
+            except asyncio.TimeoutError:
+                pass
             except WebSocketDisconnect:
                 break
+
+            db = SessionLocal()
+            try:
+                new_logs = (
+                    db.query(TaskLog)
+                    .filter(TaskLog.task_id == task_id, TaskLog.id > last_log_id)
+                    .order_by(TaskLog.id.asc())
+                    .all()
+                )
+                for log in new_logs:
+                    await ws.send_json({
+                        "type": "log",
+                        "task_id": task_id,
+                        "level": log.level,
+                        "line": log.message,
+                        "created_at": str(log.created_at) if log.created_at else None,
+                    })
+                    last_log_id = max(last_log_id, log.id)
+
+                current_status = (
+                    db.query(Task.status)
+                    .filter(Task.task_id == task_id)
+                    .scalar()
+                )
+                if current_status and current_status != last_status:
+                    last_status = current_status
+                    await ws.send_json({
+                        "type": "status",
+                        "task_id": task_id,
+                        "status": current_status,
+                    })
+                    if current_status in TERMINAL_TASK_STATUSES:
+                        await ws.send_json({
+                            "type": "done",
+                            "task_id": task_id,
+                            "status": current_status,
+                        })
+            finally:
+                db.close()
     except Exception:
         pass
     finally:

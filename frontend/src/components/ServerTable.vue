@@ -5,12 +5,13 @@
     stripe
     v-loading="loading"
     table-layout="fixed"
+    style="width: 100%"
     class="server-table"
     header-cell-class-name="server-table-header"
     cell-class-name="server-table-cell"
   >
     <el-table-column prop="name" label="服务器名称" min-width="120" show-overflow-tooltip />
-    <el-table-column label="地址" min-width="145" show-overflow-tooltip>
+    <el-table-column label="地址" min-width="150" show-overflow-tooltip>
       <template #default="{ row }">
         <span class="table-ellipsis">{{ row.host }}:{{ row.port }}</span>
       </template>
@@ -35,45 +36,45 @@
         </el-tooltip>
       </template>
     </el-table-column>
-    <el-table-column label="标签" min-width="130">
+    <el-table-column label="标签" width="100">
       <template #default="{ row }">
         <span v-if="!row.tags || row.tags.length === 0" class="table-ellipsis" style="color:#94a3b8">-</span>
         <el-tag v-for="tag in (row.tags || []).slice(0, 3)" :key="tag" size="small" style="margin-right:4px; margin-bottom:2px;">{{ tag }}</el-tag>
         <el-tag v-if="(row.tags || []).length > 3" size="small" type="info">+{{ (row.tags || []).length - 3 }}</el-tag>
       </template>
     </el-table-column>
-    <el-table-column label="OS" min-width="110" show-overflow-tooltip>
+    <el-table-column label="OS" min-width="120" show-overflow-tooltip>
       <template #default="{ row }">
         <el-tooltip :content="displayValue(row.os_info)" placement="top" :disabled="!row.os_info">
           <span class="table-ellipsis">{{ osSummary(row.os_info) }}</span>
         </el-tooltip>
       </template>
     </el-table-column>
-    <el-table-column label="CPU" min-width="170" show-overflow-tooltip>
+    <el-table-column label="CPU" min-width="220" show-overflow-tooltip>
       <template #default="{ row }">
         <el-tooltip :content="displayValue(row.cpu_info)" placement="top" :disabled="!row.cpu_info">
           <span class="table-ellipsis">{{ cpuSummary(row.cpu_info) }}</span>
         </el-tooltip>
       </template>
     </el-table-column>
-    <el-table-column label="内存" width="80" show-overflow-tooltip>
+    <el-table-column label="内存" width="90" show-overflow-tooltip>
       <template #default="{ row }">
         <span>{{ displayValue(row.memory_info) }}</span>
       </template>
     </el-table-column>
-    <el-table-column label="GPU" min-width="170" show-overflow-tooltip>
+    <el-table-column label="GPU" min-width="220" show-overflow-tooltip>
       <template #default="{ row }">
         <el-tooltip :content="displayValue(row.gpu_info)" placement="top" :disabled="!row.gpu_info">
           <span class="table-ellipsis" :class="gpuStatusClass(row.gpu_status)">{{ gpuSummary(row.gpu_info, row.gpu_status) }}</span>
         </el-tooltip>
       </template>
     </el-table-column>
-    <el-table-column label="最后成功探测" min-width="135" show-overflow-tooltip>
+    <el-table-column label="最后成功探测" min-width="170" show-overflow-tooltip>
       <template #default="{ row }">
         <span>{{ formatDateTime(row.last_check_at) }}</span>
       </template>
     </el-table-column>
-    <el-table-column label="操作" width="320" class-name="server-actions-column">
+    <el-table-column label="操作" width="260" min-width="240" fixed="right" class-name="server-actions-column">
       <template #default="{ row }">
         <div class="server-actions">
           <el-button
@@ -99,11 +100,18 @@
           >
             服务器详情
           </el-button>
+          <el-button
+            v-if="row.auth_type === 'password'"
+            link
+            type="primary"
+            @click="$emit('deployPublicKey', row)"
+          >
+            部署公钥
+          </el-button>
           <el-dropdown trigger="click" @command="(command: string) => handleMore(command, row)">
             <el-button link type="info">更多</el-button>
             <template #dropdown>
               <el-dropdown-menu>
-                <el-dropdown-item v-if="row.auth_type === 'password'" command="deployPublicKey">部署公钥</el-dropdown-item>
                 <el-dropdown-item command="edit">编辑</el-dropdown-item>
                 <el-dropdown-item command="delete" class="danger-menu-item">删除</el-dropdown-item>
               </el-dropdown-menu>
@@ -200,9 +208,6 @@ function cpuSummary(value: string | null | undefined) {
 }
 
 function handleMore(command: string, server: ServerRecord) {
-  if (command === 'deployPublicKey') {
-    emit('deployPublicKey', server)
-  }
   if (command === 'edit') {
     emit('edit', server)
   }
@@ -213,6 +218,24 @@ function handleMore(command: string, server: ServerRecord) {
 </script>
 
 <style scoped>
+.server-table {
+  min-width: 1620px;
+}
+
+.server-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.server-actions :deep(.el-button) {
+  margin-left: 0;
+  padding-left: 0;
+  padding-right: 0;
+}
+
 .gpu-status-warning {
   color: var(--el-color-warning);
 }

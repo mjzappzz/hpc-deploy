@@ -145,6 +145,10 @@ def run_task_stage8b(task_id: str) -> None:
             #   - 轮询远程日志和报告
             #   - 报告生成后自动 artifact collection + 状态更新
             #   返回时任务已到达终态或不用额外处理
+            db.refresh(task)
+            if task.status not in TERMINAL_TASK_STATUSES:
+                _add_log(db, task_id, "ERROR", f"stress runner returned before terminal status: {task.status}")
+                _fail_task(db, task_id, "stress runner returned before terminal status")
         elif task.task_type == "apptainer":
             _add_log(db, task_id, "SYSTEM", "apptainer distribution completed, file was uploaded but not executed")
             task.status = "SUCCESS"
@@ -499,11 +503,12 @@ def _execute_stress_async(db, executor: SSHExecutor, task: Task, task_id: str, c
     _add_log(db, task_id, "SYSTEM", f"stress async start: duration={duration_seconds}s grace={grace}s")
     _add_log(db, task_id, "SYSTEM", f"remote pid file: {pid_file}")
 
-    # 后台启动脚本：nohup 写入 task.log，PID 写入 .hpcdeploy.pid
-    # 使用 bash -c 包装确保整个命令在单次 SSH exec 中完成
+    # 后台启动脚本：完全 detach，写入 task.log，PID 写入 .hpcdeploy.pid。
+    # 必须重定向 stdin/stdout/stderr，否则 Paramiko 可能一直等待远端 channel EOF。
     bg_cmd = (
-        f"cd {work_dir} && nohup bash -c "
-        f"'{command} 2>&1' > {log_file} 2>&1 & echo $! > {shell_quote(pid_file)}"
+        f"cd {work_dir} && "
+        f"(setsid bash -lc {shell_quote(command)} > {log_file} 2>&1 < /dev/null "
+        f"& echo $! > {shell_quote(pid_file)})"
     )
     try:
         executor.exec_simple(bg_cmd)
@@ -561,11 +566,29 @@ def _execute_stress_async(db, executor: SSHExecutor, task: Task, task_id: str, c
             _rx = _rx_raw.strip()
             if _rx:
                 _add_log(db, task_id, "SYSTEM", f"stress async: xlsx report found ({_rx})")
-                collect_artifacts(db, task_id, task.remote_work_dir, executor)
+                downloaded = collect_artifacts(db, task_id, task.remote_work_dir, executor)
                 db.refresh(task)
                 if task.status not in ("CANCELED", "CANCELING", "SUCCESS"):
-                    _attempt_stress_recovery(db, task_id, task)
-                    _add_log(db, task_id, "SYSTEM", "stress async: completed via report detection")
+                    recovered = _attempt_stress_recovery(db, task_id, task)
+                    if recovered:
+                        _add_log(db, task_id, "SYSTEM", "stress async: completed via report detection")
+                    else:
+                        _add_log(
+                            db,
+                            task_id,
+                            "ERROR",
+                            "stress async: remote report detected but local artifact recovery failed",
+                        )
+                        task.status = "FAILED"
+                        task.exit_code = None
+                        task.end_time = datetime.utcnow()
+                        task.error_message = (
+                            "remote report detected but local artifact recovery failed"
+                            if downloaded else
+                            "remote report detected but no report artifact was collected"
+                        )
+                        db.commit()
+                        _broadcast_done_safe(task_id, "FAILED")
                 return
 
         # 4. 保持 RUNNING 广播（前端进度可见）

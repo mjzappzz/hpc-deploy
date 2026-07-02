@@ -134,7 +134,7 @@ function handleCopy() {
 .log-viewer-wrapper {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 0;
 }
 
 .log-viewer__toolbar {

@@ -48,16 +48,24 @@
                       :class="['server-select-card', { 'is-active': selectedServerIds.includes(server.id) }]"
                       @click="toggleServerCard(server.id)"
                     >
-                      <div class="s-card-top">
-                        <span class="s-card-name">{{ server.name }}</span>
-                        <span v-if="selectedServerIds.includes(server.id)" class="s-card-check">✓</span>
+                      <div class="s-card-main">
+                        <div class="s-card-title-row">
+                          <span class="s-card-name">{{ server.name }}</span>
+                          <div class="s-card-state">
+                            <el-tag size="small" type="success" effect="plain">在线</el-tag>
+                            <span v-if="selectedServerIds.includes(server.id)" class="s-card-check">✓</span>
+                          </div>
+                        </div>
+                        <div class="s-card-meta-row">
+                          <span class="s-card-host">{{ server.host }}</span>
+                          <span class="s-card-sep">·</span>
+                          <span class="s-card-user">{{ server.username }}</span>
+                          <div v-if="server.tags && server.tags.length" class="s-card-tags">
+                            <span class="s-card-tags-label">标签：</span>
+                            <el-tag v-for="tag in server.tags" :key="tag" size="small" round>{{ tag }}</el-tag>
+                          </div>
+                        </div>
                       </div>
-                      <div class="s-card-host">{{ server.host }}</div>
-                      <div class="s-card-user">{{ server.username }}</div>
-                      <div v-if="server.tags && server.tags.length" class="s-card-tags">
-                        <el-tag v-for="tag in server.tags" :key="tag" size="small" round>{{ tag }}</el-tag>
-                      </div>
-                      <div class="s-card-hint">{{ selectedServerIds.includes(server.id) ? '已选择 ✓' : '点击选择' }}</div>
                     </div>
                   </div>
 
@@ -121,21 +129,10 @@
                   </div>
                 </template>
 
-                <!-- Stress type: card grid (3 known scripts, toggle single/suite mode) -->
+                <!-- Stress type: card grid (single select or auto suite by selection count) -->
                 <template v-else-if="selectedTaskType === 'stress'">
-                  <!-- Mode toggle -->
-                  <div class="stress-mode-toggle">
-                    <span class="stress-mode-label">执行模式：</span>
-                    <el-radio-group v-model="stressSuiteMode" size="small">
-                      <el-radio-button :value="false">单个脚本</el-radio-button>
-                      <el-radio-button :value="true">压测套件</el-radio-button>
-                    </el-radio-group>
-                  </div>
-                  <div class="stress-mode-desc" v-if="!stressSuiteMode">
-                    选择一个压测脚本执行。
-                  </div>
-                  <div class="stress-mode-desc" v-else>
-                    可选择多个压测脚本，系统会按 GPU → CPU/内存 → 磁盘顺序串行执行，并生成多份报告。
+                  <div class="stress-mode-desc">
+                    可选择 1-3 个压测脚本；选择 1 个执行单任务，选择多个自动按 GPU → CPU/内存 → 磁盘顺序串行执行。
                   </div>
                   <div class="file-card-grid stress-cards">
                     <div
@@ -144,13 +141,15 @@
                       :key="file.path"
                       @click="onStressCardClick(file.path)"
                     >
-                      <div class="stress-card-check" v-if="stressSuiteMode && selectedStressScripts.includes(file.path)">✓</div>
+                      <div class="stress-card-check" v-if="selectedStressScripts.includes(file.path)">✓</div>
                       <div class="f-card-name">{{ file.name }}</div>
                       <div class="f-card-desc">{{ stressCardDesc(file.name) }}</div>
                     </div>
                   </div>
-                  <!-- Sequential execution hint (suite mode only) -->
-                  <div class="stress-suite-hint" v-if="stressSuiteMode && selectedStressScripts.length >= 2">
+                  <div class="stress-suite-hint" v-if="selectedStressScripts.length === 1">
+                    已选择 1 个压测脚本，将按单任务执行。
+                  </div>
+                  <div class="stress-suite-hint" v-else-if="selectedStressScripts.length >= 2">
                     已选择 {{ selectedStressScripts.length }} 个压测脚本，
                     将按 GPU → CPU/内存 → 磁盘顺序执行并生成 {{ selectedStressScripts.length }} 份报告
                   </div>
@@ -514,7 +513,6 @@
               <div class="summary-actions">
                 <div class="summary-actions-title">快捷操作</div>
                 <div class="summary-actions-buttons">
-                  <el-button size="small" @click="handleDownloadLogs">下载日志</el-button>
                   <el-button
                     v-if="activeTask.task_type === 'stress' && (activeTask.status === 'SUCCESS' || activeTask.status === 'FAILED')"
                     size="small"
@@ -991,18 +989,11 @@ function toggleServerCard(id: number) {
 }
 
 function isStressCardActive(path: string): boolean {
-  if (stressSuiteMode.value) {
-    return selectedStressScripts.value.includes(path)
-  }
-  return selectedFilePath.value === path
+  return selectedStressScripts.value.includes(path)
 }
 
 function onStressCardClick(path: string) {
-  if (stressSuiteMode.value) {
-    toggleStressCard(path)
-  } else {
-    selectedFilePath.value = path
-  }
+  toggleStressCard(path)
 }
 
 function toggleStressCard(path: string) {
@@ -1012,6 +1003,9 @@ function toggleStressCard(path: string) {
   } else {
     selectedStressScripts.value.push(path)
   }
+  selectedStressScripts.value.sort((a, b) => stressOrderForPath(a) - stressOrderForPath(b))
+  selectedFilePath.value = selectedStressScripts.value.length === 1 ? selectedStressScripts.value[0] : ''
+  stressSuiteMode.value = selectedStressScripts.value.length >= 2
 }
 
 function stressCardDesc(name: string): string {
@@ -1033,6 +1027,17 @@ const STRESS_ORDER: Record<string, number> = {
   'scripts/stress/gpu_stress_report.sh': 1,
   'scripts/stress/cpu_mem_stress_report.sh': 2,
   'scripts/stress/disk_stress_report.sh': 3,
+  'stress/gpu_stress_report.sh': 1,
+  'stress/cpu_mem_stress_report.sh': 2,
+  'stress/disk_stress_report.sh': 3,
+}
+
+function stressOrderForPath(path: string): number {
+  if (STRESS_ORDER[path]) return STRESS_ORDER[path]
+  if (path.includes('gpu_stress_report.sh')) return 1
+  if (path.includes('cpu_mem_stress_report.sh')) return 2
+  if (path.includes('disk_stress_report.sh')) return 3
+  return 99
 }
 
 const filteredFiles = computed(() => {
@@ -1044,7 +1049,7 @@ const filteredFiles = computed(() => {
   if (selectedTaskType.value === 'stress') {
     return files.value
       .filter((file) => file.physical_category === 'stress')
-      .sort((a, b) => (STRESS_ORDER[a.path] || 99) - (STRESS_ORDER[b.path] || 99))
+      .sort((a, b) => stressOrderForPath(a.path) - stressOrderForPath(b.path))
   }
   return files.value.filter((file) => file.physical_category === selectedTaskType.value)
 })
@@ -1069,14 +1074,13 @@ const suitePlanScripts = computed(() => {
     { path: 'stress/cpu_mem_stress_report.sh', label: 'CPU/内存压测', name: 'cpu_mem_stress_report.sh' },
     { path: 'stress/disk_stress_report.sh', label: '磁盘压测', name: 'disk_stress_report.sh' },
   ]
-  return order.filter(item => selectedStressScripts.value.includes(item.path))
+  return order.filter(item => selectedStressScripts.value.some(path => path.includes(item.name)))
 })
 const isSingleServer = computed(() => selectedServerIds.value.length === 1)
 const isMultiServer = computed(() => selectedServerIds.value.length >= 2)
 
 const showParamCard = computed(() => {
   if (selectedTaskType.value !== 'stress') return !!selectedFile.value
-  if (!stressSuiteMode.value) return !!selectedFile.value
   return selectedStressScripts.value.length > 0
 })
 const activeTaskDisplayName = computed(() => {
@@ -1328,14 +1332,6 @@ async function validateRunner() {
 
     // ── Stress suite mode ──
     if (selectedTaskType.value === 'stress' && stressSuiteMode.value) {
-      if (selectedStressScripts.value.length === 0) {
-        ElMessage.error('必须选择至少一个压测脚本')
-        return
-      }
-      if (selectedStressScripts.value.length < 2) {
-        ElMessage.warning('只选一个脚本请使用"单个脚本"模式')
-        return
-      }
       if (stressDurationSeconds.value <= 0) {
         ElMessage.error('压测脚本总秒数必须大于 0')
         return
@@ -1384,7 +1380,7 @@ async function createTask() {
   // ── Stress Suite flow (suite mode, 2+ scripts) ──
   if (selectedTaskType.value === 'stress' && stressSuiteMode.value) {
     if (selectedStressScripts.value.length < 2) {
-      ElMessage.warning('压测套件模式请选择至少 2 个压测脚本')
+      ElMessage.warning('请选择至少 2 个压测脚本')
       return
     }
     await createStressSuiteTask()
@@ -1549,9 +1545,10 @@ function goToHistory() {
 }
 
 function goToBatchHistory() {
-  const batchId = batchResult.value?.batch_id
+  const batchId = stressSuiteResult.value?.batch_id || batchResult.value?.batch_id
   router.push(batchId ? `/history?view=batch&batch_id=${batchId}` : '/history')
   showBatchResult.value = false
+  showStressSuiteResult.value = false
 }
 
 async function recoverTask() {
@@ -1893,17 +1890,8 @@ watch(selectedTaskType, () => {
 })
 
 watch(selectedFilePath, () => {
+  if (selectedTaskType.value === 'stress') return
   resetParamsForFile()
-})
-
-watch(stressSuiteMode, (newMode) => {
-  if (newMode) {
-    // Switching to suite mode: clear single selection
-    selectedFilePath.value = ''
-  } else {
-    // Switching to single mode: clear multi selection
-    selectedStressScripts.value = []
-  }
 })
 
 watch(durationParts, () => {
@@ -2014,7 +2002,7 @@ onBeforeUnmount(() => {
 .selection-grid {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 10px;
+  gap: 12px;
   align-items: stretch;
 }
 
@@ -2037,21 +2025,19 @@ onBeforeUnmount(() => {
 
 /* ── Server selection cards ── */
 .server-card-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .server-select-card {
   border: 1px solid var(--el-border-color-light);
-  border-radius: 10px;
-  padding: 10px;
+  border-radius: 8px;
+  padding: 12px 14px;
   cursor: pointer;
   background: var(--el-fill-color-blank);
   transition: all 0.15s ease;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+  min-height: 72px;
 }
 
 .server-select-card:hover {
@@ -2063,46 +2049,87 @@ onBeforeUnmount(() => {
   background: var(--el-color-primary-light-9);
 }
 
-.s-card-top {
+.s-card-main {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .s-card-name {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 600;
   color: var(--el-text-color-primary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-card-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
 }
 
 .s-card-check {
-  width: 20px;
-  height: 20px;
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
   background: var(--el-color-primary);
   color: #fff;
-  font-size: 12px;
+  font-size: 10px;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
 }
 
+.s-card-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
 .s-card-host {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--el-text-color-secondary);
+  word-break: break-all;
 }
 
 .s-card-user {
-  font-size: 11px;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
+}
+
+.s-card-sep {
   color: var(--el-text-color-placeholder);
 }
 
 .s-card-tags {
   display: flex;
+  align-items: center;
   flex-wrap: wrap;
   gap: 4px;
-  margin-top: 2px;
+  min-width: 120px;
+}
+
+.s-card-tags-label {
+  font-size: 13px;
+  color: var(--el-text-color-placeholder);
+  white-space: nowrap;
+}
+
+.s-card-state {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 .selected-multi-text {
@@ -2114,13 +2141,13 @@ onBeforeUnmount(() => {
 .file-card-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 8px;
+  gap: 10px;
 }
 
 .file-select-card {
   border: 1px solid var(--el-border-color-light);
   border-radius: 10px;
-  padding: 10px;
+  padding: 12px;
   cursor: pointer;
   background: var(--el-fill-color-blank);
   transition: all 0.15s ease;
@@ -2136,30 +2163,31 @@ onBeforeUnmount(() => {
 }
 
 .f-card-name {
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 600;
   color: var(--el-text-color-primary);
   word-break: break-all;
 }
 
 .f-card-path {
-  font-size: 11px;
+  font-size: 13px;
   color: var(--el-text-color-secondary);
-  margin-top: 2px;
+  margin-top: 4px;
   word-break: break-all;
+  line-height: 1.5;
 }
 
 .f-card-meta {
-  font-size: 11px;
+  font-size: 13px;
   color: var(--el-text-color-placeholder);
   margin-top: 4px;
 }
 
 .f-card-desc {
-  font-size: 11px;
+  font-size: 13px;
   color: var(--el-text-color-secondary);
-  margin-top: 4px;
-  line-height: 1.4;
+  margin-top: 6px;
+  line-height: 1.5;
 }
 
 /* ── Stress mode toggle ── */
@@ -2178,7 +2206,7 @@ onBeforeUnmount(() => {
 }
 
 .stress-mode-desc {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--el-text-color-secondary);
   margin-bottom: 8px;
   line-height: 1.5;
@@ -2260,7 +2288,7 @@ onBeforeUnmount(() => {
 
 .stress-suite-hint {
   margin-top: 8px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--el-color-primary);
   padding: 8px 12px;
   background: var(--el-color-primary-light-9);
@@ -2272,16 +2300,17 @@ onBeforeUnmount(() => {
 .task-type-cards {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
+  gap: 10px;
 }
 
 .task-type-card {
   border: 1px solid var(--el-border-color-light);
   border-radius: 12px;
-  padding: 10px 10px 8px;
+  padding: 12px;
   cursor: pointer;
   transition: border-color 0.2s, background-color 0.2s;
   background: var(--el-fill-color-blank);
+  min-height: 92px;
 }
 
 .task-type-card:hover {
@@ -2294,16 +2323,16 @@ onBeforeUnmount(() => {
 }
 
 .task-type-card-title {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 600;
   color: var(--el-text-color-primary);
-  margin-bottom: 4px;
+  margin-bottom: 6px;
 }
 
 .task-type-card-desc {
-  font-size: 11px;
+  font-size: 13px;
   color: var(--el-text-color-secondary);
-  line-height: 1.4;
+  line-height: 1.5;
 }
 
 @media (max-width: 640px) {
@@ -2315,7 +2344,7 @@ onBeforeUnmount(() => {
 .selection-card {
   border: 1px solid var(--el-border-color-light);
   border-radius: 14px;
-  padding: 12px 12px 10px;
+  padding: 14px;
   background: var(--el-fill-color-blank);
   min-height: 96px;
 }
@@ -2332,7 +2361,7 @@ onBeforeUnmount(() => {
 }
 
 .selection-label {
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 600;
   margin-bottom: 8px;
   color: var(--el-text-color-primary);
@@ -2347,9 +2376,16 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 10px;
-  color: var(--el-text-color-secondary);
+  color: var(--el-text-color-placeholder);
   font-size: 13px;
   min-height: 24px;
+}
+
+.empty-servers-hint {
+  color: var(--el-text-color-placeholder);
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 8px 0;
 }
 
 
@@ -3188,7 +3224,9 @@ onBeforeUnmount(() => {
 
 /* ── Step UI ── */
 .step-label {
-  font-size: 15px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
 }
 
 .step-complete-tag {
@@ -3206,22 +3244,10 @@ onBeforeUnmount(() => {
   line-height: 1.5;
 }
 
-.s-card-hint {
-  font-size: 11px;
-  color: var(--el-text-color-placeholder);
-  margin-top: 2px;
-  text-align: center;
-  padding-top: 2px;
-  border-top: 1px solid var(--el-border-color-lighter);
-}
-
-.server-select-card.is-active .s-card-hint {
-  color: var(--el-color-primary);
-  border-top-color: var(--el-color-primary-light-5);
-}
-
 .step-title.step-title {
-  font-size: 15px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
   padding-bottom: 12px;
   margin-bottom: 4px;
   border-bottom: 1px solid var(--el-border-color-lighter);
@@ -3234,8 +3260,8 @@ onBeforeUnmount(() => {
 .step-placeholder {
   padding: 32px 0;
   text-align: center;
-  color: var(--el-text-color-secondary);
-  font-size: 14px;
+  color: var(--el-text-color-placeholder);
+  font-size: 13px;
 }
 
 .selection-label-row .step-complete-tag {

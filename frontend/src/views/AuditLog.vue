@@ -1,7 +1,15 @@
 <template>
   <div class="audit-page">
+    <el-card v-if="!auditUnlocked" class="audit-gate-card" shadow="never">
+      <el-empty description="审计日志属于管理员功能，需要管理员确认后查看。">
+        <el-button type="primary" :loading="loading" @click="unlockAndLoad">
+          查看审计日志
+        </el-button>
+      </el-empty>
+    </el-card>
+
     <!-- Filter bar -->
-    <el-card class="filter-card" shadow="never">
+    <el-card v-if="auditUnlocked" class="filter-card" shadow="never">
       <el-form :inline="true" label-width="auto" @keyup.enter="handleSearch">
         <el-form-item label="操作类型">
           <el-select v-model="filters.action" placeholder="全部" clearable style="width:160px">
@@ -34,7 +42,7 @@
     </el-card>
 
     <!-- Table -->
-    <el-card class="table-card" shadow="never">
+    <el-card v-if="auditUnlocked" class="table-card" shadow="never">
       <el-table :data="page.items" v-loading="loading" stripe style="width:100%">
         <el-table-column prop="created_at" label="时间" width="170">
           <template #default="{ row }">
@@ -102,6 +110,7 @@
 
 <script setup lang="ts">
 import { reactive, ref } from 'vue'
+import { ElMessage } from 'element-plus'
 import { formatDateTime } from '@/utils/time'
 import { requireAdminConfirm } from '@/composables/useAdminConfirm'
 import { listAuditLogs, type AuditLogItem, type AuditLogPage } from '@/api/audit'
@@ -142,12 +151,11 @@ const page = reactive<AuditLogPage>({
 })
 
 const loading = ref(false)
+const auditUnlocked = ref(false)
 const detailVisible = ref(false)
 const detailData = ref<any>(null)
 
 async function fetchData() {
-  const ok = await requireAdminConfirm('查看审计日志')
-  if (!ok) { page.items = []; page.total = 0; return }
   loading.value = true
   try {
     const params: Record<string, any> = {
@@ -164,14 +172,37 @@ async function fetchData() {
     page.total = res.data.total
     page.page = res.data.page
     page.page_size = res.data.page_size
+  } catch (error: any) {
+    if (error?.response?.status === 403) {
+      auditUnlocked.value = false
+      page.items = []
+      page.total = 0
+      ElMessage.warning('需要管理员确认')
+      return
+    }
+    throw error
   } finally {
     loading.value = false
   }
 }
 
+async function unlockAndLoad() {
+  const ok = await requireAdminConfirm('查看审计日志')
+  if (!ok) {
+    page.items = []
+    page.total = 0
+    return
+  }
+  auditUnlocked.value = true
+  page.page = 1
+  await fetchData()
+}
+
 function handleSearch() {
   page.page = 1
-  fetchData()
+  if (auditUnlocked.value) {
+    fetchData()
+  }
 }
 
 function handleReset() {
@@ -180,7 +211,9 @@ function handleReset() {
   filters.status = ''
   filters.keyword = ''
   page.page = 1
-  fetchData()
+  if (auditUnlocked.value) {
+    fetchData()
+  }
 }
 
 function openDetail(row: AuditLogItem) {
@@ -195,8 +228,6 @@ function formatDetailValue(val: any): string {
   return String(val)
 }
 
-// Initial load
-fetchData()
 </script>
 
 <style scoped>
@@ -208,6 +239,13 @@ fetchData()
 
 .filter-card .el-form {
   margin-bottom: -18px;
+}
+
+.audit-gate-card {
+  min-height: 280px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .table-card .pagination-wrap {

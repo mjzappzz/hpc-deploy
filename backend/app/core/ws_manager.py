@@ -1,7 +1,9 @@
 """
-In-memory WebSocket connection manager for task log broadcasting.
+In-memory WebSocket connection manager for low-latency task log broadcasting.
 
-Single-process only. No Redis/Celery.
+Cross-worker delivery is handled by the task logs WebSocket endpoint tailing
+database-backed task_logs/status updates. This manager remains best-effort and
+process-local for immediate delivery when producer and connection share a worker.
 """
 
 import asyncio

@@ -10,7 +10,7 @@
         </div>
       </div>
 
-      <el-menu router :default-active="$route.path" class="nav-menu">
+      <el-menu router :default-active="$route.path" class="nav-menu nav-menu-main">
         <el-menu-item index="/">
           <el-icon><Monitor /></el-icon>
           <span>仪表盘</span>
@@ -23,14 +23,6 @@
           <el-icon><Operation /></el-icon>
           <span>任务执行</span>
         </el-menu-item>
-        <el-menu-item index="/audit-logs">
-          <el-icon><List /></el-icon>
-          <span class="menu-label-row"><span>审计日志</span><el-tag size="small" class="admin-badge">Admin</el-tag></span>
-        </el-menu-item>
-        <el-menu-item index="/cleanup">
-          <el-icon><Delete /></el-icon>
-          <span class="menu-label-row"><span>清理中心</span><el-tag size="small" class="admin-badge">Admin</el-tag></span>
-        </el-menu-item>
         <el-menu-item index="/scripts">
           <el-icon><Document /></el-icon>
           <span>脚本知识库</span>
@@ -38,6 +30,17 @@
         <el-menu-item index="/history">
           <el-icon><Tickets /></el-icon>
           <span>任务历史</span>
+        </el-menu-item>
+      </el-menu>
+
+      <el-menu router :default-active="$route.path" class="nav-menu nav-menu-admin">
+        <el-menu-item index="/cleanup">
+          <el-icon><Delete /></el-icon>
+          <span class="menu-label-row"><span>清理中心</span><el-tag size="small" class="admin-badge">Admin</el-tag></span>
+        </el-menu-item>
+        <el-menu-item index="/audit-logs">
+          <el-icon><List /></el-icon>
+          <span class="menu-label-row"><span>审计日志</span><el-tag size="small" class="admin-badge">Admin</el-tag></span>
         </el-menu-item>
         <el-menu-item index="/settings">
           <el-icon><Setting /></el-icon>
@@ -160,10 +163,21 @@ html, body, #app {
 
 /* nav menu */
 .nav-menu {
-  flex: 1;
   border-right: none !important;
   background: transparent !important;
   padding: 4px 0;
+}
+
+.nav-menu-main {
+  flex: 1;
+}
+
+.nav-menu-admin {
+  flex-shrink: 0;
+  margin-top: 16px;
+  padding-top: 10px;
+  padding-bottom: 12px;
+  border-top: 1px solid #e5e7eb !important;
 }
 
 .nav-menu .el-menu-item {

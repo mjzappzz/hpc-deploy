@@ -8,10 +8,10 @@
             <div class="knowledge-subtitle">按分类管理脚本与容器文件，不显示复杂 JSON 参数定义。</div>
           </div>
           <div class="knowledge-actions">
-            <el-button @click="loadFiles">刷新</el-button>
             <el-button type="primary" :disabled="activeCategory === 'all'" @click="triggerUpload">
               上传到当前分类
             </el-button>
+            <el-button @click="loadFiles">刷新</el-button>
             <input
               ref="fileInputRef"
               type="file"
