@@ -5,7 +5,19 @@
         <el-button type="primary" @click="openCreate">新增服务器</el-button>
         <el-button type="primary" plain :loading="isTestingAll" :disabled="isProbingAll" @click="testAllSsh">SSH 测试全部</el-button>
         <el-button type="primary" plain :loading="isProbingAll" :disabled="isTestingAll" @click="probeAll">⚡ {{ isProbingAll ? '探测中' : '探测全部' }}</el-button>
-        <el-button class="page-deploy-key-button" :disabled="isTestingAll || isProbingAll" @click="openPublicKeyManager">部署公钥</el-button>
+        <el-badge
+          :value="pendingPublicKeyDeployCount"
+          :hidden="pendingPublicKeyDeployCount === 0"
+          class="page-deploy-key-badge"
+        >
+          <el-button
+            class="page-deploy-key-button"
+            :class="{ 'page-deploy-key-button--attention': pendingPublicKeyDeployCount > 0 }"
+            :type="pendingPublicKeyDeployCount > 0 ? 'warning' : 'default'"
+            :disabled="isTestingAll || isProbingAll"
+            @click="openPublicKeyManager"
+          >部署公钥</el-button>
+        </el-badge>
         <el-button class="page-refresh-button" @click="loadServers">刷新</el-button>
       </div>
 
@@ -18,18 +30,47 @@
       </div>
 
       <div class="server-table-wrap">
-        <ServerTable
-          :servers="servers"
-          :loading="loading"
-          :testing-ids="testingIds"
-          :detecting-ids="detectingIds"
-          :is-probing-all="isProbingAll"
-          @edit="openEdit"
-          @delete="removeServer"
-          @test="testSsh"
-          @detect="detectInfo"
-          @detail="openDetail"
-        />
+        <div class="server-group">
+          <div class="server-group__header">
+            <span class="server-group__title">在线服务器</span>
+            <el-tag size="small" type="success" effect="plain">{{ onlineServers.length }}</el-tag>
+          </div>
+          <ServerTable
+            v-if="loading || onlineServers.length > 0"
+            :servers="onlineServers"
+            :loading="loading"
+            :testing-ids="testingIds"
+            :detecting-ids="detectingIds"
+            :is-probing-all="isProbingAll"
+            @edit="openEdit"
+            @delete="removeServer"
+            @test="testSsh"
+            @detect="detectInfo"
+            @detail="openDetail"
+          />
+          <el-empty v-else description="暂无在线服务器" :image-size="60" />
+        </div>
+
+        <div class="server-group server-group--offline">
+          <div class="server-group__header">
+            <span class="server-group__title">离线/未知服务器</span>
+            <el-tag size="small" type="info" effect="plain">{{ offlineServers.length }}</el-tag>
+          </div>
+          <ServerTable
+            v-if="loading || offlineServers.length > 0"
+            :servers="offlineServers"
+            :loading="loading"
+            :testing-ids="testingIds"
+            :detecting-ids="detectingIds"
+            :is-probing-all="isProbingAll"
+            @edit="openEdit"
+            @delete="removeServer"
+            @test="testSsh"
+            @detect="detectInfo"
+            @detail="openDetail"
+          />
+          <el-empty v-else description="暂无离线服务器" :image-size="60" />
+        </div>
       </div>
     </el-card>
 
@@ -141,7 +182,7 @@
       <el-table v-else :data="publicKeyRows" size="small" border class="public-key-table">
         <el-table-column prop="server.name" label="服务器名称" min-width="120" show-overflow-tooltip />
         <el-table-column label="地址" min-width="150">
-          <template #default="{ row }">{{ row.server.host }}:{{ row.server.port }}</template>
+          <template #default="{ row }">{{ row.server.host }}</template>
         </el-table-column>
         <el-table-column prop="server.username" label="用户" width="80" />
         <el-table-column label="标签" min-width="120">
@@ -422,6 +463,7 @@ import {
 import { listTasks, getTaskLogs, downloadTaskLogs, type TaskListQuery, type TaskLogRecord, type TaskRecord } from '@/api/task'
 import { getTaskDiagnosis } from '@/api/diagnosis'
 import { scanRemote, type RemoteScanResult } from '@/api/cleanup'
+import { generateDefaultSshKey } from '@/api/settings'
 import ServerTable from '@/components/ServerTable.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import LogViewer from '@/components/LogViewer.vue'
@@ -444,6 +486,9 @@ const saving = ref(false)
 const dialogVisible = ref(false)
 const editingId = ref<number | null>(null)
 const servers = ref<ServerRecord[]>([])
+const onlineServers = computed(() => servers.value.filter((server) => server.status === 'online'))
+const offlineServers = computed(() => servers.value.filter((server) => server.status !== 'online'))
+const pendingPublicKeyDeployCount = computed(() => servers.value.filter((server) => server.auth_type === 'password').length)
 const testingIds = ref<number[]>([])
 const detectingIds = ref<number[]>([])
 const isProbingAll = ref(false)
@@ -572,6 +617,7 @@ async function loadServers() {
   } finally {
     loading.value = false
   }
+}
 
 function sortServersByStatus(a: { status?: string | null }, b: { status?: string | null }): number {
   const rank = (s: string | null | undefined): number => {
@@ -580,7 +626,6 @@ function sortServersByStatus(a: { status?: string | null }, b: { status?: string
     return 2 // offline
   }
   return rank(a.status) - rank(b.status)
-}
 }
 
 async function loadSshKeys() {
@@ -705,6 +750,7 @@ async function openPublicKeyManager() {
   deployDialogVisible.value = true
   publicKeyStatusMap.value = {}
   await loadSshKeys()
+  await ensureDeployableSshKey()
   const selectedKey = sshKeysWithPublicKey.value.find((item) => item.key_name === settingsStore.default_ssh_key_name)
     ?? sshKeysWithPublicKey.value[0]
   deployPrivateKeyPath.value = selectedKey?.private_key_path ?? ''
@@ -723,6 +769,30 @@ async function openPublicKeyManager() {
   publicKeyStatusMap.value = initial
 }
 
+async function ensureDeployableSshKey() {
+  if (sshKeysWithPublicKey.value.length > 0) return true
+  try {
+    await ElMessageBox.confirm(
+      '当前没有可部署的 SSH 密钥对。是否生成默认 id_ed25519 密钥对？',
+      '生成默认 SSH 密钥',
+      { confirmButtonText: '生成', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return false
+  }
+
+  try {
+    const res = await generateDefaultSshKey()
+    ElMessage.success(res.data.message)
+    await loadSshKeys()
+    deployPrivateKeyPath.value = res.data.private_key
+    return true
+  } catch (error) {
+    ElMessage.error(`生成默认 SSH 密钥失败：${getApiErrorMessage(error)}`)
+    return false
+  }
+}
+
 function setPublicKeyStatus(serverIds: number[], status: PublicKeyStatus, message: string) {
   publicKeyStatusMap.value = {
     ...publicKeyStatusMap.value,
@@ -736,7 +806,7 @@ async function checkPublicKeyStatuses() {
     ElMessage.warning('当前没有可检测的服务器')
     return
   }
-  if (!deployPrivateKeyPath.value) {
+  if (!deployPrivateKeyPath.value && !(await ensureDeployableSshKey())) {
     ElMessage.warning('请先选择带公钥的 SSH 密钥对')
     return
   }
@@ -765,7 +835,7 @@ async function deployPublicKeyByIds(targetIds: number[]) {
     ElMessage.warning('没有需要部署的服务器')
     return
   }
-  if (!deployPrivateKeyPath.value) {
+  if (!deployPrivateKeyPath.value && !(await ensureDeployableSshKey())) {
     ElMessage.warning('请先选择带公钥的 SSH 密钥对')
     return
   }
@@ -804,7 +874,7 @@ async function deployMissingPublicKeys() {
 }
 
 async function checkPublicKeyRow(server: ServerRecord) {
-  if (!deployPrivateKeyPath.value) {
+  if (!deployPrivateKeyPath.value && !(await ensureDeployableSshKey())) {
     ElMessage.warning('请先选择带公钥的 SSH 密钥对')
     return
   }
@@ -922,7 +992,12 @@ async function testAllSsh() {
   try {
     const resp: SSHTestAllResponse = (await testAllServerSsh(targetIds)).data
     await loadServers()
-    ElMessage.success(`SSH 测试完成：成功 ${resp.online} 台，失败 ${resp.offline} 台`)
+    if (resp.online > 0) {
+      ElMessage.success(`SSH 测试成功：${resp.online} 台`)
+    }
+    if (resp.offline > 0) {
+      ElMessage.error(`SSH 测试失败：${resp.offline} 台`)
+    }
   } catch (error) {
     ElMessage.error(`批量 SSH 测试失败：${getApiErrorMessage(error)}`)
   } finally {
@@ -974,7 +1049,12 @@ async function probeAll() {
   try {
     const resp: ProbeAllResponse = (await probeAllServers(idsToProbe)).data
     await loadServers()
-    ElMessage.success(`探测完成：在线 ${resp.online} 台，离线 ${resp.offline} 台`)
+    if (resp.online > 0) {
+      ElMessage.success(`探测在线：${resp.online} 台`)
+    }
+    if (resp.offline > 0) {
+      ElMessage.error(`探测离线：${resp.offline} 台`)
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : '请求失败'
     ElMessage.error(`批量探测失败：${message}`)
@@ -1240,8 +1320,21 @@ onMounted(() => {
   width: 100%;
 }
 
-.page-deploy-key-button {
+.page-deploy-key-badge {
   margin-left: auto;
+}
+
+.page-deploy-key-button--attention {
+  animation: deploy-key-attention 1.6s ease-in-out infinite;
+}
+
+@keyframes deploy-key-attention {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(230, 162, 60, 0);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(230, 162, 60, 0.18);
+  }
 }
 
 .page-refresh-button {
@@ -1260,6 +1353,23 @@ onMounted(() => {
 .server-table-wrap {
   width: 100%;
   overflow-x: hidden;
+}
+
+.server-group + .server-group {
+  margin-top: 18px;
+}
+
+.server-group__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.server-group__title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
 }
 
 .detail-section + .detail-section {

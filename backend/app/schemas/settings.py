@@ -122,6 +122,18 @@ def validate_remote_task_root(v: str) -> str:
 
 # ── Schemas ──
 
+class RuntimePathInfo(BaseModel):
+    key: str
+    label: str
+    path: str
+    kind: str
+    description: str
+    exists: bool = False
+    size_bytes: int | None = None
+    file_count: int | None = None
+    attention: bool = False
+
+
 class SettingsResponse(BaseModel):
     default_ssh_key_name: str = ""
     remote_task_root: str = "$HOME/hpcdeploy/tasks"
@@ -138,6 +150,7 @@ class SettingsResponse(BaseModel):
     auto_cleanup_last_status: str = ""
     auto_cleanup_last_message: str = ""
     admin_password_configured: bool = False
+    runtime_paths: list[RuntimePathInfo] = []
 
 
 class ChangePasswordRequest(BaseModel):

@@ -11,38 +11,34 @@
       </div>
 
       <el-menu router :default-active="$route.path" class="nav-menu nav-menu-main">
-        <el-menu-item index="/">
+        <el-menu-item index="/" class="hpc-nav-pulse-item" :class="{ 'hpc-nav-pulse-active': isActiveMenu('/') }">
           <el-icon><Monitor /></el-icon>
           <span>仪表盘</span>
         </el-menu-item>
-        <el-menu-item index="/servers">
+        <el-menu-item index="/servers" class="hpc-nav-pulse-item" :class="{ 'hpc-nav-pulse-active': isActiveMenu('/servers') }">
           <el-icon><Cpu /></el-icon>
           <span>服务器管理</span>
         </el-menu-item>
-        <el-menu-item index="/tasks">
+        <el-menu-item index="/tasks" class="hpc-nav-pulse-item" :class="{ 'hpc-nav-pulse-active': isActiveMenu('/tasks') }">
           <el-icon><Operation /></el-icon>
           <span>任务执行</span>
         </el-menu-item>
-        <el-menu-item index="/scripts">
+        <el-menu-item index="/scripts" class="hpc-nav-pulse-item" :class="{ 'hpc-nav-pulse-active': isActiveMenu('/scripts') }">
           <el-icon><Document /></el-icon>
           <span>脚本知识库</span>
         </el-menu-item>
-        <el-menu-item index="/history">
+        <el-menu-item index="/history" class="hpc-nav-pulse-item" :class="{ 'hpc-nav-pulse-active': isActiveMenu('/history') }">
           <el-icon><Tickets /></el-icon>
           <span>任务历史</span>
         </el-menu-item>
       </el-menu>
 
       <el-menu router :default-active="$route.path" class="nav-menu nav-menu-admin">
-        <el-menu-item index="/cleanup">
-          <el-icon><Delete /></el-icon>
-          <span class="menu-label-row"><span>清理中心</span><el-tag size="small" class="admin-badge">Admin</el-tag></span>
-        </el-menu-item>
-        <el-menu-item index="/audit-logs">
+        <el-menu-item index="/audit-logs" class="hpc-nav-pulse-item" :class="{ 'hpc-nav-pulse-active': isActiveMenu('/audit-logs') }">
           <el-icon><List /></el-icon>
           <span class="menu-label-row"><span>审计日志</span><el-tag size="small" class="admin-badge">Admin</el-tag></span>
         </el-menu-item>
-        <el-menu-item index="/settings">
+        <el-menu-item index="/settings" class="hpc-nav-pulse-item" :class="{ 'hpc-nav-pulse-active': isActiveMenu('/settings') }">
           <el-icon><Setting /></el-icon>
           <span class="menu-label-row"><span>系统设置</span><el-tag size="small" class="admin-badge">Admin</el-tag></span>
         </el-menu-item>
@@ -70,7 +66,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Cpu, Delete, Document, List, Monitor, Operation, Setting, Tickets } from '@element-plus/icons-vue'
+import { Cpu, Document, List, Monitor, Operation, Setting, Tickets } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -79,6 +75,13 @@ const routeTitle = computed(() => String(route.meta.title ?? 'HPCDeploy'))
 
 function goHome() {
   router.push('/')
+}
+
+function isActiveMenu(index: string) {
+  if (index === '/tasks') {
+    return route.path === '/tasks' || route.path === '/task-runner'
+  }
+  return route.path === index
 }
 </script>
 
@@ -187,7 +190,11 @@ html, body, #app {
   border-radius: 6px;
   color: #374151;
   font-size: 14px;
-  transition: all 0.15s;
+  transition:
+    color 0.15s,
+    background-color 0.15s,
+    box-shadow 0.18s ease;
+  overflow: visible;
 }
 
 .nav-menu .el-menu-item:hover {
@@ -199,6 +206,41 @@ html, body, #app {
   background: #eaf3ff !important;
   color: #1677ff;
   font-weight: 600;
+}
+
+@keyframes hpc-nav-blue-glow {
+  0%,
+  100% {
+    box-shadow:
+      0 0 8px rgba(64, 158, 255, 0.14),
+      0 0 16px rgba(64, 158, 255, 0.08);
+  }
+  50% {
+    box-shadow:
+      0 0 14px rgba(64, 158, 255, 0.28),
+      0 0 26px rgba(64, 158, 255, 0.16);
+  }
+}
+
+.nav-menu .hpc-nav-pulse-item {
+  border-color: transparent;
+}
+
+.nav-menu .hpc-nav-pulse-item:hover,
+.nav-menu .hpc-nav-pulse-active {
+  border-color: transparent;
+  animation: hpc-nav-blue-glow 1.8s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nav-menu .hpc-nav-pulse-item:hover,
+  .nav-menu .hpc-nav-pulse-active {
+    border-color: transparent;
+    animation: none;
+    box-shadow:
+      0 0 8px rgba(64, 158, 255, 0.18),
+      0 0 16px rgba(64, 158, 255, 0.1);
+  }
 }
 
 .nav-menu .el-menu-item.is-active .el-icon {

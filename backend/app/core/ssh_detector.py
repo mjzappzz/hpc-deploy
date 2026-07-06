@@ -197,9 +197,18 @@ def summarize_detect_result(result: dict[str, str]) -> dict[str, str]:
 
 
 def _extract_pretty_name(os_release: str) -> str:
+    fields: dict[str, str] = {}
     for line in os_release.splitlines():
-        if line.startswith("PRETTY_NAME="):
-            return line.split("=", 1)[1].strip().strip('"')
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        fields[key.strip()] = value.strip().strip('"')
+    if fields.get("PRETTY_NAME"):
+        return fields["PRETTY_NAME"]
+    if fields.get("NAME") and fields.get("VERSION_ID"):
+        return f"{fields['NAME']} {fields['VERSION_ID']}"
+    if fields.get("NAME") and fields.get("VERSION"):
+        return f"{fields['NAME']} {fields['VERSION']}"
     return ""
 
 

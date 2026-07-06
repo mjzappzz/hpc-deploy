@@ -1,5 +1,5 @@
 <template>
-  <el-card shadow="never" class="task-card">
+  <el-card shadow="never" class="task-card hpc-glow-row">
     <div class="task-card__header">
       <div>
         <div class="task-card__title" :title="displayName">{{ displayName }}</div>
@@ -36,18 +36,45 @@
     </div>
     <div v-if="task.error_message" class="task-card__error">{{ task.error_message }}</div>
     <div class="task-card__actions">
-      <el-button size="small" @click="$emit('viewLogs', task)">查看日志</el-button>
-      <el-tooltip v-if="showDeleteButton" content="删除任务记录、日志、本地结果文件和远端工作目录。此操作不可恢复。" placement="top">
-        <el-button size="small" type="danger" @click="$emit('deleteTask', task)">删除任务</el-button>
-      </el-tooltip>
-      <el-tooltip v-if="showCancelButton" content="终止远端任务进程，并清理本次任务的远端工作目录。" placement="top">
-        <el-button size="small" type="danger" plain @click="$emit('cancelTask', task)">取消任务</el-button>
+      <el-tooltip v-if="showCancelButton" content="平台会先标记任务为已取消；远端进程终止为 best-effort，不会删除远端目录。" placement="top">
+        <el-button size="small" type="danger" plain class="hpc-interactive-pulse" @click="$emit('cancelTask', task)">取消任务</el-button>
       </el-tooltip>
       <el-button v-if="showCancelingButton" size="small" type="warning" plain disabled>正在取消</el-button>
-      <el-button v-if="isContinuable" size="small" type="primary" @click="$emit('continueTask', task)">继续查看</el-button>
-      <el-button v-if="isStressCompleted" size="small" @click="$emit('viewArtifacts', task)">结果文件</el-button>
-      <el-button v-if="showDiagnoseButton" size="small" type="warning" plain @click="$emit('diagnoseTask', task)">诊断</el-button>
-      <el-button v-if="task.batch_id" size="small" type="default" plain @click="$emit('viewBatch', task)">查看批次</el-button>
+      <el-button size="small" type="primary" class="hpc-interactive-pulse" @click="$emit('continueTask', task)">查看任务详情</el-button>
+      <el-tooltip
+        v-if="showCommandCopyButtons"
+        placement="top"
+        :show-after="250"
+      >
+        <template #content>
+          <pre class="command-tooltip-content">{{ envCommandTooltip }}</pre>
+        </template>
+        <el-button
+          size="small"
+          plain
+          class="hpc-interactive-pulse"
+          @mouseenter="$emit('prefetchEnvCommands', task)"
+          @click="$emit('copyEnvCommands', task)"
+        >复制环境变量</el-button>
+      </el-tooltip>
+      <el-tooltip
+        v-if="showCommandCopyButtons"
+        placement="top"
+        :show-after="250"
+      >
+        <template #content>
+          <pre class="command-tooltip-content">{{ verifyCommandTooltip }}</pre>
+        </template>
+        <el-button
+          size="small"
+          plain
+          class="hpc-interactive-pulse"
+          @mouseenter="$emit('prefetchVerifyCommands', task)"
+          @click="$emit('copyVerifyCommands', task)"
+        >复制验证命令</el-button>
+      </el-tooltip>
+      <el-button v-if="isStressCompleted" size="small" class="hpc-interactive-pulse" @click="$emit('downloadReport', task)">下载报告</el-button>
+      <el-button v-if="task.batch_id" size="small" type="default" plain class="hpc-interactive-pulse" @click="$emit('viewBatch', task)">查看批次</el-button>
     </div>
   </el-card>
 </template>
@@ -61,17 +88,20 @@ import { calcDurationSeconds, formatSeconds, statusLabel } from '@/composables/u
 import StatusTag from './StatusTag.vue'
 
 defineEmits<{
-  viewLogs: [task: TaskRecord]
   continueTask: [task: TaskRecord]
-  viewArtifacts: [task: TaskRecord]
+  downloadReport: [task: TaskRecord]
+  prefetchEnvCommands: [task: TaskRecord]
+  prefetchVerifyCommands: [task: TaskRecord]
+  copyEnvCommands: [task: TaskRecord]
+  copyVerifyCommands: [task: TaskRecord]
   cancelTask: [task: TaskRecord]
-  deleteTask: [task: TaskRecord]
-  diagnoseTask: [task: TaskRecord]
   viewBatch: [task: TaskRecord]
 }>()
 
 const props = defineProps<{
   task: TaskRecord
+  envCommandTooltip?: string
+  verifyCommandTooltip?: string
 }>()
 
 const serverLabel = computed(() => {
@@ -90,18 +120,14 @@ const serverLabel = computed(() => {
 const displayName = computed(() => formatTaskDisplayName(props.task))
 const moduleLabel = computed(() => getTaskModuleLabel(props.task.task_type))
 
-const isContinuable = computed(() => {
-  const status = props.task.status?.toUpperCase() ?? ''
-  return ['PENDING', 'CONNECTING', 'PREPARING', 'UPLOADING', 'RUNNING', 'CANCELING'].includes(status)
-})
-
 const isStressCompleted = computed(() => {
   const status = props.task.status?.toUpperCase() ?? ''
   return props.task.task_type === 'stress' && ['SUCCESS', 'FAILED', 'CANCELED'].includes(status)
 })
 
-const showDiagnoseButton = computed(() => {
-  return !!props.task.task_id
+const showCommandCopyButtons = computed(() => {
+  const status = props.task.status?.toUpperCase() ?? ''
+  return status === 'SUCCESS' && ['script', 'mpi', 'test'].includes(props.task.task_type || '')
 })
 
 const showCancelButton = computed(() => {
@@ -111,11 +137,6 @@ const showCancelButton = computed(() => {
 
 const showCancelingButton = computed(() => {
   return (props.task.status?.toUpperCase() ?? '') === 'CANCELING'
-})
-
-const showDeleteButton = computed(() => {
-  const status = props.task.status?.toUpperCase() ?? ''
-  return ['SUCCESS', 'FAILED', 'CANCELED'].includes(status)
 })
 
 const runtime = computed(() => {
@@ -144,6 +165,17 @@ const formatTime = formatDateTime
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  overflow: visible;
+}
+
+.command-tooltip-content {
+  margin: 0;
+  max-width: 560px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .task-card__title {

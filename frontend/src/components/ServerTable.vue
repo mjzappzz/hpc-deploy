@@ -3,27 +3,26 @@
     :data="servers"
     border
     stripe
+    size="small"
     v-loading="loading"
     table-layout="fixed"
     style="width: 100%"
-    class="server-table"
+    class="server-table glow-table no-horizontal-scroll-table"
     header-cell-class-name="server-table-header"
     cell-class-name="server-table-cell"
   >
-    <el-table-column prop="name" label="服务器名称" min-width="120" show-overflow-tooltip />
-    <el-table-column label="地址" min-width="150" show-overflow-tooltip>
+    <el-table-column prop="name" label="服务器名称" width="120" show-overflow-tooltip />
+    <el-table-column label="地址" width="145" show-overflow-tooltip>
       <template #default="{ row }">
-        <span class="table-ellipsis">{{ row.host }}:{{ row.port }}</span>
+        <span class="table-ellipsis">{{ row.host }}</span>
       </template>
     </el-table-column>
-    <el-table-column label="用户" width="70" show-overflow-tooltip>
+    <el-table-column label="用户" width="70">
       <template #default="{ row }">
-        <el-tooltip :content="displayValue(row.username)" placement="top" :disabled="!row.username">
-          <span class="table-ellipsis">{{ displayValue(row.username) }}</span>
-        </el-tooltip>
+        <span class="table-ellipsis">{{ displayValue(row.username) }}</span>
       </template>
     </el-table-column>
-    <el-table-column label="状态" width="80">
+    <el-table-column label="状态" width="76">
       <template #default="{ row }">
         <el-tooltip
           :content="displayValue(row.last_error)"
@@ -36,45 +35,39 @@
         </el-tooltip>
       </template>
     </el-table-column>
-    <el-table-column label="标签" width="100">
+    <el-table-column label="标签" width="90">
       <template #default="{ row }">
         <span v-if="!row.tags || row.tags.length === 0" class="table-ellipsis" style="color:#94a3b8">-</span>
         <el-tag v-for="tag in (row.tags || []).slice(0, 3)" :key="tag" size="small" style="margin-right:4px; margin-bottom:2px;">{{ tag }}</el-tag>
         <el-tag v-if="(row.tags || []).length > 3" size="small" type="info">+{{ (row.tags || []).length - 3 }}</el-tag>
       </template>
     </el-table-column>
-    <el-table-column label="OS" min-width="120" show-overflow-tooltip>
+    <el-table-column label="OS" width="105">
       <template #default="{ row }">
-        <el-tooltip :content="displayValue(row.os_info)" placement="top" :disabled="!row.os_info">
-          <span class="table-ellipsis">{{ osSummary(row.os_info) }}</span>
-        </el-tooltip>
+        <span class="table-ellipsis">{{ osSummary(row.os_info) }}</span>
       </template>
     </el-table-column>
-    <el-table-column label="CPU" min-width="220" show-overflow-tooltip>
+    <el-table-column label="CPU" min-width="185" class-name="server-cpu-column">
       <template #default="{ row }">
-        <el-tooltip :content="displayValue(row.cpu_info)" placement="top" :disabled="!row.cpu_info">
-          <span class="table-ellipsis">{{ cpuSummary(row.cpu_info) }}</span>
-        </el-tooltip>
+        <span class="server-wrap-cell">{{ cpuSummary(row.cpu_info) }}</span>
       </template>
     </el-table-column>
-    <el-table-column label="内存" width="90" show-overflow-tooltip>
+    <el-table-column label="内存" width="75" show-overflow-tooltip>
       <template #default="{ row }">
         <span>{{ displayValue(row.memory_info) }}</span>
       </template>
     </el-table-column>
-    <el-table-column label="GPU" min-width="220" show-overflow-tooltip>
+    <el-table-column label="GPU" min-width="185" class-name="server-gpu-column">
       <template #default="{ row }">
-        <el-tooltip :content="displayValue(row.gpu_info)" placement="top" :disabled="!row.gpu_info">
-          <span class="table-ellipsis" :class="gpuStatusClass(row.gpu_status)">{{ gpuSummary(row.gpu_info, row.gpu_status) }}</span>
-        </el-tooltip>
+        <span class="server-wrap-cell" :class="gpuStatusClass(row.gpu_status)">{{ gpuSummary(row.gpu_info, row.gpu_status) }}</span>
       </template>
     </el-table-column>
-    <el-table-column label="最后成功探测" min-width="170" show-overflow-tooltip>
+    <el-table-column label="最后探测" width="150" show-overflow-tooltip>
       <template #default="{ row }">
         <span>{{ formatDateTime(row.last_check_at) }}</span>
       </template>
     </el-table-column>
-    <el-table-column label="操作" width="260" min-width="240" fixed="right" class-name="server-actions-column">
+    <el-table-column label="操作" width="230" class-name="server-actions-column">
       <template #default="{ row }">
         <div class="server-actions">
           <el-button
@@ -99,14 +92,6 @@
             @click="$emit('detail', row)"
           >
             服务器详情
-          </el-button>
-          <el-button
-            v-if="row.auth_type === 'password'"
-            link
-            type="primary"
-            @click="$emit('deployPublicKey', row)"
-          >
-            部署公钥
           </el-button>
           <el-dropdown trigger="click" @command="(command: string) => handleMore(command, row)">
             <el-button link type="info">更多</el-button>
@@ -147,7 +132,6 @@ const emit = defineEmits<{
   test: [server: ServerRecord]
   detect: [server: ServerRecord]
   detail: [server: ServerRecord]
-  deployPublicKey: [server: ServerRecord]
 }>()
 
 function displayValue(value: string | null | undefined) {
@@ -161,13 +145,13 @@ function osSummary(value: string | null | undefined) {
   const ubuntu = text.match(/Ubuntu\s+(\d+\.\d+)/i)
   if (ubuntu) return `Ubuntu ${ubuntu[1]}`
 
-  const rocky = text.match(/Rocky Linux\s+(\d+)/i)
+  const rocky = text.match(/Rocky(?: Linux)?\s+(\d+(?:\.\d+)?)/i)
   if (rocky) return `Rocky ${rocky[1]}`
 
-  const centos = text.match(/CentOS(?: Linux)?\s+(\d+)/i)
+  const centos = text.match(/CentOS(?: Linux)?\s+(\d+(?:\.\d+)?)/i)
   if (centos) return `CentOS ${centos[1]}`
 
-  const redHat = text.match(/Red Hat Enterprise Linux\s+(\d+)/i)
+  const redHat = text.match(/Red Hat Enterprise Linux\s+(\d+(?:\.\d+)?)/i)
   if (redHat) return `RHEL ${redHat[1]}`
 
   return text
@@ -219,15 +203,65 @@ function handleMore(command: string, server: ServerRecord) {
 
 <style scoped>
 .server-table {
-  min-width: 1620px;
+  min-width: 0;
+  width: 100%;
+}
+
+.no-horizontal-scroll-table :deep(.el-table__inner-wrapper),
+.no-horizontal-scroll-table :deep(.el-table__body-wrapper),
+.no-horizontal-scroll-table :deep(.el-scrollbar__wrap) {
+  overflow-x: hidden;
+}
+
+.no-horizontal-scroll-table :deep(.el-scrollbar__bar.is-horizontal) {
+  display: none;
+}
+
+.server-table :deep(.el-table__header th.el-table__cell) {
+  height: 38px;
+  padding: 6px 0;
+}
+
+.server-table :deep(.el-table__body td.el-table__cell) {
+  height: 44px;
+  padding: 6px 0;
+}
+
+.server-table :deep(.el-table__cell .cell) {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+.server-table :deep(.server-actions-column .cell) {
+  padding-left: 6px;
+  padding-right: 6px;
+}
+
+.server-table :deep(.server-cpu-column .cell),
+.server-table :deep(.server-gpu-column .cell) {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+
+.server-wrap-cell {
+  display: inline;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
 }
 
 .server-actions {
   display: flex;
   align-items: center;
   flex-wrap: nowrap;
-  gap: 6px;
+  gap: 8px;
   white-space: nowrap;
+  line-height: 1.2;
 }
 
 .server-actions :deep(.el-button) {

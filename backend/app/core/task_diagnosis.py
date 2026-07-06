@@ -430,6 +430,100 @@ def _precheck_user_canceled(
     return None
 
 
+def _precheck_batch_canceled(
+    task_status: str | None,
+    error_message: str | None,
+    logs_joined: str,
+    **kwargs: Any,
+) -> dict[str, Any] | None:
+    """Rule 1a: Task was canceled by batch cancel."""
+    if task_status != "CANCELED":
+        return None
+
+    text = "\n".join(filter(None, [error_message, logs_joined])).lower()
+    if "canceled by batch cancel" not in text and "batch cancel requested" not in text:
+        return None
+
+    remote_unreachable = "remote unreachable" in text or "ssh unreachable" in text
+    suggestions = [
+        "如需确认远端进程，服务器恢复后检查进程",
+        "如需清理结果，通过清理中心手动清理",
+    ]
+    risk_tips = ["批量取消不会删除远端目录。"]
+    matched_patterns = ["canceled by batch cancel"]
+    if remote_unreachable:
+        risk_tips.append("服务器不可达时远端进程无法确认，请恢复后复核。")
+        matched_patterns.append("remote unreachable")
+
+    return {
+        "level": "warning",
+        "category": "batch_canceled",
+        "attribution": "user_cancel",
+        "title": "任务已被批量取消",
+        "conclusion": "任务已被批量取消。",
+        "summary": "平台已将该任务状态收口为已取消，已完成任务不受批量取消影响。",
+        "possible_causes": [
+            "用户在批次视图点击了取消批次",
+        ],
+        "suggestions": suggestions,
+        "risk_tips": risk_tips,
+        "matched_patterns": matched_patterns,
+    }
+
+
+def _precheck_canceled_remote_unreachable(
+    task_status: str | None,
+    error_message: str | None,
+    logs_joined: str,
+    **kwargs: Any,
+) -> dict[str, Any] | None:
+    """Rule 1b: Task was canceled but remote server was unreachable."""
+    if task_status != "CANCELED":
+        return None
+
+    text = "\n".join(filter(None, [error_message, logs_joined])).lower()
+    markers = (
+        "remote server unreachable",
+        "ssh unreachable",
+        "remote process not confirmed",
+        "ssh connection failed",
+        "ssh connection timed out",
+    )
+    if not any(marker in text for marker in markers):
+        return None
+
+    return {
+        "level": "warning",
+        "category": "user_canceled_remote_unreachable",
+        "attribution": "platform",
+        "title": "任务已取消，但远端不可达",
+        "conclusion": "任务已取消，但取消时远端服务器不可达，无法确认远端进程是否已终止。",
+        "summary": (
+            "取消请求已经提交并在平台侧收口，但平台在尝试终止远端进程时遇到 SSH 不可达。"
+            "远端进程是否仍在运行无法确认。"
+        ),
+        "possible_causes": [
+            "目标服务器已宕机或网络不可达",
+            "SSH 服务未响应，无法读取 PID 文件或发送 kill 信号",
+            "取消请求发出时远端进程状态已无法确认",
+        ],
+        "suggestions": [
+            "等待服务器恢复后检查远端进程是否仍在运行",
+            "确认无用后，再通过清理中心手动清理远端目录",
+            "检查任务日志中的 cancel requested 与 SSH unreachable 记录",
+        ],
+        "risk_tips": [
+            "服务器恢复前，不要假设远端进程已经停止",
+            "本次取消不会删除远端目录，需要人工复核后再清理",
+        ],
+        "matched_patterns": [
+            "cancel requested by user",
+            "SSH unreachable",
+            "remote process not confirmed",
+        ],
+    }
+
+
 def _precheck_artifact_recovery_failed(
     error_message: str | None,
     **kwargs: Any,
@@ -571,6 +665,57 @@ def _precheck_timeout_no_report(
             }
 
     return None
+
+
+def _precheck_stress_preflight_failed(
+    task_status: str | None,
+    task_type: str | None,
+    error_message: str | None,
+    logs_joined: str,
+    **kwargs: Any,
+) -> dict[str, Any] | None:
+    if task_type != "stress" or task_status != "FAILED":
+        return None
+
+    text = "\n".join(filter(None, [error_message, logs_joined])).lower()
+    markers = (
+        "stress failed before start",
+        "gpu stress failed before start",
+        "cpu/memory stress failed before start",
+        "stress script exited before report generation",
+        "nvidia-smi not found",
+        "stress-ng not found",
+        "python3-openpyxl not found",
+        "no nvidia gpu detected",
+        "unsupported os",
+    )
+    if not any(marker in text for marker in markers):
+        return None
+
+    return {
+        "level": "error",
+        "category": "stress_preflight_failed",
+        "attribution": "environment",
+        "title": "压测启动前置检查失败",
+        "conclusion": error_message or "压测脚本未正常启动，平台已提前失败收口。",
+        "summary": "平台检测到压测依赖、驱动或运行环境缺失，已终止等待并将任务标记为失败。",
+        "possible_causes": [
+            "GPU 压测缺少 NVIDIA 驱动、CUDA Toolkit、nvcc 或 gpu-burn",
+            "CPU/内存或磁盘压测缺少 stress-ng",
+            "缺少 python3-openpyxl，无法生成报告",
+            "当前系统不在脚本支持范围内",
+        ],
+        "suggestions": [
+            "按错误信息安装缺失依赖后重新执行",
+            "GPU 压测先在远端验证 nvidia-smi、nvcc 和 gpu-burn",
+            "CPU/内存压测先在远端验证 stress-ng 和 python3-openpyxl",
+            "如为 stress-suite，后续压测会继续执行，请分别查看各子任务结果",
+        ],
+        "risk_tips": [
+            "该任务未生成完整压测报告，不能作为硬件稳定性通过依据",
+        ],
+        "matched_patterns": [m for m in markers if m in text],
+    }
 
 
 def _precheck_stress_stuck(
@@ -805,10 +950,13 @@ def _precheck_running(
 
 _PRE_CHECKS = [
     # Priority 1-5: Error-specific pre-checks (metadata-based)
+    ("batch_canceled", _precheck_batch_canceled),
+    ("user_canceled_remote_unreachable", _precheck_canceled_remote_unreachable),
     ("user_canceled", _precheck_user_canceled),
     ("artifact_recovery_failed", _precheck_artifact_recovery_failed),
     ("report_not_finalized", _precheck_report_not_finalized),
     ("timeout_no_report", _precheck_timeout_no_report),
+    ("stress_preflight_failed", _precheck_stress_preflight_failed),
     ("stress_stuck", _precheck_stress_stuck),
     # Priority 6-8: Status-based pre-checks
     ("success", _precheck_success),

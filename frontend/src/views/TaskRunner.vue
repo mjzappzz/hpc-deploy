@@ -15,6 +15,13 @@
         <div class="runner-config">
           <!-- Mode: config (editable new task) -->
           <template v-if="mode === 'config'">
+            <el-alert
+              class="history-handoff-alert"
+              title="任务提交后，请到任务历史查看执行状态、日志、报告和诊断。"
+              type="info"
+              :closable="false"
+              show-icon
+            />
             <div class="selection-grid">
               <!-- ─── STEP 1: TARGET SERVER CARDS ─── -->
               <div class="selection-card">
@@ -26,11 +33,6 @@
                       <el-option v-for="t in tags" :key="t.name" :label="t.name" :value="t.name" />
                     </el-select>
                   </div>
-                </div>
-
-                <!-- Tip bar when servers available but none selected -->
-                <div v-if="filteredOnlineServers.length > 0 && selectedServerIds.length === 0" class="step-tip-bar">
-                  点击下方服务器卡片选择目标服务器
                 </div>
 
                 <template v-if="allOnlineServers.length === 0">
@@ -45,7 +47,7 @@
                     <div
                       v-for="server in filteredOnlineServers"
                       :key="server.id"
-                      :class="['server-select-card', { 'is-active': selectedServerIds.includes(server.id) }]"
+                      :class="['server-select-card', 'hpc-interactive-pulse', { 'is-active': selectedServerIds.includes(server.id), 'hpc-selected-pulse': selectedServerIds.includes(server.id) }]"
                       @click="toggleServerCard(server.id)"
                     >
                       <div class="s-card-main">
@@ -60,9 +62,9 @@
                           <span class="s-card-host">{{ server.host }}</span>
                           <span class="s-card-sep">·</span>
                           <span class="s-card-user">{{ server.username }}</span>
-                          <div v-if="server.tags && server.tags.length" class="s-card-tags">
-                            <span class="s-card-tags-label">标签：</span>
-                            <el-tag v-for="tag in server.tags" :key="tag" size="small" round>{{ tag }}</el-tag>
+                          <div v-if="server.tags && server.tags.length" class="s-card-tags" :title="server.tags.join(', ')">
+                            <el-tag v-for="tag in server.tags.slice(0, 2)" :key="tag" size="small" round>{{ tag }}</el-tag>
+                            <el-tag v-if="server.tags.length > 2" size="small" type="info" round>+{{ server.tags.length - 2 }}</el-tag>
                           </div>
                         </div>
                       </div>
@@ -85,7 +87,7 @@
                 </template>
               </div>
 
-              <div class="selection-card">
+              <div :class="['selection-card', { 'is-step-disabled': !hasSelectedServer }]">
                 <div class="selection-label-row">
                   <span class="selection-label step-label">② 选择任务类型</span>
                   <el-tag v-if="selectedTaskType" type="success" size="small" effect="dark" class="step-complete-tag">已完成</el-tag>
@@ -94,8 +96,8 @@
                   <div
                     v-for="tt in taskTypes"
                     :key="tt.value"
-                    :class="['task-type-card', { 'is-active': selectedTaskType === tt.value }]"
-                    @click="selectTaskType(tt.value)"
+                    :class="['task-type-card', 'hpc-interactive-pulse', { 'is-active': selectedTaskType === tt.value, 'hpc-selected-pulse': selectedTaskType === tt.value }]"
+                    @click="hasSelectedServer && selectTaskType(tt.value)"
                   >
                     <div class="task-type-card-title">{{ tt.label }}</div>
                     <div class="task-type-card-desc">{{ taskTypeCardDesc(tt.value) }}</div>
@@ -106,7 +108,7 @@
                 </div>
               </div>
 
-              <div class="selection-card">
+              <div :class="['selection-card', { 'is-step-disabled': !hasSelectedServer || !selectedTaskType }]">
                 <div class="selection-label-row">
                   <span class="selection-label step-label">③ 选择脚本/镜像</span>
                   <el-tag v-if="isFileSelected" type="success" size="small" effect="dark" class="step-complete-tag">已完成</el-tag>
@@ -119,8 +121,8 @@
                     <div
                       v-for="file in filteredFiles"
                       :key="file.path"
-                      :class="['file-select-card', { 'is-active': selectedFilePath === file.path }]"
-                      @click="selectedFilePath = file.path"
+                      :class="['file-select-card', 'hpc-interactive-pulse', { 'is-active': selectedFilePath === file.path, 'hpc-selected-pulse': selectedFilePath === file.path }]"
+                      @click="canSelectFile && (selectedFilePath = file.path)"
                     >
                       <div class="f-card-name">{{ file.name }}</div>
                       <div class="f-card-path">{{ file.relative_path }}</div>
@@ -136,10 +138,10 @@
                   </div>
                   <div class="file-card-grid stress-cards">
                     <div
-                      :class="['file-select-card stress-card', { 'is-active': isStressCardActive(file.path) }]"
+                      :class="['file-select-card', 'stress-card', 'hpc-interactive-pulse', { 'is-active': isStressCardActive(file.path), 'hpc-selected-pulse': isStressCardActive(file.path) }]"
                       v-for="file in filteredFiles"
                       :key="file.path"
-                      @click="onStressCardClick(file.path)"
+                      @click="canSelectFile && onStressCardClick(file.path)"
                     >
                       <div class="stress-card-check" v-if="selectedStressScripts.includes(file.path)">✓</div>
                       <div class="f-card-name">{{ file.name }}</div>
@@ -162,7 +164,7 @@
                     placeholder="选择 Apptainer 镜像文件"
                     filterable
                     class="runner-control"
-                    :disabled="isFormDisabled"
+                    :disabled="isFormDisabled || !canSelectFile"
                   >
                     <el-option
                       v-for="file in filteredFiles"
@@ -179,7 +181,7 @@
               </div>
             </div>
 
-            <el-card v-if="showParamCard" shadow="never" class="info-card action-card">
+            <el-card v-if="showParamCard" :class="['info-card', 'action-card', { 'is-step-disabled': !canConfigureTask }]" shadow="never">
               <div class="card-title step-title">④ 配置参数并执行</div>
 
               <!-- 文件信息 (compact summary) - single mode -->
@@ -288,10 +290,10 @@
 
               <!-- 操作按钮 -->
               <div class="runner-actions sticky-actions">
-                <el-button type="primary" :loading="validating" :disabled="isFormDisabled" @click="validateRunner">校验参数</el-button>
+                <el-button class="hpc-interactive-pulse" type="primary" :loading="validating" :disabled="isFormDisabled || !canConfigureTask" @click="validateRunner">校验参数</el-button>
                 <el-tooltip :content="executeTooltip" placement="top">
                   <span class="disabled-button-wrap">
-                    <el-button :loading="submitting" :disabled="isFormDisabled || submitting" @click="createTask">{{ executeButtonText }}</el-button>
+                    <el-button class="hpc-interactive-pulse" :loading="submitting" :disabled="isFormDisabled || submitting || !canConfigureTask" @click="createTask">{{ executeButtonText }}</el-button>
                   </span>
                 </el-tooltip>
               </div>
@@ -305,430 +307,7 @@
             </el-card>
           </template>
 
-          <!-- Mode: config-readonly (recovered task config snapshot) -->
-          <template v-else-if="mode === 'config-readonly'">
-            <div v-if="activeTask" class="readonly-config-card">
-              <div class="readonly-config-header">
-                <span class="readonly-config-title">本次任务配置</span>
-                <el-button size="small" @click="mode = 'summary'">← 返回摘要</el-button>
-              </div>
-              <div class="readonly-config-hint">
-                该任务已创建，配置不可修改。如需创建新任务，请点击"新建任务"。
-              </div>
-
-              <div class="readonly-section">
-                <div class="readonly-section-title">基础信息</div>
-                <div class="readonly-grid">
-                  <div class="ro-field">
-                    <span class="ro-label">任务名称</span>
-                    <span class="ro-value">{{ activeTaskDisplayName }}</span>
-                  </div>
-                  <div class="ro-field">
-                    <span class="ro-label">目标服务器</span>
-                    <span class="ro-value">{{ activeTask.server_name }} ({{ activeTask.server_host }})</span>
-                  </div>
-                  <div class="ro-field">
-                    <span class="ro-label">任务类型</span>
-                    <span class="ro-value">{{ taskTypeLabel(activeTask.task_type) }}</span>
-                  </div>
-                  <div class="ro-field">
-                    <span class="ro-label">知识库文件</span>
-                    <el-tooltip :content="activeTask.file_name || ''" placement="top">
-                      <span class="ro-value ellipsis">{{ activeTask.file_name }}</span>
-                    </el-tooltip>
-                  </div>
-                  <div class="ro-field">
-                    <span class="ro-label">任务状态</span>
-                    <span class="ro-value">{{ statusLabel(activeTask.status) }}</span>
-                  </div>
-                </div>
-              </div>
-
-              <div class="readonly-section">
-                <div class="readonly-section-title">执行信息</div>
-                <div class="readonly-grid">
-                  <div class="ro-field">
-                    <span class="ro-label">远程工作目录</span>
-                    <el-tooltip :content="activeTask.remote_work_dir || ''" placement="top">
-                      <span class="ro-value mono ellipsis">{{ activeTask.remote_work_dir }}</span>
-                    </el-tooltip>
-                  </div>
-                  <div class="ro-field">
-                    <span class="ro-label">执行命令</span>
-                    <pre class="ro-command">{{ activeTask.command_preview }}</pre>
-                  </div>
-                  <div v-if="activeTask.task_type === 'stress'" class="ro-field">
-                    <span class="ro-label">压测时长</span>
-                    <span class="ro-value">{{ formattedReadonlyDuration }}</span>
-                  </div>
-                  <div v-else class="ro-field">
-                    <span class="ro-label">参数</span>
-                    <span class="ro-value">{{ activeTask.task_type === 'apptainer' ? '目标目录：' + (activeTask.remote_work_dir || '-') : '无额外参数' }}</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div v-else class="summary-loading">
-              <el-skeleton :rows="6" animated />
-            </div>
-          </template>
-
-          <!-- Mode: summary -->
-          <template v-else>
-            <div v-if="activeTask" class="summary-card">
-              <div class="summary-header">
-                <span class="summary-title">任务执行摘要</span>
-              </div>
-              <div class="summary-body">
-                <div class="summary-group">
-                  <div class="summary-group-title">任务信息</div>
-                  <div class="summary-group-grid">
-                    <div class="summary-field">
-                      <span class="field-key">任务名称</span>
-                      <span class="field-value">{{ activeTaskDisplayName }}</span>
-                    </div>
-                    <div class="summary-field">
-                      <span class="field-key">任务 ID</span>
-                      <span class="field-value mono">{{ activeTask.task_id }}</span>
-                    </div>
-                    <div class="summary-field">
-                      <span class="field-key">目标服务器</span>
-                      <span class="field-value">{{ activeTask.server_name }} ({{ activeTask.server_host }})</span>
-                    </div>
-                    <div class="summary-field">
-                      <span class="field-key">任务类型</span>
-                      <span class="field-value">{{ taskTypeLabel(activeTask.task_type) }}</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div class="summary-group">
-                  <div class="summary-group-title">执行信息</div>
-                  <div class="summary-group-grid">
-                    <div class="summary-field">
-                      <span class="field-key">脚本文件</span>
-                      <span class="field-value">{{ activeTask.file_name }}</span>
-                    </div>
-                    <div class="summary-field">
-                      <span class="field-key">远程目录</span>
-                      <el-tooltip :content="activeTask.remote_work_dir || ''" placement="top">
-                        <span class="field-value mono ellipsis">{{ activeTask.remote_work_dir }}</span>
-                      </el-tooltip>
-                    </div>
-                    <div class="summary-field">
-                      <span class="field-key">执行命令</span>
-                      <el-tooltip :content="activeTask.command_preview || ''" placement="top">
-                        <span class="field-value mono ellipsis">{{ activeTask.command_preview }}</span>
-                      </el-tooltip>
-                    </div>
-                  </div>
-                </div>
-
-                <div class="summary-group">
-                  <div class="summary-group-title">结果信息</div>
-                  <div class="summary-group-grid">
-                    <div class="summary-field">
-                      <span class="field-key">开始时间</span>
-                      <span class="field-value">{{ formatDate(activeTask.start_time) }}</span>
-                    </div>
-                    <div class="summary-field">
-                      <span class="field-key">结束时间</span>
-                      <span class="field-value">{{ formatDate(activeTask.end_time) }}</span>
-                    </div>
-                    <div class="summary-field">
-                      <span class="field-key">退出码</span>
-                      <span class="field-value">{{ activeTask.exit_code ?? '-' }}</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <el-alert
-                v-if="activeTask.status === 'SUCCESS'"
-                type="success"
-                :closable="false"
-                show-icon
-                class="completion-alert"
-              >
-                <template #title>
-                  <div>
-                    任务执行成功
-                    <span class="alert-duration">（运行耗时 {{ formatSeconds(runningDuration) }}）</span>
-                  </div>
-                  <div class="alert-detail">远程工作目录：{{ activeTask.remote_work_dir }}</div>
-                  <div class="alert-hint">
-                    {{
-                      activeTask.task_type === 'apptainer'
-                        ? '容器文件已上传到远端固定目录，未执行容器。'
-                        : '任务已完成，结果文件可用。'
-                    }}
-                  </div>
-                </template>
-                <template #action>
-                  <el-button
-                    v-if="activeTask.task_type === 'stress'"
-                    size="small"
-                    type="primary"
-                    @click="goToHistory"
-                  >
-                    查看结果文件
-                  </el-button>
-                  <el-button size="small" type="warning" plain @click="openTaskDiagnosis(activeTask)">查看诊断</el-button>
-                </template>
-              </el-alert>
-
-              <el-alert
-                v-if="activeTask.status === 'FAILED'"
-                type="error"
-                :closable="false"
-                show-icon
-                class="completion-alert"
-              >
-                <template #title>
-                  <div>任务执行失败</div>
-                  <div v-if="activeTask.error_message" class="alert-detail">{{ activeTask.error_message }}</div>
-                  <div class="alert-hint">请查看右侧日志了解详情，或使用诊断功能分析失败原因。</div>
-                </template>
-                <template #action>
-                  <el-button size="small" type="warning" plain @click="openTaskDiagnosis(activeTask)">查看诊断</el-button>
-                </template>
-              </el-alert>
-
-              <el-alert
-                v-if="activeTask.status === 'CANCELED'"
-                type="warning"
-                :closable="false"
-                show-icon
-                class="completion-alert"
-              >
-                <template #title>
-                  <div>
-                    任务已取消
-                    <span v-if="runningDuration !== null" class="alert-duration">（运行耗时 {{ formatSeconds(runningDuration) }}）</span>
-                  </div>
-                  <div v-if="activeTask.error_message" class="alert-detail">{{ activeTask.error_message }}</div>
-                  <div class="alert-hint">远端工作目录已清理，任务记录和日志已保留。</div>
-                </template>
-                <template #action>
-                  <el-button size="small" type="warning" plain @click="openTaskDiagnosis(activeTask)">查看诊断</el-button>
-                </template>
-              </el-alert>
-
-              <div class="summary-actions">
-                <div class="summary-actions-title">快捷操作</div>
-                <div class="summary-actions-buttons">
-                  <el-button
-                    v-if="activeTask.task_type === 'stress' && (activeTask.status === 'SUCCESS' || activeTask.status === 'FAILED')"
-                    size="small"
-                    type="primary"
-                    @click="goToHistory"
-                  >
-                    查看结果文件
-                  </el-button>
-                  <el-button
-                    v-if="activeTask.status === 'FAILED'"
-                    size="small"
-                    type="warning"
-                    plain
-                    @click="openTaskDiagnosis(activeTask)"
-                  >
-                    查看诊断
-                  </el-button>
-                  <el-button
-                    v-if="showCancelTaskButton"
-                    size="small"
-                    type="danger"
-                    plain
-                    :disabled="cancelSubmitting"
-                    @click="cancelCurrentTask"
-                  >
-                    取消任务
-                  </el-button>
-                  <el-button size="small" @click="mode = 'config-readonly'">展开配置</el-button>
-                  <el-button size="small" type="primary" @click="handleNewTask">新建任务</el-button>
-                  <el-button size="small" @click="goToHistory">跳转任务历史</el-button>
-                </div>
-              </div>
-            </div>
-            <div v-else class="summary-loading">
-              <el-skeleton :rows="6" animated />
-            </div>
-          </template>
         </div>
-
-        <!-- ============ RIGHT PANEL ============ -->
-        <el-card shadow="never" class="live-task-card">
-          <template #header>
-            <div class="live-task-header">
-              <div>
-                <div class="runner-title">实时面板</div>
-                <div class="runner-subtitle">默认显示执行日志，资源快照按需手动刷新。</div>
-              </div>
-              <div class="live-task-actions">
-                <StatusTag :status="activeTask?.status || 'PENDING'" />
-                <el-tag v-if="wsConnected" size="small" type="success">实时日志：已连接</el-tag>
-                <el-tag v-else-if="wsFallback" size="small" type="warning">实时日志：已断开，已切换普通刷新</el-tag>
-                <el-button
-                  v-if="showCancelTaskButton"
-                  type="danger"
-                  plain
-                  :disabled="cancelSubmitting"
-                  @click="cancelCurrentTask"
-                >
-                  取消任务
-                </el-button>
-                <el-button v-if="showCancelingTaskButton" type="warning" plain disabled>正在取消...</el-button>
-                <el-button :disabled="!activeTaskId" :loading="monitorLoading || (polling && activePanel === 'logs')" @click="refreshCurrentPanel">
-                  刷新当前监控
-                </el-button>
-                <el-button :disabled="!activeTaskId" @click="goToHistory">跳转任务历史</el-button>
-              </div>
-            </div>
-          </template>
-
-          <div class="live-content-wrapper">
-            <!-- Progress Summary Bar -->
-            <div class="progress-summary-bar" v-if="activeTaskId">
-              <div class="progress-summary-row">
-                <span class="progress-summary-name">{{ activeTaskDisplayName }}</span>
-                <StatusTag :status="activeTask?.status || 'PENDING'" />
-                <el-tooltip :content="activeTask?.task_id || activeTaskId || '-'" placement="top">
-                  <span class="progress-summary-id mono">{{ activeTask?.task_id || activeTaskId || '-' }}</span>
-                </el-tooltip>
-              </div>
-              <div v-if="showProgress" class="progress-summary-row">
-                <span class="progress-summary-stage">阶段：{{ currentStageLabel(activeTask?.status) }}</span>
-                <span class="progress-summary-sep">|</span>
-                <span class="progress-summary-elapsed">已运行：{{ runningDuration !== null ? formatSeconds(runningDuration) : '-' }}</span>
-                <span v-if="estimatedRemaining !== null" class="progress-summary-sep">|</span>
-                <span v-if="estimatedRemaining !== null" class="progress-summary-remaining">预计剩余：{{ formatSeconds(estimatedRemaining) }}</span>
-              </div>
-              <div v-if="showProgress" class="progress-summary-bar-row">
-                <el-progress :percentage="progressValue ?? 0" :stroke-width="16" :text-inside="true" :status="progressValue === 100 ? 'success' : undefined" />
-              </div>
-            </div>
-
-            <div class="live-tabs-area">
-              <el-tabs v-model="activePanel" class="monitor-tabs">
-                <el-tab-pane
-                  v-for="panel in visibleMonitorTabs"
-                  :key="panel.name"
-                  :label="panel.label"
-                  :name="panel.name"
-                />
-              </el-tabs>
-
-              <div class="live-content-area">
-                <template v-if="activePanel === 'logs'">
-                  <div class="log-tab-pane">
-                    <LogViewer
-                      v-if="activeTaskId"
-                      :logs="activeLogs"
-                      max-height="none"
-                      toolbar
-                      class="log-fill"
-                      @clear="activeLogs = []"
-                      @download="handleDownloadLogs"
-                    />
-                    <div v-else class="monitor-terminal-placeholder">尚未开始执行</div>
-                  </div>
-                </template>
-                <!-- CPU/Memory structured -->
-                <template v-else-if="activePanel === 'cpu_mem'">
-                  <div v-if="!activeTaskId" class="monitor-empty">
-                    <el-empty description="创建任务后可查看远程 CPU/内存快照" :image-size="60" />
-                  </div>
-                  <div v-else-if="monitorLoading && !monitorData" class="monitor-loading">
-                    <el-icon class="is-loading"><Loading /></el-icon>
-                    <span>正在获取 CPU/内存实时监控数据…</span>
-                  </div>
-                  <div v-else-if="!monitorData?.cpu_memory.available" class="monitor-empty">
-                    <el-empty description="暂无 CPU/内存实时监控数据" :image-size="60" />
-                    <div v-if="monitorData?.cpu_memory.message" class="monitor-empty-msg">{{ monitorData.cpu_memory.message }}</div>
-                  </div>
-                  <div v-else class="monitor-grid">
-                    <el-card shadow="never" class="monitor-card">
-                      <div class="monitor-card-label">CPU 使用率</div>
-                      <div class="monitor-card-value">{{ monitorData.cpu_memory.cpu_usage_percent ?? '-' }}%</div>
-                    </el-card>
-                    <el-card shadow="never" class="monitor-card">
-                      <div class="monitor-card-label">Load Average</div>
-                      <div class="monitor-card-value mono">{{ monitorData.cpu_memory.load_avg ?? '-' }}</div>
-                    </el-card>
-                    <el-card shadow="never" class="monitor-card">
-                      <div class="monitor-card-label">内存总容量</div>
-                      <div class="monitor-card-value">{{ monitorData.cpu_memory.memory_total ?? '-' }}</div>
-                    </el-card>
-                    <el-card shadow="never" class="monitor-card">
-                      <div class="monitor-card-label">内存使用</div>
-                      <div class="monitor-card-value">{{ monitorData.cpu_memory.memory_used ?? '-' }} ({{ monitorData.cpu_memory.memory_usage_percent ?? '-' }}%)</div>
-                    </el-card>
-                  </div>
-                  <div v-if="monitorData?.sampled_at" class="monitor-sampled-at">采样时间：{{ formatDate(monitorData.sampled_at) }}</div>
-                </template>
-
-                <!-- Disk structured -->
-                <template v-else-if="activePanel === 'disk'">
-                  <div v-if="!activeTaskId" class="monitor-empty">
-                    <el-empty description="创建任务后可查看远程磁盘快照" :image-size="60" />
-                  </div>
-                  <div v-else-if="monitorLoading && !monitorData" class="monitor-loading">
-                    <el-icon class="is-loading"><Loading /></el-icon>
-                    <span>正在获取磁盘实时监控数据…</span>
-                  </div>
-                  <div v-else-if="!monitorData?.disk.available" class="monitor-empty">
-                    <el-empty description="暂无磁盘监控数据" :image-size="60" />
-                    <div v-if="monitorData?.disk.message" class="monitor-empty-msg">{{ monitorData.disk.message }}</div>
-                  </div>
-                  <el-table v-else :data="monitorData.disk.disk_usage" stripe size="small" max-height="400">
-                    <el-table-column prop="mount" label="挂载点" />
-                    <el-table-column prop="total" label="总容量" />
-                    <el-table-column prop="used" label="已用" />
-                    <el-table-column prop="available" label="可用" />
-                    <el-table-column label="使用率" width="180">
-                      <template #default="{ row }">
-                        <el-progress :percentage="row.usage_percent ?? 0" :stroke-width="14" />
-                      </template>
-                    </el-table-column>
-                  </el-table>
-                  <div v-if="monitorData?.sampled_at" class="monitor-sampled-at">采样时间：{{ formatDate(monitorData.sampled_at) }}</div>
-                </template>
-
-                <!-- GPU structured -->
-                <template v-else-if="activePanel === 'gpu'">
-                  <div v-if="!activeTaskId" class="monitor-empty">
-                    <el-empty description="创建任务后可查看远程 GPU 快照" :image-size="60" />
-                  </div>
-                  <div v-else-if="monitorLoading && !monitorData" class="monitor-loading">
-                    <el-icon class="is-loading"><Loading /></el-icon>
-                    <span>正在获取 GPU 实时监控数据…</span>
-                  </div>
-                  <div v-else-if="!monitorData?.gpu.available" class="monitor-empty">
-                    <el-empty description="暂无 GPU 实时监控数据" :image-size="60" />
-                    <div
-                      v-if="monitorData?.gpu.message"
-                      class="monitor-empty-msg"
-                      :class="{ 'monitor-empty-msg--warning': monitorData.gpu.message.includes('驱动不可用') }"
-                    >
-                      {{ monitorData.gpu.message }}
-                    </div>
-                  </div>
-                  <div v-else class="monitor-gpu-grid">
-                    <el-card v-for="gpu in monitorData.gpu.items" :key="gpu.index" shadow="never" class="monitor-card">
-                      <div class="monitor-card-title">{{ gpu.name }} (Index {{ gpu.index }})</div>
-                      <div class="monitor-card-stats">
-                        <span>GPU 利用率：{{ gpu.utilization_gpu ?? '-' }}%</span>
-                        <span>显存：{{ gpu.memory_used ?? '-' }} / {{ gpu.memory_total ?? '-' }} MiB</span>
-                        <span>温度：{{ gpu.temperature ?? '-' }}°C</span>
-                      </div>
-                    </el-card>
-                  </div>
-                  <div v-if="monitorData?.sampled_at" class="monitor-sampled-at">采样时间：{{ formatDate(monitorData.sampled_at) }}</div>
-                </template>
-              </div>
-            </div>
-          </div>
-        </el-card>
       </div>
     </el-card>
     <!-- 批量执行结果弹窗 -->
@@ -765,7 +344,6 @@
       <template #footer>
         <el-button @click="showBatchResult = false">关闭</el-button>
         <el-button type="primary" @click="goToBatchHistory">查看批次详情</el-button>
-        <el-button @click="goToHistory">查看任务历史</el-button>
       </template>
     </el-dialog>
 
@@ -777,8 +355,7 @@
           <code class="batch-id-value">{{ stressSuiteResult.batch_id }}</code>
         </div>
         <div style="margin:10px 0; font-size:13px; color:#909399;">
-          子任务将按 GPU → CPU/内存 → 磁盘顺序串行执行，每台服务器独立执行序列。
-          请到任务历史批次视图查看实时状态和报告。
+          子任务将按 GPU → CPU/内存 → 磁盘顺序串行执行，请到任务历史批次视图查看状态和报告。
         </div>
         <el-table :data="stressSuiteResult.items" max-height="360" stripe size="small">
           <el-table-column prop="server_name" label="服务器" width="140" />
@@ -804,16 +381,13 @@
       <template #footer>
         <el-button @click="showStressSuiteResult = false">关闭</el-button>
         <el-button type="primary" @click="goToBatchHistory">查看批次详情</el-button>
-        <el-button @click="goToHistory">查看任务历史</el-button>
       </template>
     </el-dialog>
 
     <!-- 取消任务确认弹窗 -->
     <el-dialog v-model="cancelDialogVisible" title="取消任务" width="420px" :close-on-click-modal="false">
       <div class="cancel-dialog-body">
-        <p class="cancel-intro">确认取消当前任务？</p>
-        <el-checkbox v-model="cancelDeleteRemote">同时删除远端工作目录和已生成文件</el-checkbox>
-        <p class="cancel-hint">不勾选时会保留远端报告和日志，便于后续查看。</p>
+        <p class="cancel-intro">确认取消当前任务？平台会先标记任务为已取消，远端进程终止为 best-effort，不会删除远端目录。</p>
       </div>
       <template #footer>
         <el-button @click="cancelDialogVisible = false">取消</el-button>
@@ -1063,6 +637,9 @@ const selectedServers = computed(() => {
     .map((id) => servers.value.find((s) => s.id === id))
     .filter((s): s is ServerRecord => s != null)
 })
+const hasSelectedServer = computed(() => selectedServerIds.value.length > 0)
+const canSelectFile = computed(() => hasSelectedServer.value && !!selectedTaskType.value)
+const canConfigureTask = computed(() => canSelectFile.value && isFileSelected.value)
 const selectedFile = computed(() => filteredFiles.value.find((file) => file.path === selectedFilePath.value) ?? null)
 const showDiskTestDir = computed(() => {
   if (selectedTaskType.value !== 'stress') return false
@@ -1439,10 +1016,14 @@ async function createTask() {
       payload.params = { overwrite: apptainerOverwrite.value }
     }
     const result = (await runTask(payload)).data
-    ElMessage.success(`任务创建成功：${result.task_id}`)
-    localStorage.setItem('hpcdeploy.currentTaskId', result.task_id)
-    mode.value = 'summary'
-    startTaskPolling(result.task_id)
+    ElMessage.success('任务已创建，正在跳转任务历史。')
+    await router.push({
+      path: '/history',
+      query: {
+        view: 'tasks',
+        task_id: result.task_id,
+      },
+    })
   } catch (error: unknown) {
     // Handle 409 conflict — server already has a running task
     if (
@@ -1459,8 +1040,13 @@ async function createTask() {
             confirmButtonText: '跳转查看',
             type: 'warning',
             callback: () => {
-              localStorage.setItem('hpcdeploy.currentTaskId', detail.running_task_id!)
-              router.push(`/task-runner?task_id=${detail.running_task_id!}`)
+              router.push({
+                path: '/history',
+                query: {
+                  view: 'tasks',
+                  task_id: detail.running_task_id!,
+                },
+              })
             }
           })
         } else {
@@ -1485,8 +1071,15 @@ async function createStressSuiteTask() {
     }
     const result = (await createStressSuite(payload)).data
     stressSuiteResult.value = result
-    showStressSuiteResult.value = true
-    ElMessage.success(`压测套件已创建，batch_id: ${result.batch_id}`)
+    showStressSuiteResult.value = false
+    ElMessage.success('压测套件已创建，正在跳转任务历史。')
+    await router.push({
+      path: '/history',
+      query: {
+        view: 'batches',
+        batch_id: result.batch_id,
+      },
+    })
   } catch (error: unknown) {
     ElMessage.error(getApiErrorMessage(error))
   } finally {
@@ -1521,11 +1114,9 @@ async function handleNewTask() {
 }
 
 const cancelDialogVisible = ref(false)
-const cancelDeleteRemote = ref(false)
 
 function cancelCurrentTask() {
   if (!activeTaskId.value) return
-  cancelDeleteRemote.value = false
   cancelDialogVisible.value = true
 }
 
@@ -1534,8 +1125,13 @@ async function confirmCancelCurrentTask() {
   cancelDialogVisible.value = false
   cancelSubmitting.value = true
   try {
-    await cancelTask(activeTaskId.value, cancelDeleteRemote.value)
-    ElMessage.success('已提交取消请求')
+    const resp = await cancelTask(activeTaskId.value)
+    const message = resp.data.message?.trim()
+    if (message && (message.includes('不可达') || message.includes('无法确认'))) {
+      ElMessage.warning(message)
+    } else {
+      ElMessage.success(message || '任务已取消')
+    }
     await fetchTaskRuntime(activeTaskId.value)
   } catch (error) {
     ElMessage.error(getApiErrorMessage(error))
@@ -1550,7 +1146,7 @@ function goToHistory() {
 
 function goToBatchHistory() {
   const batchId = stressSuiteResult.value?.batch_id || batchResult.value?.batch_id
-  router.push(batchId ? `/history?view=batch&batch_id=${batchId}` : '/history')
+  router.push(batchId ? { path: '/history', query: { view: 'batches', batch_id: batchId } } : '/history')
   showBatchResult.value = false
   showStressSuiteResult.value = false
 }
@@ -1822,12 +1418,19 @@ async function batchCreate() {
           : {},
     })).data
     batchResult.value = res
-    showBatchResult.value = true
+    showBatchResult.value = false
     const parts: string[] = []
     if (res.created > 0) parts.push(`成功 ${res.created} 台`)
     if (res.skipped > 0) parts.push(`跳过 ${res.skipped} 台`)
     if (res.failed > 0) parts.push(`失败 ${res.failed} 台`)
-    ElMessage.success(`批量任务已创建：${parts.join('，')}`)
+    ElMessage.success(`批量任务已创建：${parts.join('，')}，正在跳转任务历史。`)
+    await router.push({
+      path: '/history',
+      query: {
+        view: 'batches',
+        batch_id: res.batch_id,
+      },
+    })
   } catch (error: unknown) {
     ElMessage.error(getApiErrorMessage(error))
   } finally {
@@ -1932,8 +1535,19 @@ function handleDownloadLogs() {
 }
 
 onMounted(async () => {
+  const qTaskId = route.query.task_id
+  if (typeof qTaskId === 'string' && qTaskId) {
+    await router.replace({
+      path: '/history',
+      query: {
+        view: 'tasks',
+        task_id: qTaskId,
+      },
+    })
+    return
+  }
+
   await loadOptions()
-  await recoverTask()
 
   // Phase 27A: pre-select server from query param
   const qServerId = route.query.server_id
@@ -1959,11 +1573,13 @@ onBeforeUnmount(() => {
 <style scoped>
 .page-section {
   height: 100%;
-  overflow: hidden;
+  overflow: auto;
 }
 
 .runner-card {
   border-radius: 20px;
+  max-width: 1080px;
+  margin: 0 auto;
 }
 
 .runner-card :deep(.el-card__header) {
@@ -1994,7 +1610,7 @@ onBeforeUnmount(() => {
 
 .runner-layout {
   display: grid;
-  grid-template-columns: minmax(360px, 520px) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
   align-items: start;
 }
@@ -2008,6 +1624,16 @@ onBeforeUnmount(() => {
   grid-template-columns: 1fr;
   gap: 12px;
   align-items: stretch;
+}
+
+.history-handoff-alert {
+  margin-bottom: 12px;
+}
+
+.selection-card.is-step-disabled .hpc-interactive-pulse,
+.selection-card.is-step-disabled .hpc-interactive-pulse:hover {
+  box-shadow: none;
+  animation: none;
 }
 
 .server-filter-row {
@@ -2029,19 +1655,25 @@ onBeforeUnmount(() => {
 
 /* ── Server selection cards ── */
 .server-card-grid {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 8px;
+}
+
+@media (max-width: 520px) {
+  .server-card-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .server-select-card {
   border: 1px solid var(--el-border-color-light);
   border-radius: 8px;
-  padding: 12px 14px;
+  padding: 8px 10px;
   cursor: pointer;
   background: var(--el-fill-color-blank);
   transition: all 0.15s ease;
-  min-height: 72px;
+  min-height: 54px;
 }
 
 .server-select-card:hover {
@@ -2056,11 +1688,12 @@ onBeforeUnmount(() => {
 .s-card-main {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 5px;
+  min-width: 0;
 }
 
 .s-card-name {
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--el-text-color-primary);
   min-width: 0;
@@ -2073,7 +1706,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
   min-width: 0;
 }
 
@@ -2093,21 +1726,25 @@ onBeforeUnmount(() => {
 .s-card-meta-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
+  gap: 5px;
+  flex-wrap: nowrap;
   min-width: 0;
 }
 
 .s-card-host {
-  font-size: 13px;
+  font-size: 12px;
   color: var(--el-text-color-secondary);
-  word-break: break-all;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .s-card-user {
-  font-size: 13px;
+  font-size: 12px;
   color: var(--el-text-color-secondary);
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .s-card-sep {
@@ -2117,22 +1754,28 @@ onBeforeUnmount(() => {
 .s-card-tags {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 4px;
-  min-width: 120px;
+  flex-wrap: nowrap;
+  gap: 3px;
+  min-width: 0;
+  overflow: hidden;
+  flex-shrink: 0;
 }
 
-.s-card-tags-label {
-  font-size: 13px;
-  color: var(--el-text-color-placeholder);
-  white-space: nowrap;
+.s-card-tags :deep(.el-tag) {
+  max-width: 56px;
+  padding: 0 5px;
+}
+
+.s-card-tags :deep(.el-tag__content) {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .s-card-state {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 6px;
   flex-shrink: 0;
 }
 
@@ -2351,6 +1994,26 @@ onBeforeUnmount(() => {
   padding: 14px;
   background: var(--el-fill-color-blank);
   min-height: 96px;
+}
+
+.selection-card.is-step-disabled,
+.action-card.is-step-disabled,
+.disabled-step-card {
+  opacity: 0.58;
+  border-color: var(--el-border-color-lighter);
+  background: var(--el-fill-color-light);
+}
+
+.selection-card.is-step-disabled .task-type-card,
+.selection-card.is-step-disabled .file-select-card,
+.selection-card.is-step-disabled .runner-control,
+.action-card.is-step-disabled {
+  pointer-events: none;
+}
+
+.selection-card.is-step-disabled .task-type-card,
+.selection-card.is-step-disabled .file-select-card {
+  cursor: not-allowed;
 }
 
 .selection-label-row {
@@ -3237,17 +2900,6 @@ onBeforeUnmount(() => {
   margin-left: 8px;
 }
 
-.step-tip-bar {
-  background: var(--el-color-warning-light-9);
-  border: 1px solid var(--el-color-warning-light-7);
-  border-radius: 8px;
-  padding: 8px 14px;
-  margin-bottom: 10px;
-  font-size: 13px;
-  color: var(--el-color-warning-dark-2);
-  line-height: 1.5;
-}
-
 .step-title.step-title {
   font-size: 16px;
   font-weight: 600;
@@ -3255,10 +2907,6 @@ onBeforeUnmount(() => {
   padding-bottom: 12px;
   margin-bottom: 4px;
   border-bottom: 1px solid var(--el-border-color-lighter);
-}
-
-.disabled-step-card {
-  opacity: 0.6;
 }
 
 .step-placeholder {
@@ -3285,11 +2933,5 @@ onBeforeUnmount(() => {
   margin: 0 0 16px 0;
   font-size: 14px;
   line-height: 1.6;
-}
-.cancel-hint {
-  margin: 8px 0 0 0;
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-  line-height: 1.5;
 }
 </style>

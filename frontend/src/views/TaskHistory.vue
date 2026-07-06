@@ -1,9 +1,9 @@
 <template>
-  <section class="page-section">
+  <section class="page-section hpc-row-hover-only">
     <div class="toolbar">
       <div class="view-toggle">
-        <el-button :type="viewMode === 'tasks' ? 'primary' : 'default'" size="small" @click="switchView('tasks')">任务视图</el-button>
-        <el-button :type="viewMode === 'batches' ? 'primary' : 'default'" size="small" @click="switchView('batches')">批次视图</el-button>
+        <el-button :type="viewMode === 'tasks' ? 'primary' : 'default'" size="small" @click="switchView('tasks')">单次任务视图</el-button>
+        <el-button :type="viewMode === 'batches' ? 'primary' : 'default'" size="small" @click="switchView('batches')">批次任务视图</el-button>
       </div>
       <el-button class="page-refresh-button" @click="refreshCurrentView">刷新</el-button>
     </div>
@@ -60,7 +60,7 @@
         </el-tag>
       </div>
 
-      <div class="task-list" v-loading="loading">
+      <div class="task-list hpc-glow-row-group" v-loading="loading">
         <el-empty v-if="tasks.length === 0 && !loading" description="暂无任务记录" />
         <TaskCard
           v-for="task in tasks"
@@ -68,16 +68,13 @@
           :task="task"
           :env-command-tooltip="getEnvTooltip(task.task_id)"
           :verify-command-tooltip="getVerifyTooltip(task.task_id)"
-          @view-logs="openLogs"
           @continue-task="continueTask"
-          @view-artifacts="openArtifacts"
+          @download-report="downloadTaskReport"
           @prefetch-env-commands="prefetchEnvCommands"
           @prefetch-verify-commands="prefetchVerifyCommands"
           @copy-env-commands="copyEnvCommands"
           @copy-verify-commands="copyVerifyCommands"
           @cancel-task="cancelHistoryTask"
-          @delete-task="handleDelete"
-          @diagnose-task="openDiagnosis"
           @view-batch="goToBatch"
         />
       </div>
@@ -174,19 +171,18 @@
                     <el-table-column label="总耗时" width="100" align="center">
                       <template #default="{ row: t }">{{ formatDuration(t.duration_seconds) }}</template>
                     </el-table-column>
-                    <el-table-column label="操作" width="320" fixed="right">
+                    <el-table-column label="操作" width="260" fixed="right">
                       <template #default="{ row: t }">
                         <div class="batch-task-actions">
-                          <el-button size="small" link type="primary" class="batch-view-button" @click.stop="continueBatchTask(t)">查看</el-button>
-                          <el-button size="small" link @click.stop="openBatchTaskLogs(t)">日志</el-button>
-                          <el-button size="small" link :disabled="!t.has_artifacts" @click.stop="openBatchTaskArtifacts(t)">报告</el-button>
+                          <el-button size="small" link type="primary" class="task-action-button batch-view-button" @click.stop="continueBatchTask(t)">查看任务详情</el-button>
                           <el-button
                             size="small"
                             link
+                            type="primary"
+                            class="task-action-button"
                             :disabled="!isBatchTaskTerminal(t.status)"
                             @click.stop="batchTaskDownloadReport(t)"
                           >下载报告</el-button>
-                          <el-button size="small" link type="warning" @click.stop="diagnoseBatchTask(t)">诊断</el-button>
                         </div>
                       </template>
                     </el-table-column>
@@ -198,19 +194,21 @@
                     </el-table-column>
                   </el-table>
                     <!-- Summary below subtask table -->
-                    <div class="batch-expand-summary">
-                      <span class="batch-summary-item">总计 {{ d.summary.total }}</span>
-                      <span class="batch-summary-sep">|</span>
-                      <span class="batch-summary-item batch-summary-ok">成功 {{ d.summary.success }}</span>
-                      <span class="batch-summary-sep">|</span>
-                      <span class="batch-summary-item batch-summary-fail">失败 {{ d.summary.failed }}</span>
-                      <span class="batch-summary-sep">|</span>
-                      <span class="batch-summary-item batch-summary-running">运行中 {{ d.summary.running }}</span>
-                      <span class="batch-summary-sep">|</span>
-                      <span class="batch-summary-item">等待 {{ d.summary.pending }}</span>
-                      <span class="batch-summary-sep">|</span>
-                      <span class="batch-summary-item">已取消 {{ d.summary.canceled }}</span>
-                    </div>
+                    <template v-for="stats in [calcBatchChildStats(d.tasks)]" :key="'stats'">
+                      <div class="batch-expand-summary">
+                        <span class="batch-summary-item">总计 {{ stats.total }}</span>
+                        <span class="batch-summary-sep">|</span>
+                        <span class="batch-summary-item batch-summary-ok">成功 {{ stats.success }}</span>
+                        <span class="batch-summary-sep">|</span>
+                        <span class="batch-summary-item batch-summary-fail">失败 {{ stats.failed }}</span>
+                        <span class="batch-summary-sep">|</span>
+                        <span class="batch-summary-item batch-summary-running">运行中 {{ stats.running }}</span>
+                        <span class="batch-summary-sep">|</span>
+                        <span class="batch-summary-item">等待 {{ stats.pending }}</span>
+                        <span class="batch-summary-sep">|</span>
+                        <span class="batch-summary-item">已取消 {{ stats.canceled }}</span>
+                      </div>
+                    </template>
                   </template>
                 </template>
                 <el-empty v-else :description="expandedBatchError[row.batch_id] || '暂无子任务'" />
@@ -269,6 +267,30 @@
               <span>{{ row.servers.join(', ') }}</span>
             </template>
           </el-table-column>
+          <el-table-column label="操作" width="170" fixed="right">
+            <template #default="{ row }">
+              <div class="batch-row-actions">
+                <el-button
+                  v-if="canCancelBatch(row)"
+                  size="small"
+                  link
+                  type="danger"
+                  class="task-action-button"
+                  :loading="batchCancelSubmitting[row.batch_id]"
+                  @click.stop="confirmCancelBatch(row)"
+                >取消批次</el-button>
+                <el-button
+                  size="small"
+                  link
+                  type="primary"
+                  class="task-action-button"
+                  :disabled="!canDownloadBatchReport(row)"
+                  :loading="batchReportDownloading[row.batch_id]"
+                  @click.stop="downloadBatchReports(row)"
+                >下载所有报告</el-button>
+              </div>
+            </template>
+          </el-table-column>
         </el-table>
       </div>
 
@@ -284,12 +306,6 @@
         />
       </div>
     </template>
-
-    <el-dialog v-model="logDialogVisible" :title="`任务日志 ${activeTaskId}`" width="760px">
-      <div v-loading="logLoading">
-        <LogViewer :logs="logs" toolbar @download="downloadActiveTaskLogs" />
-      </div>
-    </el-dialog>
 
     <el-dialog v-model="artDialogVisible" title="结果文件" width="700px">
       <div v-if="artLoading" v-loading="artLoading" class="art-loading-wrap" />
@@ -352,6 +368,150 @@
       :task-id="diagnosisTaskId"
     />
 
+    <el-drawer
+      v-model="taskDetailDrawerVisible"
+      title="任务详情"
+      direction="rtl"
+      size="720px"
+      class="task-detail-drawer"
+      @closed="closeTaskDetailDrawer"
+    >
+      <div v-if="drawerTaskLoading && !drawerTask" v-loading="true" class="task-drawer-loading" />
+      <template v-else-if="drawerTask">
+        <div class="task-drawer-summary">
+          <div class="task-drawer-title-row">
+            <div class="task-drawer-title" :title="drawerTaskDisplayName">{{ drawerTaskDisplayName }}</div>
+            <StatusTag :status="drawerTask.status" />
+          </div>
+          <div class="task-drawer-grid">
+            <span><b>任务 ID</b><code>{{ drawerTask.task_id }}</code></span>
+            <span v-if="drawerTask.batch_id"><b>批次</b><code>{{ drawerTask.batch_id }}</code></span>
+            <span><b>服务器</b>{{ drawerServerLabel }}</span>
+            <span><b>脚本</b>{{ drawerTask.file_name || '-' }}</span>
+            <span><b>开始</b>{{ formatDate(drawerTask.start_time) }}</span>
+            <span><b>已运行</b>{{ drawerRunningDuration !== null ? formatSeconds(drawerRunningDuration) : '-' }}</span>
+            <span v-if="drawerEstimatedRemaining !== null"><b>预计剩余</b>{{ formatSeconds(drawerEstimatedRemaining) }}</span>
+          </div>
+          <el-progress
+            :percentage="drawerProgressValue"
+            :stroke-width="16"
+            :text-inside="true"
+            :status="drawerProgressStatus"
+          />
+        </div>
+
+        <div class="task-drawer-actions">
+          <el-tag v-if="drawerWsConnected" size="small" type="success">实时日志：已连接</el-tag>
+          <el-tag v-else-if="drawerWsFallback" size="small" type="warning">实时日志：普通刷新</el-tag>
+          <el-button
+            v-if="drawerShowCancelButton"
+            type="danger"
+            plain
+            size="small"
+            @click="cancelDrawerTask"
+          >取消任务</el-button>
+          <el-button size="small" type="warning" plain @click="openDrawerDiagnosis">诊断</el-button>
+          <el-button
+            v-if="drawerShowArtifactsButton"
+            size="small"
+            @click="openDrawerArtifacts"
+          >结果文件</el-button>
+          <el-button size="small" :loading="drawerTaskLoading" @click="refreshTaskDrawer">刷新</el-button>
+        </div>
+
+        <el-tabs v-model="drawerActivePanel" class="task-drawer-tabs" @tab-change="refreshDrawerPanel">
+          <el-tab-pane
+            v-for="panel in drawerVisibleMonitorTabs"
+            :key="panel.name"
+            :label="panel.label"
+            :name="panel.name"
+          />
+        </el-tabs>
+
+        <div class="task-drawer-panel">
+          <template v-if="drawerActivePanel === 'summary'">
+            <div class="task-drawer-empty">
+              <el-empty description="任务详情已加载。执行日志不会自动拉取。" :image-size="60" />
+              <div class="task-drawer-empty-msg">需要日志时切换到“执行日志”并手动加载。</div>
+            </div>
+          </template>
+          <template v-else-if="drawerActivePanel === 'logs'">
+            <div v-if="!drawerLogsLoaded && drawerLogs.length === 0" class="task-drawer-empty">
+              <el-empty description="未加载执行日志" :image-size="60" />
+              <el-button size="small" type="primary" :loading="drawerLogsLoading" @click="loadDrawerLogs">加载日志</el-button>
+            </div>
+            <LogViewer
+              v-else
+              :logs="drawerLogs"
+              max-height="calc(100vh - 420px)"
+              toolbar
+              @clear="drawerLogs = []"
+              @download="downloadDrawerLogs"
+            />
+          </template>
+          <template v-else-if="drawerActivePanel === 'cpu_mem'">
+            <div v-if="drawerMonitorLoading && !drawerMonitorData" class="task-drawer-loading-inline">
+              <el-icon class="is-loading"><Loading /></el-icon>
+              <span>正在获取 CPU/内存快照...</span>
+            </div>
+            <div v-else-if="!drawerMonitorData?.cpu_memory.available" class="task-drawer-empty">
+              <el-empty description="暂无 CPU/内存实时监控数据" :image-size="60" />
+              <div v-if="drawerMonitorData?.cpu_memory.message" class="task-drawer-empty-msg">{{ drawerMonitorData.cpu_memory.message }}</div>
+            </div>
+            <div v-else class="task-drawer-monitor-grid">
+              <div><b>CPU 使用率</b><span>{{ drawerMonitorData.cpu_memory.cpu_usage_percent ?? '-' }}%</span></div>
+              <div><b>Load Average</b><span>{{ drawerMonitorData.cpu_memory.load_avg ?? '-' }}</span></div>
+              <div><b>内存总量</b><span>{{ drawerMonitorData.cpu_memory.memory_total ?? '-' }}</span></div>
+              <div><b>内存使用</b><span>{{ drawerMonitorData.cpu_memory.memory_used ?? '-' }} ({{ drawerMonitorData.cpu_memory.memory_usage_percent ?? '-' }}%)</span></div>
+            </div>
+          </template>
+          <template v-else-if="drawerActivePanel === 'disk'">
+            <div v-if="drawerMonitorLoading && !drawerMonitorData" class="task-drawer-loading-inline">
+              <el-icon class="is-loading"><Loading /></el-icon>
+              <span>正在获取磁盘快照...</span>
+            </div>
+            <div v-else-if="!drawerMonitorData?.disk.available" class="task-drawer-empty">
+              <el-empty description="暂无磁盘监控数据" :image-size="60" />
+              <div v-if="drawerMonitorData?.disk.message" class="task-drawer-empty-msg">{{ drawerMonitorData.disk.message }}</div>
+            </div>
+            <el-table v-else :data="drawerMonitorData.disk.disk_usage" stripe size="small" max-height="360">
+              <el-table-column prop="mount" label="挂载点" />
+              <el-table-column prop="total" label="总容量" width="90" />
+              <el-table-column prop="used" label="已用" width="90" />
+              <el-table-column prop="available" label="可用" width="90" />
+              <el-table-column label="使用率" width="150">
+                <template #default="{ row }">
+                  <el-progress :percentage="row.usage_percent ?? 0" :stroke-width="12" />
+                </template>
+              </el-table-column>
+            </el-table>
+          </template>
+          <template v-else-if="drawerActivePanel === 'gpu'">
+            <div v-if="drawerMonitorLoading && !drawerMonitorData" class="task-drawer-loading-inline">
+              <el-icon class="is-loading"><Loading /></el-icon>
+              <span>正在获取 GPU 快照...</span>
+            </div>
+            <div v-else-if="!drawerMonitorData?.gpu.available" class="task-drawer-empty">
+              <el-empty description="暂无 GPU 实时监控数据" :image-size="60" />
+              <div v-if="drawerMonitorData?.gpu.message" class="task-drawer-empty-msg">{{ drawerMonitorData.gpu.message }}</div>
+            </div>
+            <div v-else class="task-drawer-gpu-grid">
+              <div v-for="gpu in drawerMonitorData.gpu.items" :key="gpu.index" class="task-drawer-gpu-card">
+                <b>{{ gpu.name }} (Index {{ gpu.index }})</b>
+                <span>GPU：{{ gpu.utilization_gpu ?? '-' }}%</span>
+                <span>显存：{{ gpu.memory_used ?? '-' }} / {{ gpu.memory_total ?? '-' }} MiB</span>
+                <span>温度：{{ gpu.temperature ?? '-' }}°C</span>
+              </div>
+            </div>
+          </template>
+          <div v-if="drawerMonitorData?.sampled_at && drawerActivePanel !== 'logs' && drawerActivePanel !== 'summary'" class="task-drawer-sampled-at">
+            采样时间：{{ formatDate(drawerMonitorData.sampled_at) }}
+          </div>
+        </div>
+      </template>
+      <el-empty v-else description="请选择任务" />
+    </el-drawer>
+
     <!-- ─── Batch detail dialog ─── -->
     <el-dialog v-model="batchDetailVisible" :title="`批次详情：${batchDetailData?.batch_id || ''}`" width="900px" :close-on-click-modal="false" class="batch-detail-dialog">
       <div v-loading="batchDetailLoading" class="batch-detail-loading-wrap">
@@ -400,19 +560,18 @@
             <el-table-column label="总耗时" width="100" align="center">
               <template #default="{ row }">{{ formatDuration(row.duration_seconds) }}</template>
             </el-table-column>
-            <el-table-column label="操作" width="320" fixed="right">
+            <el-table-column label="操作" width="260" fixed="right">
               <template #default="{ row }">
                 <div class="batch-task-actions">
-                  <el-button size="small" link type="primary" class="batch-view-button" @click="continueBatchTask(row)">查看</el-button>
-                  <el-button size="small" link @click="openBatchTaskLogs(row)">日志</el-button>
-                  <el-button size="small" link :disabled="!row.has_artifacts" @click="openBatchTaskArtifacts(row)">报告</el-button>
+                  <el-button size="small" link type="primary" class="task-action-button batch-view-button" @click="continueBatchTask(row)">查看任务详情</el-button>
                   <el-button
                     size="small"
                     link
+                    type="primary"
+                    class="task-action-button"
                     :disabled="!isBatchTaskTerminal(row.status)"
                     @click="batchTaskDownloadReport(row)"
                   >下载报告</el-button>
-                  <el-button size="small" link type="warning" @click="diagnoseBatchTask(row)">诊断</el-button>
                 </div>
               </template>
             </el-table-column>
@@ -433,9 +592,7 @@
     <!-- 取消任务确认弹窗 -->
     <el-dialog v-model="cancelDialogVisible" title="取消任务" width="420px" :close-on-click-modal="false">
       <div class="cancel-dialog-body">
-        <p class="cancel-intro">确认取消当前任务？</p>
-        <el-checkbox v-model="cancelDeleteRemote">同时删除远端工作目录和已生成文件</el-checkbox>
-        <p class="cancel-hint">不勾选时会保留远端报告和日志，便于后续查看。</p>
+        <p class="cancel-intro">确认取消当前任务？平台会先标记任务为已取消，远端进程终止为 best-effort，不会删除远端目录。</p>
       </div>
       <template #footer>
         <el-button @click="cancelDialogVisible = false">取消</el-button>
@@ -446,27 +603,24 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onActivated, onUnmounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, onActivated, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { useRoute, useRouter } from 'vue-router'
-import { cancelTask, deleteTask, downloadTaskLogs, getTask, getTaskLogs, listArtifacts, listBatches, getBatchDetail, listTasks, type ArtifactFileDetail, type BatchDetailResponse, type BatchQuery, type BatchSummaryItem, type BatchTaskDetailItem, type TaskLogRecord, type TaskListQuery, type TaskRecord } from '@/api/task'
+import { useRoute } from 'vue-router'
+import { cancelBatch, cancelTask, downloadBatchReportZip, downloadTaskLogs, getTask, getTaskLogs, getTaskMonitor, listArtifacts, listBatches, getBatchDetail, listTasks, type ArtifactFileDetail, type BatchDetailResponse, type BatchQuery, type BatchSummaryItem, type BatchTaskDetailItem, type MonitorType, type TaskLogRecord, type TaskListQuery, type TaskMonitorStructuredResponse, type TaskRecord } from '@/api/task'
 import { formatDateTime } from '@/utils/time'
-import { requireAdminConfirm } from '@/composables/useAdminConfirm'
-import { buildConfirmContent } from '@/utils/confirm'
+import { useTaskWebSocket } from '@/composables/useTaskWebSocket'
+import { calcDurationSeconds, calcEstimatedRemaining, calcProgress, formatSeconds, getTaskDuration } from '@/composables/useTaskProgress'
+import { formatTaskDisplayName } from '@/utils/taskDisplay'
 import LogViewer from '@/components/LogViewer.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import TaskCard from '@/components/TaskCard.vue'
 import TaskDiagnosisDialog from '@/components/TaskDiagnosisDialog.vue'
+import { Loading } from '@element-plus/icons-vue'
 
 const route = useRoute()
-const router = useRouter()
 
 const loading = ref(false)
-const logLoading = ref(false)
-const logDialogVisible = ref(false)
-const activeTaskId = ref('')
 const tasks = ref<TaskRecord[]>([])
-const logs = ref<TaskLogRecord[]>([])
 
 const artDialogVisible = ref(false)
 const artLoading = ref(false)
@@ -491,6 +645,26 @@ const artifactGroups = computed(() => {
 })
 const taskLogCache = reactive<Record<string, TaskLogRecord[]>>({})
 
+type DrawerMonitorPanel = 'summary' | 'logs' | 'cpu_mem' | 'disk' | 'gpu'
+
+const taskDetailDrawerVisible = ref(false)
+const drawerSelectedTaskId = ref('')
+const drawerTask = ref<TaskRecord | null>(null)
+const drawerLogs = ref<TaskLogRecord[]>([])
+const drawerLogsLoaded = ref(false)
+const drawerLogsLoading = ref(false)
+const drawerTaskLoading = ref(false)
+const drawerActivePanel = ref<DrawerMonitorPanel>('summary')
+const drawerMonitorData = ref<TaskMonitorStructuredResponse | null>(null)
+const drawerMonitorLoading = ref(false)
+const drawerWsHook = useTaskWebSocket()
+const drawerWsConnected = ref(false)
+const drawerWsFallback = ref(false)
+const drawerNow = ref(new Date())
+let drawerPollTimer: ReturnType<typeof setInterval> | null = null
+let drawerNowTimer: ReturnType<typeof setInterval> | null = null
+let drawerMonitorTimer: ReturnType<typeof setInterval> | null = null
+
 // ── Batch view (Phase 26A) ──
 const viewMode = ref<'tasks' | 'batches'>('tasks')
 const batchLoading = ref(false)
@@ -505,6 +679,8 @@ const expandedBatchKeys = ref<string[]>([])
 const expandedBatchData = ref<Record<string, BatchDetailResponse | null>>({})
 const expandedBatchLoading = ref<Record<string, boolean>>({})
 const expandedBatchError = ref<Record<string, string>>({})
+const batchCancelSubmitting = ref<Record<string, boolean>>({})
+const batchReportDownloading = ref<Record<string, boolean>>({})
 
 /** Ref to the batch el-table instance, used for programmatic toggleRowExpansion. */
 const batchTableRef = ref()
@@ -531,6 +707,37 @@ const isAutoRefreshing = ref(false)
 let autoRefreshTimer: ReturnType<typeof setInterval> | null = null
 const TERMINAL_STATUSES = ['SUCCESS', 'FAILED', 'CANCELED']
 const BATCH_TERMINAL_STATUSES = ['SUCCESS', 'FAILED', 'CANCELED', 'PARTIAL_FAILED', 'PARTIAL_CANCELED']
+const BATCH_PENDING_STATUSES = ['PENDING', 'QUEUED', 'CREATED']
+const BATCH_FAILED_STATUSES = ['FAILED', 'TIMEOUT']
+const BATCH_CANCELED_STATUSES = ['CANCELED', 'CANCELLED']
+
+function calcBatchChildStats(tasks: BatchTaskDetailItem[]) {
+  const stats = {
+    total: tasks.length,
+    success: 0,
+    failed: 0,
+    running: 0,
+    pending: 0,
+    canceled: 0,
+  }
+
+  for (const task of tasks) {
+    const status = String(task.status || '').toUpperCase()
+    if (status === 'SUCCESS') {
+      stats.success += 1
+    } else if (BATCH_FAILED_STATUSES.includes(status)) {
+      stats.failed += 1
+    } else if (status === 'RUNNING') {
+      stats.running += 1
+    } else if (BATCH_PENDING_STATUSES.includes(status)) {
+      stats.pending += 1
+    } else if (BATCH_CANCELED_STATUSES.includes(status)) {
+      stats.canceled += 1
+    }
+  }
+
+  return stats
+}
 
 const batchFilters = reactive<BatchQuery>({
   page: 1,
@@ -563,9 +770,288 @@ const hasActiveFilters = computed(() => {
   )
 })
 
+const drawerTaskDisplayName = computed(() => {
+  return drawerTask.value ? formatTaskDisplayName(drawerTask.value) : drawerSelectedTaskId.value || '-'
+})
+
+const drawerServerLabel = computed(() => {
+  const task = drawerTask.value
+  if (!task) return '-'
+  if (task.server_name && task.server_host) return `${task.server_name} (${task.server_host})`
+  return task.server_name || task.server_host || `Server #${task.server_id}`
+})
+
+const drawerRunningDuration = computed(() => {
+  const task = drawerTask.value
+  if (!task) return null
+  return calcDurationSeconds(task.start_time, task.end_time, drawerNow.value)
+})
+
+const drawerEstimatedRemaining = computed(() => {
+  const task = drawerTask.value
+  const elapsed = drawerRunningDuration.value
+  if (!task || elapsed === null) return null
+  return calcEstimatedRemaining(task, elapsed)
+})
+
+const drawerProgressValue = computed(() => {
+  const task = drawerTask.value
+  if (!task) return 0
+  const status = task.status?.toUpperCase() ?? ''
+  if (status === 'SUCCESS') return 100
+  if (status === 'PENDING') return 0
+  const progress = calcProgress(task, drawerRunningDuration.value ?? undefined)
+  if (status === 'RUNNING' && progress !== null) return Math.min(99, progress)
+  return progress ?? 0
+})
+
+const drawerProgressStatus = computed<'success' | 'exception' | 'warning' | undefined>(() => {
+  const status = drawerTask.value?.status?.toUpperCase() ?? ''
+  if (status === 'SUCCESS') return 'success'
+  if (status === 'FAILED') return 'exception'
+  if (status === 'CANCELED') return 'warning'
+  return undefined
+})
+
+const drawerShowCancelButton = computed(() => {
+  const status = drawerTask.value?.status?.toUpperCase() ?? ''
+  return ['PENDING', 'CONNECTING', 'PREPARING', 'UPLOADING', 'RUNNING'].includes(status)
+})
+
+const drawerShowArtifactsButton = computed(() => {
+  const task = drawerTask.value
+  if (!task) return false
+  return task.task_type === 'stress' && ['SUCCESS', 'FAILED', 'CANCELED'].includes(task.status?.toUpperCase() ?? '')
+})
+
+const drawerIsTerminal = computed(() => {
+  const status = drawerTask.value?.status?.toUpperCase() ?? ''
+  return TERMINAL_STATUSES.includes(status)
+})
+
+const drawerVisibleMonitorTabs = computed<Array<{ name: DrawerMonitorPanel; label: string; monitorType?: MonitorType }>>(() => {
+  const type = drawerTask.value?.task_type
+  const base: Array<{ name: DrawerMonitorPanel; label: string; monitorType?: MonitorType }> = [
+    { name: 'summary', label: '详情概览' },
+    { name: 'logs', label: '执行日志' },
+  ]
+  if (drawerIsTerminal.value) return base
+  if (type === 'stress') {
+    return [
+      ...base,
+      { name: 'cpu_mem', label: 'CPU/内存', monitorType: 'cpu_mem' },
+      { name: 'disk', label: '磁盘', monitorType: 'disk' },
+      { name: 'gpu', label: 'GPU', monitorType: 'gpu' },
+    ]
+  }
+  if (type === 'apptainer') {
+    return [
+      ...base,
+      { name: 'disk', label: '磁盘 IO', monitorType: 'disk' },
+    ]
+  }
+  return base
+})
+
+watch(drawerVisibleMonitorTabs, (tabs) => {
+  if (!tabs.some(tab => tab.name === drawerActivePanel.value)) {
+    drawerActivePanel.value = 'summary'
+  }
+})
+
 function continueTask(task: TaskRecord) {
-  localStorage.setItem('hpcdeploy.currentTaskId', task.task_id)
-  router.push(`/task-runner?task_id=${task.task_id}`)
+  openTaskDetailDrawer(task.task_id, task)
+}
+
+async function openTaskDetailDrawer(taskId: string, initialTask?: TaskRecord) {
+  drawerSelectedTaskId.value = taskId
+  drawerTask.value = initialTask ?? null
+  drawerLogs.value = []
+  drawerLogsLoaded.value = false
+  drawerLogsLoading.value = false
+  drawerActivePanel.value = 'summary'
+  drawerMonitorData.value = null
+  taskDetailDrawerVisible.value = true
+  await refreshTaskDrawer()
+  if (!drawerIsTerminal.value) {
+    startDrawerRealtime(taskId)
+  }
+}
+
+function startDrawerRealtime(taskId: string) {
+  stopDrawerRealtime()
+  drawerNow.value = new Date()
+  drawerNowTimer = setInterval(() => {
+    drawerNow.value = new Date()
+  }, 1000)
+
+  drawerWsConnected.value = false
+  drawerWsFallback.value = false
+  drawerWsHook.connect(
+    taskId,
+    (level, line, created_at) => {
+      drawerLogs.value = [
+        ...drawerLogs.value,
+        { id: 0, task_id: taskId, level, message: line, created_at: created_at || '' },
+      ]
+    },
+    (status) => {
+      if (drawerTask.value) drawerTask.value = { ...drawerTask.value, status }
+    },
+    (status) => {
+      if (drawerTask.value) drawerTask.value = { ...drawerTask.value, status }
+      void refreshTaskDrawer()
+    },
+  )
+
+  const wsCheckTimer = window.setInterval(() => {
+    if (drawerWsHook.getIsConnected()) {
+      drawerWsConnected.value = true
+      window.clearInterval(wsCheckTimer)
+    }
+    if (drawerWsHook.getWsError()) {
+      drawerWsFallback.value = true
+      window.clearInterval(wsCheckTimer)
+    }
+  }, 500)
+  window.setTimeout(() => window.clearInterval(wsCheckTimer), 5000)
+
+  drawerPollTimer = setInterval(() => {
+    void refreshTaskDrawer(true)
+  }, 2000)
+  startDrawerMonitorPolling()
+}
+
+function stopDrawerRealtime() {
+  drawerWsHook.disconnect()
+  drawerWsConnected.value = false
+  drawerWsFallback.value = false
+  if (drawerPollTimer !== null) {
+    clearInterval(drawerPollTimer)
+    drawerPollTimer = null
+  }
+  if (drawerNowTimer !== null) {
+    clearInterval(drawerNowTimer)
+    drawerNowTimer = null
+  }
+  stopDrawerMonitorPolling()
+}
+
+function closeTaskDetailDrawer() {
+  stopDrawerRealtime()
+  drawerSelectedTaskId.value = ''
+  drawerTask.value = null
+  drawerLogs.value = []
+  drawerLogsLoaded.value = false
+  drawerLogsLoading.value = false
+  drawerMonitorData.value = null
+}
+
+async function refreshTaskDrawer(silent = false) {
+  const taskId = drawerSelectedTaskId.value
+  if (!taskId) return
+  if (!silent) drawerTaskLoading.value = true
+  try {
+    const taskResp = await getTask(taskId)
+    drawerTask.value = taskResp.data
+    if (drawerIsTerminal.value) {
+      stopDrawerRealtime()
+    }
+    if (!silent) drawerTaskLoading.value = false
+    if (drawerActivePanel.value !== 'logs' && drawerActivePanel.value !== 'summary') {
+      await fetchDrawerMonitorData()
+    }
+  } catch (error) {
+    console.error(error)
+    if (!silent) ElMessage.error(`加载任务详情失败：${getApiErrorMessage(error) || '未知错误'}`)
+  } finally {
+    if (!silent) drawerTaskLoading.value = false
+  }
+}
+
+async function refreshDrawerLogs(taskId: string) {
+  if (taskLogCache[taskId]) {
+    drawerLogs.value = taskLogCache[taskId]
+    drawerLogsLoaded.value = true
+    return
+  }
+  try {
+    const logsResp = await getTaskLogs(taskId)
+    taskLogCache[taskId] = logsResp.data
+    if (drawerSelectedTaskId.value === taskId) {
+      drawerLogs.value = logsResp.data
+      drawerLogsLoaded.value = true
+    }
+  } catch {
+    // Detail drawer should stay responsive even if a large log request fails.
+  }
+}
+
+async function loadDrawerLogs() {
+  const taskId = drawerSelectedTaskId.value
+  if (!taskId) return
+  drawerLogsLoading.value = true
+  try {
+    await refreshDrawerLogs(taskId)
+  } finally {
+    drawerLogsLoading.value = false
+  }
+}
+
+function startDrawerMonitorPolling() {
+  stopDrawerMonitorPolling()
+  drawerMonitorTimer = setInterval(() => {
+    void fetchDrawerMonitorData()
+  }, 5000)
+}
+
+function stopDrawerMonitorPolling() {
+  if (drawerMonitorTimer !== null) {
+    clearInterval(drawerMonitorTimer)
+    drawerMonitorTimer = null
+  }
+}
+
+async function fetchDrawerMonitorData() {
+  if (!drawerSelectedTaskId.value) return
+  if (drawerActivePanel.value === 'logs' || drawerActivePanel.value === 'summary') return
+  drawerMonitorLoading.value = true
+  try {
+    const resp = await getTaskMonitor(drawerSelectedTaskId.value)
+    drawerMonitorData.value = resp.data
+  } catch {
+    // keep previous snapshot
+  } finally {
+    drawerMonitorLoading.value = false
+  }
+}
+
+async function refreshDrawerPanel() {
+  if (drawerActivePanel.value === 'logs') {
+    if (!drawerLogsLoaded.value) await loadDrawerLogs()
+  } else if (drawerActivePanel.value === 'summary') {
+    await refreshTaskDrawer(true)
+  } else {
+    await fetchDrawerMonitorData()
+  }
+}
+
+function downloadDrawerLogs() {
+  if (drawerSelectedTaskId.value) downloadTaskLogs(drawerSelectedTaskId.value)
+}
+
+function cancelDrawerTask() {
+  if (drawerTask.value) cancelHistoryTask(drawerTask.value)
+}
+
+function openDrawerDiagnosis() {
+  if (!drawerSelectedTaskId.value) return
+  diagnosisTaskId.value = drawerSelectedTaskId.value
+  diagnosisVisible.value = true
+}
+
+function openDrawerArtifacts() {
+  if (drawerTask.value) openArtifacts(drawerTask.value)
 }
 
 async function loadTasks(silent = false) {
@@ -761,6 +1247,93 @@ async function loadBatchDetailData(batchId: string) {
   }
 }
 
+function canCancelBatch(row: BatchSummaryItem): boolean {
+  if (BATCH_TERMINAL_STATUSES.includes(row.status)) return false
+  return (row.running || 0) > 0 || (row.pending || 0) > 0
+}
+
+function canDownloadBatchReport(row: BatchSummaryItem): boolean {
+  return row.status !== 'RUNNING' && row.total > 0
+}
+
+function getDownloadFilename(contentDisposition: string | undefined, fallback: string): string {
+  if (!contentDisposition) return fallback
+  const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i)
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1])
+    } catch {
+      return utf8Match[1]
+    }
+  }
+  const asciiMatch = contentDisposition.match(/filename="?([^";]+)"?/i)
+  return asciiMatch?.[1] || fallback
+}
+
+async function downloadBatchReports(row: BatchSummaryItem) {
+  if (!canDownloadBatchReport(row)) {
+    ElMessage.warning('批次仍在运行，报告尚未全部生成')
+    return
+  }
+
+  batchReportDownloading.value[row.batch_id] = true
+  try {
+    const resp = await downloadBatchReportZip(row.batch_id)
+    const filename = getDownloadFilename(
+      resp.headers['content-disposition'],
+      `${row.batch_id}_reports.zip`,
+    )
+    const url = window.URL.createObjectURL(resp.data)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = filename
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    window.URL.revokeObjectURL(url)
+  } catch (err) {
+    ElMessage.error(`下载失败：${getApiErrorMessage(err) || '未知错误'}`)
+  } finally {
+    batchReportDownloading.value[row.batch_id] = false
+  }
+}
+
+async function confirmCancelBatch(row: BatchSummaryItem) {
+  try {
+    await ElMessageBox.confirm(
+      '确认取消该批次下所有未完成任务吗？\n已完成任务不会受影响，远端目录不会删除。\n如果服务器不可达，平台会将任务标记为已取消，但远端进程无法确认。',
+      '取消批次',
+      {
+        confirmButtonText: '确认取消批次',
+        cancelButtonText: '取消',
+        type: 'warning',
+      }
+    )
+  } catch {
+    return
+  }
+
+  batchCancelSubmitting.value[row.batch_id] = true
+  try {
+    const resp = (await cancelBatch(row.batch_id)).data
+    const hasRemoteUnreachable = resp.items.some(item => item.message.includes('remote unreachable'))
+    const message = `已取消 ${resp.canceled} 个未完成任务，跳过 ${resp.skipped} 个已结束任务。`
+    if (hasRemoteUnreachable) {
+      ElMessage.warning(`${message} 部分远端进程无法确认。`)
+    } else {
+      ElMessage.success(message)
+    }
+    await loadBatches()
+    if (viewMode.value === 'tasks') {
+      await loadTasks(true)
+    }
+  } catch (err) {
+    ElMessage.error(`取消批次失败：${getApiErrorMessage(err)}`)
+  } finally {
+    batchCancelSubmitting.value[row.batch_id] = false
+  }
+}
+
 async function refreshExpandedBatches() {
   for (const batchId of expandedBatchKeys.value) {
     try {
@@ -948,83 +1521,43 @@ async function batchTaskDownloadReport(task: BatchTaskDetailItem) {
     ElMessage.warning('报告尚未生成')
     return
   }
-  const tid = task.task_id
+  await downloadReportByTaskId(task.task_id)
+}
+
+async function downloadReportByTaskId(taskId: string) {
   try {
-    const resp = await listArtifacts(tid)
+    const resp = await listArtifacts(taskId)
     const xlsxFiles = resp.data.files.filter(f => f.name.endsWith('.xlsx'))
     if (xlsxFiles.length === 0) {
       ElMessage.warning('未找到 xlsx 报告')
       return
     }
     const target = xlsxFiles.find(f => /report/i.test(f.name)) || xlsxFiles[0]
-    window.open(`/api/tasks/${tid}/artifacts/${encodeURIComponent(target.name)}/download`, '_blank')
+    window.open(`/api/tasks/${taskId}/artifacts/${encodeURIComponent(target.name)}/download`, '_blank')
   } catch (err) {
     ElMessage.error(`下载失败：${getApiErrorMessage(err)}`)
   }
 }
 
-function openBatchTaskLogs(task: BatchTaskDetailItem) {
-  activeTaskId.value = task.task_id
-  logs.value = []
-  logDialogVisible.value = true
-  logLoading.value = true
-  getTaskLogs(task.task_id).then((resp) => {
-    logs.value = resp.data
-  }).finally(() => {
-    logLoading.value = false
-  })
-}
-
-function openBatchTaskArtifacts(task: BatchTaskDetailItem) {
-  activeArtTaskId.value = task.task_id
-  artFiles.value = []
-  artDir.value = ''
-  artDialogVisible.value = true
-  artLoading.value = true
-  Promise.all([listArtifacts(task.task_id), getTask(task.task_id)]).then(([artResp, taskResp]) => {
-    artDir.value = taskResp.data.remote_work_dir || ''
-    artFiles.value = artResp.data.files
-  }).finally(() => {
-    artLoading.value = false
-  })
-}
-
-function diagnoseBatchTask(task: BatchTaskDetailItem) {
-  diagnosisTaskId.value = task.task_id
-  diagnosisVisible.value = true
+async function downloadTaskReport(task: TaskRecord) {
+  const status = task.status?.toUpperCase() ?? ''
+  if (!TERMINAL_STATUSES.includes(status)) {
+    ElMessage.warning('报告尚未生成')
+    return
+  }
+  await downloadReportByTaskId(task.task_id)
 }
 
 function continueBatchTask(task: BatchTaskDetailItem) {
-  localStorage.setItem('hpcdeploy.currentTaskId', task.task_id)
-  router.push(`/task-runner?task_id=${task.task_id}`)
-}
-
-async function openLogs(task: TaskRecord) {
-  activeTaskId.value = task.task_id
-  logs.value = []
-  logDialogVisible.value = true
-  logLoading.value = true
-  try {
-    logs.value = await ensureTaskLogs(task.task_id)
-  } finally {
-    logLoading.value = false
-  }
-}
-
-function downloadActiveTaskLogs() {
-  if (activeTaskId.value) {
-    downloadTaskLogs(activeTaskId.value)
-  }
+  openTaskDetailDrawer(task.task_id)
 }
 
 const cancelDialogVisible = ref(false)
-const cancelDeleteRemote = ref(false)
 const cancelSubmitting = ref(false)
 let cancelTargetTask: TaskRecord | null = null
 
 function cancelHistoryTask(task: TaskRecord) {
   cancelTargetTask = task
-  cancelDeleteRemote.value = false
   cancelDialogVisible.value = true
 }
 
@@ -1033,14 +1566,16 @@ async function confirmCancelTask() {
   cancelDialogVisible.value = false
   cancelSubmitting.value = true
   try {
-    await cancelTask(cancelTargetTask.task_id, cancelDeleteRemote.value)
-    ElMessage.success('已提交取消请求')
+    const resp = await cancelTask(cancelTargetTask.task_id)
+    const message = resp.data.message?.trim()
+    if (message && (message.includes('不可达') || message.includes('无法确认'))) {
+      ElMessage.warning(message)
+    } else {
+      ElMessage.success(message || '任务已取消')
+    }
     await loadTasks()
-    if (activeTaskId.value === cancelTargetTask.task_id) {
-      const [taskResp, logsResp] = await Promise.all([getTask(cancelTargetTask.task_id), getTaskLogs(cancelTargetTask.task_id)])
-      taskLogCache[cancelTargetTask.task_id] = logsResp.data
-      logs.value = logsResp.data
-      activeTaskId.value = taskResp.data.task_id
+    if (drawerSelectedTaskId.value === cancelTargetTask.task_id) {
+      await refreshTaskDrawer(true)
     }
   } catch (error) {
     console.error(error)
@@ -1048,41 +1583,6 @@ async function confirmCancelTask() {
   } finally {
     cancelSubmitting.value = false
     cancelTargetTask = null
-  }
-}
-
-async function handleDelete(task: TaskRecord) {
-  const ok = await requireAdminConfirm('删除任务')
-  if (!ok) return
-  try {
-    await ElMessageBox.confirm(
-      buildConfirmContent({
-        intro: '确认删除该任务？\n此操作不可恢复。',
-        doTitle: '将删除：',
-        doItems: ['任务历史记录', '任务日志', '本地结果文件', '本次任务远端工作目录'],
-        dontTitle: '不会删除：',
-        dontItems: ['服务器配置', '脚本知识库文件', '已安装到 /opt、/usr 的软件', 'Apptainer 容器仓库', '其他任务记录'],
-      }),
-      '删除任务',
-      {
-        confirmButtonText: '确认删除',
-        cancelButtonText: '取消',
-        type: 'warning',
-        customClass: 'confirm-dialog'
-      }
-    )
-  } catch {
-    return
-  }
-
-  try {
-    const resp = (await deleteTask(task.task_id)).data
-    ElMessage.success('任务已删除')
-    await loadTasks()
-  } catch (error) {
-    console.error(error)
-    const detail = getApiErrorMessage(error)
-    ElMessage.error(detail ? `删除失败：${detail}` : '删除失败')
   }
 }
 
@@ -1121,12 +1621,6 @@ function downloadArtifact(filename: string) {
 function copyArtifactDir() {
   navigator.clipboard.writeText(artDir.value)
 }
-
-function openDiagnosis(task: TaskRecord) {
-  diagnosisTaskId.value = task.task_id
-  diagnosisVisible.value = true
-}
-
 
 async function ensureTaskLogs(taskId: string) {
   if (taskLogCache[taskId]) {
@@ -1261,7 +1755,7 @@ onMounted(async () => {
     if (!isNaN(sid)) filters.server_id = sid
   }
 
-  if (qView === 'batch') {
+  if (qView === 'batch' || qView === 'batches') {
     if (typeof qBatchId === 'string' && qBatchId) {
       await locateBatch(qBatchId)
     } else {
@@ -1288,6 +1782,7 @@ onActivated(() => {
 })
 onUnmounted(() => {
   stopAutoRefresh()
+  stopDrawerRealtime()
 })
 </script>
 
@@ -1472,6 +1967,17 @@ onUnmounted(() => {
   font-family: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
 }
 
+.batch-no-action {
+  color: var(--el-text-color-placeholder);
+}
+
+.batch-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
 /* ── Batch detail dialog ── */
 .batch-detail-dialog :deep(.batch-detail-summary-bar) {
   display: flex;
@@ -1567,6 +2073,32 @@ onUnmounted(() => {
   color: var(--el-text-color-placeholder);
 }
 
+/* ── Task history table visual hierarchy ── */
+.hpc-row-hover-only :deep(.el-table__body tbody > tr:hover) {
+  outline: none !important;
+  box-shadow: none !important;
+  animation: none !important;
+}
+
+.hpc-row-hover-only :deep(.el-table__body tbody > tr.current-row > td.el-table__cell),
+.hpc-row-hover-only :deep(.el-table__body tbody > tr.current-row:hover > td.el-table__cell) {
+  background-color: transparent !important;
+}
+
+.hpc-row-hover-only :deep(.el-table__body tbody > tr.el-table__row:hover > td.el-table__cell) {
+  background-color: rgba(0, 0, 0, 0.02) !important;
+}
+
+.hpc-row-hover-only :deep(.el-table__expanded-cell) {
+  border: none !important;
+  box-shadow: none !important;
+  background-color: transparent !important;
+}
+
+.hpc-row-hover-only :deep(.el-table__expanded-cell:hover) {
+  background-color: transparent !important;
+}
+
 /* ── Batch subtask action buttons ── */
 .batch-task-actions {
   display: flex;
@@ -1577,11 +2109,178 @@ onUnmounted(() => {
 
 .batch-task-actions .el-button {
   margin-left: 0;
-  padding: 0;
 }
 
 .batch-task-actions .batch-view-button {
   color: var(--el-color-primary-light-3);
+}
+
+.batch-task-actions :deep(.task-action-button.el-button),
+.batch-row-actions :deep(.task-action-button.el-button) {
+  min-height: 24px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition:
+    background-color 0.14s ease,
+    box-shadow 0.14s ease,
+    color 0.14s ease;
+}
+
+.batch-task-actions :deep(.task-action-button.el-button:not(.is-disabled):hover),
+.batch-row-actions :deep(.task-action-button.el-button:not(.is-disabled):hover) {
+  background: rgba(64, 158, 255, 0.10);
+  box-shadow:
+    0 0 0 1px rgba(64, 158, 255, 0.28),
+    0 0 8px rgba(64, 158, 255, 0.16);
+}
+
+.batch-task-actions :deep(.task-action-button.el-button:not(.is-disabled):active),
+.batch-row-actions :deep(.task-action-button.el-button:not(.is-disabled):active) {
+  background: rgba(64, 158, 255, 0.20);
+}
+
+.batch-task-actions :deep(.task-action-button.el-button:focus-visible),
+.batch-row-actions :deep(.task-action-button.el-button:focus-visible) {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 2px;
+  box-shadow:
+    0 0 0 1px rgba(64, 158, 255, 0.32),
+    0 0 10px rgba(64, 158, 255, 0.20);
+}
+
+/* ── Task detail drawer ── */
+.task-detail-drawer :deep(.el-drawer__body) {
+  padding: 14px 16px 18px;
+}
+
+.task-drawer-loading {
+  min-height: 240px;
+}
+
+.task-drawer-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.task-drawer-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.task-drawer-title {
+  min-width: 0;
+  font-size: 16px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-drawer-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 14px;
+  font-size: 13px;
+}
+
+.task-drawer-grid span {
+  min-width: 0;
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-drawer-grid b {
+  color: var(--el-text-color-secondary);
+  font-weight: 500;
+  flex: 0 0 auto;
+}
+
+.task-drawer-grid code {
+  color: var(--el-color-primary);
+  font-family: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.task-drawer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0 6px;
+}
+
+.task-drawer-tabs {
+  margin-top: 6px;
+}
+
+.task-drawer-panel {
+  min-height: 260px;
+}
+
+.task-drawer-loading-inline,
+.task-drawer-empty {
+  min-height: 180px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--el-text-color-secondary);
+}
+
+.task-drawer-empty {
+  flex-direction: column;
+}
+
+.task-drawer-empty-msg {
+  max-width: 560px;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+  text-align: center;
+}
+
+.task-drawer-monitor-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.task-drawer-monitor-grid > div,
+.task-drawer-gpu-card {
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--el-fill-color-lighter);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.task-drawer-monitor-grid b,
+.task-drawer-gpu-card b {
+  color: var(--el-text-color-secondary);
+  font-weight: 500;
+}
+
+.task-drawer-gpu-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.task-drawer-sampled-at {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 
 /* ── Cancel dialog ── */
@@ -1592,11 +2291,5 @@ onUnmounted(() => {
   margin: 0 0 16px 0;
   font-size: 14px;
   line-height: 1.6;
-}
-.cancel-hint {
-  margin: 8px 0 0 0;
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-  line-height: 1.5;
 }
 </style>

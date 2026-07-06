@@ -4,11 +4,11 @@ After=network.target
 
 [Service]
 Type=simple
-User=tjzs
-Group=tjzs
-WorkingDirectory=/home/tjzs/projects/hpc-deploy/backend
-Environment=PYTHONPATH=/home/tjzs/projects/hpc-deploy/backend/.deps:/home/tjzs/projects/hpc-deploy/backend
-ExecStart=/home/tjzs/projects/hpc-deploy/backend/.deps/bin/uvicorn main:app --host 127.0.0.1 --port 8000
+User=REPLACED_BY_INSTALL_SCRIPT
+Group=REPLACED_BY_INSTALL_SCRIPT
+WorkingDirectory=REPLACED_BY_INSTALL_SCRIPT/backend
+Environment=PYTHONPATH=REPLACED_BY_INSTALL_SCRIPT/backend/.deps:REPLACED_BY_INSTALL_SCRIPT/backend
+ExecStart=REPLACED_BY_INSTALL_SCRIPT/backend/.deps/bin/uvicorn main:app --host 127.0.0.1 --port 8000
 Restart=always
 RestartSec=3
 

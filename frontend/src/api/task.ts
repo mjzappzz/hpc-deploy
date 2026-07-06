@@ -127,6 +127,28 @@ export interface TaskCleanupResponse {
   messages: string[]
 }
 
+export interface TaskCancelResponse {
+  task_id: string
+  status: string
+  message: string | null
+}
+
+export interface BatchCancelItem {
+  task_id: string
+  old_status: string
+  new_status: string
+  message: string
+}
+
+export interface BatchCancelResponse {
+  batch_id: string
+  total: number
+  canceled: number
+  skipped: number
+  failed: number
+  items: BatchCancelItem[]
+}
+
 export interface TaskDeleteResponse {
   task_id: string
   deleted: boolean
@@ -176,7 +198,11 @@ export function getTaskLogs(taskId: string) {
 }
 
 export function cancelTask(taskId: string, deleteRemoteFiles = false) {
-  return request.post<RunTaskResult>(`/tasks/${taskId}/cancel`, { delete_remote_files: deleteRemoteFiles })
+  return request.post<TaskCancelResponse>(`/tasks/${taskId}/cancel`, { delete_remote_files: deleteRemoteFiles })
+}
+
+export function cancelBatch(batchId: string) {
+  return request.post<BatchCancelResponse>(`/tasks/batches/${batchId}/cancel`, { delete_remote: false })
 }
 
 export function cleanupTask(taskId: string) {
@@ -322,4 +348,10 @@ export function listBatches(params?: BatchQuery) {
 
 export function getBatchDetail(batchId: string) {
   return request.get<BatchDetailResponse>(`/tasks/batches/${batchId}`)
+}
+
+export function downloadBatchReportZip(batchId: string) {
+  return request.get<Blob>(`/batch/${batchId}/report/download-zip`, {
+    responseType: 'blob',
+  })
 }

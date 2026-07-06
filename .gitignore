@@ -29,6 +29,7 @@ backend/data/*.sqlite
 backend/data/*.sqlite3
 backend/data/artifacts/
 backend/data/tmp/
+backend/data/*.lock
 data/*.db
 data/*.sqlite
 data/*.sqlite3

@@ -28,6 +28,27 @@ class TaskCancelRequest(BaseModel):
 class TaskCancelResponse(BaseModel):
     task_id: str
     status: str
+    message: str | None = None
+
+
+class BatchCancelRequest(BaseModel):
+    delete_remote: bool = False
+
+
+class BatchCancelItem(BaseModel):
+    task_id: str
+    old_status: str
+    new_status: str
+    message: str
+
+
+class BatchCancelResponse(BaseModel):
+    batch_id: str
+    total: int
+    canceled: int
+    skipped: int
+    failed: int
+    items: list[BatchCancelItem]
 
 
 class TaskMonitorRequest(BaseModel):

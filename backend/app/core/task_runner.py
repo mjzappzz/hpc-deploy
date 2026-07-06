@@ -1,8 +1,11 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
+import os
 import re
+import threading
 from time import monotonic
 
+from app.core.report_summary import schedule_report_summary_generation
 from app.core.script_library import get_library_file_record, resolve_library_path
 from app.core.script_validator import ScriptValidationError
 from app.core.ssh_executor import SSHCommandTimeoutError, SSHExecutor, SSHExecutorError, shell_quote
@@ -42,6 +45,20 @@ STDERR_WARN_PATTERNS = (
 )
 PID_FILE_NAME = ".hpcdeploy.pid"
 CANCELED_EXIT_CODE = -15
+TASK_LEASE_SECONDS = 600
+STRESS_STARTUP_TIMEOUT_SECONDS = 300
+STRESS_FATAL_LOG_RULES: tuple[tuple[re.Pattern, str], ...] = (
+    (re.compile(r"nvidia-smi not found", re.IGNORECASE), "GPU stress failed before start: nvidia-smi not found"),
+    (re.compile(r"未检测到 NVIDIA GPU", re.IGNORECASE), "GPU stress failed before start: no NVIDIA GPU detected"),
+    (re.compile(r"nvcc not found.*无法编译 gpu-burn|nvcc not found", re.IGNORECASE), "GPU stress failed before start: nvcc not found"),
+    (re.compile(r"gpu-burn build failed", re.IGNORECASE), "GPU stress failed before start: gpu-burn build failed"),
+    (re.compile(r"GitHub clone failed", re.IGNORECASE), "GPU stress failed before start: gpu-burn source download failed"),
+    (re.compile(r"ERROR:\s*stress-ng not found", re.IGNORECASE), "CPU/memory stress failed before start: stress-ng not found"),
+    (re.compile(r"ERROR:\s*python3 not found", re.IGNORECASE), "stress failed before start: python3 not found"),
+    (re.compile(r"ERROR:\s*python3-openpyxl not found|python3-openpyxl not found", re.IGNORECASE), "stress failed before start: python3-openpyxl not found"),
+    (re.compile(r"\[ERROR\]\s*Unsupported OS", re.IGNORECASE), "stress failed before start: unsupported OS"),
+    (re.compile(r"\[ERROR\]\s*请使用 root 用户运行|请使用 root 用户运行", re.IGNORECASE), "stress failed before start: root user is required"),
+)
 
 
 def run_task_stage8b(task_id: str) -> None:
@@ -156,6 +173,7 @@ def run_task_stage8b(task_id: str) -> None:
             task.end_time = datetime.utcnow()
             task.error_message = None
             db.commit()
+            _broadcast_done_safe(task_id, "SUCCESS")
         else:
             _add_log(db, task_id, "SYSTEM", "stage 8B completed, script was uploaded but not executed")
             task.status = "SUCCESS"
@@ -163,6 +181,7 @@ def run_task_stage8b(task_id: str) -> None:
             task.end_time = datetime.utcnow()
             task.error_message = None
             db.commit()
+            _broadcast_done_safe(task_id, "SUCCESS")
     except (TaskRunnerError, SSHExecutorError, ScriptValidationError) as exc:
         _fail_task(db, task_id, str(exc))
     except TaskCanceledError:
@@ -387,6 +406,8 @@ def _execute_command_task(db, executor: SSHExecutor, task: Task, task_id: str, c
 
 
 def _broadcast_done_safe(task_id: str, status: str) -> None:
+    if status in TERMINAL_TASK_STATUSES:
+        schedule_report_summary_generation(task_id)
     try:
         ws_manager.broadcast_status_sync(task_id, status)
         ws_manager.broadcast_done_sync(task_id, status)
@@ -470,6 +491,99 @@ def _exec_with_reconnect(executor: SSHExecutor, cmd: str) -> str | None:
     return None
 
 
+def _classify_stress_fatal_log(log_text: str) -> str | None:
+    """Return a platform failure reason for startup/dependency fatal stress logs."""
+    for pattern, reason in STRESS_FATAL_LOG_RULES:
+        if pattern.search(log_text):
+            return reason
+    return None
+
+
+def _extract_stress_exit_reason(log_text: str) -> str:
+    fatal_reason = _classify_stress_fatal_log(log_text)
+    if fatal_reason:
+        return fatal_reason
+
+    for line in reversed(log_text.splitlines()):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        low = stripped.lower()
+        if "[error]" in low or low.startswith("error:") or "not found" in low or "exit_code=" in low:
+            return f"stress script exited before report generation: {stripped[:300]}"
+    return "stress script exited before report generation, no report found"
+
+
+def _classify_stress_startup_stall(log_text: str, elapsed: int) -> str | None:
+    if elapsed < STRESS_STARTUP_TIMEOUT_SECONDS:
+        return None
+    lower_text = log_text.lower()
+    if "[stage] stress_start" in lower_text:
+        return None
+    if "missing dependencies detected, installing" in lower_text:
+        return (
+            "stress failed before start: dependency installation did not finish "
+            f"within {STRESS_STARTUP_TIMEOUT_SECONDS}s"
+        )
+    if "[stage] dependency_check_start" in lower_text and "[stage] dependency_check_done" not in lower_text:
+        return (
+            "stress failed before start: dependency check did not finish "
+            f"within {STRESS_STARTUP_TIMEOUT_SECONDS}s"
+        )
+    if "gpu-burn not found or force rebuild, start building" in lower_text:
+        return (
+            "GPU stress failed before start: gpu-burn build did not finish "
+            f"within {STRESS_STARTUP_TIMEOUT_SECONDS}s"
+        )
+    return None
+
+
+def _is_remote_pid_alive(executor: SSHExecutor, pid_file: str) -> bool | None:
+    command = (
+        f"pid=$(cat {shell_quote(pid_file)} 2>/dev/null || true); "
+        "case \"$pid\" in ''|*[!0-9]*) echo unknown; exit 0;; esac; "
+        "if [ -d \"/proc/$pid\" ]; then echo alive; else echo dead; fi"
+    )
+    result = _exec_with_reconnect(executor, command)
+    if result is None:
+        return None
+    state = result.strip().splitlines()[-1] if result.strip() else "unknown"
+    if state == "alive":
+        return True
+    if state == "dead":
+        return False
+    return None
+
+
+def _terminate_remote_pid_group(executor: SSHExecutor, pid_file: str) -> None:
+    command = (
+        f"pid=$(cat {shell_quote(pid_file)} 2>/dev/null || true); "
+        "case \"$pid\" in ''|*[!0-9]*) exit 0;; esac; "
+        "if [ ! -d \"/proc/$pid\" ]; then exit 0; fi; "
+        "pgid=$(ps -p \"$pid\" -o pgid= 2>/dev/null | tr -d ' '); "
+        "if [ -z \"$pgid\" ] || [ \"$pgid\" = 0 ]; then exit 0; fi; "
+        "kill -TERM -\"$pgid\" 2>/dev/null || true; "
+        "sleep 3; "
+        "if ps --no-headers -g \"$pgid\" >/dev/null 2>&1; then "
+        "  kill -KILL -\"$pgid\" 2>/dev/null || true; "
+        "fi"
+    )
+    _exec_with_reconnect(executor, command)
+
+
+def _fail_running_stress_task(db, task: Task, task_id: str, message: str) -> None:
+    db.refresh(task)
+    if task.status in ("CANCELED", "CANCELING", "SUCCESS"):
+        return
+    task.status = "FAILED"
+    task.exit_code = None
+    task.end_time = datetime.utcnow()
+    task.error_message = message[:500]
+    db.commit()
+    _add_log(db, task_id, "ERROR", message[:1000])
+    _broadcast_done_safe(task_id, "FAILED")
+
+
 def _execute_stress_async(db, executor: SSHExecutor, task: Task, task_id: str, command: str) -> None:
     """后台启动 stress 脚本 + 轮询远端报告收尾。
 
@@ -489,7 +603,7 @@ def _execute_stress_async(db, executor: SSHExecutor, task: Task, task_id: str, c
 
     timeout_seconds, _ = calculate_stress_command_timeout(duration_seconds)
     grace = _calculate_stress_grace(duration_seconds)
-    poll_interval = 30
+    poll_interval = 10
 
     task.start_time = datetime.utcnow()
     db.commit()
@@ -532,6 +646,7 @@ def _execute_stress_async(db, executor: SSHExecutor, task: Task, task_id: str, c
     deadline = duration_seconds + grace
     elapsed = 0
     last_log_pos = 0
+    full_log_text = ""
 
     while elapsed < deadline:
         _poll_sleep(poll_interval)
@@ -552,11 +667,26 @@ def _execute_stress_async(db, executor: SSHExecutor, task: Task, task_id: str, c
                     executor, f"tail -c +{last_log_pos + 1} {log_file} 2>/dev/null"
                 )
                 if _seg_raw:
+                    full_log_text += _seg_raw
                     for _ln in _seg_raw.strip().split("\n"):
                         _ln = _ln.strip()
                         if _ln:
                             _add_log(db, task_id, "INFO", _ln)
                 last_log_pos = _cur
+
+        fatal_reason = _classify_stress_fatal_log(full_log_text)
+        if fatal_reason:
+            _add_log(db, task_id, "ERROR", f"stress async: fatal startup error detected: {fatal_reason}")
+            _terminate_remote_pid_group(executor, pid_file)
+            _fail_running_stress_task(db, task, task_id, fatal_reason)
+            return
+
+        startup_stall_reason = _classify_stress_startup_stall(full_log_text, elapsed)
+        if startup_stall_reason:
+            _add_log(db, task_id, "ERROR", f"stress async: startup stalled: {startup_stall_reason}")
+            _terminate_remote_pid_group(executor, pid_file)
+            _fail_running_stress_task(db, task, task_id, startup_stall_reason)
+            return
 
         # 3. 检查报告是否生成（含连接失败自动重连）
         _rx_raw = _exec_with_reconnect(
@@ -590,6 +720,18 @@ def _execute_stress_async(db, executor: SSHExecutor, task: Task, task_id: str, c
                         db.commit()
                         _broadcast_done_safe(task_id, "FAILED")
                 return
+
+        pid_alive = _is_remote_pid_alive(executor, pid_file)
+        if pid_alive is False:
+            reason = _extract_stress_exit_reason(full_log_text)
+            _add_log(db, task_id, "ERROR", f"stress async: remote script exited without report: {reason}")
+            try:
+                collect_artifacts(db, task_id, task.remote_work_dir, executor)
+            except Exception:
+                pass
+            if not _attempt_stress_recovery(db, task_id, task):
+                _fail_running_stress_task(db, task, task_id, reason)
+            return
 
         # 4. 保持 RUNNING 广播（前端进度可见）
         _broadcast_status_safe(task_id, "RUNNING")
@@ -776,11 +918,15 @@ def _should_chmod(local_path: Path) -> bool:
 def _mark_task_started(db, task: Task) -> None:
     if task.start_time is None:
         task.start_time = datetime.utcnow()
+        _touch_task_heartbeat(task)
         db.commit()
 
 
 def _add_log(db, task_id: str, level: str, message: str) -> None:
     db.add(TaskLog(task_id=task_id, level=level, message=message))
+    task = db.query(Task).filter(Task.task_id == task_id).first()
+    if task is not None and task.status in UNFINISHED_TASK_STATUSES:
+        _touch_task_heartbeat(task)
     db.commit()
     # Broadcast via WebSocket (best-effort)
     try:
@@ -824,6 +970,22 @@ def _is_task_canceled(task: Task) -> bool:
     return task.status in {"CANCELING", "CANCELED"}
 
 
+def _current_worker_id() -> str:
+    return f"{os.uname().nodename}:{os.getpid()}:{threading.get_ident()}"
+
+
+def _touch_task_heartbeat(task: Task) -> None:
+    now = datetime.utcnow()
+    task.last_heartbeat = now
+    task.worker_id = _current_worker_id()
+    task.lease_expire_time = now + timedelta(seconds=TASK_LEASE_SECONDS)
+
+
+def _clear_task_lease(task: Task) -> None:
+    task.worker_id = None
+    task.lease_expire_time = None
+
+
 def _ensure_task_not_canceled(db, task: Task) -> None:
     db.refresh(task)
     if task.status == "CANCELED":
@@ -840,13 +1002,21 @@ def _mark_task_canceled(db, task: Task, message: str) -> None:
     task.end_time = datetime.utcnow()
     task.exit_code = CANCELED_EXIT_CODE
     task.error_message = message
+    _clear_task_lease(task)
     db.commit()
     _add_log(db, task.task_id, "SYSTEM", message)
+    schedule_report_summary_generation(task.task_id)
 
 
 def _set_status(db, task: Task, status: str) -> None:
     task.status = status
+    if status in UNFINISHED_TASK_STATUSES:
+        _touch_task_heartbeat(task)
+    else:
+        _clear_task_lease(task)
     db.commit()
+    if status in TERMINAL_TASK_STATUSES:
+        schedule_report_summary_generation(task.task_id)
     # Broadcast status via WebSocket (best-effort)
     try:
         ws_manager.broadcast_status_sync(task.task_id, status)
@@ -866,17 +1036,20 @@ def _fail_task(db, task_id: str, message: str) -> None:
         task.exit_code = CANCELED_EXIT_CODE
         task.end_time = datetime.utcnow()
         task.error_message = "canceled by user"
+        _clear_task_lease(task)
         final_status = "CANCELED"
         db.commit()
     elif task.status != "CANCELED":
         task.status = "FAILED"
         task.error_message = message[:500]
         task.end_time = datetime.utcnow()
+        _clear_task_lease(task)
         final_status = "FAILED"
         db.commit()
         db.add(TaskLog(task_id=task_id, level="ERROR", message=message[:1000]))
         db.commit()
     if final_status:
+        schedule_report_summary_generation(task_id)
         try:
             ws_manager.broadcast_status_sync(task_id, final_status)
             ws_manager.broadcast_done_sync(task_id, final_status)

@@ -68,12 +68,60 @@ export interface DeployPublicKeyResult {
   private_key_path: string
 }
 
+export interface DeployPublicKeyAllResult {
+  server_id: number
+  server_name: string
+  success: boolean
+  message: string
+}
+
+export interface DeployPublicKeyAllResponse {
+  total: number
+  success: number
+  failed: number
+  items: DeployPublicKeyAllResult[]
+}
+
+export interface CheckPublicKeyResult {
+  server_id: number
+  server_name: string
+  host: string
+  success: boolean
+  deployed: boolean
+  status: string
+  message: string
+}
+
+export interface CheckPublicKeyResponse {
+  total: number
+  items: CheckPublicKeyResult[]
+}
+
 export interface SSHTestResult {
   success: boolean
   status: string
   hostname: string | null
   uname: string | null
   error: string | null
+}
+
+export interface SSHTestAllResult {
+  server_id: number
+  name: string
+  host: string
+  success: boolean
+  status: string
+  hostname: string | null
+  uname: string | null
+  error: string | null
+}
+
+export interface SSHTestAllResponse {
+  total: number
+  tested: number
+  online: number
+  offline: number
+  results: SSHTestAllResult[]
 }
 
 export interface ProbeAllResult {
@@ -168,15 +216,57 @@ export function testServerSsh(id: number) {
   return request.post<SSHTestResult>(`/servers/${id}/test`)
 }
 
+export function testAllServerSsh(serverIds: number[]) {
+  return request.post<SSHTestAllResponse>('/servers/test-ssh-all', { server_ids: serverIds }, {
+    timeout: 120000
+  }).catch(async (error) => {
+    if (error?.response?.status !== 405) throw error
+    const results = await Promise.all(serverIds.map(async (serverId) => {
+      try {
+        const resp = (await testServerSsh(serverId)).data
+        return {
+          server_id: serverId,
+          name: '',
+          host: '',
+          success: resp.success,
+          status: resp.status,
+          hostname: resp.hostname,
+          uname: resp.uname,
+          error: resp.error
+        }
+      } catch (itemError: any) {
+        return {
+          server_id: serverId,
+          name: '',
+          host: '',
+          success: false,
+          status: 'offline',
+          hostname: null,
+          uname: null,
+          error: itemError?.response?.data?.detail ?? itemError?.message ?? 'SSH 测试失败'
+        }
+      }
+    }))
+    const online = results.filter((item) => item.success).length
+    return {
+      data: {
+        total: serverIds.length,
+        tested: results.length,
+        online,
+        offline: results.length - online,
+        results
+      }
+    } as any
+  })
+}
+
 export function detectServer(id: number) {
   return request.post<ServerDetectResult>(`/servers/${id}/probe`)
 }
 
-export function probeAllServers(includeOffline = false) {
-  const params = includeOffline ? { include_offline: 'true' } : undefined
-  return request.post<ProbeAllResponse>('/servers/probe-all', undefined, {
-    timeout: 120000,
-    params
+export function probeAllServers(serverIds: number[]) {
+  return request.post<ProbeAllResponse>('/servers/probe-all', { server_ids: serverIds }, {
+    timeout: 120000
   })
 }
 
@@ -186,4 +276,22 @@ export function listSshKeys() {
 
 export function deployPublicKey(id: number, data: DeployPublicKeyPayload) {
   return request.post<DeployPublicKeyResult>(`/servers/${id}/deploy-public-key`, data)
+}
+
+export function deployPublicKeyAll(serverIds: number[], data: DeployPublicKeyPayload) {
+  return request.post<DeployPublicKeyAllResponse>('/servers/public-key/deploy', {
+    server_ids: serverIds,
+    private_key_path: data.private_key_path
+  }, {
+    timeout: 120000
+  })
+}
+
+export function checkPublicKey(serverIds: number[], data: DeployPublicKeyPayload) {
+  return request.post<CheckPublicKeyResponse>('/servers/public-key/check', {
+    server_ids: serverIds,
+    private_key_path: data.private_key_path
+  }, {
+    timeout: 120000
+  })
 }

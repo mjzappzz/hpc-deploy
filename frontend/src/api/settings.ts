@@ -1,5 +1,17 @@
 import { request } from './request'
 
+export interface RuntimePathInfo {
+  key: string
+  label: string
+  path: string
+  kind: string
+  description: string
+  exists: boolean
+  size_bytes: number | null
+  file_count: number | null
+  attention: boolean
+}
+
 export interface SettingsData {
   default_ssh_key_name: string
   remote_task_root: string
@@ -16,6 +28,7 @@ export interface SettingsData {
   auto_cleanup_last_status: string
   auto_cleanup_last_message: string
   admin_password_configured: boolean
+  runtime_paths: RuntimePathInfo[]
 }
 
 export interface SettingsUpdate {

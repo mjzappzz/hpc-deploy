@@ -9,6 +9,7 @@
     @update:model-value="$emit('update:modelValue', $event)"
   >
     <div v-loading="loading">
+      <el-skeleton v-if="loading && !diagnosisData" :rows="5" animated />
       <template v-if="diagnosisData">
         <!-- Attribution tag + Conclusion -->
         <div class="diag-attribution-bar">
@@ -108,6 +109,7 @@ const loading = ref(false)
 const diagnosisData = ref<TaskDiagnosisResponse['diagnosis'] | null>(null)
 const taskStatus = ref('')
 const errorMsg = ref('')
+const diagnosisCache = new Map<string, TaskDiagnosisResponse>()
 
 const computedTaskId = computed(() => props.taskId)
 
@@ -193,9 +195,29 @@ async function loadDiagnosis() {
 
   loading.value = true
   errorMsg.value = ''
-  diagnosisData.value = null
+  const cached = diagnosisCache.get(props.taskId)
+  if (cached) {
+    diagnosisData.value = cached.diagnosis
+    taskStatus.value = cached.status || ''
+  } else {
+    diagnosisData.value = {
+      level: 'info',
+      category: 'report_not_ready',
+      attribution: 'platform',
+      title: '报告摘要未就绪',
+      conclusion: '报告摘要正在读取。',
+      summary: '后台缓存未命中，先显示占位结果，稍后自动更新。',
+      possible_causes: ['报告摘要尚未生成', '任务刚结束或报告文件缺失'],
+      suggestions: ['稍后刷新诊断结果', '需要完整上下文时下载日志查看'],
+      risk_tips: [],
+      matched_patterns: [],
+      evidence: [],
+    }
+    taskStatus.value = ''
+  }
   try {
     const resp = (await getTaskDiagnosis(props.taskId)).data
+    diagnosisCache.set(props.taskId, resp)
     diagnosisData.value = resp.diagnosis
     taskStatus.value = resp.status || ''
   } catch {

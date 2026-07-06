@@ -1,24 +1,45 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_ROOT="/home/tjzs/projects/hpc-deploy"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+BACKEND_DIR="$PROJECT_ROOT/backend"
 FRONTEND_DIR="$PROJECT_ROOT/frontend"
-WEB_ROOT="/var/www/hpcdeploy"
+SERVICE_USER="${SUDO_USER:-$(id -un)}"
 
-cd "$FRONTEND_DIR"
-npm run build
+run_as_service_user() {
+  if [[ "$SERVICE_USER" == "root" ]]; then
+    "$@"
+  else
+    sudo -H -u "$SERVICE_USER" "$@"
+  fi
+}
 
 if [[ $EUID -ne 0 ]]; then
-  echo "前端已构建完成。请使用 sudo 执行以下命令发布："
-  echo "  rsync -av --delete \"$FRONTEND_DIR/dist/\" \"$WEB_ROOT/\""
+  echo "请使用 sudo 执行更新："
+  echo "  sudo deploy/scripts/redeploy_hpcdeploy.sh"
+  echo "将执行："
+  echo "  backend/.deps/bin/pip install -r backend/requirements.txt"
+  echo "  cd frontend && npm install/npm ci"
   echo "  systemctl restart hpcdeploy-backend"
-  echo "  systemctl reload nginx"
+  echo "  systemctl restart hpcdeploy-frontend"
   exit 0
 fi
 
-install -d -m 755 "$WEB_ROOT"
-rsync -av --delete "$FRONTEND_DIR/dist/" "$WEB_ROOT/"
+if [[ ! -x "$BACKEND_DIR/.deps/bin/python" ]]; then
+  run_as_service_user python3 -m venv "$BACKEND_DIR/.deps"
+fi
+run_as_service_user "$BACKEND_DIR/.deps/bin/pip" install -r "$BACKEND_DIR/requirements.txt"
+
+cd "$FRONTEND_DIR"
+if [[ -f package-lock.json ]]; then
+  run_as_service_user npm ci
+else
+  run_as_service_user npm install
+fi
+
 systemctl restart hpcdeploy-backend
-systemctl reload nginx
+systemctl restart hpcdeploy-frontend
 
 echo "HPCDeploy 已更新并重启完成"
+echo "项目目录：$PROJECT_ROOT"

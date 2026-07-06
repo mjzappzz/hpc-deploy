@@ -5,7 +5,14 @@ import threading
 from datetime import datetime
 from pathlib import Path
 from secrets import token_hex
+from urllib.parse import quote
 
+from app.core.batch_report_exporter import export_batch_report_zip
+from app.core.report_summary import (
+    get_cached_report_summary,
+    schedule_report_summary_generation,
+    unknown_report_summary,
+)
 from app.core.script_library import get_library_file_record
 from app.core.ssh_executor import SSHCommandTimeoutError, SSHExecutor, SSHExecutorError, shell_quote
 from app.core.script_validator import ScriptValidationError
@@ -21,7 +28,6 @@ from app.core.task_runner import (
 from app.core.artifact_collector import ARTIFACTS_DIR
 from app.core.audit import write_audit_log
 from app.core.auth import require_admin_token
-from app.core.task_diagnosis import diagnose_task_failure
 from app.core.ws_manager import ws_manager
 from app.db.database import SessionLocal, get_db
 from app.models.server import Server
@@ -31,6 +37,9 @@ from app.schemas.log import TaskLogRead
 from app.schemas.task import (
     ArtifactFileDetail,
     ArtifactListResponse,
+    BatchCancelItem,
+    BatchCancelRequest,
+    BatchCancelResponse,
     BatchDetailResponse,
     BatchSummaryItem,
     BatchSummaryListResponse,
@@ -55,9 +64,10 @@ from app.schemas.task import (
     TaskRunResponse,
 )
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
+from starlette.background import BackgroundTask
 
 # Stress param whitelists
 STRESS_ALLOWED_INTERVALS: list[int] = [5, 10, 30, 60, 120]
@@ -728,6 +738,7 @@ STRESS_SUITE_SCRIPTS: list[dict[str, str | int]] = [
 STRESS_SUITE_ALLOWED_PATHS: set[str] = {s["path"] for s in STRESS_SUITE_SCRIPTS}  # type: ignore
 _STRESS_SUITE_SERVER_LOCKS: dict[int, threading.Lock] = {}
 _STRESS_SUITE_SERVER_LOCKS_GUARD = threading.Lock()
+STRESS_SUITE_LOCK_ACQUIRE_TIMEOUT_SECONDS = 5
 
 
 def _get_stress_suite_server_lock(server_id: int) -> threading.Lock:
@@ -739,6 +750,109 @@ def _get_stress_suite_server_lock(server_id: int) -> threading.Lock:
         return lock
 
 
+def _fail_suite_task_records_for_scheduler(db: Session, task_records: list[Task], message: str) -> int:
+    failed = 0
+    for task in task_records:
+        if task.status not in UNFINISHED_TASK_STATUSES:
+            continue
+        task.status = "FAILED"
+        task.end_time = datetime.utcnow()
+        task.error_message = message[:500]
+        db.add(TaskLog(task_id=task.task_id, level="ERROR", message=message[:1000]))
+        failed += 1
+
+    if failed:
+        db.commit()
+        for task in task_records:
+            if task.status == "FAILED":
+                schedule_report_summary_generation(task.task_id)
+                try:
+                    ws_manager.broadcast_status_sync(task.task_id, "FAILED")
+                    ws_manager.broadcast_done_sync(task.task_id, "FAILED")
+                except Exception:
+                    pass
+    return failed
+
+
+def _mark_stress_suite_scheduler_blocked(db: Session, server_id: int, batch_id: str, message: str) -> int:
+    task_records = (
+        db.query(Task)
+        .filter(Task.batch_id == batch_id, Task.server_id == server_id)
+        .order_by(Task.sequence_index)
+        .all()
+    )
+    return _fail_suite_task_records_for_scheduler(db, task_records, message)
+
+
+def recover_orphaned_stress_suite_pending_tasks() -> int:
+    """Fail stress-suite tasks that cannot resume after backend restart.
+
+    Stress-suite workers are daemon threads kept in process memory. If the backend
+    process restarts after creating suite rows but before starting a task, those
+    PENDING rows have no worker left to advance them.
+    """
+    db = SessionLocal()
+    try:
+        task_records = (
+            db.query(Task)
+            .filter(
+                Task.status == "PENDING",
+                Task.task_type == "stress",
+                Task.batch_id.isnot(None),
+                Task.sequence_index.isnot(None),
+                Task.start_time.is_(None),
+            )
+            .order_by(Task.batch_id, Task.server_id, Task.sequence_index)
+            .all()
+        )
+        return _fail_suite_task_records_for_scheduler(
+            db,
+            task_records,
+            "stress suite scheduler recovered orphaned PENDING task after backend restart; recreate the suite",
+        )
+    finally:
+        db.close()
+
+
+def resume_pending_tasks_after_startup() -> int:
+    """Resume PENDING tasks whose in-memory worker was lost by backend restart."""
+    db = SessionLocal()
+    started = 0
+    try:
+        pending_tasks = (
+            db.query(Task)
+            .filter(Task.status == "PENDING")
+            .order_by(Task.batch_id.asc().nulls_last(), Task.server_id.asc(), Task.sequence_index.asc().nulls_last(), Task.id.asc())
+            .all()
+        )
+        suite_groups: set[tuple[int, str]] = set()
+        for task in pending_tasks:
+            if task.task_type == "stress" and task.batch_id and task.sequence_index is not None:
+                suite_groups.add((task.server_id, task.batch_id))
+                continue
+            if task.depends_on_task_id:
+                continue
+            db.add(TaskLog(task_id=task.task_id, level="SYSTEM", message="startup recovery: pending task worker resumed"))
+            _start_task_thread(task.task_id)
+            started += 1
+
+        for server_id, batch_id in sorted(suite_groups):
+            db.add(TaskLog(task_id=batch_id, level="SYSTEM", message=f"startup recovery: stress suite worker resumed for server {server_id}"))
+            thread = threading.Thread(
+                target=_run_stress_suite_for_server,
+                args=(server_id, batch_id),
+                daemon=True,
+            )
+            thread.start()
+            started += 1
+
+        if started:
+            db.commit()
+        return started
+    finally:
+        db.close()
+
+
 def _mark_suite_task_failed(db: Session, task: Task, message: str) -> None:
     task.status = "FAILED"
     task.end_time = datetime.utcnow()
@@ -746,6 +860,7 @@ def _mark_suite_task_failed(db: Session, task: Task, message: str) -> None:
     db.commit()
     db.add(TaskLog(task_id=task.task_id, level="ERROR", message=message[:1000]))
     db.commit()
+    schedule_report_summary_generation(task.task_id)
     try:
         ws_manager.broadcast_status_sync(task.task_id, "FAILED")
         ws_manager.broadcast_done_sync(task.task_id, "FAILED")
@@ -766,42 +881,56 @@ def _run_stress_suite_for_server(server_id: int, batch_id: str) -> None:
     Different server threads run in parallel (daemon threads).
     """
     lock = _get_stress_suite_server_lock(server_id)
-    with lock:
+    acquired = lock.acquire(timeout=STRESS_SUITE_LOCK_ACQUIRE_TIMEOUT_SECONDS)
+    if not acquired:
         db = SessionLocal()
         try:
-            task_records = (
-                db.query(Task)
-                .filter(Task.batch_id == batch_id, Task.server_id == server_id)
-                .order_by(Task.sequence_index)
-                .all()
+            _mark_stress_suite_scheduler_blocked(
+                db,
+                server_id,
+                batch_id,
+                "stress suite scheduler blocked by previous worker on same server; previous worker did not release lock",
             )
-
-            for task_record in task_records:
-                db.refresh(task_record)
-
-                if task_record.depends_on_task_id and not _is_suite_task_terminal(db, task_record.depends_on_task_id):
-                    _mark_suite_task_failed(
-                        db,
-                        task_record,
-                        f"previous suite task is not terminal: {task_record.depends_on_task_id}",
-                    )
-                    break
-
-                try:
-                    run_task_stage8b(task_record.task_id)
-                except Exception:
-                    pass  # run_task_stage8b handles its own error logging
-
-                db.refresh(task_record)
-                if task_record.status not in TERMINAL_TASK_STATUSES:
-                    _mark_suite_task_failed(
-                        db,
-                        task_record,
-                        f"stress suite task returned before terminal status: {task_record.status}",
-                    )
-                    break
         finally:
             db.close()
+        return
+
+    db = SessionLocal()
+    try:
+        task_records = (
+            db.query(Task)
+            .filter(Task.batch_id == batch_id, Task.server_id == server_id)
+            .order_by(Task.sequence_index)
+            .all()
+        )
+
+        for task_record in task_records:
+            db.refresh(task_record)
+
+            if task_record.depends_on_task_id and not _is_suite_task_terminal(db, task_record.depends_on_task_id):
+                _mark_suite_task_failed(
+                    db,
+                    task_record,
+                    f"previous suite task is not terminal: {task_record.depends_on_task_id}",
+                )
+                break
+
+            try:
+                run_task_stage8b(task_record.task_id)
+            except Exception:
+                pass  # run_task_stage8b handles its own error logging
+
+            db.refresh(task_record)
+            if task_record.status not in TERMINAL_TASK_STATUSES:
+                _mark_suite_task_failed(
+                    db,
+                    task_record,
+                    f"stress suite task returned before terminal status: {task_record.status}",
+                )
+                break
+    finally:
+        db.close()
+        lock.release()
 
 
 @router.post("/stress-suite", response_model=StressSuiteCreateResponse, status_code=status.HTTP_201_CREATED)
@@ -995,14 +1124,20 @@ def create_stress_suite(
 # ── Batch summary / detail (Phase 26A) ──
 
 VALID_BATCH_STATUS_VALUES = {"RUNNING", "SUCCESS", "FAILED", "PARTIAL_FAILED", "CANCELED", "PARTIAL_CANCELED"}
+BATCH_CANCELABLE_STATUSES = set(CANCELABLE_TASK_STATUSES) | {"QUEUED", "CREATED"}
+BATCH_PLATFORM_ONLY_CANCEL_STATUSES = BATCH_CANCELABLE_STATUSES - {"RUNNING"}
+BATCH_TERMINAL_STATUSES = set(TERMINAL_TASK_STATUSES) | {"TIMEOUT"}
+BATCH_UNFINISHED_STATUSES = BATCH_CANCELABLE_STATUSES | {"CANCELING"}
+BATCH_PENDING_STATUSES = {"PENDING", "QUEUED", "CREATED"}
+BATCH_FAILED_STATUSES = {"FAILED", "TIMEOUT"}
+BATCH_CANCELED_STATUSES = {"CANCELED", "CANCELLED"}
 
 
 def _compute_batch_status(tasks: list[Task]) -> str:
     """Derive the aggregate batch status from its child tasks."""
     statuses = {t.status for t in tasks}
-    unfinished = {"PENDING", "RUNNING", "CONNECTING", "PREPARING", "UPLOADING", "CANCELING"}
 
-    if statuses & unfinished:
+    if statuses & BATCH_UNFINISHED_STATUSES:
         return "RUNNING"
     if statuses == {"SUCCESS"}:
         return "SUCCESS"
@@ -1036,10 +1171,10 @@ def list_batches(
             func.min(Task.created_at).label("created_at"),
             func.count(Task.id).label("total"),
             func.sum(case((Task.status == "SUCCESS", 1), else_=0)).label("success"),
-            func.sum(case((Task.status == "FAILED", 1), else_=0)).label("failed"),
-            func.sum(case((Task.status.in_({"RUNNING", "PENDING", "CONNECTING", "PREPARING", "UPLOADING", "CANCELING"}), 1), else_=0)).label("running"),
-            func.sum(case((Task.status == "PENDING", 1), else_=0)).label("pending"),
-            func.sum(case((Task.status == "CANCELED", 1), else_=0)).label("canceled"),
+            func.sum(case((Task.status.in_(BATCH_FAILED_STATUSES), 1), else_=0)).label("failed"),
+            func.sum(case((Task.status == "RUNNING", 1), else_=0)).label("running"),
+            func.sum(case((Task.status.in_(BATCH_PENDING_STATUSES), 1), else_=0)).label("pending"),
+            func.sum(case((Task.status.in_(BATCH_CANCELED_STATUSES), 1), else_=0)).label("canceled"),
         )
         .filter(Task.batch_id.isnot(None))
         .group_by(Task.batch_id)
@@ -1105,6 +1240,171 @@ def list_batches(
     )
 
 
+def _cancel_running_task_for_batch(db: Session, task: Task) -> tuple[str, bool]:
+    """Best-effort remote stop for a running task, then always finalize platform state."""
+    task_id = task.task_id
+    task.status = "CANCELING"
+    db.commit()
+    _add_task_log(db, task_id, "SYSTEM", "batch cancel requested")
+
+    server = db.get(Server, task.server_id)
+    executor = SSHExecutor(timeout=MONITOR_TIMEOUT_SECONDS)
+    remote_unreachable = False
+    remote_process_not_confirmed = False
+    cancel_error_detail: str | None = None
+    try:
+        if server is None:
+            remote_unreachable = True
+            cancel_error_detail = "canceled by batch cancel, remote server unreachable, remote process not confirmed: server not found"
+            _add_task_log(db, task_id, "WARN", "batch cancel: server not found, remote process not confirmed")
+        else:
+            try:
+                executor.connect(
+                    host=server.host,
+                    port=server.port,
+                    username=server.username,
+                    key_path=server.key_path,
+                )
+            except SSHExecutorError as exc:
+                remote_unreachable = True
+                cancel_error_detail = f"canceled by batch cancel, remote server unreachable, remote process not confirmed: {exc}"
+                _add_task_log(db, task_id, "WARN", f"batch cancel: SSH unreachable, remote process not confirmed: {exc}")
+            else:
+                try:
+                    _cancel_remote_process(executor, task, db)
+                except SSHExecutorError as exc:
+                    remote_process_not_confirmed = True
+                    cancel_error_detail = f"canceled by batch cancel, remote process not confirmed: {exc}"
+                    _add_task_log(db, task_id, "WARN", f"batch cancel: remote process not confirmed: {exc}")
+
+        db.refresh(task)
+        if task.status == "CANCELING":
+            _mark_task_canceled(
+                db,
+                task,
+                error_message=cancel_error_detail or "canceled by batch cancel",
+                log_message="task canceled by batch cancel",
+            )
+            if remote_unreachable:
+                return "platform canceled, remote unreachable, process not confirmed", True
+            if remote_process_not_confirmed:
+                return "platform canceled, remote process not confirmed", True
+            return "canceled", True
+
+        if task.status == "CANCELED":
+            return "canceled", True
+        return f"skipped, task already finalized as {task.status}", False
+    finally:
+        executor.close()
+
+
+@router.post("/batches/{batch_id}/cancel", response_model=BatchCancelResponse)
+def cancel_batch(
+    batch_id: str,
+    payload: BatchCancelRequest = BatchCancelRequest(),
+    db: Session = Depends(get_db),
+) -> BatchCancelResponse:
+    """Cancel every unfinished task in a batch without deleting remote directories."""
+    if payload.delete_remote:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="delete_remote is not supported for batch cancel",
+        )
+
+    tasks = (
+        db.query(Task)
+        .filter(Task.batch_id == batch_id)
+        .order_by(Task.server_id.asc(), Task.sequence_index.asc().nulls_last(), Task.id.asc())
+        .all()
+    )
+    if not tasks:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="batch not found")
+
+    items: list[BatchCancelItem] = []
+    canceled = skipped = failed = 0
+
+    for task in tasks:
+        old_status = task.status
+        try:
+            if old_status in BATCH_TERMINAL_STATUSES:
+                skipped += 1
+                items.append(BatchCancelItem(
+                    task_id=task.task_id,
+                    old_status=old_status,
+                    new_status=task.status,
+                    message="skipped, task already terminal",
+                ))
+                continue
+
+            if old_status == "RUNNING":
+                message, did_cancel = _cancel_running_task_for_batch(db, task)
+                db.refresh(task)
+                if did_cancel:
+                    canceled += 1
+                else:
+                    skipped += 1
+                items.append(BatchCancelItem(
+                    task_id=task.task_id,
+                    old_status=old_status,
+                    new_status=task.status,
+                    message=message,
+                ))
+                continue
+
+            if old_status in BATCH_PLATFORM_ONLY_CANCEL_STATUSES or old_status == "CANCELING":
+                _add_task_log(db, task.task_id, "SYSTEM", "batch cancel requested")
+                _mark_task_canceled(
+                    db,
+                    task,
+                    error_message="canceled by batch cancel before start",
+                    log_message="task canceled by batch cancel before start",
+                )
+                canceled += 1
+                items.append(BatchCancelItem(
+                    task_id=task.task_id,
+                    old_status=old_status,
+                    new_status=task.status,
+                    message="canceled",
+                ))
+                continue
+
+            skipped += 1
+            items.append(BatchCancelItem(
+                task_id=task.task_id,
+                old_status=old_status,
+                new_status=task.status,
+                message="skipped, task status is not cancelable",
+            ))
+        except Exception as exc:
+            failed += 1
+            db.rollback()
+            db.refresh(task)
+            items.append(BatchCancelItem(
+                task_id=task.task_id,
+                old_status=old_status,
+                new_status=task.status,
+                message=f"failed: {type(exc).__name__}: {exc}",
+            ))
+
+    write_audit_log(
+        db, action="task.batch_cancel", target_type="task", status="success" if failed == 0 else "failed",
+        actor="visitor",
+        target_id=batch_id,
+        task_id=batch_id,
+        message=f"batch {batch_id} cancel: {canceled} canceled, {skipped} skipped, {failed} failed",
+        detail={"batch_id": batch_id, "total": len(tasks), "canceled": canceled, "skipped": skipped, "failed": failed},
+    )
+
+    return BatchCancelResponse(
+        batch_id=batch_id,
+        total=len(tasks),
+        canceled=canceled,
+        skipped=skipped,
+        failed=failed,
+        items=items,
+    )
+
+
 @router.get("/batches/{batch_id}", response_model=BatchDetailResponse)
 def get_batch_detail(
     batch_id: str,
@@ -1135,16 +1435,17 @@ def get_batch_detail(
             server_names.append(srv.name)
 
         # Count statuses
-        if t.status == "SUCCESS":
+        status_value = (t.status or "").upper()
+        if status_value == "SUCCESS":
             success += 1
-        elif t.status == "FAILED":
+        elif status_value in BATCH_FAILED_STATUSES:
             failed += 1
-        elif t.status in {"RUNNING", "PENDING", "CONNECTING", "PREPARING", "UPLOADING", "CANCELING"}:
+        elif status_value == "RUNNING":
             running += 1
-        elif t.status == "CANCELED":
-            canceled += 1
-        elif t.status == "PENDING":
+        elif status_value in BATCH_PENDING_STATUSES:
             pending += 1
+        elif status_value in BATCH_CANCELED_STATUSES:
+            canceled += 1
 
         artifact_dir = ARTIFACTS_DIR / t.task_id
         has_artifacts = artifact_dir.is_dir() and any(entry.is_file() for entry in artifact_dir.iterdir())
@@ -1200,6 +1501,39 @@ def get_batch_detail(
         batch_id=batch_id,
         summary=summary,
         tasks=detail_items,
+    )
+
+
+def _iter_download_file(path: Path):
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            yield chunk
+
+
+def _cleanup_download_file(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+@router.get("/batches/{batch_id}/report/download-zip")
+def download_batch_report_zip_compat(
+    batch_id: str,
+    db: Session = Depends(get_db),
+) -> StreamingResponse:
+    exported = export_batch_report_zip(db, batch_id)
+    if exported is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="batch not found")
+
+    headers = {
+        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(exported.filename)}",
+    }
+    return StreamingResponse(
+        _iter_download_file(exported.path),
+        media_type="application/zip",
+        headers=headers,
+        background=BackgroundTask(_cleanup_download_file, exported.path),
     )
 
 
@@ -1356,61 +1690,16 @@ async def task_logs_websocket(ws: WebSocket, task_id: str) -> None:
 
 @router.get("/{task_id}/diagnosis", response_model=TaskDiagnosisResponse)
 def diagnose_task(task_id: str, db: Session = Depends(get_db)) -> TaskDiagnosisResponse:
-    """Diagnose a task failure based on its logs and metadata."""
+    """Return cached diagnosis summary. This endpoint must not do SSH or file IO."""
     task = _get_task_or_404(db, task_id)
 
-    # Build task display name
     host = db.query(Server).with_entities(Server.host).filter(Server.id == task.server_id).scalar() or "?"
     task_name = f"{host} · {task.file_name or task.task_type} · {task.task_id}"
-
-    # Fetch logs (limit to recent entries for performance)
-    log_rows = (
-        db.query(TaskLog)
-        .filter(TaskLog.task_id == task_id)
-        .order_by(TaskLog.id.asc())
-        .all()
-    )
-    log_messages: list[str] = [row.message for row in log_rows] if log_rows else []
-    if not log_messages and task.error_message:
-        log_messages = [task.error_message]
-
-    # Check for report files in local artifacts directory
-    artifacts_present = False
-    report_result: str | None = None  # "PASS", "FAIL", or None
-    try:
-        task_artifact_dir = ARTIFACTS_DIR / task_id
-        if task_artifact_dir.is_dir():
-            for f in task_artifact_dir.iterdir():
-                if f.suffix.lower() in {".xlsx", ".txt", ".csv", ".json", ".log"}:
-                    artifacts_present = True
-                    break
-            # Parse txt report for PASS/FAIL (used by SUCCESS task diagnosis)
-            txt_reports = list(task_artifact_dir.glob("*report*.txt"))
-            if txt_reports:
-                content = txt_reports[0].read_text(errors="replace", encoding="utf-8")
-                if "测试结果              : PASS" in content:
-                    report_result = "PASS"
-                elif "测试结果              : FAIL" in content:
-                    report_result = "FAIL"
-    except Exception:
-        pass  # non-fatal
-
-    # Run diagnosis with rich context
-    diagnosis = diagnose_task_failure(
-        task_status=task.status,
-        error_message=task.error_message,
-        logs=log_messages,
-        exit_code=task.exit_code,
-        task_type=task.task_type,
-        server_name=host,
-        file_name=task.file_name,
-        params=task.params,
-        start_time=task.start_time,
-        end_time=task.end_time,
-        batch_id=task.batch_id,
-        artifacts_present=artifacts_present,
-        report_result=report_result,
-    )
+    cache = get_cached_report_summary(db, task_id)
+    summary_json = cache.summary_json if cache and isinstance(cache.summary_json, dict) else unknown_report_summary(task)
+    diagnosis = summary_json.get("diagnosis")
+    if not isinstance(diagnosis, dict):
+        diagnosis = unknown_report_summary(task)["diagnosis"]
 
     # Audit log (best-effort, must not affect response)
     try:
@@ -1421,7 +1710,7 @@ def diagnose_task(task_id: str, db: Session = Depends(get_db)) -> TaskDiagnosisR
             message=f"diagnose task {task_id}: {diagnosis.get('category', 'unknown')}",
             detail={"category": diagnosis.get("category"), "attribution": diagnosis.get("attribution"),
                     "level": diagnosis.get("level"), "file_name": task.file_name,
-                    "task_status": task.status, "artifacts_present": artifacts_present},
+                    "task_status": task.status, "cache_hit": cache is not None},
         )
     except Exception:
         pass
@@ -1441,7 +1730,6 @@ def cancel_task(
     db: Session = Depends(get_db),
 ) -> TaskCancelResponse:
     task = _get_task_or_404(db, task_id)
-    original_status = task.status
     if task.status in TERMINAL_TASK_STATUSES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="task already completed")
     if task.status == "CANCELING":
@@ -1449,66 +1737,100 @@ def cancel_task(
     if task.status not in CANCELABLE_TASK_STATUSES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="task is not cancelable")
 
-    task.status = "CANCELING"
-    db.commit()
-    _add_task_log(db, task_id, "SYSTEM", "cancel requested by user")
-
-    if not task.remote_work_dir:
+    # PENDING / CONNECTING / PREPARING / UPLOADING are platform-only cancel states:
+    # they have not started a remote process yet, so no SSH dependency is needed.
+    if task.status != "RUNNING":
+        _add_task_log(db, task_id, "SYSTEM", "cancel requested by user")
         _mark_task_canceled(
             db,
             task,
-            error_message="canceled by user before remote execution",
-            log_message="task canceled before remote execution",
+            error_message="canceled before start",
+            log_message="task canceled before start",
         )
+        _cancel_following_batch_tasks(db, task, reason="canceled because previous batch task was canceled")
         write_audit_log(
             db, action="task.cancel", target_type="task", status="success",
             actor="visitor",
             target_id=task_id, target_name=task.file_name or "unknown",
             task_id=task_id, server_id=task.server_id,
-            message=f"task {task_id} canceled before remote execution",
+            message=f"task {task_id} canceled before start",
+            detail={"server_id": task.server_id, "delete_remote_files": False, "platform_only": True},
         )
-        return TaskCancelResponse(task_id=task.task_id, status=task.status)
+        return TaskCancelResponse(
+            task_id=task.task_id,
+            status=task.status,
+            message="任务已在平台标记为已取消，未尝试远端 SSH。",
+        )
+
+    task.status = "CANCELING"
+    db.commit()
+    _add_task_log(db, task_id, "SYSTEM", "cancel requested by user")
 
     server = _get_server_or_400(db, task.server_id)
     executor = SSHExecutor(timeout=MONITOR_TIMEOUT_SECONDS)
+    remote_unreachable = False
+    remote_process_not_confirmed = False
+    cancel_error_detail: str | None = None
     try:
-        executor.connect(
-            host=server.host,
-            port=server.port,
-            username=server.username,
-            key_path=server.key_path,
-        )
+        try:
+            executor.connect(
+                host=server.host,
+                port=server.port,
+                username=server.username,
+                key_path=server.key_path,
+            )
+        except SSHExecutorError as exc:
+            remote_unreachable = True
+            cancel_error_detail = f"canceled by user, remote server unreachable, remote process not confirmed: {exc}"
+            _add_task_log(db, task_id, "WARN", f"cancel: SSH unreachable, remote process not confirmed: {exc}")
+        else:
+            # Phase 1: Terminate remote process (best effort — never fail cancel)
+            try:
+                _cancel_remote_process(executor, task, db)
+            except SSHExecutorError as exc:
+                remote_process_not_confirmed = True
+                cancel_error_detail = f"canceled by user, remote process not confirmed: {exc}"
+                _add_task_log(db, task_id, "WARN", f"cancel: remote process not confirmed: {exc}")
 
-        # Phase 1: Terminate remote process (best effort — never revert CANCELED)
-        _cancel_remote_process(executor, task, db)
-
-        # Phase 2: Mark canceled
+        # Phase 2: Mark canceled regardless of remote connectivity
         db.refresh(task)
         if task.status == "CANCELING":
             _mark_task_canceled(
                 db,
                 task,
-                error_message="canceled by user",
+                error_message=cancel_error_detail or "canceled by user",
                 log_message="task canceled",
             )
-
-        # Phase 3: 先尝试回收 artifact（无论是否删除，先拉回报告）
-        _add_task_log(db, task_id, "SYSTEM", f"cancel: delete_remote_files={payload.delete_remote_files} (type={type(payload.delete_remote_files).__name__})")
-        try:
-            from app.core.artifact_collector import collect_artifacts
-            collect_artifacts(db, task_id, task.remote_work_dir, executor)
-        except Exception:
-            _add_task_log(db, task_id, "SYSTEM", "cancel: artifact collection skipped (best effort)")
-
-        # Phase 3b: 只有用户明确勾选时才删除远端工作目录
-        if payload.delete_remote_files is True:
-            _add_task_log(db, task_id, "SYSTEM", "cancel: user requested remote work dir deletion")
-            _cleanup_remote_work_dir(executor, task, db)
         else:
-            _add_task_log(db, task_id, "SYSTEM", "cancel: preserving remote work dir (user opted to keep files)")
+            # Another worker might have finalized it while we were best-effort stopping remote work.
+            _add_task_log(db, task_id, "SYSTEM", f"cancel: task already finalized as {task.status}")
 
-        # Phase 4: Cleanup temp download dirs for known whitelist scripts (best effort)
-        _cleanup_temp_dirs(executor, task, db)
+        if remote_unreachable:
+            _add_task_log(db, task_id, "SYSTEM", "cancel: remote unreachable, skip artifact collection and temp cleanup")
+        else:
+            # Phase 3: Best-effort artifact collection
+            _add_task_log(db, task_id, "SYSTEM", "cancel: artifact collection best-effort")
+            try:
+                from app.core.artifact_collector import collect_artifacts
+                collect_artifacts(db, task_id, task.remote_work_dir, executor)
+            except Exception as exc:
+                _add_task_log(db, task_id, "WARN", f"cancel: artifact collection skipped: {exc}")
+                _add_task_log(db, task_id, "SYSTEM", "cancel: artifact collection skipped (best effort)")
+
+            # Phase 4: Cleanup temp download dirs for known whitelist scripts (best effort)
+            _cleanup_temp_dirs(executor, task, db)
+
+        _cancel_following_batch_tasks(db, task, reason="canceled because previous batch task was canceled")
+
+        if task.status == "CANCELED":
+            if remote_unreachable:
+                response_message = "任务已在平台标记为已取消。服务器当前不可达，远端进程是否仍在运行无法确认。"
+            elif remote_process_not_confirmed:
+                response_message = "任务已在平台标记为已取消。远端进程是否已终止无法确认。"
+            else:
+                response_message = "任务已在平台标记为已取消。"
+        else:
+            response_message = f"任务状态已更新为 {task.status}。"
 
         write_audit_log(
             db, action="task.cancel", target_type="task", status="success",
@@ -1516,24 +1838,45 @@ def cancel_task(
             target_id=task_id, target_name=task.file_name or "unknown",
             task_id=task_id, server_id=task.server_id,
             message=f"task {task_id} canceled",
-            detail={"server_id": task.server_id, "delete_remote_files": payload.delete_remote_files},
+            detail={
+                "server_id": task.server_id,
+                "delete_remote_files": False,
+                "remote_unreachable": remote_unreachable,
+                "remote_process_not_confirmed": remote_process_not_confirmed,
+            },
         )
-        return TaskCancelResponse(task_id=task.task_id, status=task.status)
+        return TaskCancelResponse(task_id=task.task_id, status=task.status, message=response_message)
     except SSHExecutorError as exc:
+        # This branch should no longer be hit for SSH failures, but keep it as a final safety net.
         db.refresh(task)
         if task.status == "CANCELING":
-            task.status = original_status
-            db.commit()
-        _add_task_log(db, task_id, "ERROR", f"cancel failed: {exc}")
+            _mark_task_canceled(
+                db,
+                task,
+                error_message=f"canceled by user, remote server unreachable, remote process not confirmed: {exc}",
+                log_message="task canceled",
+            )
+        _cancel_following_batch_tasks(db, task, reason="canceled because previous batch task was canceled")
+        _add_task_log(db, task_id, "WARN", f"cancel: fallback finalization after SSH error: {exc}")
+        if remote_unreachable:
+            message = "任务已在平台标记为已取消。服务器当前不可达，远端进程是否仍在运行无法确认。"
+        elif remote_process_not_confirmed:
+            message = "任务已在平台标记为已取消。远端进程是否已终止无法确认。"
+        else:
+            message = "任务已在平台标记为已取消。"
         write_audit_log(
-            db, action="task.cancel", target_type="task", status="failed",
+            db, action="task.cancel", target_type="task", status="success",
             actor="visitor",
             target_id=task_id, target_name=task.file_name or "unknown",
             task_id=task_id, server_id=task.server_id,
-            message=f"cancel failed for {task_id}: {exc}",
-            detail={"error": str(exc), "server_id": task.server_id},
+            message=f"task {task_id} canceled after SSH error",
+            detail={"error": str(exc), "server_id": task.server_id, "delete_remote_files": False},
         )
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"cancel failed: {exc}") from exc
+        return TaskCancelResponse(
+            task_id=task.task_id,
+            status=task.status,
+            message=message,
+        )
     finally:
         executor.close()
 
@@ -2193,12 +2536,47 @@ def _mark_task_canceled(db: Session, task: Task, *, error_message: str, log_mess
     task.error_message = error_message
     db.commit()
     _add_task_log(db, task.task_id, "SYSTEM", log_message)
+    schedule_report_summary_generation(task.task_id)
     # Broadcast status change
     try:
         ws_manager.broadcast_status_sync(task.task_id, "CANCELED")
         ws_manager.broadcast_done_sync(task.task_id, "CANCELED")
     except Exception:
         pass
+
+
+def _cancel_following_batch_tasks(db: Session, task: Task, *, reason: str) -> None:
+    """Cancel later unfinished tasks in the same batch on the same server.
+
+    This keeps batch state from staying RUNNING when the current task is canceled.
+    Only tasks with a higher sequence_index are touched, so previous completed
+    steps remain unchanged.
+    """
+    if not task.batch_id or task.sequence_index is None:
+        return
+
+    following_tasks = (
+        db.query(Task)
+        .filter(
+            Task.batch_id == task.batch_id,
+            Task.server_id == task.server_id,
+            Task.id != task.id,
+            Task.sequence_index.isnot(None),
+            Task.sequence_index > task.sequence_index,
+            Task.status.in_(UNFINISHED_TASK_STATUSES),
+        )
+        .order_by(Task.sequence_index.asc(), Task.id.asc())
+        .all()
+    )
+
+    for follower in following_tasks:
+        _add_task_log(
+            db,
+            follower.task_id,
+            "SYSTEM",
+            f"batch cancel: previous task {task.task_id} canceled, mark this task canceled",
+        )
+        _mark_task_canceled(db, follower, error_message=reason, log_message="task canceled because previous batch task was canceled")
 
 
 def _read_remote_pid_file(executor: SSHExecutor, pid_file_path: str) -> str | None:

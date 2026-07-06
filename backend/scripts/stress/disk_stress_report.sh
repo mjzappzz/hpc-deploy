@@ -70,10 +70,10 @@ echo "[INFO] Dependency check done."
 
 DURATION=${1:-43200}
 INTERVAL=${2:-2}
-TEST_DIR="${DISK_TEST_DIR:-${3:-$(pwd)}}"
+TEST_DIR=${3:-$(pwd)}
 
 CPU_CORES=$(nproc)
-HDD_WORKERS=${WORKERS:-$(( CPU_CORES / 16 ))}
+HDD_WORKERS=$(( CPU_CORES / 16 ))
 [ "$HDD_WORKERS" -lt 4 ] && HDD_WORKERS=4
 [ "$HDD_WORKERS" -gt 32 ] && HDD_WORKERS=32
 
@@ -149,12 +149,19 @@ while true; do
             write_iops=w_ios/dt;
 
             await=0;
+            await_valid=1;
             if (w_ios>0) await=w_ticks/w_ios;
+
+            # 剔除明显异常的 await 样本：负值或极端 spike 不写入 CSV，避免污染图表和统计
+            if (await < 0 || await > 5000) await_valid=0;
 
             util=io_ticks/(dt*10);
             if (util>100) util=100;
 
-            printf "%.2f,%.2f,%.2f,%.2f", write_MBps,write_iops,await,util
+            if (await_valid==1)
+                printf "%.2f,%.2f,%.2f,%.2f", write_MBps,write_iops,await,util
+            else
+                printf "%.2f,%.2f,,%.2f", write_MBps,write_iops,util
         }')
     else
         METRICS="0,0,0,0"
@@ -188,11 +195,9 @@ set +e
   echo "Mode       : wr-rnd"
   echo
 
-  TEST_FILE_SIZE="${TEST_FILE_SIZE:-20G}"
-
   stdbuf -oL -eL stress-ng \
     --hdd ${HDD_WORKERS} \
-    --hdd-bytes ${TEST_FILE_SIZE} \
+    --hdd-bytes 20G \
     --hdd-opts wr-rnd \
     --verify \
     --timeout "${DURATION}" \
@@ -252,8 +257,30 @@ WRITE_MAX=$(awk -F',' 'NR>1 {if($5>max)max=$5} END{printf "%.2f",max+0}' "$MON_L
 WIOPS_AVG=$(awk -F',' 'NR>1 {sum+=$6; n++} END{if(n>0) printf "%.2f",sum/n; else print "0"}' "$MON_LOG")
 WIOPS_MAX=$(awk -F',' 'NR>1 {if($6>max)max=$6} END{printf "%.2f",max+0}' "$MON_LOG")
 
-AWAIT_AVG=$(awk -F',' 'NR>1 {sum+=$7; n++} END{if(n>0) printf "%.2f",sum/n; else print "0"}' "$MON_LOG")
-AWAIT_MAX=$(awk -F',' 'NR>1 {if($7>max)max=$7} END{printf "%.2f",max+0}' "$MON_LOG")
+AWAIT_AVG=$(awk -F',' '
+NR>1 {
+    v=$7
+    if (v != "" && v+0 >= 0 && v+0 <= 5000) {
+        sum += v+0
+        n++
+    }
+}
+END{
+    if(n>0) printf "%.2f",sum/n;
+    else print "0"
+}' "$MON_LOG")
+AWAIT_MAX=$(awk -F',' '
+NR>1 {
+    v=$7
+    if (v != "" && v+0 >= 0 && v+0 <= 5000) {
+        if (!seen || v+0 > max) max=v+0
+        seen=1
+    }
+}
+END{
+    if(seen) printf "%.2f",max;
+    else print "0.00"
+}' "$MON_LOG")
 
 UTIL_AVG=$(awk -F',' 'NR>1 {sum+=$8; n++} END{if(n>0) printf "%.2f",sum/n; else print "0"}' "$MON_LOG")
 UTIL_MAX=$(awk -F',' 'NR>1 {if($8>max)max=$8} END{printf "%.2f",max+0}' "$MON_LOG")
@@ -543,7 +570,18 @@ if mon_log.exists():
             out = []
             for j, val in enumerate(row, 1):
                 if idx > 1 and j >= 2:
-                    out.append(to_number(val))
+                    if j == 7:
+                        s = str(val).strip()
+                        if s == "":
+                            out.append(None)
+                        else:
+                            v = to_number(s)
+                            if v < 0 or v > 5000:
+                                out.append(None)
+                            else:
+                                out.append(v)
+                    else:
+                        out.append(to_number(val))
                 else:
                     out.append(clean_excel_text(val.strip()) if isinstance(val, str) else val)
             mon.append(out)
@@ -599,4 +637,6 @@ echo "Kernel Error : ${ERR_LOG}"
 echo "Text Report  : ${REPORT}"
 echo "XLSX Report  : ${XLSX_REPORT}"
 echo "======================================"
+
+
 

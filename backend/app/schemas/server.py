@@ -136,11 +136,48 @@ class DeployPublicKeyRequest(BaseModel):
     private_key_path: str = Field(min_length=1, max_length=255)
 
 
+class DeployPublicKeyAllRequest(DeployPublicKeyRequest):
+    server_ids: list[int] = Field(default_factory=list)
+
+
+class CheckPublicKeyRequest(DeployPublicKeyAllRequest):
+    pass
+
+
 class DeployPublicKeyResponse(BaseModel):
     success: bool
     message: str
     auth_type: str
     private_key_path: str
+
+
+class DeployPublicKeyAllItem(BaseModel):
+    server_id: int
+    server_name: str
+    success: bool
+    message: str
+
+
+class DeployPublicKeyAllResponse(BaseModel):
+    total: int
+    success: int
+    failed: int
+    items: list[DeployPublicKeyAllItem]
+
+
+class CheckPublicKeyItem(BaseModel):
+    server_id: int
+    server_name: str
+    host: str
+    success: bool
+    deployed: bool
+    status: str
+    message: str
+
+
+class CheckPublicKeyResponse(BaseModel):
+    total: int
+    items: list[CheckPublicKeyItem]
 
 
 # ── Tag summary ──

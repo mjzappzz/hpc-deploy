@@ -44,6 +44,10 @@ class ProbeAllResult(BaseModel):
     reason: str | None = None  # why the server was skipped
 
 
+class ProbeAllRequest(BaseModel):
+    server_ids: list[int] = []
+
+
 class ProbeAllResponse(BaseModel):
     total: int
     probed: int
