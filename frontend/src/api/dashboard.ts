@@ -27,6 +27,10 @@ export interface RecentTaskItem {
   created_at: string | null
   start_time: string | null
   end_time: string | null
+  command_preview?: string | null
+  params?: Record<string, unknown> | null
+  duration_seconds?: number | null
+  final_status?: string | null
 }
 
 export interface ArtifactStats {

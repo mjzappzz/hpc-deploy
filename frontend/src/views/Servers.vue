@@ -22,7 +22,7 @@
       </div>
 
       <div class="filter-bar">
-        <el-select v-model="filterTag" placeholder="按标签筛选" clearable size="small" style="width:140px" @change="loadServers">
+        <el-select v-model="filterTag" placeholder="按标签筛选" clearable size="small" style="width:140px" @change="loadServers" @clear="loadServers">
           <el-option v-for="t in tags" :key="t.name" :label="t.name" :value="t.name" />
         </el-select>
         <el-input v-model="filterKeyword" placeholder="搜索名称/主机" clearable size="small" style="width:200px" @clear="loadServers" @keyup.enter="loadServers" />
@@ -47,6 +47,7 @@
             @test="testSsh"
             @detect="detectInfo"
             @detail="openDetail"
+            @update-tags="updateServerTags"
           />
           <el-empty v-else description="暂无在线服务器" :image-size="60" />
         </div>
@@ -68,6 +69,7 @@
             @test="testSsh"
             @detect="detectInfo"
             @detail="openDetail"
+            @update-tags="updateServerTags"
           />
           <el-empty v-else description="暂无离线服务器" :image-size="60" />
         </div>
@@ -125,22 +127,6 @@
             选择 backend/keys/ 下的本地私钥。不会返回私钥内容。
           </div>
         </el-form-item>
-        <el-form-item label="标签">
-          <el-select
-            ref="tagSelectRef"
-            v-model="form.tags"
-            multiple
-            filterable
-            allow-create
-            default-first-option
-            placeholder="GPU / 5090 / Ubuntu / 客户A"
-            style="width:100%"
-            @change="handleFormTagChange"
-          >
-            <el-option v-for="t in availableTagOptions" :key="t" :label="t" :value="t" />
-          </el-select>
-          <div class="form-help-text">最多 10 个标签，每个不超过 30 个字符。禁止特殊字符。</div>
-        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
@@ -148,10 +134,23 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="deployDialogVisible" title="部署公钥" width="1040px" class="public-key-dialog">
-      <div class="deploy-hint">
-        <div>用于检查各服务器是否已安装当前选择的本机公钥。未安装的服务器可以在这里一键安装。</div>
-        <div class="deploy-path">写入位置固定为远端登录用户的 ~/.ssh/authorized_keys。</div>
+    <el-dialog v-model="deployDialogVisible" title="部署公钥" width="980px" class="public-key-dialog">
+      <div class="public-key-header">
+        <div class="deploy-hint">
+          <div class="deploy-hint__title">公钥部署说明</div>
+          <div>选择本机 <code>backend/keys/</code> 下带 <code>.pub</code> 的 SSH 密钥对，将公钥写入远端登录用户的 <code>~/.ssh/authorized_keys</code>。</div>
+          <div class="deploy-path">没有可用密钥时，点击右侧“生成默认密钥”创建 <code>id_ed25519</code> 和 <code>id_ed25519.pub</code>。</div>
+        </div>
+        <div class="public-key-summary">
+          <div class="public-key-summary__item">
+            <span>可部署密钥</span>
+            <strong>{{ sshKeysWithPublicKey.length }}</strong>
+          </div>
+          <div class="public-key-summary__item">
+            <span>待部署服务器</span>
+            <strong>{{ pendingPublicKeyDeployCount }}</strong>
+          </div>
+        </div>
       </div>
 
       <div class="public-key-toolbar">
@@ -173,24 +172,19 @@
             </div>
           </el-option>
         </el-select>
+        <el-button :loading="sshKeyGenerating" @click="generateDeployKey">生成默认密钥</el-button>
         <el-button :loading="publicKeyChecking" @click="checkPublicKeyStatuses">检测全部</el-button>
         <el-button type="primary" plain :loading="publicKeyDeploying" @click="deployMissingPublicKeys">安装到未安装服务器</el-button>
         <el-button @click="refreshPublicKeyPanel">刷新</el-button>
       </div>
 
       <el-empty v-if="publicKeyRows.length === 0" description="当前没有可操作的服务器" />
-      <el-table v-else :data="publicKeyRows" size="small" border class="public-key-table">
+      <el-table v-else :data="publicKeyRows" size="small" border class="public-key-table" max-height="420">
         <el-table-column prop="server.name" label="服务器名称" min-width="120" show-overflow-tooltip />
         <el-table-column label="地址" min-width="150">
           <template #default="{ row }">{{ row.server.host }}</template>
         </el-table-column>
         <el-table-column prop="server.username" label="用户" width="80" />
-        <el-table-column label="标签" min-width="120">
-          <template #default="{ row }">
-            <span v-if="!row.server.tags || row.server.tags.length === 0" class="detail-empty-text">-</span>
-            <el-tag v-for="tag in row.server.tags" :key="tag" size="small" style="margin-right:4px">{{ tag }}</el-tag>
-          </template>
-        </el-table-column>
         <el-table-column label="SSH 状态" width="90">
           <template #default="{ row }"><StatusTag :status="row.server.status" /></template>
         </el-table-column>
@@ -199,10 +193,10 @@
             <el-tag size="small" :type="publicKeyStatusType(row.status)">{{ publicKeyStatusLabel(row.status) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="最近检测时间" width="150">
+        <el-table-column label="最近检测时间" width="145">
           <template #default="{ row }">{{ formatTime(row.server.last_check_at) }}</template>
         </el-table-column>
-        <el-table-column label="说明" min-width="220">
+        <el-table-column label="说明" min-width="260" show-overflow-tooltip>
           <template #default="{ row }">
             <span class="public-key-message">{{ row.message || '-' }}</span>
           </template>
@@ -433,10 +427,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { formatDateTime } from '@/utils/time'
+import { getApiErrorMessage as readApiErrorMessage } from '@/utils/apiError'
+import { getTaskTypeLabel } from '@/utils/taskDisplay'
 import {
   createServer,
   checkPublicKey,
@@ -497,6 +493,7 @@ const detailVisible = ref(false)
 const activeServer = ref<ServerRecord | null>(null)
 const sshKeys = ref<SSHKeyItem[]>([])
 const sshKeysLoading = ref(false)
+const sshKeyGenerating = ref(false)
 const deployDialogVisible = ref(false)
 const deployPrivateKeyPath = ref('')
 const publicKeyChecking = ref(false)
@@ -505,7 +502,6 @@ const publicKeyStatusMap = ref<Record<number, { status: PublicKeyStatus; message
 const filterTag = ref('')
 const filterKeyword = ref('')
 const tags = ref<TagSummary[]>([])
-const tagSelectRef = ref()
 
 // ── Detail drawer (Phase 27A) ──
 const router = useRouter()
@@ -535,7 +531,6 @@ const form = reactive<ServerPayload>({
   key_path: '',
   password: '',
   status: 'unknown',
-  tags: []
 })
 
 const availableSshKeyOptions = computed(() => {
@@ -562,7 +557,6 @@ const saveDisabled = computed(() => {
   }
   return !form.key_path?.trim() || (!editingId.value && !hasSelectableSshKey.value)
 })
-const availableTagOptions = computed(() => tags.value.map((t) => t.name))
 const publicKeyTargetServers = computed(() => servers.value)
 const publicKeyRows = computed<PublicKeyRow[]>(() => publicKeyTargetServers.value.map((server) => {
   const state = publicKeyStatusMap.value[server.id]
@@ -572,16 +566,6 @@ const publicKeyRows = computed<PublicKeyRow[]>(() => publicKeyTargetServers.valu
     message: state?.message ?? '未检测'
   }
 }))
-
-function handleFormTagChange() {
-  nextTick(() => {
-    const select = tagSelectRef.value as { blur?: () => void; toggleMenu?: () => void; expanded?: boolean; visible?: boolean } | undefined
-    select?.blur?.()
-    if (select?.expanded || select?.visible) {
-      select.toggleMenu?.()
-    }
-  })
-}
 
 function clearFilters() {
   filterTag.value = ''
@@ -600,8 +584,22 @@ function resetForm() {
     key_path: '',
     password: '',
     status: 'unknown',
-    tags: []
   })
+}
+
+/**
+ * Called when tags are edited inline in the ServerTable (tag column popover).
+ * Sends a PATCH to the server endpoint with only the tags field.
+ */
+async function updateServerTags(serverId: number, newTags: string[]) {
+  try {
+    await updateServer(serverId, { tags: newTags } as Partial<ServerPayload>)
+    // Optimistically update local state
+    const srv = servers.value.find(s => s.id === serverId)
+    if (srv) srv.tags = newTags
+  } catch (error) {
+    ElMessage.error(`标签更新失败：${getApiErrorMessage(error)}`)
+  }
 }
 
 async function loadServers() {
@@ -687,7 +685,6 @@ function openEdit(server: ServerRecord) {
     memory_info: server.memory_info,
     disk_info: server.disk_info,
     network_info: server.network_info,
-    tags: server.tags ?? []
   })
   void loadSshKeys()
   dialogVisible.value = true
@@ -713,7 +710,7 @@ async function saveServer() {
       memory_info: form.memory_info,
       disk_info: form.disk_info,
       network_info: form.network_info,
-      tags: form.tags || [],
+      // Tags are edited inline via the table, not in this dialog
     }
     if (form.auth_type === 'password') {
       payload.key_path = null
@@ -750,7 +747,6 @@ async function openPublicKeyManager() {
   deployDialogVisible.value = true
   publicKeyStatusMap.value = {}
   await loadSshKeys()
-  await ensureDeployableSshKey()
   const selectedKey = sshKeysWithPublicKey.value.find((item) => item.key_name === settingsStore.default_ssh_key_name)
     ?? sshKeysWithPublicKey.value[0]
   deployPrivateKeyPath.value = selectedKey?.private_key_path ?? ''
@@ -782,6 +778,19 @@ async function ensureDeployableSshKey() {
   }
 
   try {
+    return await generateDeployKey()
+  } catch (error) {
+    ElMessage.error(`生成默认 SSH 密钥失败：${getApiErrorMessage(error)}`)
+    return false
+  }
+}
+
+async function generateDeployKey(): Promise<boolean> {
+  const confirmed = await requireAdminConfirm('生成默认 SSH 密钥')
+  if (!confirmed) return false
+
+  sshKeyGenerating.value = true
+  try {
     const res = await generateDefaultSshKey()
     ElMessage.success(res.data.message)
     await loadSshKeys()
@@ -790,6 +799,8 @@ async function ensureDeployableSshKey() {
   } catch (error) {
     ElMessage.error(`生成默认 SSH 密钥失败：${getApiErrorMessage(error)}`)
     return false
+  } finally {
+    sshKeyGenerating.value = false
   }
 }
 
@@ -1215,16 +1226,7 @@ function authTypeLabel(value: string | null | undefined) {
 }
 
 function getApiErrorMessage(error: unknown) {
-  if (
-    typeof error === 'object' &&
-    error !== null &&
-    'response' in error &&
-    typeof (error as { response?: { data?: { detail?: unknown } } }).response?.data?.detail === 'string'
-  ) {
-    return (error as { response: { data: { detail: string } } }).response.data.detail
-  }
-  if (error instanceof Error) return error.message
-  return '请求失败'
+  return readApiErrorMessage(error, '请求失败')
 }
 
 function formatTime(value: string | null | undefined) {
@@ -1232,14 +1234,7 @@ function formatTime(value: string | null | undefined) {
 }
 
 function taskTypeLabel(type: string | null | undefined): string {
-  const labels: Record<string, string> = {
-    script: '编译环境',
-    stress: '压测脚本',
-    apptainer: 'Apptainer 镜像',
-    mpi: '编译环境',
-    test: '测试'
-  }
-  return labels[type ?? ''] || type || '-'
+  return getTaskTypeLabel(type, '-')
 }
 
 onMounted(() => {
@@ -1256,15 +1251,59 @@ onMounted(() => {
   gap: 4px;
 }
 
+.public-key-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  padding: 12px;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 6px;
+  background: var(--el-fill-color-lighter);
+}
+
 .deploy-hint {
-  margin-bottom: 16px;
   color: #475569;
   font-size: 13px;
   line-height: 1.6;
+  min-width: 0;
+}
+
+.deploy-hint__title {
+  margin-bottom: 2px;
+  font-weight: 600;
+  color: #1f2937;
 }
 
 .deploy-path {
   color: #475569;
+}
+
+.public-key-summary {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.public-key-summary__item {
+  min-width: 92px;
+  padding: 8px 10px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  background: var(--el-bg-color);
+  text-align: center;
+}
+
+.public-key-summary__item span {
+  display: block;
+  margin-bottom: 2px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.public-key-summary__item strong {
+  color: #1f2937;
+  font-size: 18px;
 }
 
 .public-key-toolbar {
@@ -1272,10 +1311,12 @@ onMounted(() => {
   gap: 8px;
   align-items: center;
   margin: 12px 0;
+  flex-wrap: wrap;
 }
 
 .public-key-toolbar .ssh-key-select {
   max-width: 420px;
+  min-width: 280px;
 }
 
 .public-key-table {
@@ -1283,9 +1324,6 @@ onMounted(() => {
 }
 
 .public-key-message {
-  white-space: normal;
-  word-break: break-word;
-  overflow-wrap: anywhere;
   color: #475569;
 }
 

@@ -212,7 +212,8 @@ class BatchTaskDetailItem(BaseModel):
     server_id: int
     server_name: str
     host: str
-    status: str
+    status: str  # execution status
+    final_status: str = "UNKNOWN"  # unified status (considers report)
     sequence_index: int | None = None
     started_at: datetime | None = None
     ended_at: datetime | None = None
@@ -296,5 +297,8 @@ class TaskDiagnosisItem(BaseModel):
 class TaskDiagnosisResponse(BaseModel):
     task_id: str
     task_name: str
-    status: str
+    status: str  # execution status (legacy, kept for backward compat)
+    execution_status: str
+    report_status: str
+    final_status: str
     diagnosis: TaskDiagnosisItem

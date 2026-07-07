@@ -52,7 +52,18 @@
                     >
                       <div class="s-card-main">
                         <div class="s-card-title-row">
-                          <span class="s-card-name">{{ server.name }}</span>
+                          <div class="s-card-name-group">
+                            <span class="s-card-name">{{ server.name }}</span>
+                            <template v-if="server.tags && server.tags.length">
+                              <el-tag
+                                v-for="tag in server.tags.slice(0, 2)"
+                                :key="tag"
+                                size="small"
+                                class="s-card-tag"
+                              >{{ tag }}</el-tag>
+                              <el-tag v-if="server.tags.length > 2" size="small" type="info" class="s-card-tag">+{{ server.tags.length - 2 }}</el-tag>
+                            </template>
+                          </div>
                           <div class="s-card-state">
                             <el-tag size="small" type="success" effect="plain">在线</el-tag>
                             <span v-if="selectedServerIds.includes(server.id)" class="s-card-check">✓</span>
@@ -62,10 +73,6 @@
                           <span class="s-card-host">{{ server.host }}</span>
                           <span class="s-card-sep">·</span>
                           <span class="s-card-user">{{ server.username }}</span>
-                          <div v-if="server.tags && server.tags.length" class="s-card-tags" :title="server.tags.join(', ')">
-                            <el-tag v-for="tag in server.tags.slice(0, 2)" :key="tag" size="small" round>{{ tag }}</el-tag>
-                            <el-tag v-if="server.tags.length > 2" size="small" type="info" round>+{{ server.tags.length - 2 }}</el-tag>
-                          </div>
                         </div>
                       </div>
                     </div>
@@ -429,7 +436,9 @@ import { downloadTaskLogs } from '@/api/task'
 import { useTaskWebSocket } from '@/composables/useTaskWebSocket'
 import { formatDateTime, formatScriptUpdatedAt } from '@/utils/time'
 
-import { formatTaskDisplayName } from '@/utils/taskDisplay'
+import { getTaskTypeLabel, formatTaskDisplayName } from '@/utils/taskDisplay'
+import { getApiErrorMessage as readApiErrorMessage } from '@/utils/apiError'
+import { formatBytes } from '@/utils/format'
 import {
   calcDurationSeconds,
   calcEstimatedRemaining,
@@ -1344,31 +1353,17 @@ async function refreshCurrentPanel() {
 }
 
 function formatSize(size: number) {
-  if (size < 1024) return `${size} B`
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
-  if (size < 1024 * 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`
-  return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`
+  return formatBytes(size)
 }
 
 const formatDate = formatDateTime
 
 function taskTypeLabel(value: TaskType | null | undefined) {
-  if (!value) return '-'
-  const found = taskTypes.find((item) => item.value === value)
-  return found?.label ?? value
+  return getTaskTypeLabel(value, '-')
 }
 
 function getApiErrorMessage(error: unknown) {
-  if (
-    typeof error === 'object' &&
-    error !== null &&
-    'response' in error &&
-    typeof (error as { response?: { data?: { detail?: unknown } } }).response?.data?.detail === 'string'
-  ) {
-    return (error as { response: { data: { detail: string } } }).response.data.detail
-  }
-  if (error instanceof Error) return error.message
-  return '任务创建失败'
+  return readApiErrorMessage(error, '任务创建失败')
 }
 
 function paramsPreviewString(): string {
@@ -1692,6 +1687,14 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
+.s-card-name-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+
 .s-card-name {
   font-size: 14px;
   font-weight: 600;
@@ -1700,13 +1703,14 @@ onBeforeUnmount(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex-shrink: 1;
 }
 
 .s-card-title-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
 }
 
@@ -1751,24 +1755,12 @@ onBeforeUnmount(() => {
   color: var(--el-text-color-placeholder);
 }
 
-.s-card-tags {
-  display: flex;
-  align-items: center;
-  flex-wrap: nowrap;
-  gap: 3px;
-  min-width: 0;
-  overflow: hidden;
-  flex-shrink: 0;
-}
-
-.s-card-tags :deep(.el-tag) {
-  max-width: 56px;
-  padding: 0 5px;
-}
-
-.s-card-tags :deep(.el-tag__content) {
+.s-card-tag {
+  max-width: 72px;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .s-card-state {

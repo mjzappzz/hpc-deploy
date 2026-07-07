@@ -176,6 +176,35 @@ HPCDeploy 已形成完整闭环，端到端链路全部打通：
 
 ---
 
+## 近期维护记录
+
+### 2026-07-06 — 状态体系统一 + 仪表盘进度条 + 服务器标签内联编辑
+
+**最终状态统一（final_status）**
+- 新增 `backend/app/core/task_state_resolver.py` — `resolve_final_status()` 单源真理
+- 优先级：report FAIL > report PASS > execution FAILED > UNKNOWN
+- 诊断弹窗顶部改为 final_status 展示（压测失败/压测通过/执行失败）
+- TaskCard、批次展开、抽屉详情、诊断弹窗统一使用 final_status
+- `_compute_batch_status` 考虑报告状态（SUCCESS+FAIL 报告 → 批次 FAILED）
+- batch detail API 返回 `final_status`
+
+**仪表盘进度条**
+- 最近任务表新增进度列（el-progress），实时显示运行耗时 + 预计剩余
+- 移除快捷操作卡片
+- 使用 tick 计数器 + `currentNow()` 保证进度条每秒刷新
+- 后端 `RecentTaskItem` 新增 `params`、`command_preview`、`duration_seconds`、`final_status`
+
+**服务器标签内联编辑**
+- 标签列改为点击直接出现输入框，回车/失焦保存
+- 去掉编辑对话框中的标签字段
+- 标签使用 `el-tag` 蓝色芯片展示，点击任意位置编辑
+- 多个标签用逗号/空格分隔
+
+**任务执行页服务器卡片**
+- 标签从 meta 行移到 title 行，紧跟在服务器名称后
+
+---
+
 ## 当前暂未做
 
 - 调度器集群集成（Slurm 等）
@@ -198,6 +227,7 @@ HPCDeploy 已形成完整闭环，端到端链路全部打通：
 5. 修改后必须跑 `compileall` + `npm run build`
 6. 前端不传 raw command / raw_args / remote_path / remote_work_dir
 7. 高风险操作的所有 API 已经通过 `require_admin_token()` 依赖保护
+8. 新增 `backend/app/core/task_state_resolver.py` — 统一 final_status 规则，report 状态优先
 
 ---
 
@@ -215,4 +245,6 @@ HPCDeploy 已形成完整闭环，端到端链路全部打通：
 前端不要传 raw command / raw_args / remote_path / remote_work_dir。
 不要 git add .
 不要 git commit，除非我明确要求。
+最终状态规则：report FAIL > report PASS > execution FAILED > UNKNOWN，
+实现在 backend/app/core/task_state_resolver.py。
 ```

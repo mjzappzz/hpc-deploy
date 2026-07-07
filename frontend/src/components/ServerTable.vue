@@ -35,11 +35,38 @@
         </el-tooltip>
       </template>
     </el-table-column>
-    <el-table-column label="标签" width="90">
+    <!-- 标签列：点击直接内联编辑，标签始终在 DOM 避免抖动 -->
+    <!-- 宽度 0 + flex 让标签列自适应剩余空间，保证操作列不被挤 -->
+    <el-table-column label="标签" class-name="server-tags-column">
       <template #default="{ row }">
-        <span v-if="!row.tags || row.tags.length === 0" class="table-ellipsis" style="color:#94a3b8">-</span>
-        <el-tag v-for="tag in (row.tags || []).slice(0, 3)" :key="tag" size="small" style="margin-right:4px; margin-bottom:2px;">{{ tag }}</el-tag>
-        <el-tag v-if="(row.tags || []).length > 3" size="small" type="info">+{{ (row.tags || []).length - 3 }}</el-tag>
+        <div class="inline-tag-cell" @click="!editingId && startEditing(row)">
+          <!-- 背景层：标签始终渲染 -->
+          <div class="inline-tag-backdrop">
+            <template v-if="row.tags && row.tags.length">
+              <el-tag
+                v-for="tag in row.tags.slice(0, 3)"
+                :key="tag"
+                size="small"
+                class="inline-tag-chip"
+                :class="{ 'inline-tag-chip--hidden': editingId === row.id }"
+              >{{ tag }}</el-tag>
+              <el-tag v-if="row.tags.length > 3" size="small" type="info" class="inline-tag-chip" :class="{ 'inline-tag-chip--hidden': editingId === row.id }">+{{ row.tags.length - 3 }}</el-tag>
+            </template>
+            <span v-else class="inline-tag-placeholder" :class="{ 'inline-tag-placeholder--hidden': editingId === row.id }">点击添加标签</span>
+          </div>
+          <!-- 前景层：编辑输入框 absolute 覆盖 -->
+          <el-input
+            v-if="editingId === row.id"
+            ref="editInputRef"
+            v-model="editText"
+            size="small"
+            placeholder="输入标签文字，用逗号或空格分隔"
+            class="inline-tag-input"
+            @blur="finishEditing(row)"
+            @keyup.enter="finishEditing(row)"
+            @keyup.escape="cancelEditing"
+          />
+        </div>
       </template>
     </el-table-column>
     <el-table-column label="OS" width="105">
@@ -67,7 +94,7 @@
         <span>{{ formatDateTime(row.last_check_at) }}</span>
       </template>
     </el-table-column>
-    <el-table-column label="操作" width="230" class-name="server-actions-column">
+    <el-table-column label="操作" width="240" class-name="server-actions-column">
       <template #default="{ row }">
         <div class="server-actions">
           <el-button
@@ -109,11 +136,12 @@
 </template>
 
 <script setup lang="ts">
+import { nextTick, ref } from 'vue'
 import type { ServerRecord } from '@/api/server'
 import { formatDateTime } from '@/utils/time'
 import StatusTag from './StatusTag.vue'
 
-withDefaults(defineProps<{
+const props = withDefaults(defineProps<{
   servers: ServerRecord[]
   loading?: boolean
   testingIds?: number[]
@@ -123,7 +151,7 @@ withDefaults(defineProps<{
   loading: false,
   testingIds: () => [],
   detectingIds: () => [],
-  isProbingAll: false
+  isProbingAll: false,
 })
 
 const emit = defineEmits<{
@@ -132,7 +160,13 @@ const emit = defineEmits<{
   test: [server: ServerRecord]
   detect: [server: ServerRecord]
   detail: [server: ServerRecord]
+  'update-tags': [serverId: number, tags: string[]]
 }>()
+
+/** Inline tag editing state */
+const editingId = ref<number | null>(null)
+const editText = ref('')
+const editInputRef = ref()
 
 function displayValue(value: string | null | undefined) {
   return value?.trim() || '-'
@@ -162,9 +196,7 @@ function gpuSummary(value: string | null | undefined, status: string | null | un
   if (status === 'none') return '无 NVIDIA GPU'
   if (status === 'hardware_only') return text
   if (status === 'unknown') return '-'
-  // Fallback for null status (old data without gpu_status) or driver_ok
   if (status === 'driver_ok') return text.split(',')[0].trim() || text
-  // Legacy fallback — parse text for detection keywords
   if (text === '-' || /not detected/i.test(text)) return '无 NVIDIA GPU'
   if (text.includes('驱动不可用')) return text
   return text.split(',')[0].trim() || text
@@ -199,6 +231,34 @@ function handleMore(command: string, server: ServerRecord) {
     emit('delete', server)
   }
 }
+
+// ── Inline tag editing ──
+
+function startEditing(row: ServerRecord) {
+  editingId.value = row.id
+  editText.value = (row.tags || []).join(', ')
+  nextTick(() => {
+    editInputRef.value?.focus?.()
+  })
+}
+
+function finishEditing(row: ServerRecord) {
+  if (editingId.value !== row.id) return
+  editingId.value = null
+  // Parse: split by comma/space, clean up
+  const tags = editText.value
+    .split(/[,，\s]+/)
+    .map(t => t.trim())
+    .filter(t => t.length > 0)
+    .slice(0, 10)
+  const unique = [...new Set(tags)]
+  emit('update-tags', row.id, unique)
+}
+
+function cancelEditing() {
+  editingId.value = null
+  editText.value = ''
+}
 </script>
 
 <style scoped>
@@ -228,13 +288,13 @@ function handleMore(command: string, server: ServerRecord) {
 }
 
 .server-table :deep(.el-table__cell .cell) {
-  padding-left: 8px;
-  padding-right: 8px;
+  padding-left: 6px;
+  padding-right: 6px;
 }
 
 .server-table :deep(.server-actions-column .cell) {
-  padding-left: 6px;
-  padding-right: 6px;
+  padding-left: 4px;
+  padding-right: 4px;
 }
 
 .server-table :deep(.server-cpu-column .cell),
@@ -275,5 +335,56 @@ function handleMore(command: string, server: ServerRecord) {
 }
 .gpu-status-none {
   color: var(--el-text-color-placeholder);
+}
+
+/* ── Inline tag cell ── */
+.inline-tag-cell {
+  position: relative;
+  min-height: 22px;
+  cursor: pointer;
+  padding: 0;
+  border-radius: 3px;
+  transition: background 0.12s;
+}
+.inline-tag-cell:hover {
+  background: var(--el-fill-color-light);
+}
+.inline-tag-backdrop {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  line-height: 22px;
+}
+.inline-tag-chip {
+  flex-shrink: 0;
+  margin: 0;
+}
+.inline-tag-chip--hidden,
+.inline-tag-placeholder--hidden {
+  visibility: hidden;
+}
+.inline-tag-placeholder {
+  font-size: 13px;
+  color: var(--el-text-color-placeholder);
+  font-style: italic;
+  line-height: 22px;
+}
+.inline-tag-input {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+}
+.inline-tag-input :deep(.el-input__wrapper) {
+  height: 24px;
+  min-height: 24px;
+  box-shadow: 0 0 0 1px var(--el-color-primary) inset !important;
+  padding: 0 6px;
+}
+.inline-tag-input :deep(.el-input__inner) {
+  height: 22px;
+  line-height: 22px;
+  font-size: 13px;
 }
 </style>

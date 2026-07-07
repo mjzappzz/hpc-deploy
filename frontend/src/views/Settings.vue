@@ -74,11 +74,18 @@
         <div v-else-if="artifactDirectories.length === 0" class="section-placeholder">没有本机结果文件</div>
         <el-table
           v-else
-          :data="artifactDirectories"
+          ref="tableRef"
+          :data="sortedArtifactDirectories"
           size="small"
           border
-          class="artifact-table"
+          max-height="520"
+          :class="['artifact-table', { 'is-dragging': isDragSelecting }]"
           @selection-change="onArtifactDirSelection"
+          @sort-change="onArtifactSortChange"
+          @cell-mouse-enter="onCellDragEnter"
+          @mousedown="onTableDragStart"
+          @mouseleave="onTableDragEnd"
+          @mouseup="onTableDragEnd"
         >
           <el-table-column type="selection" width="40" :selectable="isArtifactDirSelectable" />
           <el-table-column type="expand" width="44">
@@ -108,10 +115,10 @@
           <el-table-column label="文件数" width="90" align="right">
             <template #default="{ row }">{{ row.file_count }}</template>
           </el-table-column>
-          <el-table-column label="大小" width="110" align="right">
+          <el-table-column label="大小" width="110" align="right" sortable="custom" prop="size_bytes">
             <template #default="{ row }">{{ row.size_text }}</template>
           </el-table-column>
-          <el-table-column label="更新时间" width="170">
+          <el-table-column label="更新时间" width="170" sortable="custom" prop="modified_at">
             <template #default="{ row }">{{ row.modified_at ? formatDate(row.modified_at) : '-' }}</template>
           </el-table-column>
           <el-table-column label="操作" width="90" align="right">
@@ -180,7 +187,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { changePassword, getSettings, updateSettings, type RuntimePathInfo } from '@/api/settings'
 import {
@@ -193,6 +200,7 @@ import {
 import { requireAdminConfirm } from '@/composables/useAdminConfirm'
 import { useSettingsStore } from '@/stores/settings'
 import { formatDateTime } from '@/utils/time'
+import { formatBytes } from '@/utils/format'
 
 const settingsStore = useSettingsStore()
 const loading = ref(true)
@@ -346,19 +354,6 @@ async function loadSettings() {
   }
 }
 
-function formatBytes(value: number | null | undefined) {
-  if (value === null || value === undefined) return '-'
-  if (value < 1024) return `${value} B`
-  const units = ['KB', 'MB', 'GB', 'TB']
-  let size = value / 1024
-  let unitIndex = 0
-  while (size >= 1024 && unitIndex < units.length - 1) {
-    size /= 1024
-    unitIndex += 1
-  }
-  return `${size.toFixed(size >= 10 ? 1 : 2)} ${units[unitIndex]}`
-}
-
 function formatCount(value: number | null | undefined) {
   if (value === null || value === undefined) return '-'
   return String(value)
@@ -471,8 +466,60 @@ const artifactsTotalDirs = ref(0)
 const artifactsTotalFiles = ref(0)
 const artifactsTotalSize = ref(0)
 const artifactDirectories = ref<LocalArtifactDirectory[]>([])
+const artifactSortBy = ref<string>('modified_at')
+const artifactSortOrder = ref<'asc' | 'desc'>('desc')
 const selectedArtifactDirPaths = ref<string[]>([])
 const deletingArtifactDir = ref('')
+
+const sortedArtifactDirectories = computed(() => {
+  const data = [...artifactDirectories.value]
+  if (!artifactSortBy.value) return data
+  const order = artifactSortOrder.value === 'desc' ? -1 : 1
+  data.sort((a, b) => {
+    let va: number, vb: number
+    if (artifactSortBy.value === 'size_bytes') {
+      va = a.size_bytes ?? 0
+      vb = b.size_bytes ?? 0
+    } else {
+      va = sortableTime(a.modified_at, a.name)
+      vb = sortableTime(b.modified_at, b.name)
+    }
+    return (va - vb) * order
+  })
+  return data
+})
+
+// ── Drag-to-select ──
+const tableRef = ref<any>(null)
+const isDragSelecting = ref(false)
+
+function onTableDragStart(event: MouseEvent) {
+  const target = event.target as HTMLElement
+  // 不对表头、复选框、按钮启动拖拽
+  if (target.closest('.el-table__header-wrapper') || target.closest('.el-checkbox') || target.closest('.el-button')) return
+  isDragSelecting.value = true
+}
+
+function onTableDragEnd() {
+  isDragSelecting.value = false
+}
+
+function onCellDragEnter(row: LocalArtifactDirectory) {
+  if (!isDragSelecting.value) return
+  if (!isArtifactDirSelectable(row)) return
+  tableRef.value?.toggleRowSelection(row, true)
+}
+
+function onArtifactSortChange({ prop, order }: { prop?: string; order?: 'asc' | 'desc' | null }) {
+  if (prop && order) {
+    artifactSortBy.value = prop
+    artifactSortOrder.value = order
+  } else {
+    // Reset to default: sort by modified_at desc
+    artifactSortBy.value = 'modified_at'
+    artifactSortOrder.value = 'desc'
+  }
+}
 
 function sortableTime(value?: string | null, fallbackName = '') {
   if (value) {
@@ -498,7 +545,10 @@ async function doScanArtifacts() {
     artifactsTotalDirs.value = res.total_dirs
     artifactsTotalFiles.value = res.total_files
     artifactsTotalSize.value = res.total_size_bytes
-    artifactDirectories.value = [...res.items].sort((a, b) => sortableTime(b.modified_at, b.name) - sortableTime(a.modified_at, a.name))
+    artifactDirectories.value = [...res.items]
+    // 重置排序为默认：更新时间降序
+    artifactSortBy.value = 'modified_at'
+    artifactSortOrder.value = 'desc'
     artifactsScanned.value = true
     selectedArtifactDirPaths.value = []
     await loadSettings()
@@ -670,6 +720,10 @@ onMounted(async () => {
 
 .artifact-table {
   width: 100%;
+}
+.artifact-table.is-dragging :deep(.el-table__body-wrapper) {
+  user-select: none;
+  cursor: pointer;
 }
 
 .noop-text {

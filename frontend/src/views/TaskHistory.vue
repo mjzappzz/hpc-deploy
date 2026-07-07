@@ -156,7 +156,7 @@
                     <el-table-column label="序号" prop="sequence_index" width="55" align="center" />
                     <el-table-column label="状态" width="100">
                       <template #default="{ row: t }">
-                        <StatusTag :status="t.status" />
+                        <StatusTag :status="batchChildDisplayStatus(t)" />
                       </template>
                     </el-table-column>
                     <el-table-column label="退出码" width="65" align="center">
@@ -381,7 +381,7 @@
         <div class="task-drawer-summary">
           <div class="task-drawer-title-row">
             <div class="task-drawer-title" :title="drawerTaskDisplayName">{{ drawerTaskDisplayName }}</div>
-            <StatusTag :status="drawerTask.status" />
+            <StatusTag :status="drawerDisplayStatus" />
           </div>
           <div class="task-drawer-grid">
             <span><b>任务 ID</b><code>{{ drawerTask.task_id }}</code></span>
@@ -608,9 +608,10 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute } from 'vue-router'
 import { cancelBatch, cancelTask, downloadBatchReportZip, downloadTaskLogs, getTask, getTaskLogs, getTaskMonitor, listArtifacts, listBatches, getBatchDetail, listTasks, type ArtifactFileDetail, type BatchDetailResponse, type BatchQuery, type BatchSummaryItem, type BatchTaskDetailItem, type MonitorType, type TaskLogRecord, type TaskListQuery, type TaskMonitorStructuredResponse, type TaskRecord } from '@/api/task'
 import { formatDateTime } from '@/utils/time'
+import { getApiErrorMessage as readApiErrorMessage } from '@/utils/apiError'
 import { useTaskWebSocket } from '@/composables/useTaskWebSocket'
 import { calcDurationSeconds, calcEstimatedRemaining, calcProgress, formatSeconds, getTaskDuration } from '@/composables/useTaskProgress'
-import { formatTaskDisplayName } from '@/utils/taskDisplay'
+import { formatTaskDisplayName, getTaskTypeLabel } from '@/utils/taskDisplay'
 import LogViewer from '@/components/LogViewer.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import TaskCard from '@/components/TaskCard.vue'
@@ -721,17 +722,23 @@ function calcBatchChildStats(tasks: BatchTaskDetailItem[]) {
     canceled: 0,
   }
 
+  const FAILED_FINAL_STATUSES = ['FAIL', 'FAILED']
+  const CANCELED_STATUSES = ['CANCELED']
+
   for (const task of tasks) {
-    const status = String(task.status || '').toUpperCase()
-    if (status === 'SUCCESS') {
+    const finalStatus = (task.final_status || '').toUpperCase()
+    const execStatus = String(task.status || '').toUpperCase()
+    // Prefer final_status for counting; fall back to execution status
+    const status = (finalStatus && finalStatus !== 'UNKNOWN') ? finalStatus : execStatus
+    if (status === 'SUCCESS' || status === 'PASS') {
       stats.success += 1
-    } else if (BATCH_FAILED_STATUSES.includes(status)) {
+    } else if (FAILED_FINAL_STATUSES.includes(status) || BATCH_FAILED_STATUSES.includes(status)) {
       stats.failed += 1
     } else if (status === 'RUNNING') {
       stats.running += 1
     } else if (BATCH_PENDING_STATUSES.includes(status)) {
       stats.pending += 1
-    } else if (BATCH_CANCELED_STATUSES.includes(status)) {
+    } else if (CANCELED_STATUSES.includes(status) || BATCH_CANCELED_STATUSES.includes(status)) {
       stats.canceled += 1
     }
   }
@@ -811,6 +818,20 @@ const drawerProgressStatus = computed<'success' | 'exception' | 'warning' | unde
   if (status === 'FAILED') return 'exception'
   if (status === 'CANCELED') return 'warning'
   return undefined
+})
+
+/**
+ * For the detail drawer: prefer final_status over raw execution status.
+ * This ensures stress tasks with SUCCESS execution + FAIL report show as FAIL.
+ */
+const drawerDisplayStatus = computed(() => {
+  const task = drawerTask.value
+  if (!task) return ''
+  // Use final_status for stress tasks when available and meaningful
+  if (task.task_type === 'stress' && task.final_status && task.final_status !== 'UNKNOWN') {
+    return task.final_status
+  }
+  return task.status
 })
 
 const drawerShowCancelButton = computed(() => {
@@ -1453,6 +1474,16 @@ function checkAutoRefresh() {
   }
 }
 
+/**
+ * Batch child status keeps execution state visible. Only report failures
+ * override it, so SUCCESS + report PASS still displays as SUCCESS.
+ */
+function batchChildDisplayStatus(t: BatchTaskDetailItem): string {
+  const finalStatus = (t.final_status || '').toUpperCase()
+  if (finalStatus === 'FAIL' || finalStatus === 'FAILED') return finalStatus
+  return t.status
+}
+
 function batchStatusLabel(status: string): string {
   const labels: Record<string, string> = {
     RUNNING: '运行中',
@@ -1478,14 +1509,7 @@ function batchStatusTagType(status: string): string {
 }
 
 function taskTypeLabel(type: string | null): string {
-  const labels: Record<string, string> = {
-    script: '编译环境',
-    stress: '压测脚本',
-    apptainer: 'Apptainer 镜像',
-    mpi: '编译环境',
-    test: '测试脚本',
-  }
-  return labels[type ?? ''] || type || '-'
+  return getTaskTypeLabel(type, '-')
 }
 
 const formatDate = formatDateTime
@@ -1587,16 +1611,7 @@ async function confirmCancelTask() {
 }
 
 function getApiErrorMessage(error: unknown): string {
-  if (
-    typeof error === 'object' &&
-    error !== null &&
-    'response' in error &&
-    typeof (error as { response?: { data?: { detail?: unknown } } }).response?.data?.detail === 'string'
-  ) {
-    return (error as { response: { data: { detail: string } } }).response.data.detail
-  }
-  if (error instanceof Error) return error.message
-  return ''
+  return readApiErrorMessage(error, '')
 }
 
 async function openArtifacts(task: TaskRecord) {

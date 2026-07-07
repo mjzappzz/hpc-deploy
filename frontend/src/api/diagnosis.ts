@@ -18,6 +18,9 @@ export interface TaskDiagnosisResponse {
   task_id: string
   task_name: string
   status: string
+  execution_status: string
+  report_status: string
+  final_status: string
   diagnosis: TaskDiagnosisItem
 }
 

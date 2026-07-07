@@ -66,12 +66,10 @@ defineEmits<{
 }>()
 
 import { formatDateTime } from '@/utils/time'
+import { formatBytes } from '@/utils/format'
 const formatMtime = formatDateTime
 
 function formatSize(size: number) {
-  if (size < 1024) return `${size} B`
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
-  if (size < 1024 * 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`
-  return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`
+  return formatBytes(size)
 }
 </script>

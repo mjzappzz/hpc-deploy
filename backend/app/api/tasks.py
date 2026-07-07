@@ -13,6 +13,12 @@ from app.core.report_summary import (
     schedule_report_summary_generation,
     unknown_report_summary,
 )
+from app.core.task_state_resolver import resolve_final_status
+from app.core.task_serializer import serialize_task_record
+from app.core.stress_params import (
+    validate_stress_params,
+    validate_stress_suite_params,
+)
 from app.core.script_library import get_library_file_record
 from app.core.ssh_executor import SSHCommandTimeoutError, SSHExecutor, SSHExecutorError, shell_quote
 from app.core.script_validator import ScriptValidationError
@@ -69,30 +75,7 @@ from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
 
-# Stress param whitelists
-STRESS_ALLOWED_INTERVALS: list[int] = [5, 10, 30, 60, 120]
-STRESS_ALLOWED_DISK_FILE_SIZES: list[str] = ["1G", "10G", "50G", "100G"]
-STRESS_ALLOWED_GPU_BACKENDS: list[str] = ["cuda"]
-STRESS_ALL_PARAM_KEYS: set[str] = {
-    "duration_seconds", "interval_seconds",
-    "memory_percent", "workers",
-    "disk_file_size", "disk_path", "disk_test_dir",
-    "gpu_ids", "gpu_memory_percent", "gpu_backend",
-}
-
-_SAFE_DISK_DIR_PREFIXES: tuple[str, ...] = (
-    "/data", "/mnt", "/scratch", "/public", "/home", "/root",
-)
-
-_SAFE_DISK_DIR_BLOCKLIST: tuple[str, ...] = (
-    "/", "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64",
-    "/boot", "/dev", "/proc", "/sys", "/run", "/var", "/tmp",
-)
-
 WS_DB_POLL_INTERVAL_SECONDS = 1.0
-
-_DISK_DIR_DANGEROUS_CHARS: re.Pattern = re.compile(r"[;&|`$()\n\r\0 \*\?]")
-_DISK_DIR_TRAVERSAL: str = ".."
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -108,157 +91,6 @@ ALLOWED_TEMP_DIRS: set[str] = set()
 for dirs in SCRIPT_TEMP_DIR_MAP.values():
     for d in dirs:
         ALLOWED_TEMP_DIRS.add(d)
-
-def _auto_calc_stress_interval(duration_seconds: int) -> int:
-    """Auto-calculate sampling interval based on duration."""
-    if duration_seconds <= 600:
-        return 10
-    if duration_seconds <= 3600:
-        return 30
-    if duration_seconds <= 43200:
-        return 60
-    return 120
-
-
-def _validate_disk_test_dir(path: str) -> str:
-    """Validate disk_test_dir for disk stress tasks.
-
-    Rules:
-      1. Must be absolute (starts with /).
-      2. Must start with one of the safe prefixes.
-      3. No path traversal (..).
-      4. No dangerous shell chars or spaces.
-      5. Not a blocked system directory.
-      6. No trailing wildcards.
-
-    Returns the cleaned (trimmed) path, or raises HTTPException(400).
-    """
-    stripped = path.strip()
-
-    if not stripped.startswith("/"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="disk_test_dir must be an absolute path",
-        )
-
-    if _DISK_DIR_TRAVERSAL in stripped:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="disk_test_dir must not contain path traversal (..)",
-        )
-
-    if _DISK_DIR_DANGEROUS_CHARS.search(stripped):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="disk_test_dir contains dangerous characters",
-        )
-
-    if stripped.endswith(("*", "?")):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="disk_test_dir must not end with wildcard character",
-        )
-
-    if stripped in _SAFE_DISK_DIR_BLOCKLIST:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"disk_test_dir must not be a system directory ({stripped})",
-        )
-
-    if not stripped.startswith(_SAFE_DISK_DIR_PREFIXES):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"disk_test_dir must start with one of: {', '.join(_SAFE_DISK_DIR_PREFIXES)}",
-        )
-
-    return stripped
-
-
-def _validate_stress_params(raw: dict[str, object], script_name: str) -> dict[str, object]:
-    """Validate and sanitize stress task params.
-    Raises HTTPException(400) on any invalid value.
-    Returns a cleaned params dict with only accepted keys.
-    """
-    validated: dict[str, object] = {}
-
-    # duration_seconds: required, 10 ~ 259200
-    dur = raw.get("duration_seconds")
-    if not isinstance(dur, int) or dur < 10 or dur > 259200:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="duration_seconds must be an integer between 10 and 259200",
-        )
-    validated["duration_seconds"] = dur
-
-    # interval_seconds: auto-calculated, always overridden
-    validated["interval_seconds"] = _auto_calc_stress_interval(dur)
-
-    # --- cpu_mem_stress_report.sh params ---
-    if script_name == "cpu_mem_stress_report.sh":
-        if "memory_percent" in raw:
-            mp = raw["memory_percent"]
-            if not isinstance(mp, int) or mp < 10 or mp > 95:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="memory_percent must be between 10 and 95")
-            validated["memory_percent"] = mp
-        if "workers" in raw:
-            w = raw["workers"]
-            if not isinstance(w, int) or w < 1 or w > 1024:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="workers must be between 1 and 1024")
-            validated["workers"] = w
-
-    # --- disk_stress_report.sh params ---
-    elif script_name == "disk_stress_report.sh":
-        if "disk_file_size" in raw:
-            dfs = raw["disk_file_size"]
-            if dfs not in STRESS_ALLOWED_DISK_FILE_SIZES:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"disk_file_size must be one of {STRESS_ALLOWED_DISK_FILE_SIZES}",
-                )
-            validated["disk_file_size"] = dfs
-        if "disk_path" in raw:
-            dp = raw["disk_path"]
-            if not isinstance(dp, str) or not dp.startswith("~/") or ".." in dp:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="disk_path must be under home directory (~/...)")
-            validated["disk_path"] = dp
-        if "disk_test_dir" in raw:
-            dtd = raw["disk_test_dir"]
-            if not isinstance(dtd, str):
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="disk_test_dir must be a string")
-            if dtd.strip():
-                validated["disk_test_dir"] = _validate_disk_test_dir(dtd)
-            # else empty string → pass empty; backend will use remote_work_dir
-
-    # --- gpu_stress_report.sh params ---
-    elif script_name == "gpu_stress_report.sh":
-        if "gpu_ids" in raw:
-            gpu_ids = raw["gpu_ids"]
-            if not isinstance(gpu_ids, str) or not re.match(r'^(\d+(,\d+)*|all)$', gpu_ids):
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="gpu_ids must be 'all' or comma-separated numbers (e.g. '0,1')",
-                )
-            validated["gpu_ids"] = gpu_ids
-        if "gpu_memory_percent" in raw:
-            gmp = raw["gpu_memory_percent"]
-            if not isinstance(gmp, int) or gmp < 10 or gmp > 95:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="gpu_memory_percent must be between 10 and 95")
-            validated["gpu_memory_percent"] = gmp
-        if "gpu_backend" in raw:
-            if raw["gpu_backend"] not in STRESS_ALLOWED_GPU_BACKENDS:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"gpu_backend must be one of {STRESS_ALLOWED_GPU_BACKENDS}",
-                )
-            validated["gpu_backend"] = "cuda"
-
-    # Reject unknown keys
-    for key in raw:
-        if key not in STRESS_ALL_PARAM_KEYS:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"unknown param: {key}")
-
-    return validated
-
 
 APPTAINER_ALLOWED_PARAM_KEYS: set[str] = {"overwrite"}
 
@@ -445,7 +277,7 @@ def run_task(
         if "duration_seconds" not in raw_params:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="duration_seconds is required for stress tasks")
 
-        validated = _validate_stress_params(raw_params, str(file_record["name"]))
+        validated = validate_stress_params(raw_params, str(file_record["name"]))
         params = validated
     elif payload.task_type == "apptainer":
         params = _validate_apptainer_params(payload.params)
@@ -606,7 +438,7 @@ def batch_run_task(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="duration_seconds is required for stress tasks",
             )
-        params = _validate_stress_params(payload.params, script_name)
+        params = validate_stress_params(payload.params, script_name)
     elif payload.script_type == "apptainer":
         params = _validate_apptainer_params(payload.params)
     elif payload.params:
@@ -907,12 +739,25 @@ def _run_stress_suite_for_server(server_id: int, batch_id: str) -> None:
         for task_record in task_records:
             db.refresh(task_record)
 
+            if task_record.status in TERMINAL_TASK_STATUSES:
+                continue
+
+            if task_record.status in UNFINISHED_TASK_STATUSES and task_record.status != "PENDING":
+                db.add(TaskLog(
+                    task_id=task_record.task_id,
+                    level="SYSTEM",
+                    message=f"stress suite scheduler found active task {task_record.status}, leave it untouched",
+                ))
+                db.commit()
+                break
+
             if task_record.depends_on_task_id and not _is_suite_task_terminal(db, task_record.depends_on_task_id):
-                _mark_suite_task_failed(
-                    db,
-                    task_record,
-                    f"previous suite task is not terminal: {task_record.depends_on_task_id}",
-                )
+                db.add(TaskLog(
+                    task_id=task_record.task_id,
+                    level="SYSTEM",
+                    message=f"stress suite scheduler waiting for previous task: {task_record.depends_on_task_id}",
+                ))
+                db.commit()
                 break
 
             try:
@@ -965,37 +810,8 @@ def create_stress_suite(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"forbidden param key: {key}",
             )
-        if key not in STRESS_ALL_PARAM_KEYS:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"unknown param: {key}",
-            )
-
-    # duration_seconds: required
-    dur = raw.get("duration_seconds")
-    if not isinstance(dur, int) or dur < 10 or dur > 259200:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="duration_seconds must be an integer between 10 and 259200",
-        )
-
-    # Build shared params
-    suite_params: dict[str, object] = {
-        "duration_seconds": dur,
-        "interval_seconds": _auto_calc_stress_interval(dur),
-    }
-
-    # Copy through other whitelisted params
-    for key in raw:
-        if key not in ("duration_seconds", "interval_seconds"):
-            suite_params[key] = raw[key]
-
-    # Validate disk_test_dir if disk is selected
     has_disk = any(s["name"] == "disk_stress_report.sh" for s in selected_scripts)
-    dtd = suite_params.get("disk_test_dir")
-    if dtd is not None and has_disk:
-        if isinstance(dtd, str) and dtd.strip():
-            suite_params["disk_test_dir"] = _validate_disk_test_dir(dtd)
+    suite_params = validate_stress_suite_params(raw, has_disk=has_disk)
 
     # ── 3. Deduplicate server_ids ──
     server_ids: list[int] = list(dict.fromkeys(payload.server_ids))
@@ -1133,23 +949,75 @@ BATCH_FAILED_STATUSES = {"FAILED", "TIMEOUT"}
 BATCH_CANCELED_STATUSES = {"CANCELED", "CANCELLED"}
 
 
-def _compute_batch_status(tasks: list[Task]) -> str:
-    """Derive the aggregate batch status from its child tasks."""
-    statuses = {t.status for t in tasks}
+def _compute_batch_status(tasks: list[Task], db: Session | None = None) -> str:
+    """Derive the aggregate batch status from its child tasks.
 
-    if statuses & BATCH_UNFINISHED_STATUSES:
+    Uses final_status (considering report) where available, falling back
+    to execution status for tasks without report summary.
+    """
+    # Batch-load report summaries for all child tasks
+    task_ids = [t.task_id for t in tasks]
+    report_map: dict[str, str] = {}
+    if task_ids:
+        try:
+            from app.models.task import TaskReportSummary
+            _sess: Session = db if db is not None else SessionLocal()
+            cache_rows = (
+                _sess.query(TaskReportSummary.task_id, TaskReportSummary.report_status)
+                .filter(TaskReportSummary.task_id.in_(task_ids))
+                .all()
+            )
+            for tid, rs in cache_rows:
+                report_map[tid] = rs
+            if db is None:
+                _sess.close()
+        except Exception:
+            pass
+
+    def _child_final(t: Task) -> str:
+        report_status = report_map.get(t.task_id, "UNKNOWN").upper()
+        return resolve_final_status(t.status or "UNKNOWN", report_status)
+
+    # Collect final statuses for all children
+    final_set = {_child_final(t) for t in tasks}
+
+    # Map final statuses back to batch-status concepts
+    has_fail_report = "FAIL" in final_set
+    has_failed_exec = "FAILED" in final_set
+    has_pass = "PASS" in final_set
+    has_unknown = "UNKNOWN" in final_set
+    exec_statuses = {t.status for t in tasks}
+
+    # Any still-non-terminal execution status → batch still running
+    if exec_statuses & BATCH_UNFINISHED_STATUSES:
         return "RUNNING"
-    if statuses == {"SUCCESS"}:
-        return "SUCCESS"
-    if statuses == {"FAILED"}:
+    # Report FAIL takes highest priority
+    if has_fail_report:
+        # If some pass and some fail → partial
+        if has_pass:
+            return "PARTIAL_FAILED"
         return "FAILED"
-    if statuses == {"CANCELED"}:
+    # Execution FAILED
+    if has_failed_exec:
+        if has_pass:
+            return "PARTIAL_FAILED"
+        return "FAILED"
+    # All PASS
+    if has_pass and not has_unknown:
+        return "SUCCESS"
+    # Some stress reports (for example disk) may not yield a PASS/FAIL summary
+    # even though the platform task completed successfully.
+    if exec_statuses == {"SUCCESS"}:
+        return "SUCCESS"
+    # Cancel scenarios
+    if exec_statuses == {"CANCELED"}:
         return "CANCELED"
-    if "CANCELED" in statuses and "SUCCESS" not in statuses and "FAILED" not in statuses:
+    if "CANCELED" in exec_statuses and "SUCCESS" not in exec_statuses and "FAILED" not in exec_statuses:
         return "CANCELED"
-    if "CANCELED" in statuses:
+    if "CANCELED" in exec_statuses:
         return "PARTIAL_CANCELED"
-    if "FAILED" in statuses:
+    # Fallback
+    if "FAILED" in exec_statuses:
         return "PARTIAL_FAILED"
     return "RUNNING"
 
@@ -1211,7 +1079,7 @@ def list_batches(
             if t.file_name:
                 script_names.add(t.file_name)
 
-        raw_status = _compute_batch_status(child_tasks)
+        raw_status = _compute_batch_status(child_tasks, db)
 
         # Apply status filter post-query
         if status is not None and raw_status != status:
@@ -1422,6 +1290,20 @@ def get_batch_detail(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="batch not found")
 
     # Build summary
+    # Batch-load report summaries for final_status computation
+    report_map: dict[str, str] = {}
+    try:
+        from app.models.task import TaskReportSummary
+        cache_rows = (
+            db.query(TaskReportSummary.task_id, TaskReportSummary.report_status)
+            .filter(TaskReportSummary.task_id.in_([t.task_id for t in tasks]))
+            .all()
+        )
+        for tid, rs in cache_rows:
+            report_map[tid] = rs
+    except Exception:
+        pass
+
     server_names: list[str] = []
     detail_items: list[BatchTaskDetailItem] = []
     total = len(tasks)
@@ -1434,11 +1316,15 @@ def get_batch_detail(
         if srv and srv.name not in server_names:
             server_names.append(srv.name)
 
-        # Count statuses
+        # Compute final_status
+        child_report = report_map.get(t.task_id, "UNKNOWN").upper()
+        child_final = resolve_final_status(t.status or "UNKNOWN", child_report)
+
+        # Count statuses (using final_status for accuracy)
         status_value = (t.status or "").upper()
-        if status_value == "SUCCESS":
+        if child_final == "PASS" or (child_final == "UNKNOWN" and status_value == "SUCCESS"):
             success += 1
-        elif status_value in BATCH_FAILED_STATUSES:
+        elif child_final in ("FAIL", "FAILED") or status_value in BATCH_FAILED_STATUSES:
             failed += 1
         elif status_value == "RUNNING":
             running += 1
@@ -1465,6 +1351,7 @@ def get_batch_detail(
             server_name=srv_name,
             host=srv_host,
             status=t.status,
+            final_status=child_final,
             sequence_index=t.sequence_index,
             started_at=t.start_time,
             ended_at=t.end_time,
@@ -1474,7 +1361,7 @@ def get_batch_detail(
             error_summary=t.error_message,
         ))
 
-    batch_status = _compute_batch_status(tasks)
+    batch_status = _compute_batch_status(tasks, db)
 
     # Collect distinct script names
     script_names: set[str] = set()
@@ -1715,10 +1602,18 @@ def diagnose_task(task_id: str, db: Session = Depends(get_db)) -> TaskDiagnosisR
     except Exception:
         pass
 
+    # --- resolve final_status ---
+    execution_status = task.status or "UNKNOWN"
+    report_status = (summary_json.get("report_status") or "UNKNOWN").upper()
+    final_status = resolve_final_status(execution_status, report_status)
+
     return TaskDiagnosisResponse(
         task_id=task.task_id,
         task_name=task_name,
         status=task.status,
+        execution_status=execution_status,
+        report_status=report_status,
+        final_status=final_status,
         diagnosis=diagnosis,
     )
 
@@ -2686,47 +2581,8 @@ def _cancel_remote_process(executor: SSHExecutor, task: Task, db: Session) -> No
     _add_task_log(db, task_id, "SYSTEM", "no matching remote process found, skipping termination")
 
 
-def _parse_task_duration_seconds(task: Task) -> int | None:
-    """Extract duration_seconds from task params or command_preview."""
-    if task.params and isinstance(task.params, dict):
-        ds = task.params.get("duration_seconds")
-        if isinstance(ds, int) and ds > 0:
-            return ds
-    # Try to parse from command_preview for stress tasks
-    if task.task_type == "stress" and task.command_preview:
-        m = re.search(r'(\d+)', task.command_preview)
-        if m:
-            val = int(m.group(1))
-            return val if val > 0 else None
-    return None
-
-
 def _serialize_task(task: Task, db: Session) -> dict[str, object]:
-    server = db.get(Server, task.server_id)
-    return {
-        "id": task.id,
-        "task_id": task.task_id,
-        "server_id": task.server_id,
-        "server_name": server.name if server else None,
-        "server_host": server.host if server else None,
-        "script_id": task.script_id,
-        "task_type": task.task_type,
-        "file_path": task.file_path,
-        "file_name": task.file_name,
-        "display_category": task.display_category,
-        "remote_work_dir": task.remote_work_dir,
-        "command_preview": task.command_preview,
-        "status": task.status,
-        "batch_id": task.batch_id,
-        "params": task.params,
-        "start_time": task.start_time,
-        "end_time": task.end_time,
-        "exit_code": task.exit_code,
-        "error_message": task.error_message,
-        "created_at": task.created_at,
-        "updated_at": task.updated_at,
-        "duration_seconds": _parse_task_duration_seconds(task),
-    }
+    return serialize_task_record(task, db)
 
 
 def _is_safe_remote_work_dir(remote_work_dir: str) -> bool:

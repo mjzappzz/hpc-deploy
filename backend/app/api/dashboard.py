@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from app.core.artifact_collector import ARTIFACTS_DIR
+from app.core.task_serializer import serialize_task_record
 from app.db.database import get_db
 from app.models.server import Server
 from app.models.task import Task
@@ -43,21 +44,8 @@ def get_dashboard_summary(db: Session = Depends(get_db)) -> DashboardSummary:
     )
     recent_tasks = []
     for t in recent_tasks_db:
-        server = db.get(Server, t.server_id)
-        recent_tasks.append(
-            RecentTaskItem(
-                task_id=t.task_id,
-                server_name=server.name if server else None,
-                server_host=server.host if server else None,
-                task_type=t.task_type,
-                file_name=t.file_name,
-                file_path=t.file_path,
-                status=t.status,
-                created_at=t.created_at,
-                start_time=t.start_time,
-                end_time=t.end_time,
-            )
-        )
+        record = serialize_task_record(t, db)
+        recent_tasks.append(RecentTaskItem.model_validate(record))
 
     # --- local artifact stats ---
     artifacts_count = 0

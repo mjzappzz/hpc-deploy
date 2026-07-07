@@ -1,6 +1,6 @@
 <template>
   <section class="page-section">
-    <!-- refresh bar (no duplicate title) -->
+    <!-- refresh bar -->
     <div class="dashboard-toolbar">
       <el-button :loading="loading" @click="loadDashboard">
         刷新
@@ -84,27 +84,6 @@
       </el-col>
     </el-row>
 
-    <!-- quick actions -->
-    <el-card shadow="never" class="section-card">
-      <template #header>快捷操作</template>
-      <div class="quick-actions">
-        <div class="quick-group-label">任务</div>
-        <div class="quick-buttons">
-          <el-button type="primary" @click="goTo('/task-runner')">新建任务</el-button>
-          <el-button @click="goTo('/history?status=RUNNING')">运行中任务</el-button>
-          <el-button :type="'warning'" plain @click="goTo('/history?status=FAILED')">失败任务</el-button>
-          <el-button @click="goTo('/history?status=CANCELED')">已取消任务</el-button>
-          <el-button @click="goTo('/history')">最近任务</el-button>
-        </div>
-        <div class="quick-group-label">资源</div>
-        <div class="quick-buttons">
-          <el-button @click="goTo('/servers')">服务器管理</el-button>
-          <el-button @click="goTo('/scripts')">脚本知识库</el-button>
-          <el-button @click="goTo('/cleanup')">清理中心</el-button>
-        </div>
-      </div>
-    </el-card>
-
     <!-- recent tasks -->
     <el-card shadow="never" class="section-card">
       <template #header>最近任务</template>
@@ -118,32 +97,30 @@
         :row-style="{ cursor: 'pointer' }"
         @row-click="goToTask"
       >
-        <el-table-column label="任务名称" min-width="280" show-overflow-tooltip>
+        <el-table-column label="任务名称" min-width="360" show-overflow-tooltip>
           <template #default="{ row }">
             <div class="recent-task-name" :title="formatTaskDisplayName(row)">{{ formatTaskDisplayName(row) }}</div>
             <div class="recent-task-id">{{ row.task_id }}</div>
           </template>
         </el-table-column>
-        <el-table-column prop="server_name" label="服务器" width="120" />
-        <el-table-column label="类型" width="120">
+        <el-table-column prop="server_name" label="服务器" min-width="150" show-overflow-tooltip />
+        <el-table-column label="类型" width="140" show-overflow-tooltip>
           <template #default="{ row }">
-            {{ getTaskModuleLabel(row.task_type) }}
+            <span class="recent-task-type">{{ getTaskModuleLabel(row.task_type) }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="120">
+        <el-table-column label="状态" width="110" align="center">
           <template #default="{ row }">
             <StatusTag :status="row.status" />
           </template>
         </el-table-column>
-        <el-table-column label="创建时间" min-width="180">
+        <el-table-column label="创建时间" width="170">
           <template #default="{ row }">
             {{ formatDateTime(row.created_at) }}
           </template>
         </el-table-column>
       </el-table>
     </el-card>
-
-    <!-- artifacts tree drawer (removed) -->
   </section>
 </template>
 
@@ -162,16 +139,13 @@ const router = useRouter()
 
 const loading = ref(false)
 const loadError = ref(false)
+
 const summary = reactive<DashboardSummary>({
   servers: { total: 0, online: 0, offline: 0 },
   tasks: { total: 0, running: 0, success: 0, failed: 0, canceled: 0, pending: 0, canceling: 0 },
   recent_tasks: [],
   artifacts: { local_artifacts_count: 0, local_artifacts_size_bytes: 0 },
 })
-
-function goTo(path: string) {
-  router.push(path)
-}
 
 function goToTask(row: { task_id: string }) {
   router.push({ path: '/history', query: { keyword: row.task_id } })
@@ -185,7 +159,6 @@ async function loadDashboard() {
     summary.servers = resp.data.servers
     summary.tasks = resp.data.tasks
     summary.recent_tasks = resp.data.recent_tasks
-    // artifacts omitted from display
   } catch {
     loadError.value = true
   } finally {
@@ -212,6 +185,10 @@ onMounted(loadDashboard)
   margin-top: 4px;
   color: #6b7280;
   font-size: 12px;
+}
+
+.recent-task-type {
+  white-space: nowrap;
 }
 
 /* stat cards */
@@ -251,25 +228,7 @@ onMounted(loadDashboard)
 .stat-orange { color: #e6a23c; }
 .stat-gray   { color: #909399; }
 
-/* quick actions */
-.quick-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.quick-group-label {
-  font-size: 12px;
-  color: #909399;
-  margin-top: 4px;
-}
-.quick-buttons {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
 .section-card {
   margin-top: 16px;
 }
-
 </style>

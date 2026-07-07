@@ -361,6 +361,7 @@ import {
 import { updateSettings } from '@/api/settings'
 import { listServers, listTags, type ServerRecord, type TagSummary } from '@/api/server'
 import { formatDateTime } from '@/utils/time'
+import { formatBytes } from '@/utils/format'
 
 // ── Servers list ──
 const servers = ref<ServerRecord[]>([])
@@ -385,11 +386,7 @@ onMounted(async () => {
 
 // ── Format helpers ──
 function formatSize(bytes: number) {
-  if (bytes === 0) return '0 B'
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
+  return formatBytes(bytes)
 }
 
 const formatDate = formatDateTime

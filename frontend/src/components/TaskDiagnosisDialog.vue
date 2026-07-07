@@ -11,17 +11,17 @@
     <div v-loading="loading">
       <el-skeleton v-if="loading && !diagnosisData" :rows="5" animated />
       <template v-if="diagnosisData">
-        <!-- Attribution tag + Conclusion -->
-        <div class="diag-attribution-bar">
+        <!-- ── Final status bar (primary) ── -->
+        <div class="diag-final-bar" :class="finalBarClass">
           <el-tag
-            :type="attributionTagType"
+            :type="finalStatusTagType"
             size="small"
             effect="dark"
-            class="diag-attribution-tag"
+            class="diag-final-tag"
           >
-            {{ attributionLabel }}
+            {{ finalStatusLabel }}
           </el-tag>
-          <span class="diag-conclusion">{{ diagnosisData.conclusion }}</span>
+          <span class="diag-final-text">{{ finalStatusDescription }}</span>
         </div>
 
         <!-- Level tag + category -->
@@ -73,6 +73,25 @@
             <el-empty v-if="!diagnosisData.evidence.length" description="无关键日志片段" :image-size="60" />
           </div>
         </div>
+
+        <!-- ── 详细信息：执行状态 + 报告状态 ── -->
+        <div class="diag-section">
+          <div class="diag-section-title">详细信息</div>
+          <div class="diag-detail-grid">
+            <div class="diag-detail-item">
+              <span class="diag-detail-label">平台执行状态</span>
+              <el-tag :type="executionTagType" size="small">{{ executionLabel }}</el-tag>
+            </div>
+            <div class="diag-detail-item">
+              <span class="diag-detail-label">压测报告结果</span>
+              <el-tag :type="reportTagType" size="small">{{ reportLabel }}</el-tag>
+            </div>
+            <div class="diag-detail-item">
+              <span class="diag-detail-label">综合判定</span>
+              <el-tag :type="finalStatusTagType" size="small" effect="dark">{{ finalStatusLabel }}</el-tag>
+            </div>
+          </div>
+        </div>
       </template>
       <template v-else-if="!loading && !errorMsg">
         <el-empty description="暂无诊断结果" :image-size="60" />
@@ -108,22 +127,40 @@ const emit = defineEmits<{
 const loading = ref(false)
 const diagnosisData = ref<TaskDiagnosisResponse['diagnosis'] | null>(null)
 const taskStatus = ref('')
+const executionStatus = ref('')
+const reportStatus = ref('')
+const finalStatus = ref('')
 const errorMsg = ref('')
 const diagnosisCache = new Map<string, TaskDiagnosisResponse>()
 
 const computedTaskId = computed(() => props.taskId)
 
-const statusTagMap: Record<string, { label: string; type: string }> = {
+// ── Status maps ──
+
+const executionStatusTagMap: Record<string, { label: string; type: string }> = {
   'SUCCESS': { label: '成功', type: 'success' },
   'FAILED': { label: '失败', type: 'danger' },
   'CANCELED': { label: '已取消', type: 'warning' },
+  'CANCELING': { label: '取消中', type: 'warning' },
+  'TIMEOUT': { label: '超时', type: 'warning' },
   'RUNNING': { label: '运行中', type: 'primary' },
   'PENDING': { label: '等待中', type: 'info' },
   'CONNECTING': { label: '连接中', type: 'info' },
   'PREPARING': { label: '准备中', type: 'info' },
   'UPLOADING': { label: '上传中', type: 'info' },
-  'CANCELING': { label: '取消中', type: 'warning' },
-  'TIMEOUT': { label: '超时', type: 'warning' },
+}
+
+const reportStatusMap: Record<string, { label: string; type: string }> = {
+  'FAIL': { label: '失败', type: 'danger' },
+  'PASS': { label: '通过', type: 'success' },
+  'UNKNOWN': { label: '未知', type: 'info' },
+}
+
+const finalStatusMap: Record<string, { label: string; type: string; description: string }> = {
+  'FAIL': { label: '压测失败', type: 'danger', description: '报告结果为 FAIL，压测未通过。' },
+  'FAILED': { label: '执行失败', type: 'danger', description: '平台任务执行失败，请检查错误信息。' },
+  'PASS': { label: '压测通过', type: 'success', description: '报告结果为 PASS，压测已通过。' },
+  'UNKNOWN': { label: '未知', type: 'info', description: '无法确定综合状态。' },
 }
 
 const attributionMap: Record<string, { label: string; type: string }> = {
@@ -135,20 +172,46 @@ const attributionMap: Record<string, { label: string; type: string }> = {
   'artifact_failed': { label: '回收失败', type: 'warning' },
 }
 
-const attributionTagType = computed(() => {
-  if (!diagnosisData.value) return 'info'
-  // Prefer status-based tag, fall back to attribution
-  const status = taskStatus.value.toUpperCase()
-  if (statusTagMap[status]) return statusTagMap[status].type
-  return attributionMap[diagnosisData.value.attribution]?.type || 'info'
+// ── Computed display values ──
+
+const finalStatusLabel = computed(() => {
+  const key = finalStatus.value
+  return finalStatusMap[key]?.label || key || '未知'
 })
 
-const attributionLabel = computed(() => {
-  if (!diagnosisData.value) return ''
-  // Prefer status-based label, fall back to attribution
-  const status = taskStatus.value.toUpperCase()
-  if (statusTagMap[status]) return statusTagMap[status].label
-  return attributionMap[diagnosisData.value.attribution]?.label || diagnosisData.value.attribution || '未分类'
+const finalStatusTagType = computed(() => {
+  const key = finalStatus.value
+  return finalStatusMap[key]?.type || 'info'
+})
+
+const finalStatusDescription = computed(() => {
+  const key = finalStatus.value
+  return finalStatusMap[key]?.description || ''
+})
+
+const finalBarClass = computed(() => {
+  const type = finalStatusTagType.value
+  return `diag-final-bar--${type}`
+})
+
+const executionLabel = computed(() => {
+  const status = executionStatus.value.toUpperCase()
+  return executionStatusTagMap[status]?.label || status
+})
+
+const executionTagType = computed(() => {
+  const status = executionStatus.value.toUpperCase()
+  return executionStatusTagMap[status]?.type || 'info'
+})
+
+const reportLabel = computed(() => {
+  const status = reportStatus.value.toUpperCase()
+  return reportStatusMap[status]?.label || status
+})
+
+const reportTagType = computed(() => {
+  const status = reportStatus.value.toUpperCase()
+  return reportStatusMap[status]?.type || 'info'
 })
 
 const levelTagType = computed(() => {
@@ -166,6 +229,18 @@ const levelLabel = computed(() => {
   if (level === 'warning') return '警告'
   return '信息'
 })
+
+const attributionTagType = computed(() => {
+  if (!diagnosisData.value) return 'info'
+  return attributionMap[diagnosisData.value.attribution]?.type || 'info'
+})
+
+const attributionLabel = computed(() => {
+  if (!diagnosisData.value) return ''
+  return attributionMap[diagnosisData.value.attribution]?.label || diagnosisData.value.attribution || '未分类'
+})
+
+// ── Methods ──
 
 function handleClose() {
   emit('update:modelValue', false)
@@ -197,29 +272,15 @@ async function loadDiagnosis() {
   errorMsg.value = ''
   const cached = diagnosisCache.get(props.taskId)
   if (cached) {
-    diagnosisData.value = cached.diagnosis
-    taskStatus.value = cached.status || ''
+    applyDiagnosisResponse(cached)
   } else {
-    diagnosisData.value = {
-      level: 'info',
-      category: 'report_not_ready',
-      attribution: 'platform',
-      title: '报告摘要未就绪',
-      conclusion: '报告摘要正在读取。',
-      summary: '后台缓存未命中，先显示占位结果，稍后自动更新。',
-      possible_causes: ['报告摘要尚未生成', '任务刚结束或报告文件缺失'],
-      suggestions: ['稍后刷新诊断结果', '需要完整上下文时下载日志查看'],
-      risk_tips: [],
-      matched_patterns: [],
-      evidence: [],
-    }
-    taskStatus.value = ''
+    // Set placeholder data while loading
+    diagnosisData.value = null
   }
   try {
     const resp = (await getTaskDiagnosis(props.taskId)).data
     diagnosisCache.set(props.taskId, resp)
-    diagnosisData.value = resp.diagnosis
-    taskStatus.value = resp.status || ''
+    applyDiagnosisResponse(resp)
   } catch {
     errorMsg.value = '诊断加载失败，请查看完整日志。'
     ElMessage.error('获取诊断失败')
@@ -227,10 +288,19 @@ async function loadDiagnosis() {
     loading.value = false
   }
 }
+
+function applyDiagnosisResponse(resp: TaskDiagnosisResponse) {
+  diagnosisData.value = resp.diagnosis
+  taskStatus.value = resp.status || ''
+  executionStatus.value = resp.execution_status || resp.status || ''
+  reportStatus.value = resp.report_status || 'UNKNOWN'
+  finalStatus.value = resp.final_status || 'UNKNOWN'
+}
 </script>
 
 <style scoped>
-.diag-attribution-bar {
+/* ── Final status bar (replaces old attribution bar) ── */
+.diag-final-bar {
   display: flex;
   align-items: flex-start;
   gap: 10px;
@@ -241,18 +311,39 @@ async function loadDiagnosis() {
   border-left: 4px solid var(--el-color-primary);
 }
 
-.diag-attribution-tag {
+.diag-final-bar--danger {
+  border-left-color: var(--el-color-danger);
+  background: #fef2f2;
+}
+
+.diag-final-bar--success {
+  border-left-color: var(--el-color-success);
+  background: #f0fdf4;
+}
+
+.diag-final-bar--warning {
+  border-left-color: var(--el-color-warning);
+  background: #fffbeb;
+}
+
+.diag-final-bar--info {
+  border-left-color: var(--el-color-info);
+  background: var(--el-fill-color-lighter);
+}
+
+.diag-final-tag {
   flex-shrink: 0;
   margin-top: 1px;
 }
 
-.diag-conclusion {
+.diag-final-text {
   font-size: 14px;
   font-weight: 600;
   color: var(--el-text-color-primary);
   line-height: 1.5;
 }
 
+/* ── Header ── */
 .diag-header {
   display: flex;
   align-items: center;
@@ -266,6 +357,7 @@ async function loadDiagnosis() {
   color: var(--el-text-color-primary);
 }
 
+/* ── Sections ── */
 .diag-section {
   margin-bottom: 18px;
 }
@@ -306,6 +398,7 @@ async function loadDiagnosis() {
   line-height: 1.8;
 }
 
+/* ── Evidence ── */
 .diag-evidence {
   background: #1e293b;
   border-radius: 6px;
@@ -335,6 +428,28 @@ async function loadDiagnosis() {
   color: #e2e8f0;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+/* ── Detail grid ── */
+.diag-detail-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.diag-detail-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--el-fill-color-lighter);
+  border-radius: 6px;
+}
+
+.diag-detail-label {
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
 }
 
 /* ── Dialog position ── */

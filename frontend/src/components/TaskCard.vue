@@ -16,7 +16,7 @@
         </div>
       </div>
       <div class="task-card__status-block">
-        <StatusTag :status="task.status" />
+        <StatusTag :status="displayStatus" />
         <span class="task-card__status-label">{{ chineseStatus }}</span>
       </div>
     </div>
@@ -121,8 +121,11 @@ const displayName = computed(() => formatTaskDisplayName(props.task))
 const moduleLabel = computed(() => getTaskModuleLabel(props.task.task_type))
 
 const isStressCompleted = computed(() => {
-  const status = props.task.status?.toUpperCase() ?? ''
-  return props.task.task_type === 'stress' && ['SUCCESS', 'FAILED', 'CANCELED'].includes(status)
+  // Use final_status for stress tasks, fall back to execution status
+  const status = props.task.task_type === 'stress' && props.task.final_status && props.task.final_status !== 'UNKNOWN'
+    ? props.task.final_status.toUpperCase()
+    : (props.task.status?.toUpperCase() ?? '')
+  return props.task.task_type === 'stress' && ['SUCCESS', 'FAILED', 'CANCELED', 'FAIL', 'PASS'].includes(status)
 })
 
 const showCommandCopyButtons = computed(() => {
@@ -143,8 +146,20 @@ const runtime = computed(() => {
   return calcDurationSeconds(props.task.start_time, props.task.end_time)
 })
 
+/**
+ * Display status: for stress tasks, prefer final_status (which considers
+ * report result) over raw execution status. This prevents showing "SUCCESS"
+ * when the stress report actually FAILed.
+ */
+const displayStatus = computed(() => {
+  if (props.task.task_type === 'stress' && props.task.final_status && props.task.final_status !== 'UNKNOWN') {
+    return props.task.final_status
+  }
+  return props.task.status
+})
+
 const chineseStatus = computed(() => {
-  return statusLabel(props.task.status)
+  return statusLabel(displayStatus.value)
 })
 
 const BATCH_STEP_LABELS: Record<number, string> = {

@@ -89,6 +89,9 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { formatDateTime, formatScriptUpdatedAt } from '@/utils/time'
+import { getApiErrorMessage as readApiErrorMessage } from '@/utils/apiError'
+import { formatBytes } from '@/utils/format'
+import { getTaskTypeLabel } from '@/utils/taskDisplay'
 import { requireAdminConfirm } from '@/composables/useAdminConfirm'
 import ScriptTable from '@/components/ScriptTable.vue'
 import {
@@ -192,17 +195,11 @@ async function removeFile(file: ScriptFileRecord) {
 }
 
 function categoryLabel(category: KnowledgeCategory | ScriptFileRecord['physical_category']) {
-  if (category === 'mpi') return '编译环境'
-  if (category === 'stress') return '压测脚本'
-  if (category === 'apptainer') return 'Apptainer 镜像'
-  return '编译环境'
+  return getTaskTypeLabel(category === 'all' ? 'mpi' : category, '编译环境')
 }
 
 function formatSize(size: number) {
-  if (size < 1024) return `${size} B`
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
-  if (size < 1024 * 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`
-  return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`
+  return formatBytes(size)
 }
 
 function formatDate(value: string | null | undefined) {
@@ -210,16 +207,7 @@ function formatDate(value: string | null | undefined) {
 }
 
 function getApiErrorMessage(error: unknown) {
-  if (
-    typeof error === 'object' &&
-    error !== null &&
-    'response' in error &&
-    typeof (error as { response?: { data?: { detail?: unknown } } }).response?.data?.detail === 'string'
-  ) {
-    return (error as { response: { data: { detail: string } } }).response.data.detail
-  }
-  if (error instanceof Error) return error.message
-  return '操作失败'
+  return readApiErrorMessage(error, '操作失败')
 }
 
 onMounted(loadFiles)

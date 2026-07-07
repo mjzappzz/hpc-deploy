@@ -10,12 +10,19 @@ type TaskLike = {
 
 const TASK_TYPE_LABELS: Record<string, string> = {
   script: '编译环境',
-  stress: '压测',
+  stress: '压测脚本',
   apptainer: 'Apptainer 镜像',
+  mpi: '编译环境',
+  test: '测试脚本',
 }
 
 export function getTaskModuleLabel(taskType?: string | null): string {
   if (!taskType) return '任务'
+  return TASK_TYPE_LABELS[taskType] ?? taskType
+}
+
+export function getTaskTypeLabel(taskType?: string | null, fallback = '-'): string {
+  if (!taskType) return fallback
   return TASK_TYPE_LABELS[taskType] ?? taskType
 }
 

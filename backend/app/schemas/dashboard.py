@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -30,6 +31,10 @@ class RecentTaskItem(BaseModel):
     created_at: datetime | None = None
     start_time: datetime | None = None
     end_time: datetime | None = None
+    command_preview: str | None = None
+    params: dict[str, Any] | None = None
+    duration_seconds: int | None = None
+    final_status: str | None = None
 
 
 class ArtifactStats(BaseModel):

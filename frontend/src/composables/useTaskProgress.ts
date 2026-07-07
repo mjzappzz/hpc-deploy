@@ -21,6 +21,11 @@ export const STATUS_LABELS: Record<string, string> = {
   SUCCESS: '已完成',
   FAILED: '失败',
   CANCELED: '已取消',
+  // final_status values
+  FAIL: '报告失败',
+  PASS: '压测通过',
+  TIMEOUT: '超时',
+  UNKNOWN: '未知',
 }
 
 /**

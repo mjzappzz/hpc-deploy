@@ -25,6 +25,10 @@ const tagVariant = computed(() => {
   if (typeof props.status === 'boolean') {
     return props.status ? 'success' : 'info'
   }
+  // final_status values
+  if (['PASS'].includes(normalized.value)) return 'success'
+  if (['FAIL'].includes(normalized.value)) return 'danger'
+  // execution status values
   if (['ONLINE', 'SUCCESS'].includes(normalized.value)) return 'success'
   if (['FAILED', 'OFFLINE', 'TIMEOUT'].includes(normalized.value)) return 'danger'
   if (['RUNNING', 'CONNECTING', 'PREPARING', 'UPLOADING', 'CANCELING'].includes(normalized.value)) return 'progress'
