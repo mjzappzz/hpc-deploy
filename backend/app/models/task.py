@@ -31,6 +31,9 @@ class Task(Base):
     last_heartbeat: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     worker_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     lease_expire_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    hidden_from_history: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    hidden_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    hidden_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,

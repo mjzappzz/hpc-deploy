@@ -193,7 +193,7 @@ def list_tasks(
         )
 
     # --- build query ---
-    query = db.query(Task)
+    query = db.query(Task).filter(Task.hidden_from_history == 0)
 
     if task_status is not None:
         query = query.filter(Task.status == task_status)
@@ -205,6 +205,8 @@ def list_tasks(
         like_pattern = f"%{keyword}%"
         query = query.filter(
             Task.task_id.ilike(like_pattern)
+            | Task.batch_id.ilike(like_pattern)
+            | Task.file_name.ilike(like_pattern)
             | Task.file_path.ilike(like_pattern)
             | Task.remote_work_dir.ilike(like_pattern)
             | Task.error_message.ilike(like_pattern)
@@ -982,23 +984,17 @@ def _compute_batch_status(tasks: list[Task], db: Session | None = None) -> str:
     final_set = {_child_final(t) for t in tasks}
 
     # Map final statuses back to batch-status concepts
-    has_fail_report = "FAIL" in final_set
-    has_failed_exec = "FAILED" in final_set
-    has_pass = "PASS" in final_set
+    # Note: resolve_final_status maps report "FAIL" → "FAILED", report "PASS" → "SUCCESS"
+    has_failed = "FAILED" in final_set
+    has_pass = "SUCCESS" in final_set
     has_unknown = "UNKNOWN" in final_set
     exec_statuses = {t.status for t in tasks}
 
     # Any still-non-terminal execution status → batch still running
     if exec_statuses & BATCH_UNFINISHED_STATUSES:
         return "RUNNING"
-    # Report FAIL takes highest priority
-    if has_fail_report:
-        # If some pass and some fail → partial
-        if has_pass:
-            return "PARTIAL_FAILED"
-        return "FAILED"
-    # Execution FAILED
-    if has_failed_exec:
+    # FAILED (includes both report FAIL and execution FAILED)
+    if has_failed:
         if has_pass:
             return "PARTIAL_FAILED"
         return "FAILED"
@@ -1045,6 +1041,7 @@ def list_batches(
             func.sum(case((Task.status.in_(BATCH_CANCELED_STATUSES), 1), else_=0)).label("canceled"),
         )
         .filter(Task.batch_id.isnot(None))
+        .filter(Task.hidden_from_history == 0)
         .group_by(Task.batch_id)
         .subquery()
     )
@@ -1067,7 +1064,9 @@ def list_batches(
     for row in items_q:
         # Fetch server names and distinct script names for this batch
         child_tasks = (
-            db.query(Task).filter(Task.batch_id == row.batch_id).all()
+            db.query(Task)
+            .filter(Task.batch_id == row.batch_id, Task.hidden_from_history == 0)
+            .all()
         )
         server_names: list[str] = []
         script_names: set[str] = set()
@@ -1080,6 +1079,17 @@ def list_batches(
                 script_names.add(t.file_name)
 
         raw_status = _compute_batch_status(child_tasks, db)
+
+        # Extract stress test duration from child task params
+        stress_duration: int | None = None
+        for t in child_tasks:
+            if t.params and isinstance(t.params, dict) and t.params.get("duration_seconds") is not None:
+                try:
+                    dur = int(t.params["duration_seconds"])
+                    if stress_duration is None or dur > stress_duration:
+                        stress_duration = dur
+                except (ValueError, TypeError):
+                    pass
 
         # Apply status filter post-query
         if status is not None and raw_status != status:
@@ -1098,6 +1108,7 @@ def list_batches(
             canceled=row.canceled or 0,
             status=raw_status,
             servers=server_names,
+            stress_duration_seconds=stress_duration,
         ))
 
     return BatchSummaryListResponse(
@@ -1166,6 +1177,38 @@ def _cancel_running_task_for_batch(db: Session, task: Task) -> tuple[str, bool]:
         executor.close()
 
 
+def _best_effort_cancel_remote_process(db: Session, task: Task) -> None:
+    """Attempt to kill the remote process of a FAILED/CANCELED task.
+    This is best-effort — never raises. Only used during batch cancel
+    where the task is already terminal but the remote process might still
+    be running (e.g. backend restart mid-execution).
+    """
+    task_id = task.task_id
+    if not task.remote_work_dir:
+        return
+    server = db.get(Server, task.server_id)
+    if server is None:
+        return
+    executor = SSHExecutor(timeout=MONITOR_TIMEOUT_SECONDS)
+    try:
+        try:
+            executor.connect(
+                host=server.host,
+                port=server.port,
+                username=server.username,
+                key_path=server.key_path,
+            )
+        except SSHExecutorError:
+            _add_task_log(db, task_id, "WARN", "batch cancel: remote cleanup skipped (SSH unreachable)")
+            return
+        _cancel_remote_process(executor, task, db)
+        _add_task_log(db, task_id, "SYSTEM", "batch cancel: remote process cleanup attempted (best-effort)")
+    except Exception:
+        pass
+    finally:
+        executor.close()
+
+
 @router.post("/batches/{batch_id}/cancel", response_model=BatchCancelResponse)
 def cancel_batch(
     batch_id: str,
@@ -1194,13 +1237,19 @@ def cancel_batch(
     for task in tasks:
         old_status = task.status
         try:
+            # ── Terminal tasks (SUCCESS / FAILED / CANCELED / TIMEOUT) ──
+            # We still try to kill the remote process: the task might have
+            # FAILED on the platform while the remote stress-ng keeps running
+            # (e.g. backend restart mid-execution, SSH flash disconnect).
             if old_status in BATCH_TERMINAL_STATUSES:
+                if old_status in ("FAILED", "TIMEOUT", "CANCELED"):
+                    _best_effort_cancel_remote_process(db, task)
                 skipped += 1
                 items.append(BatchCancelItem(
                     task_id=task.task_id,
                     old_status=old_status,
                     new_status=task.status,
-                    message="skipped, task already terminal",
+                    message="skipped, task already terminal (remote cleanup attempted)",
                 ))
                 continue
 
@@ -1282,7 +1331,7 @@ def get_batch_detail(
     tasks = (
         db.query(Task)
         .outerjoin(Server, Task.server_id == Server.id)
-        .filter(Task.batch_id == batch_id)
+        .filter(Task.batch_id == batch_id, Task.hidden_from_history == 0)
         .order_by(Server.name.asc().nulls_last(), Task.sequence_index.asc().nulls_last(), Task.id.asc())
         .all()
     )
@@ -1322,7 +1371,7 @@ def get_batch_detail(
 
         # Count statuses (using final_status for accuracy)
         status_value = (t.status or "").upper()
-        if child_final == "PASS" or (child_final == "UNKNOWN" and status_value == "SUCCESS"):
+        if child_final == "SUCCESS" or (child_final == "UNKNOWN" and status_value == "SUCCESS"):
             success += 1
         elif child_final in ("FAIL", "FAILED") or status_value in BATCH_FAILED_STATUSES:
             failed += 1
@@ -1359,6 +1408,7 @@ def get_batch_detail(
             exit_code=t.exit_code,
             has_artifacts=has_artifacts,
             error_summary=t.error_message,
+            params=t.params,
         ))
 
     batch_status = _compute_batch_status(tasks, db)
@@ -1368,6 +1418,17 @@ def get_batch_detail(
     for t in tasks:
         if t.file_name:
             script_names.add(t.file_name)
+
+    # Extract stress test duration from child task params
+    stress_duration: int | None = None
+    for t in tasks:
+        if t.params and isinstance(t.params, dict) and t.params.get("duration_seconds") is not None:
+            try:
+                dur = int(t.params["duration_seconds"])
+                if stress_duration is None or dur > stress_duration:
+                    stress_duration = dur
+            except (ValueError, TypeError):
+                pass
 
     summary = BatchSummaryItem(
         batch_id=batch_id,
@@ -1382,6 +1443,7 @@ def get_batch_detail(
         canceled=canceled,
         status=batch_status,
         servers=server_names,
+        stress_duration_seconds=stress_duration,
     )
 
     return BatchDetailResponse(

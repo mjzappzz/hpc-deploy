@@ -59,14 +59,18 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - 日志查询、日志下载、WebSocket 实时日志（`/logs/ws`）
 - 失败诊断（`/{task_id}/diagnosis`）
 - 结构化监控（`/{task_id}/monitor` — CPU/内存/磁盘/GPU 5s 轮询）
+- 任务历史统一展示：普通任务按任务卡展示；同一 `batch_id` 在前端聚合为批次卡，子任务拆分展示
+- 任务历史查询默认过滤 `hidden_from_history=1` 的软隐藏记录；keyword 支持匹配 `task_id`、脚本名、`batch_id`
 
 ### scripts API (`/api/scripts`)
 - 脚本知识库文件列表、上传、预览、下载、删除
 - 按类型筛选（test/stress/mpi/apptainer）
 
 ### cleanup API (`/api/cleanup`)
-- 本地结果文件目录扫描与删除（按 task 目录聚合），每个目录返回显示元数据（服务器名称/任务类型/脚本名/日期标签）
-- 本地结果按目录 mtime 降序排列（最新在前）；批量推断批次归属（同时包含 GPU/CPU内存/磁盘 三种类型时自动标记"疑似批次"）
+- 本地结果文件目录扫描与删除已整合到系统设置页面，旧清理中心页面和 `/cleanup` 前端路由已删除
+- 本地结果文件按真实任务记录聚合：普通任务返回任务名称、任务 ID、任务类型；批次任务按 `batch_id` 聚合并返回所有子任务名称、task_id、目录、文件数和大小
+- 本地结果删除后默认只软隐藏历史记录：设置 `tasks.hidden_from_history=1`、`hidden_reason`、`hidden_at`，保留数据库记录
+- 本地结果按目录 mtime 降序排列（最新在前）
 - 本地报告自动清理状态查询（`GET /api/cleanup/auto-cleanup/status`），配置保存走 settings API
 - Apptainer 镜像目录只读查看
 - 远端单台/全部在线服务器临时目录扫描与清理，自动匹配数据库任务记录，返回显示元数据（display_title、server_name、batch_id 等）
@@ -153,6 +157,21 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 | `last_error` | TEXT | 最后错误 |
 
 说明：只保留标签，不做分组。`group_name` 列仍存在于数据库但不再使用。
+
+### tasks 表关键字段
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `task_id` | VARCHAR(64) | 任务唯一 ID；本地 artifacts 一级目录名 |
+| `batch_id` | VARCHAR(64) | 批次 ID；同一批次下多个子任务共享 |
+| `task_type` | VARCHAR(50) | 任务类型：test / stress_gpu / stress_cpu_memory / stress_disk / mpi 等 |
+| `file_name` | VARCHAR(255) | 执行脚本文件名 |
+| `status` | VARCHAR(30) | PENDING / RUNNING / SUCCESS / FAILED / CANCELED 等 |
+| `sequence_index` | INTEGER | 压测套件子任务顺序 |
+| `depends_on_task_id` | VARCHAR(64) | 串行任务依赖的前序任务 ID |
+| `hidden_from_history` | BOOLEAN | 本机结果文件删除后的历史软隐藏标记 |
+| `hidden_reason` | VARCHAR(100) | 软隐藏原因 |
+| `hidden_at` | DATETIME | 软隐藏时间 |
 
 ---
 

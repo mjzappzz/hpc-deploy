@@ -64,6 +64,7 @@ def init_db() -> None:
     _ensure_sequence_index_column()
     _ensure_depends_on_task_id_column()
     _ensure_task_lease_columns()
+    _ensure_task_hidden_columns()
     _ensure_gpu_status_column()
 
 
@@ -325,6 +326,31 @@ def _ensure_task_lease_columns() -> None:
     print("[HPCDeploy] Added task lease columns to tasks table")
 
 
+def _ensure_task_hidden_columns() -> None:
+    """Add soft-hide columns for task history visibility."""
+    if not normalized_database_url.startswith("sqlite"):
+        return
+
+    inspector = inspect(engine)
+    if "tasks" not in inspector.get_table_names():
+        return
+
+    existing = {column["name"] for column in inspector.get_columns("tasks")}
+    required = {
+        "hidden_from_history": "INTEGER NOT NULL DEFAULT 0",
+        "hidden_reason": "VARCHAR(255)",
+        "hidden_at": "DATETIME",
+    }
+    missing = [(name, column_type) for name, column_type in required.items() if name not in existing]
+    if not missing:
+        return
+
+    with engine.begin() as connection:
+        for name, column_type in missing:
+            connection.execute(text(f"ALTER TABLE tasks ADD COLUMN {name} {column_type}"))
+    print("[HPCDeploy] Added task history hidden columns to tasks table")
+
+
 def _ensure_gpu_status_column() -> None:
     """Phase 28B: Add gpu_status column to servers table for GPU detection accuracy."""
     if not normalized_database_url.startswith("sqlite"):
@@ -341,4 +367,3 @@ def _ensure_gpu_status_column() -> None:
     with engine.begin() as connection:
         connection.execute(text("ALTER TABLE servers ADD COLUMN gpu_status VARCHAR(20)"))
     print("[HPCDeploy] Added gpu_status column to servers table")
-

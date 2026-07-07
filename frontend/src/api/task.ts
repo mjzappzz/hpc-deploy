@@ -305,6 +305,7 @@ export interface BatchSummaryItem {
   canceled: number
   status: string  // RUNNING / SUCCESS / FAILED / PARTIAL_FAILED / CANCELED / PARTIAL_CANCELED
   servers: string[]
+  stress_duration_seconds: number | null
 }
 
 export interface BatchSummaryListResponse {
@@ -336,6 +337,7 @@ export interface BatchTaskDetailItem {
   exit_code: number | null
   has_artifacts: boolean
   error_summary: string | null
+  params: Record<string, unknown> | null
 }
 
 export interface BatchDetailResponse {

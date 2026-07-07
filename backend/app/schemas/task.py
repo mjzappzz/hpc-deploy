@@ -196,6 +196,7 @@ class BatchSummaryItem(BaseModel):
     canceled: int
     status: str  # RUNNING / SUCCESS / FAILED / PARTIAL_FAILED / CANCELED / PARTIAL_CANCELED
     servers: list[str] = []
+    stress_duration_seconds: int | None = None  # configured test duration (from task params)
 
 
 class BatchSummaryListResponse(BaseModel):
@@ -221,6 +222,7 @@ class BatchTaskDetailItem(BaseModel):
     exit_code: int | None = None
     has_artifacts: bool = False
     error_summary: str | None = None
+    params: dict[str, Any] | None = None  # task params (stress duration, etc.)
 
 
 class BatchDetailResponse(BaseModel):

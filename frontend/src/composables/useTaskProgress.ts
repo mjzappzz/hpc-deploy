@@ -20,10 +20,11 @@ export const STATUS_LABELS: Record<string, string> = {
   CANCELING: '正在取消',
   SUCCESS: '已完成',
   FAILED: '失败',
+  PARTIAL_FAILED: '部分完成',
+  PARTIAL_CANCELED: '部分取消',
   CANCELED: '已取消',
-  // final_status values
-  FAIL: '报告失败',
-  PASS: '压测通过',
+  // PASS kept for report_status display (diagnosis), label unified to "已完成"
+  PASS: '已完成',
   TIMEOUT: '超时',
   UNKNOWN: '未知',
 }

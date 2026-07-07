@@ -179,7 +179,7 @@
       </div>
 
       <el-empty v-if="publicKeyRows.length === 0" description="当前没有可操作的服务器" />
-      <el-table v-else :data="publicKeyRows" size="small" border class="public-key-table" max-height="420">
+      <el-table v-else :data="publicKeyRows" size="small" border class="public-key-table hpc-table" max-height="420">
         <el-table-column prop="server.name" label="服务器名称" min-width="120" show-overflow-tooltip />
         <el-table-column label="地址" min-width="150">
           <template #default="{ row }">{{ row.server.host }}</template>
@@ -332,7 +332,7 @@
           <div class="detail-section">
             <div class="detail-section__title">最近任务</div>
             <div v-loading="recentTasksLoading">
-              <el-table v-if="recentTasks.length > 0" :data="recentTasks" stripe size="small" max-height="300">
+              <el-table v-if="recentTasks.length > 0" :data="recentTasks" stripe size="small" class="hpc-table" max-height="300">
                 <el-table-column label="任务名称" min-width="160" show-overflow-tooltip>
                   <template #default="{ row }">
                     <span>{{ row.file_name || row.task_type || '-' }}</span>
@@ -396,7 +396,7 @@
             <div class="detail-actions">
               <el-button size="small" type="primary" @click="goToNewTask(activeServer.id)">新建任务</el-button>
               <el-button size="small" @click="goToTaskHistory(activeServer.id)">查看任务历史</el-button>
-              <el-button size="small" @click="goToCleanupCenter">打开清理中心</el-button>
+              <el-button size="small" @click="goToSettings">打开系统设置</el-button>
               <el-button size="small" @click="openEditForCurrent">编辑服务器</el-button>
             </div>
           </div>
@@ -1145,9 +1145,9 @@ function goToTaskHistory(serverId: number) {
   router.push(`/history?server_id=${serverId}`)
 }
 
-function goToCleanupCenter() {
+function goToSettings() {
   detailVisible.value = false
-  router.push('/cleanup')
+  router.push('/settings')
 }
 
 function openEditForCurrent() {

@@ -1,0 +1,109 @@
+/* ─── HPCDeploy Unified Table Design System ───
+ *
+ * Reference: Servers.vue table styling
+ * Applies class="hpc-table" to any <el-table> for consistent density.
+ *
+ * Row height target: 32-38px
+ * Cell padding: compact
+ * All text: single-line ellipsis
+ * Operations: link buttons, no wrap
+ */
+
+/* ── Base table: compact size reference ── */
+
+.hpc-table {
+  width: 100%;
+}
+
+/* Cell padding: tighter than Element Plus "small" default */
+.hpc-table.el-table--small .el-table__cell {
+  padding: 5px 4px;
+}
+
+/* All text cells: single line ellipsis */
+.hpc-table .el-table__cell > .cell {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Exception: expand cells need wrap */
+.hpc-table .el-table__expanded-cell > .cell,
+.hpc-table .el-table__expanded-cell .el-table__cell > .cell {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+/* ── Hover glow (matches server-table hover from global.css) ── */
+
+.hpc-table.el-table__body tbody > tr:hover {
+  outline: 1px solid rgba(90, 169, 255, 0.62);
+  outline-offset: -1px;
+}
+
+.hpc-table.el-table__body tbody > tr:hover > td {
+  background-color: rgba(64, 158, 255, 0.045) !important;
+}
+
+/* ── Operation column layout ── */
+
+.hpc-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.hpc-actions .el-button {
+  flex-shrink: 0;
+  margin-left: 0;
+  padding-left: 4px;
+  padding-right: 4px;
+}
+
+.hpc-actions .el-button + .el-button {
+  margin-left: 0;
+}
+
+/* ── Status tag size ── */
+
+.hpc-table .el-tag {
+  height: 22px;
+  line-height: 20px;
+  padding: 0 6px;
+}
+
+/* ── Expand row icon vertical center ── */
+
+.hpc-table .el-table__expand-column .cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 !important;
+}
+
+/* ── Parent batch table (TaskHistory) extra compact ── */
+
+.batch-task-table.el-table--small .el-table__cell {
+  padding-top: 2px !important;
+  padding-bottom: 2px !important;
+  padding-left: 6px;
+  padding-right: 6px;
+}
+.batch-task-table .el-table__cell > .cell {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.2;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+.batch-task-table .el-table__cell.el-table__expand-column {
+  padding: 0 !important;
+}
+.batch-task-table .el-tag {
+  height: 20px;
+  line-height: 18px;
+  padding: 0 5px;
+}

@@ -10,6 +10,23 @@ export interface LocalArtifactFile {
   modified_at: string | null
 }
 
+export interface LocalArtifactTaskItem {
+  task_id: string
+  task_display_name: string
+  display_title: string
+  server_name: string
+  task_type_label: string
+  script_label: string
+  date_label: string
+  status: string
+  sequence_index: number | null
+  relative_path: string
+  file_count: number
+  size_bytes: number
+  size_text: string
+  modified_at: string | null
+}
+
 export interface LocalArtifactDirectory {
   name: string
   relative_path: string
@@ -33,6 +50,10 @@ export interface LocalArtifactDirectory {
   inferred_batch_key: string | null
   is_batch_task: boolean
   task_source_label: string
+  task_status: string
+  sequence_index: number | null
+  child_relative_paths: string[]
+  child_tasks: LocalArtifactTaskItem[]
   files: LocalArtifactFile[]
 }
 

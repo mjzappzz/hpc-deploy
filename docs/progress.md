@@ -178,6 +178,27 @@ HPCDeploy 已形成完整闭环，端到端链路全部打通：
 
 ## 近期维护记录
 
+### 2026-07-07 — 任务历史统一展示 + 本机结果清理联动隐藏
+
+**任务历史统一展示**
+- 移除“单次任务视图 / 批次任务视图”切换入口，任务历史统一展示普通任务与批次任务
+- 普通任务继续使用任务卡；同一 `batch_id` 的任务在前端聚合为一个批次卡
+- 批次卡内按子任务拆分展示 GPU / CPU内存 / 磁盘等状态、耗时、退出码、详情和报告入口
+- 批次卡不再显示整体统计与整体状态，避免和子任务状态重复
+- `PARTIAL_FAILED` 前端显示为“部分完成”，状态标签使用 warning 色
+- 任务历史 keyword 搜索支持 `batch_id` 和 `file_name`，修复从任务执行页跳转批次历史为空的问题
+
+**本机结果文件与历史联动**
+- 清理中心页面与 `/cleanup` 前端路由已删除，本机结果文件清理整合到系统设置
+- 系统设置本机结果文件表格显示任务名称、任务 ID、任务类型（单次/批次/遗留）、子任务数量
+- 本机 artifacts 扫描按 `batch_id` 聚合批次结果，展开批次可查看所有子任务名称、task_id、目录、文件数和大小
+- 删除本机结果文件后不物理删除任务记录，只设置 `tasks.hidden_from_history=1`、`hidden_reason`、`hidden_at`
+- 任务历史和批次接口默认过滤 `hidden_from_history=1`，保留数据库记录但不再展示
+
+**功能收口**
+- 移除“重新执行/重跑”模块：前端按钮、API client、后端 `/tasks/{task_id}/rerun` 端点和响应 schema 均已删除
+- 服务器详情快捷入口从“打开清理中心”改为“打开系统设置”
+
 ### 2026-07-06 — 状态体系统一 + 仪表盘进度条 + 服务器标签内联编辑
 
 **最终状态统一（final_status）**
@@ -228,6 +249,9 @@ HPCDeploy 已形成完整闭环，端到端链路全部打通：
 6. 前端不传 raw command / raw_args / remote_path / remote_work_dir
 7. 高风险操作的所有 API 已经通过 `require_admin_token()` 依赖保护
 8. 新增 `backend/app/core/task_state_resolver.py` — 统一 final_status 规则，report 状态优先
+9. 任务历史默认过滤 `hidden_from_history=1`；系统设置删除本机结果文件会软隐藏历史任务
+10. 清理中心页面已删除，本机结果文件清理入口在系统设置
+11. 重跑/重新执行模块已删除；如需再次执行，回到任务执行页新建任务
 
 ---
 
@@ -247,4 +271,7 @@ HPCDeploy 已形成完整闭环，端到端链路全部打通：
 不要 git commit，除非我明确要求。
 最终状态规则：report FAIL > report PASS > execution FAILED > UNKNOWN，
 实现在 backend/app/core/task_state_resolver.py。
+任务历史统一展示单次和批次任务；清理中心页面已删除，本机结果文件在系统设置。
+删除本机结果文件只软隐藏历史任务，不物理删除任务记录，字段为 hidden_from_history。
+重跑/重新执行模块已删除。
 ```

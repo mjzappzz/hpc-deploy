@@ -1,10 +1,7 @@
 <template>
-  <section class="page-section hpc-row-hover-only">
+  <section class="page-section hpc-row-hover-only task-history-page">
     <div class="toolbar">
-      <div class="view-toggle">
-        <el-button :type="viewMode === 'tasks' ? 'primary' : 'default'" size="small" @click="switchView('tasks')">单次任务视图</el-button>
-        <el-button :type="viewMode === 'batches' ? 'primary' : 'default'" size="small" @click="switchView('batches')">批次任务视图</el-button>
-      </div>
+      <div class="page-title">任务历史</div>
       <el-button class="page-refresh-button" @click="refreshCurrentView">刷新</el-button>
     </div>
 
@@ -61,22 +58,98 @@
       </div>
 
       <div class="task-list hpc-glow-row-group" v-loading="loading">
-        <el-empty v-if="tasks.length === 0 && !loading" description="暂无任务记录" />
-        <TaskCard
-          v-for="task in tasks"
-          :key="task.id"
-          :task="task"
-          :env-command-tooltip="getEnvTooltip(task.task_id)"
-          :verify-command-tooltip="getVerifyTooltip(task.task_id)"
-          @continue-task="continueTask"
-          @download-report="downloadTaskReport"
-          @prefetch-env-commands="prefetchEnvCommands"
-          @prefetch-verify-commands="prefetchVerifyCommands"
-          @copy-env-commands="copyEnvCommands"
-          @copy-verify-commands="copyVerifyCommands"
-          @cancel-task="cancelHistoryTask"
-          @view-batch="goToBatch"
-        />
+        <el-empty v-if="historyItems.length === 0 && !loading" description="暂无任务记录" />
+        <template v-for="item in historyItems" :key="item.key">
+          <TaskCard
+            v-if="item.type === 'task'"
+            :task="item.task"
+            :env-command-tooltip="getEnvTooltip(item.task.task_id)"
+            :verify-command-tooltip="getVerifyTooltip(item.task.task_id)"
+            @continue-task="continueTask"
+            @download-report="downloadTaskReport"
+            @prefetch-env-commands="prefetchEnvCommands"
+            @prefetch-verify-commands="prefetchVerifyCommands"
+            @copy-env-commands="copyEnvCommands"
+            @copy-verify-commands="copyVerifyCommands"
+            @cancel-task="cancelHistoryTask"
+          />
+          <el-card v-else shadow="never" class="task-card batch-history-card hpc-glow-row">
+            <div class="batch-history-card__header">
+              <div class="batch-history-card__main">
+                <div class="batch-history-card__title">
+                  <span :title="batchGroupDisplayName(item.tasks)">{{ batchGroupDisplayName(item.tasks) }}</span>
+                  <el-tag size="small" type="warning" effect="plain">{{ item.tasks.length }} 个子任务</el-tag>
+                </div>
+                <div class="batch-history-card__meta">
+                  <span class="batch-id-cell">{{ item.batchId }}</span>
+                  <span>{{ batchGroupServerLabel(item.tasks) }}</span>
+                  <span>{{ batchGroupScriptLabel(item.tasks) }}</span>
+                  <span>创建 {{ formatDate(batchGroupCreatedAt(item.tasks)) }}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="batch-history-steps">
+              <div
+                v-for="task in item.tasks"
+                :key="task.task_id"
+                class="batch-history-step"
+              >
+                <div class="batch-history-step__head">
+                  <div class="batch-history-step__name">
+                    <span>{{ batchStepLabel(task) }}</span>
+                    <el-tag size="small" effect="plain">{{ task.file_name || '-' }}</el-tag>
+                  </div>
+                  <StatusTag :status="taskDisplayStatus(task)" />
+                </div>
+                <div class="batch-history-step__meta">
+                  <span>{{ task.server_name || task.server_host || `Server #${task.server_id}` }}</span>
+                  <span>耗时 {{ formatDuration(task.duration_seconds ?? getTaskDuration(task)) }}</span>
+                  <span>退出码 {{ task.exit_code ?? '-' }}</span>
+                </div>
+                <div class="batch-history-step__actions">
+                  <el-button size="small" link type="primary" class="task-action-button" @click="continueTask(task)">详情</el-button>
+                  <el-button
+                    v-if="isStressTaskCompleted(task)"
+                    size="small"
+                    link
+                    type="primary"
+                    class="task-action-button"
+                    @click="downloadTaskReport(task)"
+                  >报告</el-button>
+                  <el-button
+                    v-if="canCancelTask(task)"
+                    size="small"
+                    link
+                    type="danger"
+                    class="task-action-button"
+                    @click="cancelHistoryTask(task)"
+                  >取消</el-button>
+                </div>
+              </div>
+            </div>
+
+            <div class="batch-history-card__footer">
+              <div class="batch-row-actions">
+                <el-button
+                  size="small"
+                  type="warning"
+                  plain
+                  :disabled="!canCancelBatch(batchSummaryFromTasks(item.batchId, item.tasks))"
+                  :loading="batchCancelSubmitting[item.batchId]"
+                  @click="confirmCancelBatch(batchSummaryFromTasks(item.batchId, item.tasks))"
+                >取消批次</el-button>
+                <el-button
+                  size="small"
+                  plain
+                  :disabled="!canDownloadBatchReport(batchSummaryFromTasks(item.batchId, item.tasks))"
+                  :loading="batchReportDownloading[item.batchId]"
+                  @click="downloadBatchReports(batchSummaryFromTasks(item.batchId, item.tasks))"
+                >下载批次报告</el-button>
+              </div>
+            </div>
+          </el-card>
+        </template>
       </div>
 
       <div v-if="total > 0" class="pagination-bar">
@@ -133,6 +206,7 @@
           :data="batchItems"
           stripe
           size="small"
+          class="hpc-table batch-task-table batch-history-table"
           row-key="batch_id"
           :expand-row-keys="expandedBatchKeys"
           @expand-change="onBatchExpandChange"
@@ -140,134 +214,124 @@
           <el-table-column type="expand">
             <template #default="{ row }">
               <div class="batch-expand-content">
-                <div v-if="expandedBatchLoading[row.batch_id]" v-loading="true" class="batch-expand-loading" />
-                <template v-else-if="expandedBatchData[row.batch_id]">
-                  <!-- d is a non-null alias for TypeScript narrowing -->
-                  <template v-for="d in [expandedBatchData[row.batch_id]!]" :key="'d'">
-                    <el-table :data="d.tasks" size="small" stripe @row-click.stop>
-                    <el-table-column label="服务器" min-width="150">
-                      <template #default="{ row: t }">
-                        <span>{{ t.server_name }} <span class="batch-expand-host">({{ t.host }})</span></span>
-                      </template>
-                    </el-table-column>
-                    <el-table-column label="脚本" min-width="180" show-overflow-tooltip>
-                      <template #default="{ row: t }">{{ t.task_name }}</template>
-                    </el-table-column>
-                    <el-table-column label="序号" prop="sequence_index" width="55" align="center" />
-                    <el-table-column label="状态" width="100">
-                      <template #default="{ row: t }">
-                        <StatusTag :status="batchChildDisplayStatus(t)" />
-                      </template>
-                    </el-table-column>
-                    <el-table-column label="退出码" width="65" align="center">
-                      <template #default="{ row: t }">{{ t.exit_code ?? '-' }}</template>
-                    </el-table-column>
-                    <el-table-column label="开始时间" width="145">
-                      <template #default="{ row: t }">{{ formatDate(t.started_at) }}</template>
-                    </el-table-column>
-                    <el-table-column label="结束时间" width="145">
-                      <template #default="{ row: t }">{{ formatDate(t.ended_at) }}</template>
-                    </el-table-column>
-                    <el-table-column label="总耗时" width="100" align="center">
-                      <template #default="{ row: t }">{{ formatDuration(t.duration_seconds) }}</template>
-                    </el-table-column>
-                    <el-table-column label="操作" width="260" fixed="right">
-                      <template #default="{ row: t }">
-                        <div class="batch-task-actions">
-                          <el-button size="small" link type="primary" class="task-action-button batch-view-button" @click.stop="continueBatchTask(t)">查看任务详情</el-button>
-                          <el-button
-                            size="small"
-                            link
-                            type="primary"
-                            class="task-action-button"
-                            :disabled="!isBatchTaskTerminal(t.status)"
-                            @click.stop="batchTaskDownloadReport(t)"
-                          >下载报告</el-button>
+                <div class="task-detail-container">
+                  <div v-if="expandedBatchLoading[row.batch_id]" v-loading="true" class="batch-expand-loading" />
+                  <template v-else-if="expandedBatchData[row.batch_id]">
+                    <!-- d is a non-null alias for TypeScript narrowing -->
+                    <template v-for="d in [expandedBatchData[row.batch_id]!]" :key="'d'">
+                      <el-table :data="d.tasks" size="small" stripe @row-click.stop>
+                      <el-table-column label="服务器" min-width="150">
+                        <template #default="{ row: t }">
+                          <span>{{ t.server_name }} <span class="batch-expand-host">({{ t.host }})</span></span>
+                        </template>
+                      </el-table-column>
+                      <el-table-column label="压测时长" width="110" align="center">
+                        <template #default="{ row: t }">
+                          <span>{{ formatStressDuration(t.params) }}</span>
+                        </template>
+                      </el-table-column>
+                      <el-table-column label="脚本" min-width="180" show-overflow-tooltip>
+                        <template #default="{ row: t }">{{ t.task_name }}</template>
+                      </el-table-column>
+                      <el-table-column label="序号" prop="sequence_index" width="55" align="center" />
+                      <el-table-column label="状态" width="100">
+                        <template #default="{ row: t }">
+                          <StatusTag :status="batchChildDisplayStatus(t)" />
+                        </template>
+                      </el-table-column>
+                      <el-table-column label="退出码" width="65" align="center">
+                        <template #default="{ row: t }">{{ t.exit_code ?? '-' }}</template>
+                      </el-table-column>
+                      <el-table-column label="开始时间" width="145">
+                        <template #default="{ row: t }">{{ formatDate(t.started_at) }}</template>
+                      </el-table-column>
+                      <el-table-column label="结束时间" width="145">
+                        <template #default="{ row: t }">{{ formatDate(t.ended_at) }}</template>
+                      </el-table-column>
+                      <el-table-column label="总耗时" width="100" align="center">
+                        <template #default="{ row: t }">{{ formatDuration(t.duration_seconds) }}</template>
+                      </el-table-column>
+                      <el-table-column label="操作" width="260" fixed="right">
+                        <template #default="{ row: t }">
+                          <div class="batch-task-actions">
+                            <el-button size="small" link type="primary" class="task-action-button batch-view-button" @click.stop="continueBatchTask(t)">查看任务详情</el-button>
+                            <el-button
+                              size="small"
+                              link
+                              type="primary"
+                              class="task-action-button"
+                              :disabled="!isBatchTaskTerminal(t.status)"
+                              @click.stop="batchTaskDownloadReport(t)"
+                            >下载报告</el-button>
+                          </div>
+                        </template>
+                      </el-table-column>
+                      <el-table-column label="错误" min-width="180" show-overflow-tooltip>
+                        <template #default="{ row: t }">
+                          <span v-if="t.error_summary" class="batch-error-text">{{ t.error_summary }}</span>
+                          <span v-else>-</span>
+                        </template>
+                      </el-table-column>
+                    </el-table>
+                      <!-- Summary below subtask table -->
+                      <template v-for="stats in [calcBatchChildStats(d.tasks)]" :key="'stats'">
+                        <div class="batch-expand-summary">
+                          <span class="batch-summary-item">总计 {{ stats.total }}</span>
+                          <span class="batch-summary-sep">|</span>
+                          <span class="batch-summary-item batch-summary-ok">成功 {{ stats.success }}</span>
+                          <span class="batch-summary-sep">|</span>
+                          <span class="batch-summary-item batch-summary-fail">失败 {{ stats.failed }}</span>
+                          <span class="batch-summary-sep">|</span>
+                          <span class="batch-summary-item batch-summary-running">运行中 {{ stats.running }}</span>
+                          <span class="batch-summary-sep">|</span>
+                          <span class="batch-summary-item">等待 {{ stats.pending }}</span>
+                          <span class="batch-summary-sep">|</span>
+                          <span class="batch-summary-item">已取消 {{ stats.canceled }}</span>
                         </div>
                       </template>
-                    </el-table-column>
-                    <el-table-column label="错误" min-width="180" show-overflow-tooltip>
-                      <template #default="{ row: t }">
-                        <span v-if="t.error_summary" class="batch-error-text">{{ t.error_summary }}</span>
-                        <span v-else>-</span>
-                      </template>
-                    </el-table-column>
-                  </el-table>
-                    <!-- Summary below subtask table -->
-                    <template v-for="stats in [calcBatchChildStats(d.tasks)]" :key="'stats'">
-                      <div class="batch-expand-summary">
-                        <span class="batch-summary-item">总计 {{ stats.total }}</span>
-                        <span class="batch-summary-sep">|</span>
-                        <span class="batch-summary-item batch-summary-ok">成功 {{ stats.success }}</span>
-                        <span class="batch-summary-sep">|</span>
-                        <span class="batch-summary-item batch-summary-fail">失败 {{ stats.failed }}</span>
-                        <span class="batch-summary-sep">|</span>
-                        <span class="batch-summary-item batch-summary-running">运行中 {{ stats.running }}</span>
-                        <span class="batch-summary-sep">|</span>
-                        <span class="batch-summary-item">等待 {{ stats.pending }}</span>
-                        <span class="batch-summary-sep">|</span>
-                        <span class="batch-summary-item">已取消 {{ stats.canceled }}</span>
-                      </div>
                     </template>
                   </template>
-                </template>
-                <el-empty v-else :description="expandedBatchError[row.batch_id] || '暂无子任务'" />
+                  <el-empty v-else :description="expandedBatchError[row.batch_id] || '暂无子任务'" />
+                </div>
               </div>
             </template>
           </el-table-column>
-          <el-table-column label="批次 ID" min-width="240">
+          <el-table-column label="批次 ID" min-width="220" show-overflow-tooltip>
             <template #default="{ row }">
               <span class="batch-id-cell">{{ row.batch_id }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="脚本" width="220" show-overflow-tooltip>
+          <el-table-column label="服务器" min-width="140" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span>{{ row.servers.join(', ') }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="时长" width="70" align="center">
+            <template #default="{ row }">
+              <span>{{ formatStressDuration(row.stress_duration_seconds) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="创建时间" width="150">
+            <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
+          </el-table-column>
+          <el-table-column label="脚本" width="140" show-overflow-tooltip>
             <template #default="{ row }">
               <span>{{ (row.script_names || []).join('、') }}</span>
             </template>
           </el-table-column>
-          <el-table-column prop="task_type" label="类型" width="80">
+          <el-table-column prop="task_type" label="类型" width="60">
             <template #default="{ row }">
               <span>{{ taskTypeLabel(row.task_type) }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="状态" width="100">
+          <el-table-column label="状态" width="80">
             <template #default="{ row }">
               <el-tag :type="batchStatusTagType(row.status)" size="small">
                 {{ batchStatusLabel(row.status) }}
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="总计" width="55" align="center">
-            <template #default="{ row }">{{ row.total }}</template>
-          </el-table-column>
-          <el-table-column label="成功" width="55" align="center">
-            <template #default="{ row }">
-              <span class="batch-count-success">{{ row.success }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="失败" width="55" align="center">
-            <template #default="{ row }">
-              <span class="batch-count-fail">{{ row.failed }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="运行中" width="60" align="center">
-            <template #default="{ row }">{{ row.running }}</template>
-          </el-table-column>
-          <el-table-column label="等待" width="55" align="center">
-            <template #default="{ row }">{{ row.pending }}</template>
-          </el-table-column>
-          <el-table-column label="已取消" width="60" align="center">
-            <template #default="{ row }">{{ row.canceled }}</template>
-          </el-table-column>
-          <el-table-column label="创建时间" width="160">
-            <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
-          </el-table-column>
-          <el-table-column label="服务器" min-width="180" show-overflow-tooltip>
-            <template #default="{ row }">
-              <span>{{ row.servers.join(', ') }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="操作" width="170" fixed="right">
+          <el-table-column label="操作" width="160">
             <template #default="{ row }">
               <div class="batch-row-actions">
                 <el-button
@@ -541,14 +605,14 @@
             </div>
           </div>
 
-          <el-table :data="batchDetailData.tasks" stripe size="small" max-height="400">
-            <el-table-column prop="task_name" label="任务" min-width="200" show-overflow-tooltip />
-            <el-table-column label="状态" width="100">
-              <template #default="{ row }">
-                <StatusTag :status="row.status" />
-              </template>
-            </el-table-column>
-            <el-table-column label="退出码" width="70" align="center">
+	  <el-table :data="batchDetailData.tasks" stripe size="small" max-height="400">
+	    <el-table-column prop="task_name" label="任务" min-width="200" show-overflow-tooltip />
+	    <el-table-column label="状态" width="100">
+	      <template #default="{ row }">
+	        <StatusTag :status="row.status" />
+	      </template>
+	    </el-table-column>
+	    <el-table-column label="退出码" width="70" align="center">
               <template #default="{ row }">{{ row.exit_code ?? '-' }}</template>
             </el-table-column>
             <el-table-column label="开始时间" width="160">
@@ -610,7 +674,7 @@ import { cancelBatch, cancelTask, downloadBatchReportZip, downloadTaskLogs, getT
 import { formatDateTime } from '@/utils/time'
 import { getApiErrorMessage as readApiErrorMessage } from '@/utils/apiError'
 import { useTaskWebSocket } from '@/composables/useTaskWebSocket'
-import { calcDurationSeconds, calcEstimatedRemaining, calcProgress, formatSeconds, getTaskDuration } from '@/composables/useTaskProgress'
+import { calcDurationSeconds, calcEstimatedRemaining, calcProgress, formatSeconds, getTaskDuration, statusLabel } from '@/composables/useTaskProgress'
 import { formatTaskDisplayName, getTaskTypeLabel } from '@/utils/taskDisplay'
 import LogViewer from '@/components/LogViewer.vue'
 import StatusTag from '@/components/StatusTag.vue'
@@ -730,7 +794,7 @@ function calcBatchChildStats(tasks: BatchTaskDetailItem[]) {
     const execStatus = String(task.status || '').toUpperCase()
     // Prefer final_status for counting; fall back to execution status
     const status = (finalStatus && finalStatus !== 'UNKNOWN') ? finalStatus : execStatus
-    if (status === 'SUCCESS' || status === 'PASS') {
+    if (status === 'SUCCESS') {
       stats.success += 1
     } else if (FAILED_FINAL_STATUSES.includes(status) || BATCH_FAILED_STATUSES.includes(status)) {
       stats.failed += 1
@@ -744,6 +808,152 @@ function calcBatchChildStats(tasks: BatchTaskDetailItem[]) {
   }
 
   return stats
+}
+
+function batchGroupStats(tasks: TaskRecord[]) {
+  const stats = {
+    total: tasks.length,
+    success: 0,
+    failed: 0,
+    running: 0,
+    pending: 0,
+    canceled: 0,
+  }
+
+  const FAILED_FINAL_STATUSES = ['FAIL', 'FAILED']
+  const CANCELED_STATUSES = ['CANCELED']
+
+  for (const task of tasks) {
+    const status = taskDisplayStatus(task).toUpperCase()
+    if (status === 'SUCCESS' || status === 'PASS') {
+      stats.success += 1
+    } else if (FAILED_FINAL_STATUSES.includes(status) || BATCH_FAILED_STATUSES.includes(status)) {
+      stats.failed += 1
+    } else if (status === 'RUNNING') {
+      stats.running += 1
+    } else if (BATCH_PENDING_STATUSES.includes(status) || ['CONNECTING', 'PREPARING', 'UPLOADING', 'QUEUED'].includes(status)) {
+      stats.pending += 1
+    } else if (CANCELED_STATUSES.includes(status) || BATCH_CANCELED_STATUSES.includes(status)) {
+      stats.canceled += 1
+    }
+  }
+
+  return stats
+}
+
+function taskDisplayStatus(task: TaskRecord): string {
+  if (task.task_type === 'stress' && task.final_status && task.final_status !== 'UNKNOWN') {
+    return task.final_status
+  }
+  return task.status
+}
+
+function batchGroupStatus(tasks: TaskRecord[]): string {
+  const stats = batchGroupStats(tasks)
+  if (stats.running > 0) return 'RUNNING'
+  if (stats.pending > 0) return 'PENDING'
+  if (stats.failed > 0 && stats.success > 0) return 'PARTIAL_FAILED'
+  if (stats.failed > 0 && stats.failed === stats.total) return 'FAILED'
+  if (stats.canceled > 0 && stats.canceled === stats.total) return 'CANCELED'
+  if (stats.success > 0 && stats.success === stats.total) return 'SUCCESS'
+  if (stats.canceled > 0) return 'PARTIAL_CANCELED'
+  return 'UNKNOWN'
+}
+
+function batchGroupCreatedAt(tasks: TaskRecord[]): string | null {
+  const first = [...tasks].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())[0]
+  return first?.created_at ?? null
+}
+
+function batchGroupServerLabel(tasks: TaskRecord[]): string {
+  const servers = new Set<string>()
+  for (const task of tasks) {
+    servers.add(task.server_name || task.server_host || `Server #${task.server_id}`)
+  }
+  return Array.from(servers).join(', ') || '-'
+}
+
+function batchGroupScriptLabel(tasks: TaskRecord[]): string {
+  const names = tasks.map(task => taskScriptBaseName(task)).filter(Boolean)
+  return Array.from(new Set(names)).join('、') || '-'
+}
+
+function batchGroupDisplayName(tasks: TaskRecord[]): string {
+  const serverLabel = batchGroupServerLabel(tasks)
+  const typeLabel = getTaskTypeLabel(tasks[0]?.task_type, '任务')
+  const scriptLabel = batchGroupScriptLabel(tasks)
+  const dateLabel = compactTaskDate(batchGroupCreatedAt(tasks))
+  return ['批次', serverLabel, typeLabel, scriptLabel, dateLabel].filter(Boolean).join(' · ')
+}
+
+function taskScriptBaseName(task: TaskRecord): string {
+  const raw = task.file_name || task.file_path || ''
+  if (!raw) return ''
+  const normalized = raw.replace(/\\/g, '/')
+  const basename = normalized.split('/').pop() || ''
+  return basename.replace(/\.(sh|py|txt|md|sif)$/i, '')
+}
+
+function compactTaskDate(value?: string | null): string {
+  if (!value) return ''
+  const isoMatch = value.match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (isoMatch) return `${isoMatch[1]}${isoMatch[2]}${isoMatch[3]}`
+
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const year = String(date.getFullYear())
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}${month}${day}`
+}
+
+function batchStepLabel(task: TaskRecord): string {
+  const seq = task.sequence_index
+  if (seq === 1) return 'GPU'
+  if (seq === 2) return 'CPU/内存'
+  if (seq === 3) return '磁盘'
+  return task.file_name || `子任务 ${task.task_id}`
+}
+
+function isStressTaskCompleted(task: TaskRecord): boolean {
+  const status = taskDisplayStatus(task).toUpperCase()
+  return task.task_type === 'stress' && ['SUCCESS', 'FAILED', 'CANCELED', 'PASS', 'FAIL'].includes(status)
+}
+
+function canCancelTask(task: TaskRecord): boolean {
+  const status = task.status?.toUpperCase() ?? ''
+  return ['PENDING', 'CONNECTING', 'PREPARING', 'UPLOADING', 'RUNNING'].includes(status)
+}
+
+function batchSummaryFromTasks(batchId: string, tasks: TaskRecord[]): BatchSummaryItem {
+  const stats = batchGroupStats(tasks)
+  const scriptNames = new Set<string>()
+  const servers = new Set<string>()
+  let stressDuration: number | null = null
+
+  for (const task of tasks) {
+    if (task.file_name) scriptNames.add(task.file_name)
+    servers.add(task.server_name || task.server_host || `Server #${task.server_id}`)
+    if (stressDuration === null && task.params && typeof task.params.duration_seconds === 'number') {
+      stressDuration = task.params.duration_seconds
+    }
+  }
+
+  return {
+    batch_id: batchId,
+    task_type: tasks[0]?.task_type ?? null,
+    script_names: Array.from(scriptNames),
+    created_at: batchGroupCreatedAt(tasks) || tasks[0]?.created_at || '',
+    total: stats.total,
+    success: stats.success,
+    failed: stats.failed,
+    running: stats.running,
+    pending: stats.pending,
+    canceled: stats.canceled,
+    status: batchGroupStatus(tasks),
+    servers: Array.from(servers),
+    stress_duration_seconds: stressDuration,
+  }
 }
 
 const batchFilters = reactive<BatchQuery>({
@@ -762,6 +972,64 @@ const filters = reactive<TaskListQuery>({
   offset: 0,
 })
 const total = ref(0)
+
+type HistoryTaskItem = {
+  type: 'task'
+  key: string
+  task: TaskRecord
+}
+
+type HistoryBatchItem = {
+  type: 'batch'
+  key: string
+  batchId: string
+  tasks: TaskRecord[]
+}
+
+type HistoryItem = HistoryTaskItem | HistoryBatchItem
+
+const historyItems = computed<HistoryItem[]>(() => {
+  const items: HistoryItem[] = []
+  const batchMap = new Map<string, HistoryBatchItem>()
+
+  for (const task of tasks.value) {
+    const batchId = task.batch_id
+    if (!batchId) {
+      items.push({
+        type: 'task',
+        key: `task:${task.task_id}`,
+        task,
+      })
+      continue
+    }
+
+    let batchItem = batchMap.get(batchId)
+    if (!batchItem) {
+      batchItem = {
+        type: 'batch',
+        key: `batch:${batchId}`,
+        batchId,
+        tasks: [],
+      }
+      batchMap.set(batchId, batchItem)
+      items.push(batchItem)
+    }
+    batchItem.tasks.push(task)
+  }
+
+  for (const item of items) {
+    if (item.type === 'batch') {
+      item.tasks.sort((a, b) => {
+        const seqA = a.sequence_index ?? 999
+        const seqB = b.sequence_index ?? 999
+        if (seqA !== seqB) return seqA - seqB
+        return new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+      })
+    }
+  }
+
+  return items
+})
 
 const currentPage = computed(() => {
   if (!filters.limit) return 1
@@ -1136,11 +1404,7 @@ function switchView(mode: 'tasks' | 'batches') {
 }
 
 function refreshCurrentView() {
-  if (viewMode.value === 'batches') {
-    loadBatches()
-  } else {
-    loadTasks()
-  }
+  loadTasks()
 }
 
 async function loadBatches(silent = false) {
@@ -1406,7 +1670,9 @@ function resetBatchFilters() {
 async function goToBatch(task: TaskRecord) {
   const batchId = task.batch_id
   if (!batchId) return
-  await locateBatch(batchId)
+  filters.keyword = batchId
+  filters.offset = 0
+  await loadTasks()
 }
 
 async function locateBatch(batchId: string) {
@@ -1480,7 +1746,7 @@ function checkAutoRefresh() {
  */
 function batchChildDisplayStatus(t: BatchTaskDetailItem): string {
   const finalStatus = (t.final_status || '').toUpperCase()
-  if (finalStatus === 'FAIL' || finalStatus === 'FAILED') return finalStatus
+  if (finalStatus === 'FAILED' || finalStatus === 'SUCCESS') return finalStatus
   return t.status
 }
 
@@ -1489,7 +1755,7 @@ function batchStatusLabel(status: string): string {
     RUNNING: '运行中',
     SUCCESS: '全部成功',
     FAILED: '全部失败',
-    PARTIAL_FAILED: '部分失败',
+    PARTIAL_FAILED: '部分完成',
     CANCELED: '已取消',
     PARTIAL_CANCELED: '部分取消',
   }
@@ -1501,7 +1767,7 @@ function batchStatusTagType(status: string): string {
     RUNNING: 'warning',
     SUCCESS: 'success',
     FAILED: 'danger',
-    PARTIAL_FAILED: 'danger',
+    PARTIAL_FAILED: 'warning',
     CANCELED: 'info',
     PARTIAL_CANCELED: 'info',
   }
@@ -1526,6 +1792,28 @@ function formatDuration(seconds: number | null | undefined): string {
   if (h > 0) parts.push(`${h}h`)
   if (m > 0) parts.push(`${m}m`)
   if (sec > 0 || parts.length === 0) parts.push(`${sec}s`)
+  return parts.join(' ')
+}
+
+/**
+ * Format stress test duration.
+ * Accepts either a raw `duration_seconds` number (from batch summary)
+ * or a params object with `duration_seconds` (from subtable task).
+ */
+function formatStressDuration(dur: number | Record<string, unknown> | null | undefined): string {
+  let total: number | null = null
+  if (typeof dur === 'number') {
+    total = dur
+  } else if (dur && typeof dur === 'object' && typeof (dur as Record<string, unknown>).duration_seconds === 'number') {
+    total = (dur as Record<string, unknown>).duration_seconds as number
+  }
+  if (total === null || total <= 0) return '-'
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const parts: string[] = []
+  if (h > 0) parts.push(`${h}h`)
+  if (m > 0) parts.push(`${m}m`)
+  if (parts.length === 0) parts.push(`${total}s`)
   return parts.join(' ')
 }
 
@@ -1772,12 +2060,8 @@ onMounted(async () => {
 
   if (qView === 'batch' || qView === 'batches') {
     if (typeof qBatchId === 'string' && qBatchId) {
-      await locateBatch(qBatchId)
-    } else {
-      viewMode.value = 'batches'
-      await loadBatches()
+      filters.keyword = qBatchId
     }
-    return
   }
 
   // Support task_id query param — auto-search
@@ -1789,11 +2073,7 @@ onMounted(async () => {
   loadTasks()
 })
 onActivated(() => {
-  if (viewMode.value === 'tasks') {
-    loadTasks()
-  } else {
-    loadBatches()
-  }
+  loadTasks()
 })
 onUnmounted(() => {
   stopAutoRefresh()
@@ -1950,6 +2230,12 @@ onUnmounted(() => {
   margin-bottom: 12px;
 }
 
+.page-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--el-text-color-primary);
+}
+
 .page-refresh-button {
   margin-left: auto;
 }
@@ -1957,6 +2243,146 @@ onUnmounted(() => {
 .view-toggle {
   display: flex;
   gap: 2px;
+}
+
+/* ── Unified batch card ── */
+.batch-history-card :deep(.el-card__body) {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.batch-history-card__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.batch-history-card__main {
+  min-width: 0;
+}
+
+.batch-history-card__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-weight: 700;
+}
+
+.batch-history-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.task-history-page .task-card__status-block {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.task-history-page .task-card__status-label {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
+}
+
+.batch-history-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.batch-history-step {
+  min-width: 0;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--el-fill-color-lighter);
+}
+
+.batch-history-step__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.batch-history-step__name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.batch-history-step__name > span {
+  white-space: nowrap;
+}
+
+.batch-history-step__name :deep(.el-tag) {
+  min-width: 0;
+  max-width: 180px;
+}
+
+.batch-history-step__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.batch-history-step__meta span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.batch-history-step__error {
+  margin-top: 6px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: var(--el-color-danger-light-9);
+  color: var(--el-color-danger);
+  font-size: 12px;
+  line-height: 1.4;
+  word-break: break-all;
+}
+
+.batch-history-step__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  margin-top: 6px;
+}
+
+.batch-history-card__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.batch-history-card__footer .batch-expand-summary {
+  margin-top: 0;
+}
+
+@media (max-width: 1200px) {
+  .batch-history-steps {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* ── Batch view ── */
@@ -1989,7 +2415,7 @@ onUnmounted(() => {
 .batch-row-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   white-space: nowrap;
 }
 
@@ -2032,11 +2458,56 @@ onUnmounted(() => {
 
 /* ── Batch expand content ── */
 .batch-expand-content {
-  padding: 8px 16px 12px 40px;
+  padding: 0;
+}
+
+.task-history-page .batch-history-table {
+  --el-table-cell-padding-vertical: 4px;
+  --el-table-cell-padding-horizontal: 0;
+}
+
+.task-history-page .batch-history-table :deep(> .el-table__inner-wrapper > .el-table__header-wrapper th.el-table__cell),
+.task-history-page .batch-history-table :deep(> .el-table__inner-wrapper > .el-table__body-wrapper > .el-scrollbar > .el-scrollbar__wrap > .el-scrollbar__view > table > tbody > tr.el-table__row > td.el-table__cell) {
+  padding: 4px 0;
+  line-height: 1.3;
+}
+
+.task-history-page .batch-history-table :deep(> .el-table__inner-wrapper > .el-table__body-wrapper > .el-scrollbar > .el-scrollbar__wrap > .el-scrollbar__view > table > tbody > tr > td.el-table__expanded-cell) {
+  padding: 8px 12px;
+  line-height: 1.3;
+}
+
+.task-history-page .batch-history-table :deep(> .el-table__inner-wrapper > .el-table__header-wrapper th.el-table__expand-column),
+.task-history-page .batch-history-table :deep(> .el-table__inner-wrapper > .el-table__body-wrapper > .el-scrollbar > .el-scrollbar__wrap > .el-scrollbar__view > table > tbody > tr.el-table__row > td.el-table__expand-column) {
+  padding: 0;
+}
+
+.task-history-page .batch-history-table :deep(> .el-table__inner-wrapper > .el-table__header-wrapper th.el-table__cell > .cell),
+.task-history-page .batch-history-table :deep(> .el-table__inner-wrapper > .el-table__body-wrapper > .el-scrollbar > .el-scrollbar__wrap > .el-scrollbar__view > table > tbody > tr.el-table__row > td.el-table__cell > .cell) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.3;
+  padding: 0 2px;
+}
+
+.task-history-page .batch-history-table :deep(> .el-table__inner-wrapper .el-tag) {
+  height: 20px;
+  line-height: 18px;
+  padding: 0 5px;
+}
+
+.task-detail-container {
+  width: 100%;
+}
+
+.task-detail-container :deep(.el-table__cell) {
+  padding: 4px 0;
+  line-height: 1.3;
 }
 
 .batch-expand-loading {
-  min-height: 60px;
+  min-height: 44px;
 }
 
 .batch-expand-host {
@@ -2048,10 +2519,10 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 12px;
-  margin-top: 6px;
+  padding: 5px 8px;
+  margin-top: 4px;
   background: var(--el-fill-color-lighter);
-  border-radius: 8px;
+  border-radius: 6px;
   font-size: 12px;
 }
 
@@ -2307,4 +2778,5 @@ onUnmounted(() => {
   font-size: 14px;
   line-height: 1.6;
 }
+
 </style>

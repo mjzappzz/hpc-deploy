@@ -43,7 +43,7 @@
 
     <!-- Table -->
     <el-card v-if="auditUnlocked" class="table-card" shadow="never">
-      <el-table :data="page.items" v-loading="loading" stripe style="width:100%">
+      <el-table size="small" class="hpc-table" :data="page.items" v-loading="loading" stripe style="width:100%">
         <el-table-column prop="created_at" label="时间" width="170">
           <template #default="{ row }">
             {{ formatDateTime(row.created_at) }}
@@ -70,11 +70,13 @@
           </template>
         </el-table-column>
         <el-table-column prop="message" label="消息" min-width="220" show-overflow-tooltip />
-        <el-table-column label="详情" width="80" fixed="right">
+        <el-table-column label="详情" width="70">
           <template #default="{ row }">
-            <el-button v-if="row.detail_json" link type="primary" size="small" @click="openDetail(row)">
-              查看
-            </el-button>
+            <div class="hpc-actions">
+              <el-button v-if="row.detail_json" link type="primary" size="small" @click="openDetail(row)">
+                查看
+              </el-button>
+            </div>
           </template>
         </el-table-column>
       </el-table>

@@ -90,6 +90,26 @@
           <el-table-column type="selection" width="40" :selectable="isArtifactDirSelectable" />
           <el-table-column type="expand" width="44">
             <template #default="{ row }">
+              <div v-if="row.type === 'batch' && row.child_tasks?.length" class="artifact-task-list">
+                <div class="artifact-expand-title">批次子任务</div>
+                <el-table :data="row.child_tasks" size="small" border>
+                  <el-table-column label="任务名称" min-width="320" show-overflow-tooltip>
+                    <template #default="{ row: t }">{{ t.display_title || t.task_display_name || '-' }}</template>
+                  </el-table-column>
+                  <el-table-column label="任务 ID" min-width="240" show-overflow-tooltip>
+                    <template #default="{ row: t }"><code class="artifact-task-id">{{ t.task_id }}</code></template>
+                  </el-table-column>
+                  <el-table-column label="目录" min-width="220" show-overflow-tooltip>
+                    <template #default="{ row: t }">{{ t.relative_path }}</template>
+                  </el-table-column>
+                  <el-table-column label="文件数" width="80" align="right">
+                    <template #default="{ row: t }">{{ t.file_count }}</template>
+                  </el-table-column>
+                  <el-table-column label="大小" width="100" align="right">
+                    <template #default="{ row: t }">{{ t.size_text }}</template>
+                  </el-table-column>
+                </el-table>
+              </div>
               <div v-if="row.files.length === 0" class="section-placeholder">无文件</div>
               <el-table v-else :data="row.files" size="small" border>
                 <el-table-column prop="name" label="文件名" min-width="260" show-overflow-tooltip />
@@ -102,14 +122,34 @@
               </el-table>
             </template>
           </el-table-column>
-          <el-table-column label="任务/目录" min-width="260" show-overflow-tooltip>
+          <el-table-column label="任务名称" min-width="320" show-overflow-tooltip>
             <template #default="{ row }">
-              <span>{{ row.display_title || row.task_display_name || row.name }}</span>
+              <div class="artifact-task-cell">
+                <div class="artifact-task-title">
+                  <span class="artifact-task-kind">{{ row.type === 'batch' ? '[批次任务]' : (row.found_in_db ? '[单次任务]' : '[遗留]') }}</span>
+                  {{ row.display_title || row.task_display_name || row.name }}
+                </div>
+              </div>
             </template>
           </el-table-column>
-          <el-table-column label="来源" width="90" align="center">
+          <el-table-column label="任务 ID" min-width="240" show-overflow-tooltip>
             <template #default="{ row }">
-              <el-tag size="small" :type="row.found_in_db ? 'primary' : 'info'" effect="plain">{{ row.found_in_db ? '任务' : '遗留' }}</el-tag>
+              <code v-if="row.type === 'batch'" class="artifact-task-id">{{ row.batch_id || row.name }}</code>
+              <code v-else-if="row.task_id" class="artifact-task-id">{{ row.task_id }}</code>
+              <span v-else class="noop-text">{{ row.name }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="任务类型" width="100" align="center">
+            <template #default="{ row }">
+              <el-tag size="small" :type="row.type === 'batch' ? 'warning' : (row.found_in_db ? 'primary' : 'info')" effect="plain">
+                {{ row.type === 'batch' ? '批次任务' : (row.found_in_db ? '单次任务' : '遗留') }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="子任务" width="90" align="right">
+            <template #default="{ row }">
+              <span v-if="row.type === 'batch'">{{ row.child_tasks?.length || 0 }}</span>
+              <span v-else>-</span>
             </template>
           </el-table-column>
           <el-table-column label="文件数" width="90" align="right">
@@ -484,6 +524,10 @@ const sortedArtifactDirectories = computed(() => {
       va = sortableTime(a.modified_at, a.name)
       vb = sortableTime(b.modified_at, b.name)
     }
+    if (artifactSortBy.value === 'modified_at' && a.type !== b.type) {
+      if (a.type === 'batch') return -1
+      if (b.type === 'batch') return 1
+    }
     return (va - vb) * order
   })
   return data
@@ -538,6 +582,13 @@ function isArtifactDirSelectable(dir: LocalArtifactDirectory) {
   return dir.relative_path !== '.' && dir.name !== '未归档文件'
 }
 
+function artifactDeletePaths(dir: LocalArtifactDirectory): string[] {
+  if (dir.type === 'batch' && dir.child_relative_paths?.length) {
+    return dir.child_relative_paths
+  }
+  return [dir.relative_path]
+}
+
 async function doScanArtifacts() {
   scanArtifactsLoading.value = true
   try {
@@ -560,7 +611,7 @@ async function doScanArtifacts() {
 }
 
 function onArtifactDirSelection(selection: LocalArtifactDirectory[]) {
-  selectedArtifactDirPaths.value = selection.map((item) => item.relative_path)
+  selectedArtifactDirPaths.value = Array.from(new Set(selection.flatMap((item) => artifactDeletePaths(item))))
 }
 
 async function doDeleteArtifactDir(dir: LocalArtifactDirectory) {
@@ -569,7 +620,7 @@ async function doDeleteArtifactDir(dir: LocalArtifactDirectory) {
   deletingArtifactDir.value = dir.relative_path
   try {
     await ElMessageBox.confirm(
-      `将删除该任务结果目录及其中所有文件。任务历史记录不会删除，但相关结果文件将不可下载。此操作不可恢复。\n\n目录：${dir.name}`,
+      `将删除该任务结果目录及其中所有文件。任务历史记录不会删除，但相关结果文件将不可下载。此操作不可恢复。\n\n目录：${artifactDeletePaths(dir).join(', ')}`,
       '确认删除',
       { confirmButtonText: '确认删除', cancelButtonText: '取消', type: 'warning' }
     )
@@ -578,7 +629,7 @@ async function doDeleteArtifactDir(dir: LocalArtifactDirectory) {
     return
   }
   try {
-    const res = (await deleteLocalArtifacts([dir.relative_path], true)).data
+    const res = (await deleteLocalArtifacts(artifactDeletePaths(dir), true)).data
     if (res.deleted.length > 0) ElMessage.success(`已删除: ${dir.name}`)
     if (res.failed.length > 0) ElMessage.warning(res.failed[0].error || '删除失败')
     await doScanArtifacts()
@@ -724,6 +775,51 @@ onMounted(async () => {
 .artifact-table.is-dragging :deep(.el-table__body-wrapper) {
   user-select: none;
   cursor: pointer;
+}
+
+.artifact-task-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.artifact-task-title {
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artifact-task-kind {
+  color: var(--el-color-primary);
+  margin-right: 4px;
+}
+
+.artifact-task-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.artifact-task-list {
+  margin-bottom: 10px;
+}
+
+.artifact-expand-title {
+  margin: 2px 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+.artifact-task-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  color: var(--el-color-primary);
 }
 
 .noop-text {

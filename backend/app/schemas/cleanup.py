@@ -12,6 +12,24 @@ class LocalArtifactFile(BaseModel):
     modified_at: datetime | None = None
 
 
+class LocalArtifactTaskItem(BaseModel):
+    """Task metadata attached to a local artifact directory or batch group."""
+    task_id: str
+    task_display_name: str = ""
+    display_title: str = ""
+    server_name: str = ""
+    task_type_label: str = ""
+    script_label: str = ""
+    date_label: str = ""
+    status: str = ""
+    sequence_index: int | None = None
+    relative_path: str = ""
+    file_count: int = 0
+    size_bytes: int = 0
+    size_text: str = ""
+    modified_at: datetime | None = None
+
+
 class LocalArtifactDirectory(BaseModel):
     """A directory (or virtual group) under the artifacts root."""
     name: str
@@ -36,6 +54,10 @@ class LocalArtifactDirectory(BaseModel):
     inferred_batch_key: str | None = None
     is_batch_task: bool = False
     task_source_label: str = "未匹配"
+    task_status: str = ""
+    sequence_index: int | None = None
+    child_relative_paths: list[str] = []
+    child_tasks: list[LocalArtifactTaskItem] = []
     files: list[LocalArtifactFile] = []
 
 

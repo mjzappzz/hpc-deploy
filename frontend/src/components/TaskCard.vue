@@ -117,7 +117,10 @@ const serverLabel = computed(() => {
   return `Server #${props.task.server_id}`
 })
 
-const displayName = computed(() => formatTaskDisplayName(props.task))
+const displayName = computed(() => {
+  const prefix = props.task.batch_id ? '批次子任务' : '单次'
+  return `${prefix} · ${formatTaskDisplayName(props.task)}`
+})
 const moduleLabel = computed(() => getTaskModuleLabel(props.task.task_type))
 
 const isStressCompleted = computed(() => {
@@ -125,7 +128,7 @@ const isStressCompleted = computed(() => {
   const status = props.task.task_type === 'stress' && props.task.final_status && props.task.final_status !== 'UNKNOWN'
     ? props.task.final_status.toUpperCase()
     : (props.task.status?.toUpperCase() ?? '')
-  return props.task.task_type === 'stress' && ['SUCCESS', 'FAILED', 'CANCELED', 'FAIL', 'PASS'].includes(status)
+  return props.task.task_type === 'stress' && ['SUCCESS', 'FAILED', 'CANCELED'].includes(status)
 })
 
 const showCommandCopyButtons = computed(() => {

@@ -39,7 +39,7 @@
 | 阶段 27 | SSH 重连 + 批次耗时 | SSHExecutor.reconnect() 自动重连、批次视图总耗时列、取消/超时远端文件默认保留 | ✅ |
 | 阶段 28 | WebSocket 多进程广播 | WS 连接 worker 主动 tail 数据库 task_logs/status，多 uvicorn worker 下可补发日志与终态 | ✅ |
 | 阶段 28B | 稳定性与交互优化 | stress-suite 同服务器串行锁、后台启动/完成状态区分、失败/取消 artifacts 入口、审计日志延迟管理员确认、服务器/任务执行页 UI 优化、GPU 多卡报告脚本 | ✅ |
-| 阶段 29 | 本地报告自动清理 | 清理中心自动清理开关、默认关闭、默认保留 30 天、每日定时清理 backend/data/artifacts 旧任务结果目录、跳过运行中任务、审计日志记录；不自动清理远端目录和 Apptainer 镜像 | ✅ |
+| 阶段 29 | 本地报告自动清理 | 本机结果文件清理整合到系统设置；默认关闭、默认保留 30 天、每日定时清理 backend/data/artifacts 旧任务结果目录、跳过运行中任务、审计日志记录；不自动清理远端目录和 Apptainer 镜像 | ✅ |
 
 ---
 

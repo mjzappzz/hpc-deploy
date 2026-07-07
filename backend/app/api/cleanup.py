@@ -20,6 +20,7 @@ from app.db.database import SessionLocal, get_db
 from app.models.server import Server
 from app.models.settings import SystemSetting
 from app.models.task import Task
+from app.models.task_log import TaskLog
 from app.schemas.cleanup import (
     REMOTE_ALLOWED_TARGETS,
     REMOTE_TARGETS,
@@ -29,6 +30,7 @@ from app.schemas.cleanup import (
     DeleteResultItem,
     LocalArtifactDirectory,
     LocalArtifactFile,
+    LocalArtifactTaskItem,
     LocalArtifactsDeleteRequest,
     LocalArtifactsDeleteResponse,
     LocalArtifactsScanResult,
@@ -97,6 +99,19 @@ def _extract_task_id(relative: str) -> str | None:
     if parts and parts[0]:
         return parts[0]
     return None
+
+
+def _hide_task_from_history_for_artifact_delete(db: Session, relative: str) -> None:
+    task_id = _extract_task_id(relative)
+    if not task_id:
+        return
+    task = db.query(Task).filter(Task.task_id == task_id).first()
+    if task is None:
+        return
+    task.hidden_from_history = 1
+    task.hidden_reason = "local artifacts deleted from settings"
+    task.hidden_at = datetime.utcnow()
+    db.add(TaskLog(task_id=task.task_id, level="SYSTEM", message="task hidden from history after local artifacts deletion"))
 
 
 def _target_label(key: str) -> str:
@@ -228,6 +243,8 @@ def _build_task_display_metadata(
             "inferred_batch_key": None,
             "is_batch_task": bool(task.batch_id),
             "task_source_label": "批次任务" if task.batch_id else "单次任务",
+            "task_status": task.status or "",
+            "sequence_index": task.sequence_index,
         }
 
     task_type_label = _infer_task_type_label(dir_name, *file_names)
@@ -252,6 +269,8 @@ def _build_task_display_metadata(
         "inferred_batch_key": None,
         "is_batch_task": False,
         "task_source_label": "未匹配",
+        "task_status": "",
+        "sequence_index": None,
     }
 
 
@@ -308,6 +327,103 @@ def _apply_inferred_batch_flags(directories: list[LocalArtifactDirectory]) -> No
                 item.is_batch_task = True
                 item.task_source_label = "疑似批次"
                 item.inferred_batch_key = inferred_key
+
+
+def _local_artifact_task_item(item: LocalArtifactDirectory) -> LocalArtifactTaskItem | None:
+    if not item.task_id:
+        return None
+    return LocalArtifactTaskItem(
+        task_id=item.task_id,
+        task_display_name=item.task_display_name or item.display_title or item.name,
+        display_title=item.display_title or item.task_display_name or item.name,
+        server_name=item.server_name,
+        task_type_label=item.task_type_label,
+        script_label=item.script_label,
+        date_label=item.date_label,
+        status=item.task_status,
+        sequence_index=item.sequence_index,
+        relative_path=item.relative_path,
+        file_count=item.file_count,
+        size_bytes=item.size_bytes,
+        size_text=item.size_text,
+        modified_at=item.modified_at,
+    )
+
+
+def _group_local_artifact_batches(directories: list[LocalArtifactDirectory]) -> list[LocalArtifactDirectory]:
+    grouped: dict[str, list[LocalArtifactDirectory]] = {}
+    passthrough: list[LocalArtifactDirectory] = []
+
+    for item in directories:
+        if item.batch_id:
+            grouped.setdefault(item.batch_id, []).append(item)
+        else:
+            task_item = _local_artifact_task_item(item)
+            if task_item:
+                item.child_tasks = [task_item]
+                item.child_relative_paths = [item.relative_path]
+            passthrough.append(item)
+
+    for batch_id, items in grouped.items():
+        items.sort(key=lambda item: (item.sequence_index if item.sequence_index is not None else 999, item.date_label, item.script_label, item.task_id or item.name))
+        total_files = sum(item.file_count for item in items)
+        total_size = sum(item.size_bytes for item in items)
+        latest_mtime = max(
+            (item.modified_at for item in items if item.modified_at is not None),
+            default=None,
+        )
+        servers = sorted({item.server_name for item in items if item.server_name})
+        scripts = [item.script_label for item in items if item.script_label]
+        date_label = next((item.date_label for item in items if item.date_label), "")
+        title = _build_display_title([
+            "批次",
+            "、".join(servers),
+            "压测",
+            "、".join(dict.fromkeys(scripts)),
+            date_label,
+        ])
+        files: list[LocalArtifactFile] = []
+        for item in items:
+            files.extend(item.files)
+        files.sort(key=lambda f: f.relative_path)
+
+        child_tasks: list[LocalArtifactTaskItem] = []
+        for item in items:
+            task_item = _local_artifact_task_item(item)
+            if task_item:
+                child_tasks.append(task_item)
+
+        passthrough.append(LocalArtifactDirectory(
+            name=batch_id,
+            relative_path=batch_id,
+            type="batch",
+            file_count=total_files,
+            size_bytes=total_size,
+            size_text=_format_size_text(total_size),
+            modified_at=latest_mtime,
+            task_id=None,
+            task_display_name=title,
+            display_title=title,
+            server_name="、".join(servers),
+            task_type_label="压测",
+            script_label="、".join(dict.fromkeys(scripts)),
+            date_label=date_label,
+            dir_name=batch_id,
+            path=batch_id,
+            source="local_artifact_batch",
+            found_in_db=any(item.found_in_db for item in items),
+            batch_id=batch_id,
+            inferred_batch_key=None,
+            is_batch_task=True,
+            task_source_label="批次任务",
+            task_status="",
+            sequence_index=None,
+            child_relative_paths=[item.relative_path for item in items],
+            child_tasks=child_tasks,
+            files=files,
+        ))
+
+    return passthrough
 
 
 def _normalize_remote_dir_path(path: str | None) -> str:
@@ -464,6 +580,7 @@ def scan_local_artifacts(db: Session = Depends(get_db)) -> LocalArtifactsScanRes
         ))
 
     _apply_inferred_batch_flags(directories)
+    directories = _group_local_artifact_batches(directories)
 
     # Sort local task result directories by modified time desc; keep root-level files last.
     directories.sort(
@@ -614,6 +731,8 @@ def _build_directory_entry(
         inferred_batch_key=metadata.get("inferred_batch_key"),
         is_batch_task=bool(metadata.get("is_batch_task", False)),
         task_source_label=metadata.get("task_source_label", "未匹配"),
+        task_status=metadata.get("task_status", ""),
+        sequence_index=metadata.get("sequence_index"),
         files=dir_files,
     ))
     return dir_file_count, dir_size
@@ -664,6 +783,7 @@ def delete_local_artifacts(
                 continue
 
             deleted.append(DeleteResultItem(path=relative, success=True))
+            _hide_task_from_history_for_artifact_delete(db, relative)
 
         except HTTPException as exc:
             failed.append(DeleteResultItem(path=relative, success=False, error=exc.detail))
