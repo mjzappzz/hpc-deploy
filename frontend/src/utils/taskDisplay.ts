@@ -9,10 +9,10 @@ type TaskLike = {
 }
 
 const TASK_TYPE_LABELS: Record<string, string> = {
-  script: '编译环境',
-  stress: '压测脚本',
+  script: '服务器环境',
+  stress: '服务器压测',
   apptainer: 'Apptainer 镜像',
-  mpi: '编译环境',
+  mpi: '服务器环境',
   test: '测试脚本',
 }
 

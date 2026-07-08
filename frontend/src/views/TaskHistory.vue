@@ -1,11 +1,9 @@
 <template>
   <section class="page-section hpc-row-hover-only task-history-page">
-    <div class="toolbar">
-      <el-button class="page-refresh-button" @click="refreshCurrentView">刷新</el-button>
-    </div>
-
     <template v-if="viewMode === 'tasks'">
       <div class="filter-bar">
+        <el-button class="page-refresh-button" @click="refreshCurrentView">刷新</el-button>
+
         <el-select
           v-model="filters.status"
           placeholder="全部状态"
@@ -33,9 +31,8 @@
           @change="handleFilterChange"
         >
           <el-option label="全部类型" value="" />
-          <el-option label="测试脚本" value="test" />
-          <el-option label="压测脚本" value="stress" />
-          <el-option label="编译环境" value="mpi" />
+          <el-option label="服务器环境" value="script" />
+          <el-option label="服务器压测" value="stress" />
           <el-option label="Apptainer 镜像" value="apptainer" />
         </el-select>
 
@@ -127,7 +124,7 @@
                   type="primary"
                   class="hpc-interactive-pulse"
                   @click="openBatchDetail(batchSummaryFromTasks(item.batchId, item.tasks))"
-                >查看任务详情</el-button>
+                >查看批次详情</el-button>
                 <el-button
                   size="small"
                   class="hpc-interactive-pulse"
@@ -165,6 +162,8 @@
     <!-- ─── Batch view ─── -->
     <template v-else-if="viewMode === 'batches'">
       <div class="filter-bar">
+        <el-button class="page-refresh-button" @click="refreshCurrentView">刷新</el-button>
+
         <el-select
           v-model="batchFilters.status"
           placeholder="全部状态"
@@ -655,7 +654,7 @@
                 <span><b>开始时间</b>{{ formatDate(task.started_at) }}</span>
                 <span><b>结束时间</b>{{ formatDate(task.ended_at) }}</span>
                 <span><b>总耗时</b>{{ formatDuration(task.duration_seconds) }}</span>
-                <span class="batch-detail-task-card__reason"><b>原因</b>{{ batchDetailFailureReason(task) }}</span>
+                <span v-if="batchDetailFailureReason(task)" class="batch-detail-task-card__reason"><b>原因</b>{{ batchDetailFailureReason(task) }}</span>
               </div>
             </div>
           </div>
@@ -763,6 +762,7 @@ const batchTotal = ref(0)
 const batchDetailVisible = ref(false)
 const batchDetailData = ref<BatchDetailResponse | null>(null)
 const batchDetailLoading = ref(false)
+let batchDetailRefreshTimer: ReturnType<typeof setInterval> | null = null
 
 // ── Expandable batch rows ──
 const expandedBatchKeys = ref<string[]>([])
@@ -912,7 +912,7 @@ function batchGroupServerMetaLabel(tasks: TaskRecord[]): string {
 
 function batchGroupDisplayName(tasks: TaskRecord[]): string {
   const serverLabel = batchGroupServerLabel(tasks)
-  const typeLabel = tasks.some(task => task.task_type === 'stress') ? '压测任务' : getTaskTypeLabel(tasks[0]?.task_type, '任务')
+  const typeLabel = tasks.some(task => task.task_type === 'stress') ? '服务器压测' : getTaskTypeLabel(tasks[0]?.task_type, '任务')
   const dateLabel = compactTaskDate(batchGroupCreatedAt(tasks))
   return ['批次', serverLabel, typeLabel, dateLabel].filter(Boolean).join(' · ')
 }
@@ -998,10 +998,16 @@ function batchDetailReportTagType(task: BatchTaskDetailItem): 'success' | 'dange
 
 function batchDetailFailureReason(task: BatchTaskDetailItem): string {
   const reportStatus = (task.report_status || '').toUpperCase()
-  if (reportStatus === 'PASS') return '-'
+  const status = (task.status || '').toUpperCase()
+  const hasExplicitError = Boolean(task.failure_reason || task.error_summary)
+  if (reportStatus === 'PASS') return ''
   if (reportStatus === 'FAIL') return task.failure_reason || task.error_summary || '报告结果为 FAIL，请查看结果文件确认失败指标。'
-  if (task.has_artifacts) return '已有结果文件，但摘要缓存未解析出 PASS/FAIL；请打开结果文件查看。'
-  return task.error_summary || '未找到结果文件，可能脚本未生成报告或回收失败。'
+  if (hasExplicitError) return task.failure_reason || task.error_summary || ''
+  if (!isBatchTaskTerminal(status)) return ''
+  if (status === 'SUCCESS') {
+    return task.has_artifacts ? '已有结果文件，但摘要缓存未解析出 PASS/FAIL；请打开结果文件查看。' : ''
+  }
+  return task.has_artifacts ? '已有结果文件，但摘要缓存未解析出 PASS/FAIL；请打开结果文件查看。' : '未找到结果文件，可能脚本未生成报告或回收失败。'
 }
 
 function batchDetailServerPlans(tasks: BatchTaskDetailItem[]): string[] {
@@ -1551,7 +1557,11 @@ function switchView(mode: 'tasks' | 'batches') {
 }
 
 function refreshCurrentView() {
-  loadTasks()
+  if (viewMode.value === 'batches') {
+    loadBatches()
+  } else {
+    loadTasks()
+  }
 }
 
 async function loadBatches(silent = false) {
@@ -1778,16 +1788,50 @@ async function refreshExpandedBatches() {
 }
 
 async function openBatchDetail(row: BatchSummaryItem) {
+  stopBatchDetailRefresh()
   batchDetailVisible.value = true
   batchDetailData.value = null
   batchDetailLoading.value = true
   try {
     const resp = (await getBatchDetail(row.batch_id)).data
     batchDetailData.value = resp
+    scheduleBatchDetailRefresh()
   } catch {
     batchDetailData.value = null
   } finally {
     batchDetailLoading.value = false
+  }
+}
+
+async function refreshBatchDetail(silent = true) {
+  const batchId = batchDetailData.value?.batch_id
+  if (!batchDetailVisible.value || !batchId) return
+  if (!silent) batchDetailLoading.value = true
+  try {
+    const resp = (await getBatchDetail(batchId)).data
+    batchDetailData.value = resp
+    scheduleBatchDetailRefresh()
+  } catch {
+    // Keep the current detail visible if one refresh fails.
+  } finally {
+    if (!silent) batchDetailLoading.value = false
+  }
+}
+
+function scheduleBatchDetailRefresh() {
+  stopBatchDetailRefresh()
+  const tasks = batchDetailData.value?.tasks ?? []
+  const hasActiveTask = tasks.some(task => !isBatchTaskTerminal(task.status))
+  if (!batchDetailVisible.value || !hasActiveTask) return
+  batchDetailRefreshTimer = setInterval(() => {
+    refreshBatchDetail(true)
+  }, 5000)
+}
+
+function stopBatchDetailRefresh() {
+  if (batchDetailRefreshTimer !== null) {
+    clearInterval(batchDetailRefreshTimer)
+    batchDetailRefreshTimer = null
   }
 }
 
@@ -2265,25 +2309,30 @@ onMounted(async () => {
     if (!isNaN(sid)) filters.server_id = sid
   }
 
-  if (qView === 'batch' || qView === 'batches') {
-    if (typeof qBatchId === 'string' && qBatchId) {
-      filters.keyword = qBatchId
+  if (typeof qBatchId === 'string' && qBatchId) {
+    filters.keyword = qBatchId
+    if (qView === 'batch' || qView === 'batches') {
+      viewMode.value = 'tasks'
     }
   }
 
   // Support task_id query param — auto-search
   const qTaskId = route.query.task_id
-  if (typeof qTaskId === 'string' && qTaskId) {
+  if (!filters.keyword && typeof qTaskId === 'string' && qTaskId) {
     filters.keyword = qTaskId
   }
 
   loadTasks()
+})
+watch(batchDetailVisible, (visible) => {
+  if (!visible) stopBatchDetailRefresh()
 })
 onActivated(() => {
   loadTasks()
 })
 onUnmounted(() => {
   stopAutoRefresh()
+  stopBatchDetailRefresh()
   stopDrawerRealtime()
 })
 </script>
@@ -2475,7 +2524,7 @@ onUnmounted(() => {
 }
 
 .page-refresh-button {
-  margin-left: auto;
+  margin-left: 0;
 }
 
 .view-toggle {
@@ -2488,6 +2537,16 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.task-history-page .task-card {
+  border-color: rgba(64, 158, 255, 0.22);
+  box-shadow: 0 1px 4px rgba(64, 158, 255, 0.08);
+}
+
+.task-history-page .task-card:hover {
+  border-color: rgba(64, 158, 255, 0.38);
+  box-shadow: 0 3px 10px rgba(64, 158, 255, 0.12);
 }
 
 .batch-history-card__header {

@@ -18,6 +18,7 @@ export interface TaskStats {
 
 export interface RecentTaskItem {
   task_id: string
+  batch_id?: string | null
   server_name: string | null
   server_host: string | null
   task_type: string | null
@@ -28,6 +29,7 @@ export interface RecentTaskItem {
   start_time: string | null
   end_time: string | null
   command_preview?: string | null
+  sequence_index?: number | null
   params?: Record<string, unknown> | null
   duration_seconds?: number | null
   final_status?: string | null

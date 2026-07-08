@@ -19,7 +19,11 @@
         </el-tag>
       </template>
     </el-table-column>
-    <el-table-column prop="path" label="路径" min-width="260" show-overflow-tooltip />
+    <el-table-column label="路径" min-width="340">
+      <template #default="{ row }">
+        <code class="script-path-code">{{ row.resolved_path || row.path }}</code>
+      </template>
+    </el-table-column>
     <el-table-column label="大小" width="120">
       <template #default="{ row }">
         {{ formatSize(row.size) }}
@@ -73,3 +77,16 @@ function formatSize(size: number) {
   return formatBytes(size)
 }
 </script>
+
+<style scoped>
+.script-path-code {
+  display: inline-block;
+  max-width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  color: var(--el-text-color-primary);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+</style>

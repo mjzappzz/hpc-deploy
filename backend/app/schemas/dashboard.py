@@ -22,6 +22,7 @@ class TaskStats(BaseModel):
 
 class RecentTaskItem(BaseModel):
     task_id: str
+    batch_id: str | None = None
     server_name: str | None = None
     server_host: str | None = None
     task_type: str | None = None
@@ -32,6 +33,7 @@ class RecentTaskItem(BaseModel):
     start_time: datetime | None = None
     end_time: datetime | None = None
     command_preview: str | None = None
+    sequence_index: int | None = None
     params: dict[str, Any] | None = None
     duration_seconds: int | None = None
     final_status: str | None = None

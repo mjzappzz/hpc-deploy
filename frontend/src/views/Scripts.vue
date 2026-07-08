@@ -32,8 +32,8 @@
 
       <el-tabs v-model="activeCategory" class="knowledge-tabs">
         <el-tab-pane label="全部" name="all" />
-        <el-tab-pane :label="`编译环境 (${counts.mpi})`" name="mpi" />
-        <el-tab-pane :label="`压测脚本 (${counts.stress})`" name="stress" />
+        <el-tab-pane :label="`服务器环境 (${counts.mpi})`" name="mpi" />
+        <el-tab-pane :label="`服务器压测 (${counts.stress})`" name="stress" />
         <el-tab-pane :label="`Apptainer 镜像 (${counts.apptainer})`" name="apptainer" />
       </el-tabs>
 
@@ -52,7 +52,9 @@
           <el-descriptions :column="2" border>
             <el-descriptions-item label="文件名">{{ previewFile.name }}</el-descriptions-item>
             <el-descriptions-item label="分类">{{ previewFile.display_category }}</el-descriptions-item>
-            <el-descriptions-item label="路径">{{ previewFile.path }}</el-descriptions-item>
+            <el-descriptions-item label="路径" :span="2">
+              <code class="script-path-code">{{ previewFile.resolved_path || previewFile.path }}</code>
+            </el-descriptions-item>
             <el-descriptions-item label="相对路径">{{ previewFile.relative_path }}</el-descriptions-item>
             <el-descriptions-item label="类型">{{ previewFile.is_text ? '文本' : '二进制' }}</el-descriptions-item>
             <el-descriptions-item label="大小">{{ formatSize(previewFile.size) }}</el-descriptions-item>
@@ -79,7 +81,7 @@
 
       <template #footer>
         <el-button @click="previewVisible = false">关闭</el-button>
-        <el-button v-if="previewFile" type="primary" @click="downloadPreviewFile">下载文件</el-button>
+        <el-button v-if="previewFile" type="primary" :disabled="previewContent === null" @click="copyPreviewContent">复制脚本</el-button>
       </template>
     </el-dialog>
   </section>
@@ -176,9 +178,17 @@ function downloadFile(file: ScriptFileRecord | ScriptFilePreviewRecord) {
   window.open(getScriptFileDownloadUrl(file.path), '_blank', 'noopener,noreferrer')
 }
 
-function downloadPreviewFile() {
-  if (!previewFile.value) return
-  downloadFile(previewFile.value)
+async function copyPreviewContent() {
+  if (previewContent.value === null) {
+    ElMessage.warning('当前文件没有可复制的文本内容')
+    return
+  }
+  try {
+    await navigator.clipboard.writeText(previewContent.value)
+    ElMessage.success('脚本内容已复制')
+  } catch {
+    ElMessage.error('复制失败，请手动选择内容复制')
+  }
 }
 
 async function removeFile(file: ScriptFileRecord) {
@@ -195,7 +205,7 @@ async function removeFile(file: ScriptFileRecord) {
 }
 
 function categoryLabel(category: KnowledgeCategory | ScriptFileRecord['physical_category']) {
-  return getTaskTypeLabel(category === 'all' ? 'mpi' : category, '编译环境')
+  return getTaskTypeLabel(category === 'all' ? 'mpi' : category, '服务器环境')
 }
 
 function formatSize(size: number) {
@@ -259,6 +269,17 @@ onMounted(loadFiles)
 .preview-meta {
   margin-bottom: 16px;
   flex: 0 0 auto;
+}
+
+.script-path-code {
+  display: inline-block;
+  max-width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  color: var(--el-text-color-primary);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
 }
 
 .preview-scroll-area {

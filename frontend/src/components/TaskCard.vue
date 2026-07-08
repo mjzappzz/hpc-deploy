@@ -127,9 +127,9 @@ const taskReadableType = computed(() => {
   if (fileName.includes('gpu')) return 'GPU压测'
   if (fileName.includes('cpu') || fileName.includes('mem')) return 'CPU/内存压测'
   if (fileName.includes('disk')) return '磁盘压测'
-  if (props.task.task_type === 'stress') return '压测任务'
+  if (props.task.task_type === 'stress') return '服务器压测'
   if (props.task.task_type === 'apptainer') return 'Apptainer 分发'
-  if (props.task.task_type === 'script') return '脚本任务'
+  if (props.task.task_type === 'script') return '服务器环境'
   return '任务'
 })
 

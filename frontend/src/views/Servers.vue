@@ -2,7 +2,7 @@
   <section class="page-section">
     <el-card shadow="never" class="server-table-card">
       <div class="toolbar">
-        <el-button type="primary" @click="openCreate">新增服务器</el-button>
+        <el-button @click="openCreate">新增服务器</el-button>
         <el-button type="primary" plain :loading="isTestingAll" :disabled="isProbingAll" @click="testAllSsh">SSH 测试全部</el-button>
         <el-button type="primary" plain :loading="isProbingAll" :disabled="isTestingAll" @click="probeAll">⚡ {{ isProbingAll ? '探测中' : '探测全部' }}</el-button>
         <el-badge
@@ -1359,7 +1359,7 @@ onMounted(() => {
 }
 
 .page-deploy-key-badge {
-  margin-left: auto;
+  margin-left: 0;
 }
 
 .page-deploy-key-button--attention {

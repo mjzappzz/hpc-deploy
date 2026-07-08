@@ -19,8 +19,8 @@ ALLOWED_SUFFIXES_BY_CATEGORY = {
     "apptainer": {".sif"},
 }
 DISPLAY_CATEGORY_LABELS = {
-    "mpi": "编译环境",
-    "stress": "压测脚本",
+    "mpi": "服务器环境",
+    "stress": "服务器压测",
     "apptainer": "Apptainer 容器",
 }
 
@@ -129,6 +129,7 @@ def build_library_file_record(path: Path) -> dict[str, object]:
         updated_at = None
     return {
         "path": relative,
+        "resolved_path": str(resolved),
         "relative_path": relative_path,
         "name": resolved.name,
         "physical_category": physical_category,

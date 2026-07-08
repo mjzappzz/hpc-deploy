@@ -140,8 +140,14 @@
 
                 <!-- Stress type: card grid (single select or auto suite by selection count) -->
                 <template v-else-if="selectedTaskType === 'stress'">
-                  <div class="stress-mode-desc">
-                    可选择 1-3 个压测脚本；选择 1 个执行单任务，选择多个自动按 GPU → CPU/内存 → 磁盘顺序串行执行。
+                  <div class="stress-mode-header">
+                    <div class="stress-mode-desc">
+                      可选择 1-3 个服务器压测脚本；选择 1 个执行单任务，选择多个自动按 GPU → CPU/内存 → 磁盘顺序串行执行。
+                    </div>
+                    <div class="stress-select-actions">
+                      <el-button size="small" type="primary" plain :disabled="!canSelectFile || filteredFiles.length === 0" @click="selectAllStressScripts">全选服务器压测</el-button>
+                      <el-button size="small" :disabled="selectedStressScripts.length === 0" @click="clearStressScripts">清空</el-button>
+                    </div>
                   </div>
                   <div class="file-card-grid stress-cards">
                     <div
@@ -156,10 +162,10 @@
                     </div>
                   </div>
                   <div class="stress-suite-hint" v-if="selectedStressScripts.length === 1">
-                    已选择 1 个压测脚本，将按单次执行。
+                    已选择 1 个服务器压测脚本，将按单次执行。
                   </div>
                   <div class="stress-suite-hint" v-else-if="selectedStressScripts.length >= 2">
-                    已选择 {{ selectedStressScripts.length }} 个压测脚本，
+                    已选择 {{ selectedStressScripts.length }} 个服务器压测脚本，
                     将按 GPU → CPU/内存 → 磁盘顺序执行并生成 {{ selectedStressScripts.length }} 份报告
                   </div>
                 </template>
@@ -232,11 +238,19 @@
 
                 <template v-if="selectedTaskType === 'stress'">
                   <el-form-item label="压测时长" required>
-                    <div class="duration-row">
-                      <el-input-number v-model="durationParts.hours" :min="0" :step="1" controls-position="right" :disabled="isFormDisabled" size="small" style="width:120px" />
-                      <span class="duration-unit">小时</span>
-                      <el-input-number v-model="durationParts.minutes" :min="0" :max="59" :step="1" controls-position="right" :disabled="isFormDisabled" size="small" style="width:120px" />
-                      <span class="duration-unit">分钟</span>
+                    <div class="duration-control">
+                      <div class="duration-row">
+                        <el-input-number v-model="durationParts.hours" :min="0" :step="1" controls-position="right" :disabled="isFormDisabled" size="small" style="width:120px" />
+                        <span class="duration-unit">小时</span>
+                        <el-input-number v-model="durationParts.minutes" :min="0" :max="59" :step="1" controls-position="right" :disabled="isFormDisabled" size="small" style="width:120px" />
+                        <span class="duration-unit">分钟</span>
+                      </div>
+                      <div class="duration-presets">
+                        <el-button size="small" plain :disabled="isFormDisabled" @click="setDurationPreset(0, 1)">1分钟</el-button>
+                        <el-button size="small" plain :disabled="isFormDisabled" @click="setDurationPreset(0, 3)">3分钟</el-button>
+                        <el-button size="small" plain :disabled="isFormDisabled" @click="setDurationPreset(4, 0)">4小时</el-button>
+                        <el-button size="small" plain :disabled="isFormDisabled" @click="setDurationPreset(12, 0)">12小时</el-button>
+                      </div>
                     </div>
                   </el-form-item>
 
@@ -249,7 +263,6 @@
                           placeholder="例如：/data 或 /mnt/nvme0；留空则使用远端工作目录"
                           :disabled="isFormDisabled"
                           clearable
-                          style="width:380px"
                         />
                         <div class="form-help-text">
                           测试文件会写入该目录以压测对应磁盘；报告仍保存在远端工作目录并回收。请确认目录所在磁盘有足够空间。
@@ -468,14 +481,14 @@ type MonitorPanel = 'logs' | 'cpu_mem' | 'disk' | 'gpu'
 
 type PageMode = 'config' | 'summary' | 'config-readonly'
 const taskTypes: Array<{ label: string; value: TaskType }> = [
-  { label: '编译环境', value: 'script' },
-  { label: '压测脚本', value: 'stress' },
+  { label: '服务器环境', value: 'script' },
+  { label: '服务器压测', value: 'stress' },
   { label: 'Apptainer 镜像', value: 'apptainer' },
 ]
 
 function taskTypeCardDesc(value: TaskType): string {
   const descs: Record<TaskType, string> = {
-    script: '执行脚本知识库中的编译环境/安装/运维脚本',
+    script: '执行脚本知识库中的服务器环境、安装、运维配置脚本',
     stress: 'CPU/内存、磁盘、GPU 压测，支持参数化配置',
     apptainer: '仅上传分发 .sif 镜像，不执行容器',
   }
@@ -593,6 +606,24 @@ function toggleStressCard(path: string) {
   selectedStressScripts.value.sort((a, b) => stressOrderForPath(a) - stressOrderForPath(b))
   selectedFilePath.value = selectedStressScripts.value.length === 1 ? selectedStressScripts.value[0] : ''
   stressSuiteMode.value = selectedStressScripts.value.length >= 2
+}
+
+function selectAllStressScripts() {
+  selectedStressScripts.value = filteredFiles.value
+    .map((file) => file.path)
+    .sort((a, b) => stressOrderForPath(a) - stressOrderForPath(b))
+  selectedFilePath.value = selectedStressScripts.value.length === 1 ? selectedStressScripts.value[0] : ''
+  stressSuiteMode.value = selectedStressScripts.value.length >= 2
+}
+
+function clearStressScripts() {
+  selectedStressScripts.value = []
+  selectedFilePath.value = ''
+  stressSuiteMode.value = false
+}
+
+function setDurationPreset(hours: number, minutes: number) {
+  Object.assign(durationParts, { hours, minutes })
 }
 
 function stressCardDesc(name: string): string {
@@ -762,7 +793,7 @@ const isFileSelected = computed(() => {
 
 const executeTooltip = computed(() => {
   if (selectedTaskType.value === 'stress' && stressSuiteMode.value && selectedStressScripts.value.length >= 2) {
-    return `${selectedStressScripts.value.length} 个压测脚本按 GPU → CPU/内存 → 磁盘顺序串行执行，每台服务器独立序列`
+    return `${selectedStressScripts.value.length} 个服务器压测脚本按 GPU → CPU/内存 → 磁盘顺序串行执行，每台服务器独立序列`
   }
   if (isMultiServer.value) {
     return `将在 ${selectedServerIds.value.length} 台服务器上批量创建任务，每台独立执行`
@@ -923,7 +954,7 @@ async function validateRunner() {
     // ── Stress suite mode ──
     if (selectedTaskType.value === 'stress' && stressSuiteMode.value) {
       if (stressDurationSeconds.value <= 0) {
-        ElMessage.error('压测脚本总秒数必须大于 0')
+        ElMessage.error('服务器压测总秒数必须大于 0')
         return
       }
       ElMessage.success('参数校验通过，将按 GPU → CPU/内存 → 磁盘顺序执行。')
@@ -936,7 +967,7 @@ async function validateRunner() {
       return
     }
     if (selectedFile.value.physical_category === 'stress' && stressDurationSeconds.value <= 0) {
-      ElMessage.error('压测脚本总秒数必须大于 0')
+      ElMessage.error('服务器压测总秒数必须大于 0')
       return
     }
     if (selectedFile.value.physical_category === 'apptainer' && !apptainerTargetDir.value.trim()) {
@@ -970,7 +1001,7 @@ async function createTask() {
   // ── Stress Suite flow (suite mode, 2+ scripts) ──
   if (selectedTaskType.value === 'stress' && stressSuiteMode.value) {
     if (selectedStressScripts.value.length < 2) {
-      ElMessage.warning('请选择至少 2 个压测脚本')
+      ElMessage.warning('请选择至少 2 个服务器压测脚本')
       return
     }
     await createStressSuiteTask()
@@ -980,11 +1011,11 @@ async function createTask() {
   // ── Single/batch stress file check ──
   if (selectedTaskType.value === 'stress') {
     if (!selectedFile.value) {
-      ElMessage.error('必须选择压测脚本')
+      ElMessage.error('必须选择服务器压测脚本')
       return
     }
     if (stressDurationSeconds.value <= 0) {
-      ElMessage.error('压测脚本总秒数必须大于 0')
+      ElMessage.error('服务器压测总秒数必须大于 0')
       return
     }
   } else if (selectedTaskType.value === 'apptainer') {
@@ -1572,9 +1603,9 @@ onBeforeUnmount(() => {
 }
 
 .runner-card {
-  border-radius: 20px;
-  max-width: 1080px;
-  margin: 0 auto;
+  border-radius: 12px;
+  width: 100%;
+  margin: 0;
 }
 
 .runner-card :deep(.el-card__header) {
@@ -1847,8 +1878,22 @@ onBeforeUnmount(() => {
 .stress-mode-desc {
   font-size: 13px;
   color: var(--el-text-color-secondary);
-  margin-bottom: 8px;
   line-height: 1.5;
+}
+
+.stress-mode-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.stress-select-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
 }
 
 /* ── Suite execution plan ── */
@@ -1938,8 +1983,9 @@ onBeforeUnmount(() => {
 /* ── Task type cards ── */
 .task-type-cards {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(220px, 260px));
   gap: 10px;
+  justify-content: start;
 }
 
 .task-type-card {
@@ -2146,6 +2192,20 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 4px;
+  flex-wrap: wrap;
+}
+
+.duration-control {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.duration-presets {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   flex-wrap: wrap;
 }
 
@@ -2782,6 +2842,12 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  width: 100%;
+  min-width: 0;
+}
+
+.disk-test-dir-control :deep(.el-input) {
+  width: 100%;
 }
 
 .overwrite-control {

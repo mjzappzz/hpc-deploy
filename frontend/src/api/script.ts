@@ -45,6 +45,7 @@ export interface ParamsValidateResult {
 export interface ScriptFileRecord {
   name: string
   path: string
+  resolved_path?: string | null
   relative_path: string
   physical_category: 'mpi' | 'stress' | 'apptainer'
   display_category: string

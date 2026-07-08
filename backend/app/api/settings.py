@@ -112,17 +112,17 @@ def _build_runtime_paths() -> list[dict[str, object]]:
         ),
         _runtime_path(
             key="mpi_scripts",
-            label="编译环境脚本库",
+            label="服务器环境脚本库",
             path=MPI_SCRIPTS_DIR,
             kind="directory",
-            description="编译环境/安装类脚本，任务执行时按选择上传到远端。",
+            description="服务器环境、安装、运维配置脚本，任务执行时按选择上传到远端。",
         ),
         _runtime_path(
             key="stress_scripts",
-            label="压测脚本库",
+            label="服务器压测脚本库",
             path=STRESS_SCRIPTS_DIR,
             kind="directory",
-            description="GPU、CPU/内存、磁盘压测脚本，任务执行时按选择上传到远端。",
+            description="GPU、CPU/内存、磁盘服务器压测脚本，任务执行时按选择上传到远端。",
         ),
         _runtime_path(
             key="artifacts",

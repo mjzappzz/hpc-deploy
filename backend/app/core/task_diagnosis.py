@@ -697,7 +697,7 @@ def _precheck_stress_preflight_failed(
         "category": "stress_preflight_failed",
         "attribution": "environment",
         "title": "压测启动前置检查失败",
-        "conclusion": error_message or "压测脚本未正常启动，平台已提前失败收口。",
+        "conclusion": error_message or "服务器压测任务未正常启动，平台已提前失败收口。",
         "summary": "平台检测到压测依赖、驱动或运行环境缺失，已终止等待并将任务标记为失败。",
         "possible_causes": [
             "GPU 压测缺少 NVIDIA 驱动、CUDA Toolkit、nvcc 或 gpu-burn",

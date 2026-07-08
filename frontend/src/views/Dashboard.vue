@@ -99,8 +99,14 @@
       >
         <el-table-column label="任务名称" min-width="360" show-overflow-tooltip>
           <template #default="{ row }">
-            <div class="recent-task-name" :title="formatTaskDisplayName(row)">{{ formatTaskDisplayName(row) }}</div>
-            <div class="recent-task-id">{{ row.task_id }}</div>
+            <div class="recent-task-name" :title="formatTaskDisplayName(row)">
+              <span>{{ formatTaskDisplayName(row) }}</span>
+              <el-tag v-if="row.batch_id" size="small" type="warning" effect="plain">批次 {{ formatBatchStep(row) }}</el-tag>
+            </div>
+            <div class="recent-task-id">
+              <span>{{ row.task_id }}</span>
+              <span v-if="row.batch_id" class="recent-task-batch-id">{{ row.batch_id }}</span>
+            </div>
           </template>
         </el-table-column>
         <el-table-column prop="server_name" label="服务器" min-width="150" show-overflow-tooltip />
@@ -147,8 +153,19 @@ const summary = reactive<DashboardSummary>({
   artifacts: { local_artifacts_count: 0, local_artifacts_size_bytes: 0 },
 })
 
-function goToTask(row: { task_id: string }) {
-  router.push({ path: '/history', query: { keyword: row.task_id } })
+function goToTask(row: { task_id: string; batch_id?: string | null }) {
+  if (row.batch_id) {
+    router.push({ path: '/history', query: { batch_id: row.batch_id } })
+    return
+  }
+  router.push({ path: '/history', query: { task_id: row.task_id } })
+}
+
+function formatBatchStep(row: { sequence_index?: number | null }) {
+  if (row.sequence_index === 1) return 'GPU'
+  if (row.sequence_index === 2) return 'CPU/内存'
+  if (row.sequence_index === 3) return '磁盘'
+  return '子任务'
 }
 
 async function loadDashboard() {
@@ -172,19 +189,29 @@ onMounted(loadDashboard)
 <style scoped>
 .dashboard-toolbar {
   display: flex;
-  justify-content: flex-end;
+  justify-content: flex-start;
   margin-bottom: 16px;
 }
 
 .recent-task-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-weight: 600;
   color: #1f2937;
 }
 
 .recent-task-id {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin-top: 4px;
   color: #6b7280;
   font-size: 12px;
+}
+
+.recent-task-batch-id {
+  color: #b88230;
 }
 
 .recent-task-type {

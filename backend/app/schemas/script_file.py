@@ -6,6 +6,7 @@ from pydantic import BaseModel
 class ScriptFileRead(BaseModel):
     name: str
     path: str
+    resolved_path: str | None = None
     relative_path: str
     physical_category: str
     display_category: str
