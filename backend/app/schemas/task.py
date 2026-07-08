@@ -88,6 +88,9 @@ class TaskRead(BaseModel):
     created_at: datetime
     updated_at: datetime
     duration_seconds: int | None = None
+    final_status: str | None = None
+    report_status: str | None = None
+    failure_reason: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -213,15 +216,19 @@ class BatchTaskDetailItem(BaseModel):
     server_id: int
     server_name: str
     host: str
+    username: str | None = None
     status: str  # execution status
     final_status: str = "UNKNOWN"  # unified status (considers report)
+    report_status: str = "UNKNOWN"
     sequence_index: int | None = None
+    created_at: datetime | None = None
     started_at: datetime | None = None
     ended_at: datetime | None = None
     duration_seconds: int | None = None
-    exit_code: int | None = None
+    remote_work_dir: str | None = None
     has_artifacts: bool = False
     error_summary: str | None = None
+    failure_reason: str | None = None
     params: dict[str, Any] | None = None  # task params (stress duration, etc.)
 
 

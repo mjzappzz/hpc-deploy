@@ -395,7 +395,7 @@
             <div class="detail-section__title">快捷操作</div>
             <div class="detail-actions">
               <el-button size="small" type="primary" @click="goToNewTask(activeServer.id)">新建任务</el-button>
-              <el-button size="small" @click="goToTaskHistory(activeServer.id)">查看任务历史</el-button>
+              <el-button size="small" @click="goToTaskHistory(activeServer.id)">查看历史任务</el-button>
               <el-button size="small" @click="goToSettings">打开系统设置</el-button>
               <el-button size="small" @click="openEditForCurrent">编辑服务器</el-button>
             </div>

@@ -3,9 +3,9 @@
     <div class="task-card__header">
       <div>
         <div class="task-card__title" :title="displayName">{{ displayName }}</div>
-        <div class="task-card__meta">{{ task.task_id }} / {{ serverLabel }} / {{ moduleLabel }}</div>
+        <div class="task-card__meta">{{ task.task_id }} / {{ serverLabel }} / 创建 {{ formatTime(task.created_at) }}</div>
         <div class="task-card__badges">
-          <el-tag v-if="!task.batch_id" size="small" type="info" effect="plain">单次任务</el-tag>
+          <el-tag v-if="!task.batch_id" size="small" type="info" effect="plain">单次</el-tag>
           <template v-else>
             <el-tag size="small" type="warning" effect="plain">批次子任务</el-tag>
             <el-tag size="small" type="default" effect="plain" class="tag-mono">Batch: {{ task.batch_id }}</el-tag>
@@ -13,6 +13,7 @@
               步骤 {{ task.sequence_index }}/3 {{ batchStepLabel(task.sequence_index) }}
             </el-tag>
           </template>
+          <el-tag v-for="tag in taskTypeTags" :key="tag" size="small" effect="plain">{{ tag }}</el-tag>
         </div>
       </div>
       <div class="task-card__status-block">
@@ -21,15 +22,15 @@
       </div>
     </div>
     <div class="task-card__body">
-      <div class="task-card__info-grid">
+      <div class="task-card__info-grid task-card__info-grid--aligned">
+        <span class="task-card__module-label">{{ taskModuleLabel }}</span>
         <span>文件：{{ task.file_name ?? '-' }}</span>
         <span>远程目录：{{ task.remote_work_dir ?? '-' }}</span>
         <span>命令：{{ task.command_preview ?? '-' }}</span>
-        <span>退出码：{{ task.exit_code ?? '-' }}</span>
+        <span v-if="plannedDuration" class="task-card__plan-duration">计划时长：{{ plannedDuration }}</span>
       </div>
       <div class="task-card__time-line">
-        创建 {{ formatTime(task.created_at) }}
-        <template v-if="task.start_time"> | 开始 {{ formatTime(task.start_time) }}</template>
+        <template v-if="task.start_time">开始 {{ formatTime(task.start_time) }}</template>
         <template v-if="task.end_time"> | 结束 {{ formatTime(task.end_time) }}</template>
         <template v-if="runtime"> | 耗时 {{ formatSeconds(runtime) }}</template>
       </div>
@@ -73,7 +74,7 @@
           @click="$emit('copyVerifyCommands', task)"
         >复制验证命令</el-button>
       </el-tooltip>
-      <el-button v-if="isStressCompleted" size="small" class="hpc-interactive-pulse" @click="$emit('downloadReport', task)">下载报告</el-button>
+      <el-button v-if="isStressCompleted" size="small" class="hpc-interactive-pulse" @click="$emit('downloadReport', task)">结果文件</el-button>
       <el-button v-if="task.batch_id" size="small" type="default" plain class="hpc-interactive-pulse" @click="$emit('viewBatch', task)">查看批次</el-button>
     </div>
   </el-card>
@@ -82,7 +83,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { TaskRecord } from '@/api/task'
-import { formatTaskDisplayName, getTaskModuleLabel } from '@/utils/taskDisplay'
 import { formatDateTime } from '@/utils/time'
 import { calcDurationSeconds, formatSeconds, statusLabel } from '@/composables/useTaskProgress'
 import StatusTag from './StatusTag.vue'
@@ -119,9 +119,31 @@ const serverLabel = computed(() => {
 
 const displayName = computed(() => {
   const prefix = props.task.batch_id ? '批次子任务' : '单次'
-  return `${prefix} · ${formatTaskDisplayName(props.task)}`
+  return [prefix, serverLabel.value, taskReadableType.value, compactTaskDate(props.task.created_at)].filter(Boolean).join(' · ')
 })
-const moduleLabel = computed(() => getTaskModuleLabel(props.task.task_type))
+
+const taskReadableType = computed(() => {
+  const fileName = (props.task.file_name || props.task.file_path || '').toLowerCase()
+  if (fileName.includes('gpu')) return 'GPU压测'
+  if (fileName.includes('cpu') || fileName.includes('mem')) return 'CPU/内存压测'
+  if (fileName.includes('disk')) return '磁盘压测'
+  if (props.task.task_type === 'stress') return '压测任务'
+  if (props.task.task_type === 'apptainer') return 'Apptainer 分发'
+  if (props.task.task_type === 'script') return '脚本任务'
+  return '任务'
+})
+
+const taskTypeTags = computed(() => {
+  const fileName = (props.task.file_name || props.task.file_path || '').toLowerCase()
+  if (fileName.includes('gpu')) return ['GPU']
+  if (fileName.includes('cpu') || fileName.includes('mem')) return ['CPU/内存']
+  if (fileName.includes('disk')) return ['磁盘']
+  return [taskReadableType.value]
+})
+
+const taskModuleLabel = computed(() => {
+  return taskTypeTags.value[0] || taskReadableType.value
+})
 
 const isStressCompleted = computed(() => {
   // Use final_status for stress tasks, fall back to execution status
@@ -165,6 +187,13 @@ const chineseStatus = computed(() => {
   return statusLabel(displayStatus.value)
 })
 
+const plannedDuration = computed(() => {
+  const raw = props.task.params?.duration_seconds ?? props.task.duration_seconds
+  const seconds = typeof raw === 'number' ? raw : Number(raw)
+  if (!Number.isFinite(seconds) || seconds <= 0) return ''
+  return formatPlanDuration(seconds)
+})
+
 const BATCH_STEP_LABELS: Record<number, string> = {
   1: 'GPU',
   2: 'CPU/内存',
@@ -173,6 +202,30 @@ const BATCH_STEP_LABELS: Record<number, string> = {
 
 function batchStepLabel(seq: number): string {
   return BATCH_STEP_LABELS[seq] ?? `步骤${seq}`
+}
+
+function compactTaskDate(value?: string | null): string {
+  if (!value) return ''
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (match) return `${match[1]}${match[2]}${match[3]}`
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`
+}
+
+function formatPlanDuration(value: number): string {
+  const seconds = Math.floor(value)
+  if (seconds >= 3600) {
+    const hours = Math.floor(seconds / 3600)
+    const minutes = Math.floor((seconds % 3600) / 60)
+    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`
+  }
+  if (seconds >= 60) {
+    const minutes = Math.floor(seconds / 60)
+    const rest = seconds % 60
+    return rest > 0 ? `${minutes}m ${rest}s` : `${minutes}m`
+  }
+  return `${seconds}s`
 }
 
 const formatTime = formatDateTime
@@ -263,11 +316,37 @@ const formatTime = formatDateTime
   line-height: 1.6;
 }
 
+.task-card__info-grid--aligned {
+  display: grid;
+  grid-template-columns: 72px 250px 520px 320px max-content;
+  align-items: center;
+  justify-content: start;
+}
+
 .task-card__info-grid span {
   white-space: nowrap;
+  max-width: 100%;
+}
+
+.task-card__info-grid--aligned span:nth-child(2),
+.task-card__info-grid--aligned span:nth-child(3),
+.task-card__info-grid--aligned span:nth-child(4) {
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 100%;
+}
+
+.task-card__module-label {
+  color: var(--el-text-color-secondary);
+  font-weight: 600;
+}
+
+.task-card__info-grid .task-card__plan-duration {
+  color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+  border: 1px solid var(--el-color-primary-light-7);
+  border-radius: 6px;
+  padding: 1px 8px;
+  font-weight: 600;
 }
 
 .task-card__time-line {
@@ -277,5 +356,11 @@ const formatTime = formatDateTime
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+@media (max-width: 1200px) {
+  .task-card__info-grid--aligned {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 </style>

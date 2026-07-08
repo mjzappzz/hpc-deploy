@@ -157,8 +157,8 @@ const reportStatusMap: Record<string, { label: string; type: string }> = {
 }
 
 const finalStatusMap: Record<string, { label: string; type: string; description: string }> = {
-  'FAILED': { label: '失败', type: 'danger', description: '任务执行失败或压测未通过，请检查错误信息。' },
-  'SUCCESS': { label: '通过', type: 'success', description: '平台任务执行成功且压测通过。' },
+  'FAILED': { label: '失败', type: 'danger', description: '执行任务失败或压测未通过，请检查错误信息。' },
+  'SUCCESS': { label: '通过', type: 'success', description: '平台执行任务成功且压测通过。' },
   'UNKNOWN': { label: '未知', type: 'info', description: '无法确定综合状态。' },
 }
 

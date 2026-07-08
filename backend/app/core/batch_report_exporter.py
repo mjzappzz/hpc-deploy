@@ -1,4 +1,3 @@
-import json
 import re
 import tempfile
 import zipfile
@@ -55,58 +54,17 @@ def _iter_report_files(task_id: str) -> list[Path]:
     return reports
 
 
-def _build_server_report_zip(
-    server_name: str,
-    timestamp: str,
-    batch_id: str,
-    tasks: list[Task],
-) -> Path:
-    tmp = tempfile.NamedTemporaryFile(prefix=f"hpcdeploy-server-{batch_id}-", suffix=".zip", delete=False)
-    tmp_path = Path(tmp.name)
-    tmp.close()
-
-    root_folder = f"{_safe_zip_name(server_name)}_压测报告"
-    used_names: set[str] = set()
-    missing_lines: list[str] = []
-    summary: dict[str, object] = {
-        "batch_id": batch_id,
-        "server_name": server_name,
-        "generated_at": datetime.now().isoformat(),
-        "task_count": len(tasks),
-        "tasks": [],
-    }
-
-    with zipfile.ZipFile(tmp_path, mode="w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
-        for task in tasks:
-            reports = _iter_report_files(task.task_id)
-            task_summary = {
-                "task_id": task.task_id,
-                "file_name": task.file_name,
-                "status": task.status,
-                "reports": [],
-                "missing": not reports,
-            }
-            if not reports:
-                missing_lines.append(f"{task.task_id} {task.file_name or '-'}: xlsx report missing")
-
-            for index, report in enumerate(reports, start=1):
-                candidate = f"{root_folder}/{report.name}"
-                while candidate in used_names:
-                    candidate = f"{root_folder}/{report.stem}_{index}_{len(used_names)}{report.suffix}"
-                used_names.add(candidate)
-                zf.write(report, candidate)
-                task_summary["reports"].append(candidate)
-
-            summary["tasks"].append(task_summary)
-
-        zf.writestr(
-            f"{root_folder}/summary.json",
-            json.dumps(summary, ensure_ascii=False, indent=2),
-        )
-        if missing_lines:
-            zf.writestr(f"{root_folder}/missing.txt", "\n".join(missing_lines) + "\n")
-
-    return tmp_path
+def _report_archive_name(task: Task, report: Path, used_names: set[str], root_folder: str | None = None) -> str:
+    prefix = _report_prefix(task)
+    candidate_name = f"{prefix}{report.suffix.lower()}"
+    candidate = f"{root_folder}/{candidate_name}" if root_folder else candidate_name
+    index = 2
+    while candidate in used_names:
+        candidate_name = f"{prefix}_{index}{report.suffix.lower()}"
+        candidate = f"{root_folder}/{candidate_name}" if root_folder else candidate_name
+        index += 1
+    used_names.add(candidate)
+    return candidate
 
 
 def build_batch_report_zip(batch_id: str, tasks: list[Task], servers_by_id: dict[int, Server]) -> BatchReportZip:
@@ -114,9 +72,8 @@ def build_batch_report_zip(batch_id: str, tasks: list[Task], servers_by_id: dict
         raise ValueError("batch has no tasks")
 
     created_at = tasks[0].created_at or datetime.now()
-    timestamp = created_at.strftime("%Y%m%d_%H%M%S")
+    timestamp = created_at.strftime("%Y%m%d")
     fallback_server_name = f"{batch_id}_server"
-    zip_filename = f"{_safe_zip_name(batch_id)}_压测报告_{timestamp}.zip"
 
     tmp = tempfile.NamedTemporaryFile(prefix=f"hpcdeploy-{batch_id}-", suffix=".zip", delete=False)
     tmp_path = Path(tmp.name)
@@ -127,14 +84,29 @@ def build_batch_report_zip(batch_id: str, tasks: list[Task], servers_by_id: dict
         server_name = _server_name_for_task(task, servers_by_id, fallback_server_name)
         grouped.setdefault(server_name, []).append(task)
 
+    single_server = len(grouped) == 1
+    if single_server:
+        server_name = next(iter(grouped.keys()))
+        zip_filename = f"{_safe_zip_name(server_name)}_压测报告_{timestamp}.zip"
+    else:
+        zip_filename = f"{_safe_zip_name(batch_id)}.zip"
+
     with zipfile.ZipFile(tmp_path, mode="w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
+        used_names: set[str] = set()
+        missing_lines: list[str] = []
         for server_name, server_tasks in sorted(grouped.items(), key=lambda item: item[0]):
-            server_zip = _build_server_report_zip(server_name, timestamp, batch_id, server_tasks)
-            try:
-                arcname = f"{_safe_zip_name(server_name)}_压测报告_{timestamp}.zip"
-                zf.write(server_zip, arcname)
-            finally:
-                server_zip.unlink(missing_ok=True)
+            root_folder = None if single_server else _safe_zip_name(server_name)
+            for task in sorted(server_tasks, key=lambda item: (item.sequence_index or 999, item.id)):
+                reports = _iter_report_files(task.task_id)
+                if not reports:
+                    missing_lines.append(f"{server_name} {task.task_id} {task.file_name or '-'}: xlsx report missing")
+                    continue
+                for report in reports:
+                    zf.write(report, _report_archive_name(task, report, used_names, root_folder))
+
+        if missing_lines:
+            missing_path = "missing.txt" if single_server else "_missing.txt"
+            zf.writestr(missing_path, "\n".join(missing_lines) + "\n")
 
     return BatchReportZip(path=tmp_path, filename=zip_filename)
 

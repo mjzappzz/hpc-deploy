@@ -59,7 +59,10 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - 日志查询、日志下载、WebSocket 实时日志（`/logs/ws`）
 - 失败诊断（`/{task_id}/diagnosis`）
 - 结构化监控（`/{task_id}/monitor` — CPU/内存/磁盘/GPU 5s 轮询）
-- 任务历史统一展示：普通任务按任务卡展示；同一 `batch_id` 在前端聚合为批次卡，子任务拆分展示
+- 历史任务统一展示：普通任务按单次任务卡展示；同一 `batch_id` 在前端聚合为批次卡，首页展示批次概览，批次详情弹窗展示完整子任务信息
+- 历史任务卡片统一展示模块、文件、远程目录、命令、计划时长、开始/结束/耗时、报告状态和失败原因
+- 结果文件入口先展示 artifact/result 文件列表，再由用户选择具体文件下载
+- 批次报告下载：单服务器批次生成 `服务器名称_压测报告_日期.zip`，多服务器批次生成 `batch_id.zip` 并按服务器目录拆分
 - 任务历史查询默认过滤 `hidden_from_history=1` 的软隐藏记录；keyword 支持匹配 `task_id`、脚本名、`batch_id`
 
 ### scripts API (`/api/scripts`)

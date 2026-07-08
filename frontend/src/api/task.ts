@@ -28,6 +28,8 @@ export interface TaskRecord {
   updated_at: string
   duration_seconds?: number | null
   final_status?: string | null
+  report_status?: string | null
+  failure_reason?: string | null
 }
 
 export interface TaskLogRecord {
@@ -328,15 +330,19 @@ export interface BatchTaskDetailItem {
   server_id: number
   server_name: string
   host: string
+  username: string | null
   status: string  // execution status
   final_status: string  // unified status (considers report)
+  report_status: string
   sequence_index: number | null
+  created_at: string | null
   started_at: string | null
   ended_at: string | null
   duration_seconds: number | null
-  exit_code: number | null
+  remote_work_dir: string | null
   has_artifacts: boolean
   error_summary: string | null
+  failure_reason: string | null
   params: Record<string, unknown> | null
 }
 

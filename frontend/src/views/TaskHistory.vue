@@ -1,7 +1,6 @@
 <template>
   <section class="page-section hpc-row-hover-only task-history-page">
     <div class="toolbar">
-      <div class="page-title">任务历史</div>
       <el-button class="page-refresh-button" @click="refreshCurrentView">刷新</el-button>
     </div>
 
@@ -81,72 +80,70 @@
                   <el-tag size="small" type="warning" effect="plain">{{ item.tasks.length }} 个子任务</el-tag>
                 </div>
                 <div class="batch-history-card__meta">
-                  <span class="batch-id-cell">{{ item.batchId }}</span>
-                  <span>{{ batchGroupServerLabel(item.tasks) }}</span>
-                  <span>{{ batchGroupScriptLabel(item.tasks) }}</span>
-                  <span>创建 {{ formatDate(batchGroupCreatedAt(item.tasks)) }}</span>
+                  {{ item.batchId }} / {{ batchGroupServerMetaLabel(item.tasks) }} / 创建 {{ formatDate(batchGroupCreatedAt(item.tasks)) }}
+                </div>
+                <div class="batch-history-card__badges">
+                  <el-tag size="small" type="warning" effect="plain">批次</el-tag>
+                  <el-tag v-for="tag in batchGroupTypeTags(item.tasks)" :key="tag" size="small" effect="plain">{{ tag }}</el-tag>
+                </div>
+              </div>
+              <div class="batch-history-card__status-block">
+                <StatusTag :status="batchGroupStatus(item.tasks)" />
+                <div v-if="batchReportResult(item.tasks).visible" class="batch-report-pill" :class="batchReportResult(item.tasks).className">
+                  {{ batchReportResult(item.tasks).label }}
                 </div>
               </div>
             </div>
 
-            <div class="batch-history-steps">
-              <div
-                v-for="task in item.tasks"
-                :key="task.task_id"
-                class="batch-history-step"
-              >
-                <div class="batch-history-step__head">
-                  <div class="batch-history-step__name">
-                    <span>{{ batchStepLabel(task) }}</span>
-                    <el-tag size="small" effect="plain">{{ task.file_name || '-' }}</el-tag>
+            <div class="task-card__body">
+              <div class="batch-task-info-list">
+                <div v-for="task in item.tasks" :key="task.task_id" class="batch-task-info-row">
+                  <div class="task-card__info-grid task-card__info-grid--aligned batch-task-info-row__grid">
+                    <span class="task-card__module-label">{{ batchStepLabel(task) }}</span>
+                    <span :title="task.file_name ?? '-'">文件：{{ task.file_name ?? '-' }}</span>
+                    <span :title="task.remote_work_dir ?? '-'">远程目录：{{ task.remote_work_dir ?? '-' }}</span>
+                    <span :title="task.command_preview ?? '-'">命令：{{ task.command_preview ?? '-' }}</span>
+                    <span class="task-card__plan-duration">计划时长：{{ formatStressDuration(task.params) }}</span>
                   </div>
-                  <StatusTag :status="taskDisplayStatus(task)" />
                 </div>
-                <div class="batch-history-step__meta">
-                  <span>{{ task.server_name || task.server_host || `Server #${task.server_id}` }}</span>
-                  <span>耗时 {{ formatDuration(task.duration_seconds ?? getTaskDuration(task)) }}</span>
-                  <span>退出码 {{ task.exit_code ?? '-' }}</span>
-                </div>
-                <div class="batch-history-step__actions">
-                  <el-button size="small" link type="primary" class="task-action-button" @click="continueTask(task)">详情</el-button>
-                  <el-button
-                    v-if="isStressTaskCompleted(task)"
-                    size="small"
-                    link
-                    type="primary"
-                    class="task-action-button"
-                    @click="downloadTaskReport(task)"
-                  >报告</el-button>
-                  <el-button
-                    v-if="canCancelTask(task)"
-                    size="small"
-                    link
-                    type="danger"
-                    class="task-action-button"
-                    @click="cancelHistoryTask(task)"
-                  >取消</el-button>
-                </div>
+              </div>
+              <div class="task-card__time-line">
+                <template v-if="batchGroupStartTime(item.tasks)">开始 {{ formatDate(batchGroupStartTime(item.tasks)) }}</template>
+                <template v-if="batchGroupEndTime(item.tasks)"> | 结束 {{ formatDate(batchGroupEndTime(item.tasks)) }}</template>
+                <template v-if="batchGroupDuration(item.tasks) !== null"> | 耗时 {{ formatDuration(batchGroupDuration(item.tasks)) }}</template>
               </div>
             </div>
 
-            <div class="batch-history-card__footer">
-              <div class="batch-row-actions">
+            <div v-if="batchFailureReasons(item.tasks).length > 0" class="task-card__error batch-history-failure">
+              <div v-for="reason in batchFailureReasons(item.tasks)" :key="reason.title + reason.message" class="batch-history-failure__item">
+                <b>{{ reason.title }}：</b>
+                <span>{{ reason.message }}</span>
+              </div>
+            </div>
+
+            <div class="task-card__actions">
                 <el-button
+                  size="small"
+                  type="primary"
+                  class="hpc-interactive-pulse"
+                  @click="openBatchDetail(batchSummaryFromTasks(item.batchId, item.tasks))"
+                >查看任务详情</el-button>
+                <el-button
+                  size="small"
+                  class="hpc-interactive-pulse"
+                  :disabled="!canDownloadBatchReport(batchSummaryFromTasks(item.batchId, item.tasks))"
+                  :loading="artLoading"
+                  @click="openBatchArtifacts(item.batchId, item.tasks)"
+                >结果文件</el-button>
+                <el-button
+                  v-if="canCancelBatch(batchSummaryFromTasks(item.batchId, item.tasks))"
                   size="small"
                   type="warning"
                   plain
-                  :disabled="!canCancelBatch(batchSummaryFromTasks(item.batchId, item.tasks))"
+                  class="hpc-interactive-pulse"
                   :loading="batchCancelSubmitting[item.batchId]"
                   @click="confirmCancelBatch(batchSummaryFromTasks(item.batchId, item.tasks))"
-                >取消批次</el-button>
-                <el-button
-                  size="small"
-                  plain
-                  :disabled="!canDownloadBatchReport(batchSummaryFromTasks(item.batchId, item.tasks))"
-                  :loading="batchReportDownloading[item.batchId]"
-                  @click="downloadBatchReports(batchSummaryFromTasks(item.batchId, item.tasks))"
-                >下载批次报告</el-button>
-              </div>
+                >取消批次任务</el-button>
             </div>
           </el-card>
         </template>
@@ -230,17 +227,14 @@
                           <span>{{ formatStressDuration(t.params) }}</span>
                         </template>
                       </el-table-column>
-                      <el-table-column label="脚本" min-width="180" show-overflow-tooltip>
-                        <template #default="{ row: t }">{{ t.task_name }}</template>
+                      <el-table-column label="任务" min-width="180" show-overflow-tooltip>
+                        <template #default="{ row: t }">{{ batchDetailTaskLabel(t) }}</template>
                       </el-table-column>
                       <el-table-column label="序号" prop="sequence_index" width="55" align="center" />
                       <el-table-column label="状态" width="100">
                         <template #default="{ row: t }">
                           <StatusTag :status="batchChildDisplayStatus(t)" />
                         </template>
-                      </el-table-column>
-                      <el-table-column label="退出码" width="65" align="center">
-                        <template #default="{ row: t }">{{ t.exit_code ?? '-' }}</template>
                       </el-table-column>
                       <el-table-column label="开始时间" width="145">
                         <template #default="{ row: t }">{{ formatDate(t.started_at) }}</template>
@@ -261,8 +255,8 @@
                               type="primary"
                               class="task-action-button"
                               :disabled="!isBatchTaskTerminal(t.status)"
-                              @click.stop="batchTaskDownloadReport(t)"
-                            >下载报告</el-button>
+                              @click.stop="openBatchTaskArtifacts(t)"
+                            >结果文件</el-button>
                           </div>
                         </template>
                       </el-table-column>
@@ -314,9 +308,9 @@
           <el-table-column label="创建时间" width="150">
             <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
           </el-table-column>
-          <el-table-column label="脚本" width="140" show-overflow-tooltip>
+          <el-table-column label="模块" width="140" show-overflow-tooltip>
             <template #default="{ row }">
-              <span>{{ (row.script_names || []).join('、') }}</span>
+              <span>{{ batchSummaryScriptLabels(row.script_names || []).join('、') || '-' }}</span>
             </template>
           </el-table-column>
           <el-table-column prop="task_type" label="类型" width="60">
@@ -349,9 +343,9 @@
                   type="primary"
                   class="task-action-button"
                   :disabled="!canDownloadBatchReport(row)"
-                  :loading="batchReportDownloading[row.batch_id]"
-                  @click.stop="downloadBatchReports(row)"
-                >下载所有报告</el-button>
+                  :loading="artLoading"
+                  @click.stop="openBatchSummaryArtifacts(row)"
+                >结果文件</el-button>
               </div>
             </template>
           </el-table-column>
@@ -371,17 +365,55 @@
       </div>
     </template>
 
-    <el-dialog v-model="artDialogVisible" title="结果文件" width="700px">
+    <el-dialog v-model="artDialogVisible" :title="artDialogTitle" width="760px">
       <div v-if="artLoading" v-loading="artLoading" class="art-loading-wrap" />
       <template v-else>
+        <div v-if="activeArtBatchSummary" class="art-batch-actions">
+          <span>{{ activeArtBatchSummary.batch_id }} / {{ activeArtBatchSummary.servers.join(', ') }}</span>
+          <el-button
+            size="small"
+            plain
+            :disabled="!canDownloadBatchReport(activeArtBatchSummary)"
+            :loading="batchReportDownloading[activeArtBatchSummary.batch_id]"
+            @click="downloadBatchReports(activeArtBatchSummary)"
+          >下载批次报告</el-button>
+        </div>
         <!-- 远端服务器目录 -->
-        <div v-if="artDir" class="art-dir-bar">
+        <div v-if="artDir && batchArtifactGroups.length === 0" class="art-dir-bar">
           <span class="art-dir-label">远端服务器目录：</span>
           <code class="art-dir-path">{{ artDir }}</code>
           <el-button size="small" text @click="copyArtifactDir">复制路径</el-button>
         </div>
 
-        <template v-if="artFiles.length === 0">
+        <template v-if="batchArtifactGroups.length > 0">
+          <div class="art-list">
+            <div v-for="group in batchArtifactGroups" :key="group.taskId" class="art-group art-batch-group">
+              <div class="art-group-header">
+                <span class="art-group-title">{{ group.label }}</span>
+                <span class="art-group-desc">{{ group.serverLabel }}</span>
+              </div>
+              <div v-if="group.remoteDir" class="art-dir-bar art-dir-bar--compact">
+                <span class="art-dir-label">远端服务器目录：</span>
+                <code class="art-dir-path">{{ group.remoteDir }}</code>
+              </div>
+              <template v-if="group.files.length === 0">
+                <div class="art-empty-inline">暂无结果文件</div>
+              </template>
+              <div v-for="f in group.files" :key="`${group.taskId}:${f.name}`" class="art-item">
+                <div class="art-item-info">
+                  <span class="art-name" :title="f.name">{{ f.name }}</span>
+                  <div class="art-meta-row">
+                    <span class="art-size">{{ formatFileSize(f.size) }}</span>
+                    <el-tag size="small">{{ f.type }}</el-tag>
+                    <span class="art-local-path" :title="f.local_relative_path">{{ f.local_relative_path }}</span>
+                  </div>
+                </div>
+                <el-button size="small" @click="downloadArtifact(f.name, group.taskId)">下载</el-button>
+              </div>
+            </div>
+          </div>
+        </template>
+        <template v-else-if="artFiles.length === 0">
           <el-empty description="暂无结果文件" />
           <p class="art-empty-hint">可能脚本未生成报告或回收失败，请查看任务日志。</p>
         </template>
@@ -401,7 +433,7 @@
                   <span class="art-local-path" :title="f.local_relative_path">{{ f.local_relative_path }}</span>
                 </div>
               </div>
-              <el-button size="small" type="primary" @click="downloadArtifact(f.name)">下载报告</el-button>
+              <el-button size="small" type="primary" @click="downloadArtifact(f.name)">下载</el-button>
             </div>
           </div>
           <!-- 原始文件 -->
@@ -451,7 +483,8 @@
             <span><b>任务 ID</b><code>{{ drawerTask.task_id }}</code></span>
             <span v-if="drawerTask.batch_id"><b>批次</b><code>{{ drawerTask.batch_id }}</code></span>
             <span><b>服务器</b>{{ drawerServerLabel }}</span>
-            <span><b>脚本</b>{{ drawerTask.file_name || '-' }}</span>
+            <span><b>任务</b>{{ taskDisplayModuleName(drawerTask) }}</span>
+            <span><b>远端目录</b><code>{{ drawerTask.remote_work_dir || '-' }}</code></span>
             <span><b>开始</b>{{ formatDate(drawerTask.start_time) }}</span>
             <span><b>已运行</b>{{ drawerRunningDuration !== null ? formatSeconds(drawerRunningDuration) : '-' }}</span>
             <span v-if="drawerEstimatedRemaining !== null"><b>预计剩余</b>{{ formatSeconds(drawerEstimatedRemaining) }}</span>
@@ -577,27 +610,19 @@
     </el-drawer>
 
     <!-- ─── Batch detail dialog ─── -->
-    <el-dialog v-model="batchDetailVisible" :title="`批次详情：${batchDetailData?.batch_id || ''}`" width="900px" :close-on-click-modal="false" class="batch-detail-dialog">
+    <el-dialog v-model="batchDetailVisible" :title="`批次详情：${batchDetailData?.batch_id || ''}`" width="1120px" top="6vh" :close-on-click-modal="false" class="batch-detail-dialog">
       <div v-loading="batchDetailLoading" class="batch-detail-loading-wrap">
         <template v-if="batchDetailData">
           <div class="batch-detail-summary-bar">
             <div class="batch-detail-summary-row">
-              <span class="bd-label">脚本：</span>
-              <span>{{ (batchDetailData.summary.script_names || []).join('、') || '-' }}</span>
+              <span class="bd-label">模块：</span>
+              <span>{{ batchSummaryModuleLabels(batchDetailData.tasks).join('、') || '-' }}</span>
               <el-tag size="small" style="margin-left:8px">{{ taskTypeLabel(batchDetailData.summary.task_type) }}</el-tag>
               <el-tag :type="batchStatusTagType(batchDetailData.summary.status)" size="small" style="margin-left:8px">{{ batchStatusLabel(batchDetailData.summary.status) }}</el-tag>
             </div>
-            <div class="batch-detail-summary-stats">
-              <span class="batch-summary-item batch-summary-total">总计 {{ batchDetailData.summary.total }}</span>
-              <span class="batch-summary-item batch-summary-ok">成功 {{ batchDetailData.summary.success }}</span>
-              <span v-if="batchDetailData.summary.failed > 0" class="batch-summary-item batch-summary-fail">失败 {{ batchDetailData.summary.failed }}</span>
-              <span v-if="batchDetailData.summary.running > 0" class="batch-summary-item batch-summary-total">运行中 {{ batchDetailData.summary.running }}</span>
-              <span v-if="batchDetailData.summary.pending > 0" class="batch-summary-item batch-summary-total">等待 {{ batchDetailData.summary.pending }}</span>
-              <span v-if="batchDetailData.summary.canceled > 0" class="batch-summary-item batch-summary-skip">取消 {{ batchDetailData.summary.canceled }}</span>
-            </div>
             <div class="batch-detail-servers">
               <span class="bd-label">目标服务器：</span>
-              <span>{{ batchDetailData.summary.servers.join(', ') }}</span>
+              <span>{{ batchDetailServerPlans(batchDetailData.tasks).join('；') }}</span>
             </div>
             <div class="batch-detail-time">
               <span class="bd-label">创建时间：</span>
@@ -605,47 +630,35 @@
             </div>
           </div>
 
-	  <el-table :data="batchDetailData.tasks" stripe size="small" max-height="400">
-	    <el-table-column prop="task_name" label="任务" min-width="200" show-overflow-tooltip />
-	    <el-table-column label="状态" width="100">
-	      <template #default="{ row }">
-	        <StatusTag :status="row.status" />
-	      </template>
-	    </el-table-column>
-	    <el-table-column label="退出码" width="70" align="center">
-              <template #default="{ row }">{{ row.exit_code ?? '-' }}</template>
-            </el-table-column>
-            <el-table-column label="开始时间" width="160">
-              <template #default="{ row }">{{ formatDate(row.started_at) }}</template>
-            </el-table-column>
-            <el-table-column label="结束时间" width="160">
-              <template #default="{ row }">{{ formatDate(row.ended_at) }}</template>
-            </el-table-column>
-            <el-table-column label="总耗时" width="100" align="center">
-              <template #default="{ row }">{{ formatDuration(row.duration_seconds) }}</template>
-            </el-table-column>
-            <el-table-column label="操作" width="260" fixed="right">
-              <template #default="{ row }">
-                <div class="batch-task-actions">
-                  <el-button size="small" link type="primary" class="task-action-button batch-view-button" @click="continueBatchTask(row)">查看任务详情</el-button>
+          <div class="batch-detail-task-list">
+            <div v-for="task in batchDetailData.tasks" :key="task.task_id" class="batch-detail-task-card">
+              <div class="batch-detail-task-card__header">
+                <div>
+                  <div class="batch-detail-task-card__title">{{ batchDetailTaskLabel(task) }}</div>
+                  <div class="batch-detail-task-card__meta">{{ task.task_id }} / {{ task.server_name }} ({{ task.host }}) / 用户 {{ task.username || '-' }}</div>
+                </div>
+                <div class="batch-detail-task-card__actions">
+                  <el-button size="small" type="primary" plain @click="continueBatchTask(task)">查看任务详情</el-button>
                   <el-button
                     size="small"
-                    link
-                    type="primary"
-                    class="task-action-button"
-                    :disabled="!isBatchTaskTerminal(row.status)"
-                    @click="batchTaskDownloadReport(row)"
-                  >下载报告</el-button>
+                    plain
+                    :disabled="!isBatchTaskTerminal(task.status)"
+                    @click="openBatchTaskArtifacts(task)"
+                  >结果文件</el-button>
                 </div>
-              </template>
-            </el-table-column>
-            <el-table-column label="错误" min-width="200" show-overflow-tooltip>
-              <template #default="{ row }">
-                <span v-if="row.error_summary" class="batch-error-text">{{ row.error_summary }}</span>
-                <span v-else>-</span>
-              </template>
-            </el-table-column>
-          </el-table>
+              </div>
+              <div class="batch-detail-task-card__grid">
+                <span><b>任务状态</b><StatusTag :status="task.status" /></span>
+                <span><b>报告状态</b><el-tag size="small" :type="batchDetailReportTagType(task)">{{ batchDetailReportLabel(task) }}</el-tag></span>
+                <span><b>计划时长</b>{{ formatStressDuration(task.params) }}</span>
+                <span><b>创建时间</b>{{ formatDate(task.created_at) }}</span>
+                <span><b>开始时间</b>{{ formatDate(task.started_at) }}</span>
+                <span><b>结束时间</b>{{ formatDate(task.ended_at) }}</span>
+                <span><b>总耗时</b>{{ formatDuration(task.duration_seconds) }}</span>
+                <span class="batch-detail-task-card__reason"><b>原因</b>{{ batchDetailFailureReason(task) }}</span>
+              </div>
+            </div>
+          </div>
         </template>
       </div>
       <template #footer>
@@ -692,6 +705,18 @@ const artLoading = ref(false)
 const artDir = ref('')
 const artFiles = ref<ArtifactFileDetail[]>([])
 const activeArtTaskId = ref('')
+const artDialogTitle = ref('结果文件')
+const activeArtBatchSummary = ref<BatchSummaryItem | null>(null)
+
+type BatchArtifactGroup = {
+  taskId: string
+  label: string
+  serverLabel: string
+  remoteDir: string
+  files: ArtifactFileDetail[]
+}
+
+const batchArtifactGroups = ref<BatchArtifactGroup[]>([])
 
 const diagnosisVisible = ref(false)
 const diagnosisTaskId = ref('')
@@ -873,25 +898,23 @@ function batchGroupServerLabel(tasks: TaskRecord[]): string {
   return Array.from(servers).join(', ') || '-'
 }
 
-function batchGroupScriptLabel(tasks: TaskRecord[]): string {
-  const names = tasks.map(task => taskScriptBaseName(task)).filter(Boolean)
-  return Array.from(new Set(names)).join('、') || '-'
+function batchGroupServerMetaLabel(tasks: TaskRecord[]): string {
+  const servers = new Set<string>()
+  for (const task of tasks) {
+    if (task.server_name && task.server_host) {
+      servers.add(`${task.server_name} (${task.server_host})`)
+    } else {
+      servers.add(task.server_name || task.server_host || `Server #${task.server_id}`)
+    }
+  }
+  return Array.from(servers).join(', ') || '-'
 }
 
 function batchGroupDisplayName(tasks: TaskRecord[]): string {
   const serverLabel = batchGroupServerLabel(tasks)
-  const typeLabel = getTaskTypeLabel(tasks[0]?.task_type, '任务')
-  const scriptLabel = batchGroupScriptLabel(tasks)
+  const typeLabel = tasks.some(task => task.task_type === 'stress') ? '压测任务' : getTaskTypeLabel(tasks[0]?.task_type, '任务')
   const dateLabel = compactTaskDate(batchGroupCreatedAt(tasks))
-  return ['批次', serverLabel, typeLabel, scriptLabel, dateLabel].filter(Boolean).join(' · ')
-}
-
-function taskScriptBaseName(task: TaskRecord): string {
-  const raw = task.file_name || task.file_path || ''
-  if (!raw) return ''
-  const normalized = raw.replace(/\\/g, '/')
-  const basename = normalized.split('/').pop() || ''
-  return basename.replace(/\.(sh|py|txt|md|sif)$/i, '')
+  return ['批次', serverLabel, typeLabel, dateLabel].filter(Boolean).join(' · ')
 }
 
 function compactTaskDate(value?: string | null): string {
@@ -912,17 +935,141 @@ function batchStepLabel(task: TaskRecord): string {
   if (seq === 1) return 'GPU'
   if (seq === 2) return 'CPU/内存'
   if (seq === 3) return '磁盘'
-  return task.file_name || `子任务 ${task.task_id}`
+  return taskDisplayModuleName(task).replace('压测', '') || `子任务 ${task.task_id}`
 }
 
-function isStressTaskCompleted(task: TaskRecord): boolean {
-  const status = taskDisplayStatus(task).toUpperCase()
-  return task.task_type === 'stress' && ['SUCCESS', 'FAILED', 'CANCELED', 'PASS', 'FAIL'].includes(status)
+function batchGroupStartTime(tasks: TaskRecord[]): string | null {
+  const values = tasks.map(task => task.start_time).filter(Boolean) as string[]
+  if (values.length === 0) return null
+  return values.sort((a, b) => new Date(a).getTime() - new Date(b).getTime())[0]
 }
 
-function canCancelTask(task: TaskRecord): boolean {
-  const status = task.status?.toUpperCase() ?? ''
-  return ['PENDING', 'CONNECTING', 'PREPARING', 'UPLOADING', 'RUNNING'].includes(status)
+function batchGroupEndTime(tasks: TaskRecord[]): string | null {
+  const values = tasks.map(task => task.end_time).filter(Boolean) as string[]
+  if (values.length === 0) return null
+  return values.sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0]
+}
+
+function batchGroupDuration(tasks: TaskRecord[]): number | null {
+  const start = batchGroupStartTime(tasks)
+  const end = batchGroupEndTime(tasks)
+  if (!start || !end) return null
+  const seconds = Math.round((new Date(end).getTime() - new Date(start).getTime()) / 1000)
+  return seconds > 0 ? seconds : null
+}
+
+function taskDisplayModuleName(task: TaskRecord): string {
+  const seq = task.sequence_index
+  if (seq === 1) return 'GPU压测'
+  if (seq === 2) return 'CPU/内存压测'
+  if (seq === 3) return '磁盘压测'
+  const fileName = (task.file_name || task.file_path || '').toLowerCase()
+  if (fileName.includes('gpu')) return 'GPU压测'
+  if (fileName.includes('cpu') || fileName.includes('mem')) return 'CPU/内存压测'
+  if (fileName.includes('disk')) return '磁盘压测'
+  return getTaskTypeLabel(task.task_type, '任务')
+}
+
+function batchDetailTaskLabel(task: BatchTaskDetailItem): string {
+  const seq = task.sequence_index
+  if (seq === 1) return 'GPU压测'
+  if (seq === 2) return 'CPU/内存压测'
+  if (seq === 3) return '磁盘压测'
+  const name = (task.task_name || '').toLowerCase()
+  if (name.includes('gpu')) return 'GPU压测'
+  if (name.includes('cpu') || name.includes('mem')) return 'CPU/内存压测'
+  if (name.includes('disk')) return '磁盘压测'
+  return task.task_name || `子任务 ${task.task_id}`
+}
+
+function batchDetailReportLabel(task: BatchTaskDetailItem): string {
+  const reportStatus = (task.report_status || '').toUpperCase()
+  if (reportStatus === 'PASS') return 'PASS'
+  if (reportStatus === 'FAIL') return 'FAIL'
+  return task.has_artifacts ? '报告未解析' : '无报告'
+}
+
+function batchDetailReportTagType(task: BatchTaskDetailItem): 'success' | 'danger' | 'warning' | 'info' {
+  const reportStatus = (task.report_status || '').toUpperCase()
+  if (reportStatus === 'PASS') return 'success'
+  if (reportStatus === 'FAIL') return 'danger'
+  return task.has_artifacts ? 'warning' : 'info'
+}
+
+function batchDetailFailureReason(task: BatchTaskDetailItem): string {
+  const reportStatus = (task.report_status || '').toUpperCase()
+  if (reportStatus === 'PASS') return '-'
+  if (reportStatus === 'FAIL') return task.failure_reason || task.error_summary || '报告结果为 FAIL，请查看结果文件确认失败指标。'
+  if (task.has_artifacts) return '已有结果文件，但摘要缓存未解析出 PASS/FAIL；请打开结果文件查看。'
+  return task.error_summary || '未找到结果文件，可能脚本未生成报告或回收失败。'
+}
+
+function batchDetailServerPlans(tasks: BatchTaskDetailItem[]): string[] {
+  const grouped = new Map<string, Set<string>>()
+  for (const task of tasks) {
+    const server = `${task.server_name} (${task.host}) / 用户 ${task.username || '-'}`
+    const modulePlan = `${batchDetailTaskLabel(task)} ${formatStressDuration(task.params)}`
+    if (!grouped.has(server)) grouped.set(server, new Set())
+    grouped.get(server)?.add(modulePlan)
+  }
+  return Array.from(grouped.entries()).map(([server, plans]) => `${server} / 计划 ${Array.from(plans).join('、')}`)
+}
+
+function batchSummaryModuleLabels(tasks: BatchTaskDetailItem[]): string[] {
+  const ordered = ['GPU压测', 'CPU/内存压测', '磁盘压测']
+  const labels = new Set(tasks.map(batchDetailTaskLabel))
+  return ordered.filter(label => labels.has(label)).concat(Array.from(labels).filter(label => !ordered.includes(label)))
+}
+
+function batchSummaryScriptLabels(scriptNames: string[]): string[] {
+  const labels = new Set<string>()
+  for (const name of scriptNames) {
+    const normalized = name.toLowerCase()
+    if (normalized.includes('gpu')) labels.add('GPU压测')
+    else if (normalized.includes('cpu') || normalized.includes('mem')) labels.add('CPU/内存压测')
+    else if (normalized.includes('disk')) labels.add('磁盘压测')
+    else if (name) labels.add(name)
+  }
+  const ordered = ['GPU压测', 'CPU/内存压测', '磁盘压测']
+  return ordered.filter(label => labels.has(label)).concat(Array.from(labels).filter(label => !ordered.includes(label)))
+}
+
+function taskTypeTags(task: TaskRecord): string[] {
+  const fileName = (task.file_name || task.file_path || '').toLowerCase()
+  if (fileName.includes('gpu')) return ['GPU']
+  if (fileName.includes('cpu') || fileName.includes('mem')) return ['CPU/内存']
+  if (fileName.includes('disk')) return ['磁盘']
+  if (task.task_type === 'stress') return ['压测']
+  return [getTaskTypeLabel(task.task_type, '任务')]
+}
+
+function batchGroupTypeTags(tasks: TaskRecord[]): string[] {
+  const ordered = ['GPU', 'CPU/内存', '磁盘']
+  const seen = new Set<string>()
+  for (const task of tasks) {
+    for (const tag of taskTypeTags(task)) seen.add(tag)
+  }
+  return ordered.filter(tag => seen.has(tag)).concat(Array.from(seen).filter(tag => !ordered.includes(tag)))
+}
+
+function batchReportResult(tasks: TaskRecord[]) {
+  const statuses = tasks.map(task => (task.report_status || '').toUpperCase()).filter(Boolean)
+  if (statuses.includes('FAIL')) {
+    return { visible: true, label: '压测失败', className: 'is-fail' }
+  }
+  if (statuses.length > 0 && statuses.every(status => status === 'PASS')) {
+    return { visible: true, label: '压测通过', className: 'is-pass' }
+  }
+  return { visible: false, label: '', className: '' }
+}
+
+function batchFailureReasons(tasks: TaskRecord[]) {
+  return tasks
+    .filter(task => (task.report_status || '').toUpperCase() === 'FAIL' || taskDisplayStatus(task).toUpperCase() === 'FAILED')
+    .map(task => ({
+      title: `${batchStepLabel(task)}压测失败`,
+      message: task.failure_reason || task.error_message || '报告检测到压测结果为 FAIL，请查看结果文件。',
+    }))
 }
 
 function batchSummaryFromTasks(batchId: string, tasks: TaskRecord[]): BatchSummaryItem {
@@ -1828,36 +1975,13 @@ function isFailureStatus(status: string): boolean {
   return FAILURE_STATUSES.has(status)
 }
 
-async function batchTaskDownloadReport(task: BatchTaskDetailItem) {
-  if (!isBatchTaskTerminal(task.status)) {
-    ElMessage.warning('报告尚未生成')
-    return
-  }
-  await downloadReportByTaskId(task.task_id)
-}
-
-async function downloadReportByTaskId(taskId: string) {
-  try {
-    const resp = await listArtifacts(taskId)
-    const xlsxFiles = resp.data.files.filter(f => f.name.endsWith('.xlsx'))
-    if (xlsxFiles.length === 0) {
-      ElMessage.warning('未找到 xlsx 报告')
-      return
-    }
-    const target = xlsxFiles.find(f => /report/i.test(f.name)) || xlsxFiles[0]
-    window.open(`/api/tasks/${taskId}/artifacts/${encodeURIComponent(target.name)}/download`, '_blank')
-  } catch (err) {
-    ElMessage.error(`下载失败：${getApiErrorMessage(err)}`)
-  }
-}
-
 async function downloadTaskReport(task: TaskRecord) {
   const status = task.status?.toUpperCase() ?? ''
   if (!TERMINAL_STATUSES.includes(status)) {
-    ElMessage.warning('报告尚未生成')
+    ElMessage.warning('结果文件尚未生成')
     return
   }
-  await downloadReportByTaskId(task.task_id)
+  await openArtifacts(task)
 }
 
 function continueBatchTask(task: BatchTaskDetailItem) {
@@ -1904,6 +2028,9 @@ function getApiErrorMessage(error: unknown): string {
 
 async function openArtifacts(task: TaskRecord) {
   activeArtTaskId.value = task.task_id
+  activeArtBatchSummary.value = null
+  batchArtifactGroups.value = []
+  artDialogTitle.value = '结果文件'
   artFiles.value = []
   artDir.value = ''
   artDialogVisible.value = true
@@ -1917,8 +2044,88 @@ async function openArtifacts(task: TaskRecord) {
   }
 }
 
-function downloadArtifact(filename: string) {
-  window.open(`/api/tasks/${activeArtTaskId.value}/artifacts/${filename}/download`, '_blank')
+async function openBatchTaskArtifacts(task: BatchTaskDetailItem) {
+  if (!isBatchTaskTerminal(task.status)) {
+    ElMessage.warning('结果文件尚未生成')
+    return
+  }
+  activeArtTaskId.value = task.task_id
+  activeArtBatchSummary.value = null
+  batchArtifactGroups.value = []
+  artDialogTitle.value = `${batchDetailTaskLabel(task)} · 结果文件`
+  artFiles.value = []
+  artDir.value = task.remote_work_dir || ''
+  artDialogVisible.value = true
+  artLoading.value = true
+  try {
+    const resp = (await listArtifacts(task.task_id)).data
+    artFiles.value = resp.files
+  } finally {
+    artLoading.value = false
+  }
+}
+
+async function openBatchArtifacts(batchId: string, childTasks: TaskRecord[]) {
+  const summary = batchSummaryFromTasks(batchId, childTasks)
+  activeArtTaskId.value = ''
+  activeArtBatchSummary.value = summary
+  batchArtifactGroups.value = []
+  artFiles.value = []
+  artDir.value = ''
+  artDialogTitle.value = '批次结果文件'
+  artDialogVisible.value = true
+  artLoading.value = true
+  try {
+    const groups = await Promise.all(childTasks.map(async (task) => {
+      const resp = (await listArtifacts(task.task_id)).data
+      return {
+        taskId: task.task_id,
+        label: taskDisplayModuleName(task),
+        serverLabel: task.server_name || task.server_host || `Server #${task.server_id}`,
+        remoteDir: task.remote_work_dir || '',
+        files: resp.files,
+      }
+    }))
+    batchArtifactGroups.value = groups
+  } catch (err) {
+    ElMessage.error(`加载结果文件失败：${getApiErrorMessage(err) || '未知错误'}`)
+  } finally {
+    artLoading.value = false
+  }
+}
+
+async function openBatchSummaryArtifacts(summary: BatchSummaryItem) {
+  activeArtTaskId.value = ''
+  activeArtBatchSummary.value = summary
+  batchArtifactGroups.value = []
+  artFiles.value = []
+  artDir.value = ''
+  artDialogTitle.value = '批次结果文件'
+  artDialogVisible.value = true
+  artLoading.value = true
+  try {
+    const detail = (await getBatchDetail(summary.batch_id)).data
+    const groups = await Promise.all(detail.tasks.map(async (task) => {
+      const resp = (await listArtifacts(task.task_id)).data
+      return {
+        taskId: task.task_id,
+        label: batchDetailTaskLabel(task),
+        serverLabel: task.server_name || task.host || `Server #${task.server_id}`,
+        remoteDir: task.remote_work_dir || '',
+        files: resp.files,
+      }
+    }))
+    batchArtifactGroups.value = groups
+  } catch (err) {
+    ElMessage.error(`加载结果文件失败：${getApiErrorMessage(err) || '未知错误'}`)
+  } finally {
+    artLoading.value = false
+  }
+}
+
+function downloadArtifact(filename: string, taskId = activeArtTaskId.value) {
+  if (!taskId) return
+  window.open(`/api/tasks/${taskId}/artifacts/${encodeURIComponent(filename)}/download`, '_blank')
 }
 
 function copyArtifactDir() {
@@ -2105,6 +2312,20 @@ onUnmounted(() => {
   min-height: 100px;
 }
 
+.art-batch-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  margin-bottom: 12px;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 8px;
+  background: var(--el-fill-color-lighter);
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+}
+
 .art-dir-bar {
   display: flex;
   align-items: center;
@@ -2114,6 +2335,11 @@ onUnmounted(() => {
   border: 1px solid var(--el-border-color-light);
   border-radius: 10px;
   background: var(--el-fill-color-lighter);
+}
+
+.art-dir-bar--compact {
+  margin-bottom: 6px;
+  padding: 6px 8px;
 }
 
 .art-dir-label {
@@ -2150,6 +2376,24 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.art-batch-group {
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.art-batch-group:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.art-empty-inline {
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--el-fill-color-lighter);
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
 }
 
 .art-group-header {
@@ -2230,12 +2474,6 @@ onUnmounted(() => {
   margin-bottom: 12px;
 }
 
-.page-title {
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--el-text-color-primary);
-}
-
 .page-refresh-button {
   margin-left: auto;
 }
@@ -2271,6 +2509,13 @@ onUnmounted(() => {
   font-weight: 700;
 }
 
+.batch-history-card__badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
 .batch-history-card__meta {
   display: flex;
   flex-wrap: wrap;
@@ -2278,6 +2523,32 @@ onUnmounted(() => {
   margin-top: 4px;
   font-size: 12px;
   color: var(--el-text-color-secondary);
+}
+
+.batch-history-card__status-block {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.batch-report-pill {
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.batch-report-pill.is-pass {
+  color: var(--el-color-success);
+  background: var(--el-color-success-light-9);
+}
+
+.batch-report-pill.is-fail {
+  color: var(--el-color-danger);
+  background: var(--el-color-danger-light-9);
 }
 
 .task-history-page .task-card__status-block {
@@ -2294,59 +2565,102 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
-.batch-history-steps {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.batch-history-step {
-  min-width: 0;
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 8px;
-  padding: 8px 10px;
-  background: var(--el-fill-color-lighter);
-}
-
-.batch-history-step__head {
+.task-history-page .task-card__body.task-card__body {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.batch-history-step__name {
-  display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 6px;
-  min-width: 0;
-  font-size: 13px;
-  font-weight: 700;
 }
 
-.batch-history-step__name > span {
-  white-space: nowrap;
-}
-
-.batch-history-step__name :deep(.el-tag) {
-  min-width: 0;
-  max-width: 180px;
-}
-
-.batch-history-step__meta {
+.task-history-page .task-card__info-grid {
   display: flex;
   flex-wrap: wrap;
-  gap: 2px 10px;
-  margin-top: 6px;
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
+  gap: 4px 16px;
+  font-size: 13px;
+  line-height: 1.6;
 }
 
-.batch-history-step__meta span {
-  min-width: 0;
+.task-history-page .task-card__info-grid--aligned {
+  display: grid;
+  grid-template-columns: 72px 250px 520px 320px max-content;
+  align-items: center;
+  justify-content: start;
+}
+
+.task-history-page .task-card__info-grid span {
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.task-history-page .task-card__info-grid--aligned span:nth-child(2),
+.task-history-page .task-card__info-grid--aligned span:nth-child(3),
+.task-history-page .task-card__info-grid--aligned span:nth-child(4) {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.task-history-page .task-card__module-label {
+  color: var(--el-text-color-secondary);
+  font-weight: 600;
+}
+
+.task-history-page .task-card__info-grid .task-card__plan-duration {
+  color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+  border: 1px solid var(--el-color-primary-light-7);
+  border-radius: 6px;
+  padding: 1px 8px;
+  font-weight: 600;
+}
+
+.task-history-page .task-card__time-line {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  font-family: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.task-history-page .task-card__error {
+  font-size: 13px;
+  color: #f56c6c;
+  background: #fef0f0;
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin-top: 4px;
+  word-break: break-all;
+  line-height: 1.5;
+}
+
+.batch-task-info-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.batch-task-info-row {
+  padding: 5px 0;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.batch-task-info-row:last-child {
+  border-bottom: 0;
+}
+
+.batch-task-info-row__grid {
+  min-width: 0;
+}
+
+@media (max-width: 1200px) {
+  .task-history-page .task-card__info-grid--aligned {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .batch-task-info-row {
+    flex-direction: column;
+    gap: 4px;
+    align-items: start;
+  }
 }
 
 .batch-history-step__error {
@@ -2358,13 +2672,6 @@ onUnmounted(() => {
   font-size: 12px;
   line-height: 1.4;
   word-break: break-all;
-}
-
-.batch-history-step__actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 2px 8px;
-  margin-top: 6px;
 }
 
 .batch-history-card__footer {
@@ -2379,10 +2686,21 @@ onUnmounted(() => {
   margin-top: 0;
 }
 
-@media (max-width: 1200px) {
-  .batch-history-steps {
-    grid-template-columns: 1fr;
-  }
+.batch-history-failure {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.batch-history-failure__item {
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+}
+
+.batch-history-failure__item span {
+  min-width: 0;
+  white-space: normal;
 }
 
 /* ── Batch view ── */
@@ -2423,11 +2741,17 @@ onUnmounted(() => {
 .batch-detail-dialog :deep(.batch-detail-summary-bar) {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-bottom: 14px;
-  padding: 12px 16px;
+  gap: 6px;
+  margin-bottom: 10px;
+  padding: 10px 12px;
   background: var(--el-fill-color-lighter);
   border-radius: 10px;
+}
+
+.batch-detail-dialog :deep(.el-dialog__body) {
+  overflow: visible;
+  padding-top: 8px;
+  padding-bottom: 8px;
 }
 
 .batch-detail-dialog :deep(.bd-label) {
@@ -2435,14 +2759,83 @@ onUnmounted(() => {
   font-size: 13px;
 }
 
-.batch-detail-dialog :deep(.batch-detail-summary-stats) {
-  display: flex;
-  gap: 16px;
-  flex-wrap: wrap;
+.batch-detail-dialog :deep(.batch-detail-loading-wrap) {
+  min-height: 120px;
+  overflow: visible;
 }
 
-.batch-detail-dialog :deep(.batch-detail-loading-wrap) {
-  min-height: 200px;
+.batch-detail-task-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.batch-detail-task-card {
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--el-fill-color-lighter);
+}
+
+.batch-detail-task-card__header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 8px;
+}
+
+.batch-detail-task-card__title {
+  font-weight: 700;
+  color: var(--el-text-color-primary);
+}
+
+.batch-detail-task-card__meta {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.batch-detail-task-card__actions {
+  display: flex;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.batch-detail-task-card__grid {
+  display: grid;
+  grid-template-columns: 120px 120px 120px 1fr 1fr 1fr 90px;
+  gap: 8px 12px;
+  align-items: center;
+  font-size: 13px;
+}
+
+.batch-detail-task-card__grid span {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.batch-detail-task-card__grid b {
+  flex: 0 0 auto;
+  color: var(--el-text-color-secondary);
+  font-weight: 500;
+}
+
+.batch-detail-task-card__reason {
+  grid-column: 1 / -1;
+  align-items: flex-start;
+  color: var(--el-color-danger);
+  white-space: normal;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+@media (max-width: 1100px) {
+  .batch-detail-task-card__grid {
+    grid-template-columns: 1fr 1fr;
+  }
 }
 
 /* ── Auto-refresh tag ── */

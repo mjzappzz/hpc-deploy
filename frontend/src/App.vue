@@ -21,7 +21,7 @@
         </el-menu-item>
         <el-menu-item index="/tasks" class="hpc-nav-pulse-item" :class="{ 'hpc-nav-pulse-active': isActiveMenu('/tasks') }">
           <el-icon><Operation /></el-icon>
-          <span>任务执行</span>
+          <span>执行任务</span>
         </el-menu-item>
         <el-menu-item index="/scripts" class="hpc-nav-pulse-item" :class="{ 'hpc-nav-pulse-active': isActiveMenu('/scripts') }">
           <el-icon><Document /></el-icon>
@@ -29,7 +29,7 @@
         </el-menu-item>
         <el-menu-item index="/history" class="hpc-nav-pulse-item" :class="{ 'hpc-nav-pulse-active': isActiveMenu('/history') }">
           <el-icon><Tickets /></el-icon>
-          <span>任务历史</span>
+          <span>历史任务</span>
         </el-menu-item>
       </el-menu>
 

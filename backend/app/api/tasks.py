@@ -1341,15 +1341,17 @@ def get_batch_detail(
     # Build summary
     # Batch-load report summaries for final_status computation
     report_map: dict[str, str] = {}
+    report_summary_map: dict[str, TaskReportSummary] = {}
     try:
         from app.models.task import TaskReportSummary
         cache_rows = (
-            db.query(TaskReportSummary.task_id, TaskReportSummary.report_status)
+            db.query(TaskReportSummary)
             .filter(TaskReportSummary.task_id.in_([t.task_id for t in tasks]))
             .all()
         )
-        for tid, rs in cache_rows:
-            report_map[tid] = rs
+        for row in cache_rows:
+            report_map[row.task_id] = row.report_status
+            report_summary_map[row.task_id] = row
     except Exception:
         pass
 
@@ -1361,6 +1363,7 @@ def get_batch_detail(
         srv = db.get(Server, t.server_id)
         srv_name = srv.name if srv else "unknown"
         srv_host = srv.host if srv else ""
+        srv_username = srv.username if srv else None
 
         if srv and srv.name not in server_names:
             server_names.append(srv.name)
@@ -1393,21 +1396,26 @@ def get_batch_detail(
 
         task_name = f"{srv_name} · {t.task_type or 'task'} · {t.file_name or 'unknown'}"
 
+        report_summary = report_summary_map.get(t.task_id)
         detail_items.append(BatchTaskDetailItem(
             task_id=t.task_id,
             task_name=task_name,
             server_id=t.server_id,
             server_name=srv_name,
             host=srv_host,
+            username=srv_username,
             status=t.status,
             final_status=child_final,
+            report_status=child_report,
             sequence_index=t.sequence_index,
+            created_at=t.created_at,
             started_at=t.start_time,
             ended_at=t.end_time,
             duration_seconds=_dur,
-            exit_code=t.exit_code,
+            remote_work_dir=t.remote_work_dir,
             has_artifacts=has_artifacts,
             error_summary=t.error_message,
+            failure_reason=report_summary.failure_reason if report_summary else None,
             params=t.params,
         ))
 

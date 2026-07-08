@@ -275,7 +275,7 @@ const fallbackRuntimePaths: RuntimePathInfo[] = [
     label: '编译环境脚本库',
     path: 'backend/scripts/mpi/',
     kind: 'directory',
-    description: '编译环境/安装类脚本，任务执行时按选择上传到远端。',
+    description: '编译环境/安装类脚本，执行任务时按选择上传到远端。',
     exists: false,
     size_bytes: null,
     file_count: null,
@@ -286,7 +286,7 @@ const fallbackRuntimePaths: RuntimePathInfo[] = [
     label: '压测脚本库',
     path: 'backend/scripts/stress/',
     kind: 'directory',
-    description: 'GPU、CPU/内存、磁盘压测脚本，任务执行时按选择上传到远端。',
+    description: 'GPU、CPU/内存、磁盘压测脚本，执行任务时按选择上传到远端。',
     exists: false,
     size_bytes: null,
     file_count: null,
@@ -620,7 +620,7 @@ async function doDeleteArtifactDir(dir: LocalArtifactDirectory) {
   deletingArtifactDir.value = dir.relative_path
   try {
     await ElMessageBox.confirm(
-      `将删除该任务结果目录及其中所有文件。任务历史记录不会删除，但相关结果文件将不可下载。此操作不可恢复。\n\n目录：${artifactDeletePaths(dir).join(', ')}`,
+      `将删除该任务结果目录及其中所有文件。历史任务记录不会删除，但相关结果文件将不可下载。此操作不可恢复。\n\n目录：${artifactDeletePaths(dir).join(', ')}`,
       '确认删除',
       { confirmButtonText: '确认删除', cancelButtonText: '取消', type: 'warning' }
     )
@@ -646,7 +646,7 @@ async function doDeleteSelectedArtifacts() {
   if (selectedArtifactDirPaths.value.length === 0) return
   try {
     await ElMessageBox.confirm(
-      `将删除选中的 ${selectedArtifactDirPaths.value.length} 个目录及其所有文件。任务历史记录不会删除，但相关结果文件将不可下载。此操作不可恢复。`,
+      `将删除选中的 ${selectedArtifactDirPaths.value.length} 个目录及其所有文件。历史任务记录不会删除，但相关结果文件将不可下载。此操作不可恢复。`,
       '确认批量删除',
       { confirmButtonText: '确认删除', cancelButtonText: '取消', type: 'warning' }
     )

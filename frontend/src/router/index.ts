@@ -13,8 +13,8 @@ const router = createRouter({
   routes: [
     { path: '/', component: Dashboard, meta: { title: '仪表盘' } },
     { path: '/servers', component: Servers, meta: { title: '服务器管理' } },
-    { path: '/task-runner', component: TaskRunner, meta: { title: '任务执行' }, alias: '/tasks' },
-    { path: '/history', component: TaskHistory, meta: { title: '任务历史' } },
+    { path: '/task-runner', component: TaskRunner, meta: { title: '执行任务' }, alias: '/tasks' },
+    { path: '/history', component: TaskHistory, meta: { title: '历史任务' } },
     { path: '/audit-logs', component: AuditLog, meta: { title: '审计日志' } },
     { path: '/scripts', component: Scripts, meta: { title: '脚本知识库' } },
     { path: '/settings', component: Settings, meta: { title: '系统设置' } },

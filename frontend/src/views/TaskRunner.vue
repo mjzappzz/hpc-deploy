@@ -4,7 +4,7 @@
       <template #header>
         <div class="runner-header">
           <div>
-            <div class="runner-title">任务执行准备</div>
+            <div class="runner-title">执行任务准备</div>
             <div class="runner-subtitle">从脚本知识库中选择脚本执行（stress 支持参数化配置）；Apptainer 只做镜像分发上传，不执行。</div>
           </div>
         </div>
@@ -17,7 +17,7 @@
           <template v-if="mode === 'config'">
             <el-alert
               class="history-handoff-alert"
-              title="任务提交后，请到任务历史查看执行状态、日志、报告和诊断。"
+              title="任务提交后，请到历史任务查看执行状态、日志、报告和诊断。"
               type="info"
               :closable="false"
               show-icon
@@ -156,7 +156,7 @@
                     </div>
                   </div>
                   <div class="stress-suite-hint" v-if="selectedStressScripts.length === 1">
-                    已选择 1 个压测脚本，将按单任务执行。
+                    已选择 1 个压测脚本，将按单次执行。
                   </div>
                   <div class="stress-suite-hint" v-else-if="selectedStressScripts.length >= 2">
                     已选择 {{ selectedStressScripts.length }} 个压测脚本，
@@ -362,7 +362,7 @@
           <code class="batch-id-value">{{ stressSuiteResult.batch_id }}</code>
         </div>
         <div style="margin:10px 0; font-size:13px; color:#909399;">
-          子任务将按 GPU → CPU/内存 → 磁盘顺序串行执行，请到任务历史批次视图查看状态和报告。
+          子任务将按 GPU → CPU/内存 → 磁盘顺序串行执行，请到历史任务批次视图查看状态和报告。
         </div>
         <el-table :data="stressSuiteResult.items" max-height="360" stripe size="small">
           <el-table-column prop="server_name" label="服务器" width="140" />
@@ -1025,7 +1025,7 @@ async function createTask() {
       payload.params = { overwrite: apptainerOverwrite.value }
     }
     const result = (await runTask(payload)).data
-    ElMessage.success('任务已创建，正在跳转任务历史。')
+    ElMessage.success('任务已创建，正在跳转历史任务。')
     await router.push({
       path: '/history',
       query: {
@@ -1043,7 +1043,7 @@ async function createTask() {
       const resp = (error as { response: { status?: number; data?: { detail?: Record<string, unknown> } } }).response
       if (resp.status === 409 && resp.data?.detail && typeof resp.data.detail === 'object') {
         const detail = resp.data.detail as { message?: string; running_task_id?: string }
-        const msg = detail.message || '当前服务器已有任务正在执行，请到任务历史继续查看。'
+        const msg = detail.message || '当前服务器已有任务正在执行，请到历史任务继续查看。'
         if (detail.running_task_id) {
           ElMessageBox.alert(msg, '任务冲突', {
             confirmButtonText: '跳转查看',
@@ -1081,7 +1081,7 @@ async function createStressSuiteTask() {
     const result = (await createStressSuite(payload)).data
     stressSuiteResult.value = result
     showStressSuiteResult.value = false
-    ElMessage.success('压测套件已创建，正在跳转任务历史。')
+    ElMessage.success('压测套件已创建，正在跳转历史任务。')
     await router.push({
       path: '/history',
       query: {
@@ -1100,7 +1100,7 @@ async function handleNewTask() {
   if (activeTaskId.value) {
     try {
       await ElMessageBox.confirm(
-        '当前远程任务不会停止，可在任务历史中继续查看。',
+        '当前远程任务不会停止，可在历史任务中继续查看。',
         '新建任务',
         { confirmButtonText: '确认', cancelButtonText: '取消', type: 'warning' }
       )
@@ -1418,7 +1418,7 @@ async function batchCreate() {
     if (res.created > 0) parts.push(`成功 ${res.created} 台`)
     if (res.skipped > 0) parts.push(`跳过 ${res.skipped} 台`)
     if (res.failed > 0) parts.push(`失败 ${res.failed} 台`)
-    ElMessage.success(`批量任务已创建：${parts.join('，')}，正在跳转任务历史。`)
+    ElMessage.success(`批量任务已创建：${parts.join('，')}，正在跳转历史任务。`)
     await router.push({
       path: '/history',
       query: {
