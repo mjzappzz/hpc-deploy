@@ -608,54 +608,288 @@
       <el-empty v-else description="请选择任务" />
     </el-drawer>
 
-    <!-- ─── Batch detail dialog ─── -->
-    <el-dialog v-model="batchDetailVisible" :title="`批次详情：${batchDetailData?.batch_id || ''}`" width="1120px" top="6vh" :close-on-click-modal="false" class="batch-detail-dialog">
+    <!-- ─── Batch detail dialog (inline detail panel) ─── -->
+    <el-dialog v-model="batchDetailVisible" title="批次详情" width="1200px" top="4vh" :close-on-click-modal="false" class="batch-detail-dialog">
       <div v-loading="batchDetailLoading" class="batch-detail-loading-wrap">
         <template v-if="batchDetailData">
           <div class="batch-detail-summary-bar">
             <div class="batch-detail-summary-row">
-              <span class="bd-label">模块：</span>
-              <span>{{ batchSummaryModuleLabels(batchDetailData.tasks).join('、') || '-' }}</span>
-              <el-tag size="small" style="margin-left:8px">{{ taskTypeLabel(batchDetailData.summary.task_type) }}</el-tag>
-              <el-tag :type="batchStatusTagType(batchDetailData.summary.status)" size="small" style="margin-left:8px">{{ batchStatusLabel(batchDetailData.summary.status) }}</el-tag>
+              <code class="bd-batch-id">{{ batchDetailData.batch_id }}</code>
+              <span class="bd-tag-group">
+                <el-tag size="small">{{ batchSummaryModuleLabels(batchDetailData.tasks).join('、') || '-' }}</el-tag>
+                <el-tag :type="batchStatusTagType(batchDetailData.summary.status)" size="small">{{ batchStatusLabel(batchDetailData.summary.status) }}</el-tag>
+              </span>
             </div>
-            <div class="batch-detail-servers">
-              <span class="bd-label">目标服务器：</span>
+            <div class="batch-detail-summary-sub">
+              <span class="bd-label">目标</span>
               <span>{{ batchDetailServerPlans(batchDetailData.tasks).join('；') }}</span>
-            </div>
-            <div class="batch-detail-time">
-              <span class="bd-label">创建时间：</span>
+              <span class="bd-sep">|</span>
+              <span class="bd-label">创建</span>
               <span>{{ formatDate(batchDetailData.summary.created_at) }}</span>
             </div>
           </div>
 
-          <div class="batch-detail-task-list">
-            <div v-for="task in batchDetailData.tasks" :key="task.task_id" class="batch-detail-task-card">
-              <div class="batch-detail-task-card__header">
-                <div>
-                  <div class="batch-detail-task-card__title">{{ batchDetailTaskLabel(task) }}</div>
-                  <div class="batch-detail-task-card__meta">{{ task.task_id }} / {{ task.server_name }} ({{ task.host }}) / 用户 {{ task.username || '-' }}</div>
-                </div>
-                <div class="batch-detail-task-card__actions">
-                  <el-button size="small" type="primary" plain @click="continueBatchTask(task)">查看任务详情</el-button>
-                  <el-button
-                    size="small"
-                    plain
-                    :disabled="!isBatchTaskTerminal(task.status)"
-                    @click="openBatchTaskArtifacts(task)"
-                  >结果文件</el-button>
+          <!-- Left/right split -->
+          <div class="batch-detail-split">
+            <!-- Left: sub-task list -->
+            <div class="batch-detail-left">
+              <div class="batch-detail-left__header">子任务（{{ batchDetailData.tasks.length }}）</div>
+              <div class="batch-detail-left__list">
+                <div
+                  v-for="(task, idx) in batchDetailData.tasks"
+                  :key="task.task_id"
+                  class="batch-detail-subtask"
+                  :class="{ 'is-active': batchDetailSelectedIdx === idx }"
+                  @click="batchDetailSelectTask(idx)"
+                >
+                  <div class="batch-detail-subtask__indicator" />
+                  <div class="batch-detail-subtask__body">
+                    <div class="batch-detail-subtask__top">
+                      <div class="batch-detail-subtask__title">
+                        <span class="batch-detail-subtask__seq">{{ batchDetailTaskOrder(task) }}</span>
+                        <span class="batch-detail-subtask__name">{{ batchDetailTaskLabel(task) }}</span>
+                      </div>
+                      <StatusTag :status="task.status" />
+                    </div>
+                    <div class="batch-detail-subtask__meta">{{ task.server_name }} ({{ task.host }})</div>
+                    <div class="batch-detail-subtask__actions">
+                      <el-button
+                        size="small"
+                        type="warning"
+                        class="batch-detail-subtask__action"
+                        text
+                        @click.stop="detailOpenDiagnosis(task)"
+                      >诊断</el-button>
+                      <el-button
+                        v-if="batchDetailShowArtifactsButton(task)"
+                        size="small"
+                        type="primary"
+                        text
+                        class="batch-detail-subtask__action"
+                        @click.stop="detailOpenArtifacts(task)"
+                      >结果文件</el-button>
+                    </div>
+                  </div>
                 </div>
               </div>
-              <div class="batch-detail-task-card__grid">
-                <span><b>任务状态</b><StatusTag :status="task.status" /></span>
-                <span><b>报告状态</b><el-tag size="small" :type="batchDetailReportTagType(task)">{{ batchDetailReportLabel(task) }}</el-tag></span>
-                <span><b>计划时长</b>{{ formatStressDuration(task.params) }}</span>
-                <span><b>创建时间</b>{{ formatDate(task.created_at) }}</span>
-                <span><b>开始时间</b>{{ formatDate(task.started_at) }}</span>
-                <span><b>结束时间</b>{{ formatDate(task.ended_at) }}</span>
-                <span><b>总耗时</b>{{ formatDuration(task.duration_seconds) }}</span>
-                <span v-if="batchDetailFailureReason(task)" class="batch-detail-task-card__reason"><b>原因</b>{{ batchDetailFailureReason(task) }}</span>
-              </div>
+            </div>
+
+            <!-- Right: selected sub-task detail -->
+            <div class="batch-detail-right">
+              <template v-if="batchDetailSelectedIdx === null">
+                <div class="batch-detail-right__empty">
+                  <el-empty description="没活儿在跑，右边先摸会儿鱼。点左侧子任务也能强行查看。" :image-size="50" />
+                </div>
+              </template>
+              <template v-else-if="selectedTaskData">
+                <div class="detail-panel">
+                  <!-- Header -->
+                  <div class="detail-panel__header">
+                    <div class="detail-panel__title-row">
+                      <div class="detail-panel__title-wrap">
+                        <span class="detail-panel__title">{{ selectedTaskLabel }}</span>
+                        <el-tag v-if="detailShowRealtimeLogStatus" size="small" type="success">实时日志：已连接</el-tag>
+                      </div>
+                      <div class="detail-panel__header-actions">
+                        <el-button
+                          v-if="detailCanRetry"
+                          type="primary"
+                          plain
+                          size="small"
+                          class="detail-panel__retry-button"
+                          :disabled="selectedTaskData ? batchDetailRetryBlocked(selectedTaskData) : false"
+                          :loading="batchRetrySubmitting[batchDetailSelectedTaskId || '']"
+                          @click="detailRetryTask()"
+                        >{{ selectedTaskData && batchDetailRetryBlocked(selectedTaskData) ? '已排队' : '重跑' }}</el-button>
+                        <el-button
+                          v-if="detailShowCancelButton"
+                          type="danger"
+                          plain
+                          size="small"
+                          class="detail-panel__cancel-button"
+                          @click="detailCancelTask"
+                        >取消任务</el-button>
+                      </div>
+                    </div>
+                    <div class="detail-panel__id-row">
+                      <code>{{ batchDetailSelectedTaskId }}</code><span class="detail-panel__sep">·</span><span class="detail-panel__server">{{ selectedTaskData.server_name }} ({{ selectedTaskData.host }})</span>
+                    </div>
+                  </div>
+
+                  <!-- Info grid -->
+                  <div class="detail-panel__grid">
+                    <div class="detail-grid__item">
+                      <span class="detail-grid__label">任务状态</span>
+                      <StatusTag :status="detailDisplayStatus" />
+                    </div>
+                    <div class="detail-grid__item">
+                      <span class="detail-grid__label">报告状态</span>
+                      <el-tag size="small" :type="detailReportTagType" effect="plain">{{ detailReportLabel }}</el-tag>
+                    </div>
+                    <div class="detail-grid__item detail-grid__item--full">
+                      <span class="detail-grid__label">远端目录</span>
+                      <code class="detail-grid__code">{{ selectedTaskData.remote_work_dir || '-' }}</code>
+                    </div>
+                    <div class="detail-grid__item">
+                      <span class="detail-grid__label">计划时长</span>
+                      <span>{{ formatStressDuration(selectedTaskData.params) || '-' }}</span>
+                    </div>
+                    <div class="detail-grid__item">
+                      <span class="detail-grid__label">创建时间</span>
+                      <span>{{ formatDate(selectedTaskData.created_at) || '-' }}</span>
+                    </div>
+                    <div class="detail-grid__item">
+                      <span class="detail-grid__label">开始时间</span>
+                      <span>{{ formatDate(selectedTaskData.started_at) || '-' }}</span>
+                    </div>
+                    <div class="detail-grid__item">
+                      <span class="detail-grid__label">结束时间</span>
+                      <span>{{ formatDate(selectedTaskData.ended_at) || '-' }}</span>
+                    </div>
+                    <div class="detail-grid__item">
+                      <span class="detail-grid__label">已运行</span>
+                      <span>{{ detailRunningDuration !== null ? formatSeconds(detailRunningDuration) : '-' }}</span>
+                    </div>
+                    <div class="detail-grid__item">
+                      <span class="detail-grid__label">预计剩余</span>
+                      <span>{{ detailEstimatedRemaining !== null ? formatSeconds(detailEstimatedRemaining) : '-' }}</span>
+                    </div>
+                    <div class="detail-grid__item">
+                      <span class="detail-grid__label">总耗时</span>
+                      <span>{{ formatDuration(selectedTaskData.duration_seconds) || '-' }}</span>
+                    </div>
+                  </div>
+                  <div v-if="batchDetailFailureReason(selectedTaskData)" class="detail-panel__reason">
+                    <span class="detail-reason__icon">⚠</span><span><b>原因：</b>{{ batchDetailFailureReason(selectedTaskData) }}</span>
+                  </div>
+
+                  <!-- Progress bar -->
+                  <el-progress
+                    v-if="detailProgressValue !== null"
+                    :percentage="detailProgressValue"
+                    :stroke-width="12"
+                    :text-inside="true"
+                    :status="detailProgressStatus"
+                    class="detail-panel__progress"
+                  />
+
+                  <!-- Tabs -->
+                  <el-tabs v-model="detailActivePanel" class="detail-panel__tabs" @tab-change="handleDetailPanelChange">
+                    <el-tab-pane label="详情概览" name="summary">
+                      <div class="detail-summary-rows">
+                        <div class="detail-summary__row">
+                          <span class="detail-summary__label">任务类型</span>
+                          <span>{{ taskTypeLabel(batchDetailData.summary.task_type) }}</span>
+                        </div>
+                        <div class="detail-summary__row">
+                          <span class="detail-summary__label">当前任务</span>
+                          <span>{{ selectedTaskLabel }}</span>
+                        </div>
+                        <div class="detail-summary__row">
+                          <span class="detail-summary__label">执行顺序</span>
+                          <span>{{ detailSequenceNumerator }} / {{ detailSequenceTotal }}</span>
+                        </div>
+                        <div class="detail-summary__row">
+                          <span class="detail-summary__label">远端用户</span>
+                          <span>{{ selectedTaskData.username || '-' }}</span>
+                        </div>
+                      </div>
+                    </el-tab-pane>
+                    <el-tab-pane label="执行日志" name="logs">
+                      <div v-loading="detailLogsLoading && !detailLogsLoaded" class="detail-panel-logs-wrap">
+                        <div v-if="detailShowManualLogLoad" class="detail-panel-empty-action">
+                          <el-button size="small" type="primary" :loading="detailLogsLoading" @click="detailLoadLogs">加载日志</el-button>
+                        </div>
+                        <LogViewer
+                          v-else
+                          ref="detailLogViewerRef"
+                          :logs="detailLogs"
+                          max-height="280px"
+                          toolbar
+                          @clear="detailLogs = []"
+                          @download="detailDownloadLogs"
+                        />
+                      </div>
+                    </el-tab-pane>
+
+                    <el-tab-pane v-if="detailShowMonitorCpuMem" label="CPU/内存" name="cpu_mem">
+                      <div v-if="detailMonitorLoading && !detailMonitorData" class="detail-panel-loading-inline">
+                        <el-icon class="is-loading"><Loading /></el-icon>
+                        <span>正在获取 CPU/内存快照...</span>
+                      </div>
+                      <div v-else-if="!detailMonitorData?.cpu_memory.available" class="detail-panel-empty-action">
+                        <el-empty description="暂无 CPU/内存实时监控数据" :image-size="40" />
+                        <div v-if="detailMonitorData?.cpu_memory.message" class="detail-monitor-msg">{{ detailMonitorData.cpu_memory.message }}</div>
+                      </div>
+                      <div v-else class="detail-monitor-grid">
+                        <div class="detail-monitor-card">
+                          <span class="detail-monitor-card__label">CPU 使用率</span>
+                          <span class="detail-monitor-card__value">{{ detailMonitorData.cpu_memory.cpu_usage_percent ?? '-' }}%</span>
+                        </div>
+                        <div class="detail-monitor-card">
+                          <span class="detail-monitor-card__label">Load Average</span>
+                          <span class="detail-monitor-card__value">{{ detailMonitorData.cpu_memory.load_avg ?? '-' }}</span>
+                        </div>
+                        <div class="detail-monitor-card">
+                          <span class="detail-monitor-card__label">内存总量</span>
+                          <span class="detail-monitor-card__value">{{ detailMonitorData.cpu_memory.memory_total ?? '-' }}</span>
+                        </div>
+                        <div class="detail-monitor-card">
+                          <span class="detail-monitor-card__label">内存使用</span>
+                          <span class="detail-monitor-card__value">{{ detailMonitorData.cpu_memory.memory_used ?? '-' }} ({{ detailMonitorData.cpu_memory.memory_usage_percent ?? '-' }}%)</span>
+                        </div>
+                      </div>
+                    </el-tab-pane>
+
+                    <el-tab-pane v-if="detailShowMonitorDisk" label="磁盘" name="disk">
+                      <div v-if="detailMonitorLoading && !detailMonitorData" class="detail-panel-loading-inline">
+                        <el-icon class="is-loading"><Loading /></el-icon>
+                        <span>正在获取磁盘快照...</span>
+                      </div>
+                      <div v-else-if="!detailMonitorData?.disk.available" class="detail-panel-empty-action">
+                        <el-empty description="暂无磁盘监控数据" :image-size="40" />
+                        <div v-if="detailMonitorData?.disk.message" class="detail-monitor-msg">{{ detailMonitorData.disk.message }}</div>
+                      </div>
+                      <el-table v-else :data="detailMonitorData.disk.disk_usage" stripe size="small" max-height="260">
+                        <el-table-column prop="mount" label="挂载点" />
+                        <el-table-column prop="total" label="总容量" width="90" />
+                        <el-table-column prop="used" label="已用" width="90" />
+                        <el-table-column prop="available" label="可用" width="90" />
+                        <el-table-column label="使用率" width="150">
+                          <template #default="{ row }">
+                            <el-progress :percentage="row.usage_percent ?? 0" :stroke-width="12" />
+                          </template>
+                        </el-table-column>
+                      </el-table>
+                    </el-tab-pane>
+
+                    <el-tab-pane v-if="detailShowMonitorGpu" label="GPU" name="gpu">
+                      <div v-if="detailMonitorLoading && !detailMonitorData" class="detail-panel-loading-inline">
+                        <el-icon class="is-loading"><Loading /></el-icon>
+                        <span>正在获取 GPU 快照...</span>
+                      </div>
+                      <div v-else-if="!detailMonitorData?.gpu.available" class="detail-panel-empty-action">
+                        <el-empty description="暂无 GPU 实时监控数据" :image-size="40" />
+                        <div v-if="detailMonitorData?.gpu.message" class="detail-monitor-msg">{{ detailMonitorData.gpu.message }}</div>
+                      </div>
+                      <div v-else class="detail-monitor-gpu-grid">
+                        <div v-for="gpu in detailMonitorData.gpu.items" :key="gpu.index" class="detail-monitor-gpu-card">
+                          <div class="detail-gpu-name">{{ gpu.name }}<span class="detail-gpu-idx"> #{{ gpu.index }}</span></div>
+                          <div class="detail-gpu-metrics">
+                            <span>GPU {{ gpu.utilization_gpu ?? '-' }}%</span>
+                            <span>显存 {{ gpu.memory_used ?? '-' }}/{{ gpu.memory_total ?? '-' }} MiB</span>
+                            <span>🌡 {{ gpu.temperature ?? '-' }}°C</span>
+                          </div>
+                        </div>
+                      </div>
+                    </el-tab-pane>
+                  </el-tabs>
+
+                  <div v-if="detailMonitorData?.sampled_at && detailActivePanel !== 'logs' && detailActivePanel !== 'summary'" class="detail-sampled-at">
+                    采样时间：{{ formatDate(detailMonitorData.sampled_at) }}
+                  </div>
+                </div>
+              </template>
             </div>
           </div>
         </template>
@@ -687,7 +921,7 @@
 import { computed, nextTick, onMounted, onActivated, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
-import { cancelBatch, cancelTask, downloadBatchReportZip, downloadTaskLogs, getTask, getTaskLogs, getTaskMonitor, listArtifacts, listBatches, getBatchDetail, listTasks, type ArtifactFileDetail, type BatchDetailResponse, type BatchQuery, type BatchSummaryItem, type BatchTaskDetailItem, type MonitorType, type TaskLogRecord, type TaskListQuery, type TaskMonitorStructuredResponse, type TaskRecord } from '@/api/task'
+import { cancelBatch, cancelTask, downloadBatchReportZip, downloadTaskLogs, getTask, getTaskLogs, getTaskMonitor, listArtifacts, listBatches, getBatchDetail, listTasks, retryBatchTask, type ArtifactFileDetail, type BatchDetailResponse, type BatchQuery, type BatchSummaryItem, type BatchTaskDetailItem, type MonitorType, type TaskLogRecord, type TaskListQuery, type TaskMonitorStructuredResponse, type TaskRecord } from '@/api/task'
 import { formatDateTime } from '@/utils/time'
 import { getApiErrorMessage as readApiErrorMessage } from '@/utils/apiError'
 import { useTaskWebSocket } from '@/composables/useTaskWebSocket'
@@ -769,6 +1003,24 @@ const batchDetailVisible = ref(false)
 const batchDetailData = ref<BatchDetailResponse | null>(null)
 const batchDetailLoading = ref(false)
 let batchDetailRefreshTimer: ReturnType<typeof setInterval> | null = null
+
+// ── Batch detail inline panel state ──
+const batchDetailSelectedIdx = ref<number | null>(null)
+const detailActivePanel = ref<string>('summary')
+const detailLogs = ref<TaskLogRecord[]>([])
+const detailLogsLoaded = ref(false)
+const detailLogsLoading = ref(false)
+const detailLogViewerRef = ref<InstanceType<typeof LogViewer> | null>(null)
+const detailMonitorData = ref<TaskMonitorStructuredResponse | null>(null)
+const detailMonitorLoading = ref(false)
+const detailNow = ref(new Date())
+const detailWsHook = useTaskWebSocket()
+const detailWsConnected = ref(false)
+const batchRetrySubmitting = ref<Record<string, boolean>>({})
+// 单独缓存选中任务的完整数据，确保 start_time 不被 batch 刷新覆盖
+const detailTaskData = ref<TaskRecord | null>(null)
+let detailNowTimer: ReturnType<typeof setInterval> | null = null
+let detailMonitorTimer: ReturnType<typeof setInterval> | null = null
 
 // ── Expandable batch rows ──
 const expandedBatchKeys = ref<string[]>([])
@@ -952,7 +1204,8 @@ function batchGroupStartTime(tasks: TaskRecord[]): string | null {
 
 function batchGroupEndTime(tasks: TaskRecord[]): string | null {
   const values = tasks.map(task => task.end_time).filter(Boolean) as string[]
-  if (values.length === 0) return null
+  // 只有全部子任务都有结束时间时才展示（整个批次已结束）
+  if (values.length !== tasks.length) return null
   return values.sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0]
 }
 
@@ -1007,6 +1260,7 @@ function batchDetailFailureReason(task: BatchTaskDetailItem): string {
   const status = (task.status || '').toUpperCase()
   const hasExplicitError = Boolean(task.failure_reason || task.error_summary)
   if (reportStatus === 'PASS') return ''
+  if (status === 'CANCELED') return task.error_summary || task.failure_reason || '任务已被取消'
   if (reportStatus === 'FAIL') return task.failure_reason || task.error_summary || '报告结果为 FAIL，请查看结果文件确认失败指标。'
   if (hasExplicitError) return task.failure_reason || task.error_summary || ''
   if (!isBatchTaskTerminal(status)) return ''
@@ -1077,11 +1331,23 @@ function batchReportResult(tasks: TaskRecord[]) {
 
 function batchFailureReasons(tasks: TaskRecord[]) {
   return tasks
-    .filter(task => (task.report_status || '').toUpperCase() === 'FAIL' || taskDisplayStatus(task).toUpperCase() === 'FAILED')
-    .map(task => ({
-      title: `${batchStepLabel(task)}压测失败`,
-      message: task.failure_reason || task.error_message || '报告检测到压测结果为 FAIL，请查看结果文件。',
-    }))
+    .filter(task => {
+      const status = taskDisplayStatus(task).toUpperCase()
+      return status === 'FAILED' || status === 'CANCELED' || (task.report_status || '').toUpperCase() === 'FAIL'
+    })
+    .map(task => {
+      const status = taskDisplayStatus(task).toUpperCase()
+      if (status === 'CANCELED') {
+        return {
+          title: `${batchStepLabel(task)}已取消`,
+          message: task.error_message || task.failure_reason || '任务已被取消',
+        }
+      }
+      return {
+        title: `${batchStepLabel(task)}压测失败`,
+        message: task.failure_reason || task.error_message || '报告检测到压测结果为 FAIL，请查看结果文件。',
+      }
+    })
 }
 
 function batchSummaryFromTasks(batchId: string, tasks: TaskRecord[]): BatchSummaryItem {
@@ -1305,6 +1571,177 @@ watch(drawerVisibleMonitorTabs, (tabs) => {
   if (!tabs.some(tab => tab.name === drawerActivePanel.value)) {
     drawerActivePanel.value = 'summary'
   }
+})
+
+// ── Batch detail inline panel computed ──
+const batchDetailSelectedTaskId = computed(() => {
+  if (batchDetailData.value === null || batchDetailSelectedIdx.value === null) return null
+  const tasks = batchDetailData.value.tasks
+  const idx = batchDetailSelectedIdx.value
+  return (idx >= 0 && idx < tasks.length) ? tasks[idx].task_id : null
+})
+
+const selectedTaskData = computed(() => {
+  if (batchDetailData.value === null || batchDetailSelectedIdx.value === null) return null
+  const tasks = batchDetailData.value.tasks
+  const idx = batchDetailSelectedIdx.value
+  return (idx >= 0 && idx < tasks.length) ? tasks[idx] : null
+})
+
+const selectedTaskLabel = computed(() => {
+  if (!selectedTaskData.value) return '-'
+  return batchDetailTaskLabel(selectedTaskData.value)
+})
+
+const detailDisplayStatus = computed(() => {
+  const task = selectedTaskData.value
+  if (!task) return ''
+  if (task.final_status && task.final_status !== 'UNKNOWN') return task.final_status
+  return task.status
+})
+
+const detailReportTagType = computed<'' | 'success' | 'danger' | 'warning' | 'info'>(() => {
+  if (!selectedTaskData.value) return ''
+  return batchDetailReportTagType(selectedTaskData.value) as unknown as '' | 'success' | 'danger' | 'warning' | 'info'
+})
+
+const detailReportLabel = computed(() => {
+  if (!selectedTaskData.value) return ''
+  return batchDetailReportLabel(selectedTaskData.value)
+})
+
+const detailRunningDuration = computed<number | null>(() => {
+  const task = selectedTaskData.value
+  if (!task) return null
+  // 优先用单独请求的完整任务数据（start_time 不会被 batch 刷新覆盖）
+  const startTime = detailTaskData.value?.start_time ?? task.started_at
+  const endTime = detailTaskData.value?.end_time ?? task.ended_at
+  return calcDurationSeconds(startTime, endTime, detailNow.value)
+})
+
+const detailEstimatedRemaining = computed<number | null>(() => {
+  const task = selectedTaskData.value
+  if (!task) return null
+  if (TERMINAL_STATUSES.includes(task.status?.toUpperCase() ?? '')) return null
+  const dur = task.duration_seconds ?? (task.params?.duration_seconds as number | undefined)
+  if (dur == null || typeof dur !== 'number' || dur <= 0) return null
+  const elapsed = detailRunningDuration.value ?? 0
+  return Math.max(0, dur - elapsed)
+})
+
+const detailSequenceTotal = computed(() => {
+  const task = selectedTaskData.value
+  if (!task || !batchDetailData.value) return 0
+  return batchDetailData.value.tasks.filter(t => t.server_id === task.server_id).length
+})
+
+const detailSequenceNumerator = computed(() => {
+  const task = selectedTaskData.value
+  if (!task || !batchDetailData.value) return 0
+  const sameServer = batchDetailData.value.tasks.filter(t => t.server_id === task.server_id)
+  const idx = sameServer.findIndex(t => t.task_id === task.task_id)
+  return idx >= 0 ? idx + 1 : 0
+})
+
+const detailProgressValue = computed<number | null>(() => {
+  const task = selectedTaskData.value
+  if (!task) return null
+  const status = task.status?.toUpperCase() ?? ''
+  if (status === 'SUCCESS') return 100
+  if (status === 'PENDING') return 0
+  const elapsed = detailRunningDuration.value
+  if (elapsed === null) return null
+  if (task.params && typeof task.params.duration_seconds === 'number') {
+    const pct = Math.round((elapsed / task.params.duration_seconds) * 100)
+    if (status === 'RUNNING') return Math.min(99, pct)
+    return Math.min(100, pct)
+  }
+  return null
+})
+
+const detailProgressStatus = computed<'success' | 'exception' | 'warning' | undefined>(() => {
+  const status = selectedTaskData.value?.status?.toUpperCase() ?? ''
+  if (status === 'SUCCESS') return 'success'
+  if (status === 'FAILED') return 'exception'
+  if (status === 'CANCELED') return 'warning'
+  return undefined
+})
+
+const detailShowCancelButton = computed(() => {
+  const status = selectedTaskData.value?.status?.toUpperCase() ?? ''
+  return ['PENDING', 'CONNECTING', 'PREPARING', 'UPLOADING', 'RUNNING'].includes(status)
+})
+
+const detailShowArtifactsButton = computed(() => {
+  const task = selectedTaskData.value
+  return task ? batchDetailShowArtifactsButton(task) : false
+})
+
+const detailCanRetry = computed(() => {
+  const task = selectedTaskData.value
+  return task ? batchDetailCanRetryTask(task) : false
+})
+
+function batchDetailTaskOrder(task: BatchTaskDetailItem): number {
+  if (!batchDetailData.value) return 0
+  const sameServer = batchDetailData.value.tasks.filter(t => t.server_id === task.server_id)
+  const idx = sameServer.findIndex(t => t.task_id === task.task_id)
+  return idx >= 0 ? idx + 1 : 0
+}
+
+function batchDetailShowArtifactsButton(task: BatchTaskDetailItem): boolean {
+  return ['SUCCESS', 'FAILED', 'CANCELED'].includes(task.status?.toUpperCase() ?? '')
+}
+
+function batchDetailCanRetryTask(task: BatchTaskDetailItem): boolean {
+  const status = task.status?.toUpperCase() ?? ''
+  const finalStatus = task.final_status?.toUpperCase() ?? ''
+  const reportStatus = task.report_status?.toUpperCase() ?? ''
+  return ['FAILED', 'CANCELED', 'TIMEOUT'].includes(status)
+    || ['FAILED', 'FAIL'].includes(finalStatus)
+    || reportStatus === 'FAIL'
+}
+
+function batchDetailRetryBlocked(task: BatchTaskDetailItem): boolean {
+  if (batchRetrySubmitting.value[task.task_id]) return true
+  const tasks = batchDetailData.value?.tasks ?? []
+  return tasks.some(candidate => {
+    const retryOf = candidate.params?.__retry_of_task_id
+    const status = candidate.status?.toUpperCase() ?? ''
+    return retryOf === task.task_id && ['PENDING', 'CONNECTING', 'PREPARING', 'UPLOADING', 'RUNNING'].includes(status)
+  })
+}
+
+const detailIsTerminal = computed(() => {
+  const status = selectedTaskData.value?.status?.toUpperCase() ?? ''
+  return TERMINAL_STATUSES.includes(status)
+})
+
+const detailShowRealtimeLogStatus = computed(() => {
+  return !detailIsTerminal.value && detailWsConnected.value
+})
+
+const detailShowManualLogLoad = computed(() => {
+  return detailIsTerminal.value && !detailLogsLoaded.value && detailLogs.value.length === 0
+})
+
+const detailShowMonitorCpuMem = computed(() => {
+  if (detailIsTerminal.value) return false
+  if (!batchDetailData.value) return false
+  return batchDetailData.value.summary.task_type === 'stress'
+})
+
+const detailShowMonitorDisk = computed(() => {
+  if (detailIsTerminal.value) return false
+  if (!batchDetailData.value) return false
+  const t = batchDetailData.value.summary.task_type
+  return t === 'stress' || t === 'stress_disk' || t === 'apptainer'
+})
+
+const detailShowMonitorGpu = computed(() => {
+  if (detailIsTerminal.value) return false
+  if (!batchDetailData.value) return false
+  return batchDetailData.value.summary.task_type === 'stress'
 })
 
 function continueTask(task: TaskRecord) {
@@ -1806,17 +2243,28 @@ async function refreshExpandedBatches() {
 
 async function openBatchDetail(row: BatchSummaryItem) {
   stopBatchDetailRefresh()
+  detailStopRealtime()
+  batchDetailSelectedIdx.value = null
   batchDetailVisible.value = true
   batchDetailData.value = null
   batchDetailLoading.value = true
   try {
     const resp = (await getBatchDetail(row.batch_id)).data
     batchDetailData.value = resp
+    selectInitialRunningBatchTask()
     scheduleBatchDetailRefresh()
   } catch {
     batchDetailData.value = null
   } finally {
     batchDetailLoading.value = false
+  }
+}
+
+function selectInitialRunningBatchTask() {
+  const tasks = batchDetailData.value?.tasks ?? []
+  const idx = tasks.findIndex(task => task.status?.toUpperCase() === 'RUNNING')
+  if (idx >= 0) {
+    batchDetailSelectTask(idx)
   }
 }
 
@@ -1850,6 +2298,231 @@ function stopBatchDetailRefresh() {
     clearInterval(batchDetailRefreshTimer)
     batchDetailRefreshTimer = null
   }
+}
+
+// ── Batch detail inline panel functions ──
+
+function batchDetailSelectTask(idx: number) {
+  if (!batchDetailData.value || idx < 0 || idx >= batchDetailData.value.tasks.length) return
+
+  detailStopRealtime()
+  batchDetailSelectedIdx.value = idx
+  detailTaskData.value = null
+  detailLogs.value = []
+  detailLogsLoaded.value = false
+  detailLogsLoading.value = false
+  detailMonitorData.value = null
+  detailActivePanel.value = 'summary'
+  detailNow.value = new Date()
+  detailWsConnected.value = false
+
+  const task = batchDetailData.value.tasks[idx]
+  // 单独请求完整任务数据，确保 start_time 可靠
+  if (task.task_id) {
+    getTask(task.task_id).then(resp => {
+      detailTaskData.value = resp.data
+    }).catch(() => {})
+  }
+
+  if (!detailIsTerminal.value && task.task_id) {
+    detailStartRealtime(task.task_id)
+  }
+}
+
+function detailStopRealtime() {
+  detailWsHook.disconnect()
+  detailWsConnected.value = false
+  if (detailNowTimer !== null) {
+    clearInterval(detailNowTimer)
+    detailNowTimer = null
+  }
+  if (detailMonitorTimer !== null) {
+    clearInterval(detailMonitorTimer)
+    detailMonitorTimer = null
+  }
+}
+
+function detailStartRealtime(taskId: string) {
+  detailStopRealtime()
+  detailNow.value = new Date()
+  detailNowTimer = setInterval(() => {
+    detailNow.value = new Date()
+  }, 1000)
+
+  // WebSocket: real-time log streaming and status updates
+  detailWsHook.connect(
+    taskId,
+    // onLog: append incoming log lines
+    (level, line, created_at) => {
+      detailLogs.value = [
+        ...detailLogs.value,
+        { id: 0, task_id: taskId, level, message: line, created_at: created_at || '' },
+      ]
+      if (detailActivePanel.value === 'logs') {
+        void scrollDetailLogsToBottom()
+      }
+    },
+    // onStatus: update selected sub-task status in batch data
+    (status) => {
+      if (batchDetailSelectedIdx.value !== null && batchDetailData.value) {
+        const t = batchDetailData.value.tasks[batchDetailSelectedIdx.value]
+        if (t) t.status = status
+      }
+    },
+    // onDone: update status
+    (status) => {
+      if (batchDetailSelectedIdx.value !== null && batchDetailData.value) {
+        const t = batchDetailData.value.tasks[batchDetailSelectedIdx.value]
+        if (t) t.status = status
+      }
+    },
+  )
+
+  // WS connection status check
+  const wsCheckTimer = window.setInterval(() => {
+    if (detailWsHook.getIsConnected()) {
+      detailWsConnected.value = true
+      window.clearInterval(wsCheckTimer)
+    }
+    if (detailWsHook.getWsError()) {
+      window.clearInterval(wsCheckTimer)
+    }
+  }, 500)
+  window.setTimeout(() => window.clearInterval(wsCheckTimer), 5000)
+
+  // Monitor polling
+  startDetailMonitorPolling()
+}
+
+function startDetailMonitorPolling() {
+  if (detailMonitorTimer !== null) clearInterval(detailMonitorTimer)
+  detailMonitorTimer = setInterval(() => {
+    void detailFetchMonitor()
+  }, 5000)
+}
+
+function stopDetailMonitorPolling() {
+  if (detailMonitorTimer !== null) {
+    clearInterval(detailMonitorTimer)
+    detailMonitorTimer = null
+  }
+}
+
+async function detailLoadLogs() {
+  const taskId = batchDetailSelectedTaskId.value
+  if (!taskId) return
+  detailLogsLoading.value = true
+  try {
+    if (taskLogCache[taskId]) {
+      detailLogs.value = taskLogCache[taskId]
+    } else {
+      const resp = await getTaskLogs(taskId)
+      taskLogCache[taskId] = resp.data
+      detailLogs.value = resp.data
+    }
+    detailLogsLoaded.value = true
+    // LogViewer 常驻挂载，autoScroll 自动滚到底部
+    await scrollDetailLogsToBottom()
+  } catch {
+    // keep empty
+  } finally {
+    detailLogsLoading.value = false
+  }
+}
+
+function handleDetailPanelChange(panelName: string | number) {
+  if (
+    panelName === 'logs'
+    && !detailIsTerminal.value
+    && !detailLogsLoaded.value
+    && !detailLogsLoading.value
+  ) {
+    void detailLoadLogs()
+  } else if (panelName === 'logs') {
+    void scrollDetailLogsToBottom()
+  }
+}
+
+async function scrollDetailLogsToBottom() {
+  await nextTick()
+  detailLogViewerRef.value?.scrollToBottom()
+}
+
+async function detailFetchMonitor() {
+  const taskId = batchDetailSelectedTaskId.value
+  if (!taskId) return
+  if (detailActivePanel.value === 'logs' || detailActivePanel.value === 'summary') return
+  detailMonitorLoading.value = true
+  try {
+    const resp = await getTaskMonitor(taskId)
+    detailMonitorData.value = resp.data
+  } catch {
+    // keep previous snapshot
+  } finally {
+    detailMonitorLoading.value = false
+  }
+}
+
+function detailCancelTask() {
+  const taskId = batchDetailSelectedTaskId.value
+  if (!taskId) return
+  cancelTargetTask = { task_id: taskId } as TaskRecord
+  cancelDialogVisible.value = true
+}
+
+function detailOpenDiagnosis(task?: BatchTaskDetailItem) {
+  const taskId = task?.task_id ?? batchDetailSelectedTaskId.value
+  if (!taskId) return
+  diagnosisTaskId.value = taskId
+  diagnosisVisible.value = true
+}
+
+function detailOpenArtifacts(task?: BatchTaskDetailItem) {
+  const taskId = task?.task_id ?? batchDetailSelectedTaskId.value
+  if (!taskId) return
+  activeArtTaskId.value = taskId
+  activeArtBatchSummary.value = null
+  batchArtifactGroups.value = []
+  artDialogTitle.value = '结果文件'
+  artFiles.value = []
+  artDir.value = ''
+  artDialogVisible.value = true
+  artLoading.value = true
+  getTask(taskId).then(resp => {
+    artDir.value = resp.data.remote_work_dir || ''
+  }).catch(() => {})
+  listArtifacts(taskId).then(resp => {
+    artFiles.value = resp.data.files
+  }).catch(() => {}).finally(() => {
+    artLoading.value = false
+  })
+}
+
+async function detailRetryTask(task?: BatchTaskDetailItem) {
+  const taskId = task?.task_id ?? batchDetailSelectedTaskId.value
+  if (!taskId || batchRetrySubmitting.value[taskId]) return
+  if (task && batchDetailRetryBlocked(task)) return
+  batchRetrySubmitting.value[taskId] = true
+  try {
+    const resp = (await retryBatchTask(taskId)).data
+    ElMessage.success(`已追加重跑子任务：${resp.retry_task_id}`)
+    await refreshBatchDetail(false)
+    const tasks = batchDetailData.value?.tasks ?? []
+    const idx = tasks.findIndex(task => task.task_id === resp.retry_task_id)
+    if (idx >= 0) {
+      batchDetailSelectTask(idx)
+    }
+    await loadBatches(true)
+  } catch (err) {
+    ElMessage.error(`重跑失败：${getApiErrorMessage(err) || '未知错误'}`)
+  } finally {
+    batchRetrySubmitting.value[taskId] = false
+  }
+}
+
+function detailDownloadLogs() {
+  const taskId = batchDetailSelectedTaskId.value
+  if (taskId) downloadTaskLogs(taskId)
 }
 
 function handleBatchPageChange(page: number) {
@@ -2343,7 +3016,14 @@ onMounted(async () => {
   loadTasks()
 })
 watch(batchDetailVisible, (visible) => {
-  if (!visible) stopBatchDetailRefresh()
+  if (!visible) {
+    stopBatchDetailRefresh()
+    detailStopRealtime()
+    batchDetailSelectedIdx.value = null
+    detailLogs.value = []
+    detailLogsLoaded.value = false
+    detailMonitorData.value = null
+  }
 })
 onActivated(() => {
   loadTasks()
@@ -2352,6 +3032,7 @@ onUnmounted(() => {
   stopAutoRefresh()
   stopBatchDetailRefresh()
   stopDrawerRealtime()
+  detailStopRealtime()
 })
 </script>
 
@@ -2551,6 +3232,11 @@ onUnmounted(() => {
 }
 
 /* ── Unified batch card ── */
+.task-history-page {
+  min-height: 100%;
+  background: #f8fafc;
+}
+
 .batch-history-card :deep(.el-card__body) {
   display: flex;
   flex-direction: column;
@@ -2558,13 +3244,59 @@ onUnmounted(() => {
 }
 
 .task-history-page .task-card {
-  border-color: rgba(64, 158, 255, 0.22);
-  box-shadow: 0 1px 4px rgba(64, 158, 255, 0.08);
+  position: relative;
+  overflow: hidden;
+  border-color: var(--el-border-color-lighter);
+  background: #ffffff;
+  box-shadow: none;
+  transition: background-color 0.16s ease, border-color 0.16s ease;
+}
+
+.task-history-page .task-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 6px;
+  background: var(--el-color-primary);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.16s ease;
 }
 
 .task-history-page .task-card:hover {
-  border-color: rgba(64, 158, 255, 0.38);
-  box-shadow: 0 3px 10px rgba(64, 158, 255, 0.12);
+  border-color: rgba(64, 158, 255, 0.5);
+  background: #ffffff;
+  box-shadow: none;
+  animation: task-history-card-border-breathe 1.8s ease-in-out infinite;
+}
+
+.task-history-page .task-card:hover::before {
+  opacity: 0.95;
+}
+
+@keyframes task-history-card-border-breathe {
+  0%, 100% {
+    box-shadow:
+      inset -1px 0 0 rgba(64, 158, 255, 0.32),
+      inset 0 1px 0 rgba(64, 158, 255, 0.32),
+      inset 0 -1px 0 rgba(64, 158, 255, 0.32);
+  }
+  50% {
+    box-shadow:
+      inset -1px 0 0 rgba(64, 158, 255, 0.68),
+      inset 0 1px 0 rgba(64, 158, 255, 0.68),
+      inset 0 -1px 0 rgba(64, 158, 255, 0.68);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .task-history-page .task-card:hover {
+    animation: none;
+    box-shadow:
+      inset -1px 0 0 rgba(64, 158, 255, 0.5),
+      inset 0 1px 0 rgba(64, 158, 255, 0.5),
+      inset 0 -1px 0 rgba(64, 158, 255, 0.5);
+  }
 }
 
 .batch-history-card__header {
@@ -2841,78 +3573,505 @@ onUnmounted(() => {
   overflow: visible;
 }
 
-.batch-detail-task-list {
+.bd-batch-id {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.bd-tag-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.bd-sep {
+  color: var(--el-border-color);
+  font-size: 12px;
+}
+
+.batch-detail-summary-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--el-text-color-regular);
+}
+
+.batch-detail-split {
+  display: flex;
+  gap: 14px;
+  min-height: 340px;
+  margin-top: 10px;
+}
+
+/* ── Left panel: sub-task list ── */
+.batch-detail-left {
+  width: 240px;
+  flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
 }
 
-.batch-detail-task-card {
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 8px;
-  padding: 10px 12px;
-  background: var(--el-fill-color-lighter);
-}
-
-.batch-detail-task-card__header {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: flex-start;
-  margin-bottom: 8px;
-}
-
-.batch-detail-task-card__title {
-  font-weight: 700;
+.batch-detail-left__header {
+  font-weight: 600;
+  font-size: 14px;
+  padding: 6px 8px;
   color: var(--el-text-color-primary);
+  border-bottom: 1px solid var(--el-border-color-light);
+  margin-bottom: 6px;
 }
 
-.batch-detail-task-card__meta {
+.batch-detail-left__list {
+  flex: 1;
+  overflow-y: auto;
+  max-height: 460px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.batch-detail-subtask {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  background: var(--el-fill-color-light);
+  transition: all 0.15s ease;
+  overflow: hidden;
+}
+
+.batch-detail-subtask:hover {
+  border-color: transparent;
+  background: var(--el-fill-color);
+}
+
+.batch-detail-subtask.is-active {
+  border-color: var(--el-color-primary-light-5);
+  background: var(--el-fill-color-light);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+}
+
+.batch-detail-subtask__indicator {
+  width: 3px;
+  flex-shrink: 0;
+  background: transparent;
+  transition: background 0.15s ease;
+}
+
+.batch-detail-subtask.is-active .batch-detail-subtask__indicator {
+  background: var(--el-color-primary);
+}
+
+.batch-detail-subtask__body {
+  flex: 1;
+  padding: 10px 10px 12px;
+  min-width: 0;
+}
+
+.batch-detail-subtask.is-active {
+  border-color: var(--el-color-primary);
+  background: var(--el-fill-color-light);
+}
+
+.batch-detail-subtask__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.batch-detail-subtask__title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.batch-detail-subtask__seq {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  min-width: 22px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+  border: 1px solid var(--el-color-primary-light-5);
+  line-height: 1;
+}
+
+.batch-detail-subtask__name {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--el-text-color-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.batch-detail-subtask__meta {
   margin-top: 3px;
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.batch-detail-subtask__actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+  padding-bottom: 4px;
+}
+
+.batch-detail-subtask__actions .el-button {
+  height: 24px;
+  min-height: 24px;
+  margin-left: 0;
+  padding: 0 6px;
+  line-height: 22px;
+  font-size: 11px;
+  font-weight: 500;
+  box-sizing: border-box;
+  border-radius: var(--el-border-radius-base);
+  border: none;
+  box-shadow: none;
+  text-decoration: none;
+  transition: color 0.14s ease, font-weight 0.14s ease, transform 0.14s ease, text-decoration-color 0.14s ease;
+}
+
+.batch-detail-subtask__action.el-button--warning {
+  --el-button-text-color: #b45309;
+  --el-button-hover-text-color: #92400e;
+  --el-button-hover-bg-color: transparent;
+}
+
+.batch-detail-subtask__action.el-button--primary {
+  --el-button-hover-bg-color: transparent;
+  --el-button-hover-text-color: #1e40af;
+}
+
+.batch-detail-subtask__action:hover {
+  font-weight: 700;
+  background: transparent !important;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  transform: translateY(-1px);
+}
+
+.batch-detail-subtask__action.el-button--warning:hover {
+  color: #78350f !important;
+}
+
+.batch-detail-subtask__action.el-button--primary:hover {
+  color: #1e40af !important;
+}
+
+.batch-detail-subtask__retry {
+  --el-button-text-color: #2563eb;
+  --el-button-hover-text-color: #1d4ed8;
+  --el-button-hover-bg-color: rgba(37, 99, 235, 0.16);
+}
+
+.batch-detail-subtask__retry.is-disabled,
+.batch-detail-subtask__retry.is-disabled:hover {
+  --el-button-disabled-text-color: var(--el-text-color-placeholder);
+  color: var(--el-text-color-placeholder);
+  background: transparent;
+}
+
+/* ── Right panel: detail ── */
+.batch-detail-right {
+  flex: 1;
+  min-width: 0;
+  border-left: 1px solid var(--el-border-color-light);
+  padding-left: 14px;
+}
+
+.batch-detail-right__empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 300px;
+}
+
+/* ── Detail panel header ── */
+.detail-panel__header {
+  margin-bottom: 10px;
+}
+
+.detail-panel__title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.detail-panel__title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.detail-panel__title {
+  min-width: 0;
+  font-weight: 700;
+  font-size: 16px;
+  color: var(--el-text-color-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-panel__header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.detail-panel__retry-button,
+.detail-panel__cancel-button {
+  flex-shrink: 0;
+}
+
+.detail-panel__id-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   font-size: 12px;
   color: var(--el-text-color-secondary);
 }
 
-.batch-detail-task-card__actions {
+.detail-panel__server {
+  color: var(--el-text-color-secondary);
+}
+
+/* ── Detail panel header ── */
+.detail-panel__sep {
+  color: var(--el-text-color-placeholder);
+  font-size: 12px;
+  margin: 0 2px;
+}
+
+.detail-panel__id-row code {
+  font-size: 12px;
+}
+
+/* ── Detail panel info grid (label-value pairs) ── */
+.detail-panel__grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px 24px;
+  padding: 10px 12px;
+  background: var(--el-fill-color-lighter);
+  border-radius: 8px;
+}
+
+.detail-grid__item {
   display: flex;
-  gap: 6px;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  border-bottom: 1px solid var(--el-border-color-extra-light);
+}
+
+.detail-grid__item:nth-last-child(-n+2) {
+  border-bottom: none;
+}
+
+.detail-grid__item--full {
+  grid-column: 1 / -1;
+}
+
+.detail-grid__label {
+  flex-shrink: 0;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  min-width: 5em;
+}
+
+.detail-grid__code {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.batch-detail-task-card__grid {
-  display: grid;
-  grid-template-columns: 120px 120px 120px 1fr 1fr 1fr 90px;
-  gap: 8px 12px;
-  align-items: center;
-  font-size: 13px;
-}
-
-.batch-detail-task-card__grid span {
-  min-width: 0;
+.detail-panel__reason {
   display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.batch-detail-task-card__grid b {
-  flex: 0 0 auto;
-  color: var(--el-text-color-secondary);
-  font-weight: 500;
-}
-
-.batch-detail-task-card__reason {
-  grid-column: 1 / -1;
   align-items: flex-start;
+  gap: 6px;
+  font-size: 13px;
   color: var(--el-color-danger);
-  white-space: normal;
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: var(--el-color-danger-light-9);
+  border-radius: 6px;
   line-height: 1.5;
   word-break: break-word;
 }
 
-@media (max-width: 1100px) {
-  .batch-detail-task-card__grid {
-    grid-template-columns: 1fr 1fr;
-  }
+.detail-reason__icon {
+  flex-shrink: 0;
+  line-height: 1.5;
+}
+
+.detail-panel__progress {
+  margin-top: 10px;
+}
+
+/* ── Action buttons ── */
+.detail-panel__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+/* ── Tabs ── */
+.detail-panel__tabs {
+  margin-top: 12px;
+}
+
+/* ── Overview tab ── */
+.detail-summary-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.detail-summary__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  background: var(--el-fill-color-lighter);
+  border-radius: 6px;
+  line-height: 1.6;
+}
+
+.detail-summary__label {
+  flex-shrink: 0;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  min-width: 5.5em;
+}
+
+.detail-panel-logs-wrap {
+  min-height: 100px;
+}
+
+.detail-panel-empty-action {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 100px;
+}
+
+.detail-panel-loading-inline {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+  min-height: 60px;
+}
+
+/* ── Monitor panels ── */
+.detail-monitor-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.detail-monitor-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  background: var(--el-fill-color-lighter);
+  border-radius: 8px;
+}
+
+.detail-monitor-card__label {
+  color: var(--el-text-color-secondary);
+  font-weight: 500;
+  font-size: 12px;
+}
+
+.detail-monitor-card__value {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--el-text-color-primary);
+  line-height: 1.3;
+}
+
+.detail-monitor-gpu-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.detail-monitor-gpu-card {
+  padding: 10px 12px;
+  background: var(--el-fill-color-lighter);
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.detail-gpu-name {
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 6px;
+  color: var(--el-text-color-primary);
+}
+
+.detail-gpu-idx {
+  font-weight: 400;
+  color: var(--el-text-color-secondary);
+}
+
+.detail-gpu-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--el-text-color-regular);
+}
+
+.detail-monitor-msg {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  text-align: center;
+}
+
+.detail-sampled-at {
+  font-size: 11px;
+  color: var(--el-text-color-disabled);
+  text-align: right;
+  margin-top: 6px;
 }
 
 /* ── Auto-refresh tag ── */

@@ -49,6 +49,7 @@ from app.schemas.task import (
     BatchDetailResponse,
     BatchSummaryItem,
     BatchSummaryListResponse,
+    BatchTaskRetryResponse,
     BatchTaskCreateItem,
     BatchTaskCreateRequest,
     BatchTaskCreateResponse,
@@ -707,7 +708,7 @@ def _is_suite_task_terminal(db: Session, task_id: str) -> bool:
     return status_value in TERMINAL_TASK_STATUSES
 
 
-def _run_stress_suite_for_server(server_id: int, batch_id: str) -> None:
+def _run_stress_suite_for_server(server_id: int, batch_id: str, wait_for_lock: bool = False) -> None:
     """Run stress suite tasks sequentially for a single server.
 
     Tasks are ordered by sequence_index (GPU → CPU/mem → Disk).
@@ -715,7 +716,7 @@ def _run_stress_suite_for_server(server_id: int, batch_id: str) -> None:
     Different server threads run in parallel (daemon threads).
     """
     lock = _get_stress_suite_server_lock(server_id)
-    acquired = lock.acquire(timeout=STRESS_SUITE_LOCK_ACQUIRE_TIMEOUT_SECONDS)
+    acquired = lock.acquire() if wait_for_lock else lock.acquire(timeout=STRESS_SUITE_LOCK_ACQUIRE_TIMEOUT_SECONDS)
     if not acquired:
         db = SessionLocal()
         try:
@@ -936,6 +937,148 @@ def create_stress_suite(
         batch_id=batch_id,
         total=len(items),
         items=items,
+    )
+
+
+RETRYABLE_BATCH_TASK_STATUSES = {"FAILED", "CANCELED", "TIMEOUT"}
+
+
+def _batch_task_can_retry(task: Task, db: Session) -> bool:
+    status_value = (task.status or "").upper()
+    if status_value in RETRYABLE_BATCH_TASK_STATUSES:
+        return True
+    summary = get_cached_report_summary(db, task.task_id)
+    return bool(summary and (summary.report_status or "").upper() == "FAIL")
+
+
+@router.post("/{task_id}/retry-in-batch", response_model=BatchTaskRetryResponse, status_code=status.HTTP_201_CREATED)
+def retry_batch_task(
+    task_id: str,
+    db: Session = Depends(get_db),
+) -> BatchTaskRetryResponse:
+    """Append a retry task to the same stress-suite batch and server queue."""
+    original = _get_task_or_404(db, task_id)
+    if not original.batch_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="task is not part of a batch")
+    if original.task_type != "stress":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="only stress suite task retry is supported")
+    if not original.file_path or original.file_path not in STRESS_SUITE_ALLOWED_PATHS:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="task script is not retryable")
+    if not _batch_task_can_retry(original, db):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="task is not failed or canceled")
+
+    server = db.get(Server, original.server_id)
+    if server is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="server_id not found")
+    if server.status != "online":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="server is not online")
+    other_unfinished = (
+        db.query(Task)
+        .filter(
+            Task.server_id == original.server_id,
+            Task.status.in_(UNFINISHED_TASK_STATUSES),
+            (Task.batch_id != original.batch_id) | (Task.batch_id.is_(None)),
+        )
+        .first()
+    )
+    if other_unfinished is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="server has unfinished task outside this batch")
+    existing_retry = (
+        db.query(Task)
+        .filter(
+            Task.batch_id == original.batch_id,
+            Task.server_id == original.server_id,
+            Task.status.in_(UNFINISHED_TASK_STATUSES),
+            Task.params["__retry_of_task_id"].as_string() == original.task_id,
+        )
+        .first()
+    )
+    if existing_retry is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="retry task already queued or running")
+
+    file_record = _get_library_file_or_400(original.file_path)
+    same_server_tasks = (
+        db.query(Task)
+        .filter(Task.batch_id == original.batch_id, Task.server_id == original.server_id)
+        .order_by(Task.sequence_index.asc().nulls_last(), Task.id.asc())
+        .all()
+    )
+    max_sequence = max((task.sequence_index or 0) for task in same_server_tasks) if same_server_tasks else 0
+    last_task = same_server_tasks[-1] if same_server_tasks else None
+    retry_sequence = max_sequence + 1
+    retry_task_id = _generate_task_id()
+    retry_params = dict(original.params or {})
+    retry_params["__retry_of_task_id"] = original.task_id
+    retry_params["__retry_created_at"] = datetime.utcnow().isoformat(timespec="seconds")
+    remote_work_dir = _build_remote_work_dir("stress")
+    command_preview = _build_command_preview(
+        task_type="stress",
+        file_name=str(file_record["name"]),
+        params=retry_params,
+        remote_work_dir=remote_work_dir,
+    )
+
+    retry_task = Task(
+        task_id=retry_task_id,
+        server_id=original.server_id,
+        script_id=None,
+        task_type="stress",
+        file_path=str(file_record["path"]),
+        file_name=str(file_record["name"]),
+        display_category=original.display_category or "压测",
+        remote_work_dir=remote_work_dir,
+        command_preview=command_preview,
+        params=retry_params,
+        status="PENDING",
+        batch_id=original.batch_id,
+        sequence_index=retry_sequence,
+        depends_on_task_id=last_task.task_id if last_task else None,
+    )
+    db.add(retry_task)
+    db.flush()
+    db.add(TaskLog(
+        task_id=retry_task_id,
+        level="SYSTEM",
+        message=f"retry task created in batch {original.batch_id}; original={original.task_id}",
+    ))
+    db.commit()
+
+    write_audit_log(
+        db,
+        action="task.batch_retry",
+        target_type="task",
+        status="success",
+        actor="visitor",
+        target_id=retry_task_id,
+        target_name=f"{server.name} · {retry_task.file_name}",
+        server_id=server.id,
+        server_name=server.name,
+        task_id=retry_task_id,
+        message=f"retry task {original.task_id} as {retry_task_id}",
+        detail={
+            "batch_id": original.batch_id,
+            "original_task_id": original.task_id,
+            "retry_task_id": retry_task_id,
+            "sequence_index": retry_sequence,
+            "depends_on_task_id": retry_task.depends_on_task_id,
+        },
+    )
+
+    thread = threading.Thread(
+        target=_run_stress_suite_for_server,
+        args=(original.server_id, original.batch_id, True),
+        daemon=True,
+    )
+    thread.start()
+
+    return BatchTaskRetryResponse(
+        original_task_id=original.task_id,
+        retry_task_id=retry_task_id,
+        batch_id=original.batch_id,
+        server_id=original.server_id,
+        sequence_index=retry_sequence,
+        depends_on_task_id=retry_task.depends_on_task_id,
+        status="PENDING",
     )
 
 

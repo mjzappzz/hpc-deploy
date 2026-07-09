@@ -7,7 +7,7 @@ from pathlib import Path
 
 from app.core.artifact_collector import ARTIFACTS_DIR
 from app.models.server import Server
-from app.models.task import Task
+from app.models.task import Task, TaskReportSummary
 from sqlalchemy.orm import Session
 
 
@@ -32,6 +32,13 @@ def _report_prefix(task: Task) -> str:
     if "disk" in file_name:
         return "disk_report"
     return "task_report"
+
+
+REPORT_MODULE_ORDER = {
+    "gpu_report": 1,
+    "cpu_mem_report": 2,
+    "disk_report": 3,
+}
 
 
 def _server_name_for_task(task: Task, servers_by_id: dict[int, Server], fallback: str) -> str:
@@ -67,7 +74,46 @@ def _report_archive_name(task: Task, report: Path, used_names: set[str], root_fo
     return candidate
 
 
-def build_batch_report_zip(batch_id: str, tasks: list[Task], servers_by_id: dict[int, Server]) -> BatchReportZip:
+def _task_has_ok_report(task: Task, reports: list[Path], report_status_by_task: dict[str, str]) -> bool:
+    if not reports:
+        return False
+    report_status = (report_status_by_task.get(task.task_id) or "").upper()
+    if report_status == "PASS":
+        return True
+    if report_status == "FAIL":
+        return False
+    return (task.status or "").upper() == "SUCCESS"
+
+
+def _select_latest_ok_tasks(server_tasks: list[Task], report_status_by_task: dict[str, str]) -> tuple[list[Task], list[str]]:
+    grouped_by_module: dict[str, list[Task]] = {}
+    for task in sorted(server_tasks, key=lambda item: (item.sequence_index or 999, item.id)):
+        grouped_by_module.setdefault(_report_prefix(task), []).append(task)
+
+    selected: list[Task] = []
+    missing_lines: list[str] = []
+    for module, module_tasks in grouped_by_module.items():
+        chosen: Task | None = None
+        for task in sorted(module_tasks, key=lambda item: (item.sequence_index or 0, item.id), reverse=True):
+            reports = _iter_report_files(task.task_id)
+            if _task_has_ok_report(task, reports, report_status_by_task):
+                chosen = task
+                break
+        if chosen is not None:
+            selected.append(chosen)
+        else:
+            latest = sorted(module_tasks, key=lambda item: (item.sequence_index or 0, item.id), reverse=True)[0]
+            missing_lines.append(f"{latest.task_id} {latest.file_name or module}: ok xlsx report missing")
+    selected.sort(key=lambda item: (REPORT_MODULE_ORDER.get(_report_prefix(item), 999), item.sequence_index or 999, item.id))
+    return selected, missing_lines
+
+
+def build_batch_report_zip(
+    batch_id: str,
+    tasks: list[Task],
+    servers_by_id: dict[int, Server],
+    report_status_by_task: dict[str, str] | None = None,
+) -> BatchReportZip:
     if not tasks:
         raise ValueError("batch has no tasks")
 
@@ -94,13 +140,13 @@ def build_batch_report_zip(batch_id: str, tasks: list[Task], servers_by_id: dict
     with zipfile.ZipFile(tmp_path, mode="w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
         used_names: set[str] = set()
         missing_lines: list[str] = []
+        report_statuses = report_status_by_task or {}
         for server_name, server_tasks in sorted(grouped.items(), key=lambda item: item[0]):
             root_folder = None if single_server else _safe_zip_name(server_name)
-            for task in sorted(server_tasks, key=lambda item: (item.sequence_index or 999, item.id)):
+            selected_tasks, server_missing = _select_latest_ok_tasks(server_tasks, report_statuses)
+            missing_lines.extend(f"{server_name} {line}" for line in server_missing)
+            for task in selected_tasks:
                 reports = _iter_report_files(task.task_id)
-                if not reports:
-                    missing_lines.append(f"{server_name} {task.task_id} {task.file_name or '-'}: xlsx report missing")
-                    continue
                 for report in reports:
                     zf.write(report, _report_archive_name(task, report, used_names, root_folder))
 
@@ -124,4 +170,7 @@ def export_batch_report_zip(db: Session, batch_id: str) -> BatchReportZip | None
     server_ids = {task.server_id for task in tasks}
     servers = db.query(Server).filter(Server.id.in_(server_ids)).all() if server_ids else []
     servers_by_id = {server.id: server for server in servers}
-    return build_batch_report_zip(batch_id, tasks, servers_by_id)
+    task_ids = [task.task_id for task in tasks]
+    summaries = db.query(TaskReportSummary).filter(TaskReportSummary.task_id.in_(task_ids)).all() if task_ids else []
+    report_status_by_task = {row.task_id: row.report_status for row in summaries}
+    return build_batch_report_zip(batch_id, tasks, servers_by_id, report_status_by_task)

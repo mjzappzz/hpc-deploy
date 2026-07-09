@@ -21,6 +21,16 @@ class TaskRunResponse(BaseModel):
     status: str
 
 
+class BatchTaskRetryResponse(BaseModel):
+    original_task_id: str
+    retry_task_id: str
+    batch_id: str
+    server_id: int
+    sequence_index: int
+    depends_on_task_id: str | None = None
+    status: str
+
+
 class TaskCancelRequest(BaseModel):
     delete_remote_files: bool = False
 
