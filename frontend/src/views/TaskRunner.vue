@@ -74,6 +74,9 @@
                           <span class="s-card-sep">·</span>
                           <span class="s-card-user">{{ server.username }}</span>
                         </div>
+                        <div v-if="server.os_info" class="s-card-badges">
+                          <el-tag :type="osTagType(server.os_info)" class="s-card-os-badge">{{ server.os_info }}</el-tag>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -225,7 +228,7 @@
               </template>
 
               <!-- 执行参数 -->
-              <div class="card-title" style="margin-top: 18px;">执行参数</div>
+              <div class="card-title" style="margin-top: 12px;">执行参数</div>
               <el-form label-width="110px" label-position="left">
                 <el-form-item v-if="!stressSuiteMode" label="远端工作目录">
                   <div v-if="selectedFile?.physical_category === 'apptainer'" class="readonly-path-hint">
@@ -407,7 +410,12 @@
     <!-- 取消任务确认弹窗 -->
     <el-dialog v-model="cancelDialogVisible" title="取消任务" width="420px" :close-on-click-modal="false">
       <div class="cancel-dialog-body">
-        <p class="cancel-intro">确认取消当前任务？平台会先标记任务为已取消，远端进程终止为 best-effort，不会删除远端目录。</p>
+        <p class="cancel-intro">确认取消当前任务？</p>
+        <ul class="cancel-checklist">
+          <li><strong>数据库标记</strong> — 状态改为已取消</li>
+          <li><strong>远端进程</strong> — 尝试终止（服务器可达时确认）</li>
+          <li><strong>远端目录</strong> — 保留不删除</li>
+        </ul>
       </div>
       <template #footer>
         <el-button @click="cancelDialogVisible = false">取消</el-button>
@@ -493,6 +501,13 @@ function taskTypeCardDesc(value: TaskType): string {
     apptainer: '仅上传分发 .sif 镜像，不执行容器',
   }
   return descs[value] ?? ''
+}
+
+function osTagType(os: string): 'success' | 'primary' | 'info' {
+  const v = os.toLowerCase()
+  if (v.includes('windows') || v.includes('win')) return 'primary'
+  if (v.includes('linux') || v.includes('ubuntu') || v.includes('centos') || v.includes('debian') || v.includes('red hat') || v.includes('fedora') || v.includes('rocky') || v.includes('suse') || v.includes('alpine') || v.includes('amazon linux')) return 'success'
+  return 'info'
 }
 
 function selectTaskType(value: TaskType) {
@@ -1599,7 +1614,7 @@ onBeforeUnmount(() => {
 <style scoped>
 .page-section {
   height: 100%;
-  overflow: auto;
+  overflow: hidden;
 }
 
 .runner-card {
@@ -1682,8 +1697,8 @@ onBeforeUnmount(() => {
 /* ── Server selection cards ── */
 .server-card-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
 }
 
 @media (max-width: 520px) {
@@ -1695,11 +1710,11 @@ onBeforeUnmount(() => {
 .server-select-card {
   border: 1px solid var(--el-border-color-light);
   border-radius: 8px;
-  padding: 8px 10px;
+  padding: 12px 14px 14px;
   cursor: pointer;
   background: var(--el-fill-color-blank);
   transition: all 0.15s ease;
-  min-height: 54px;
+  min-height: 72px;
 }
 
 .server-select-card:hover {
@@ -1714,7 +1729,7 @@ onBeforeUnmount(() => {
 .s-card-main {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 8px;
   min-width: 0;
 }
 
@@ -1727,7 +1742,7 @@ onBeforeUnmount(() => {
 }
 
 .s-card-name {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 600;
   color: var(--el-text-color-primary);
   min-width: 0;
@@ -1767,7 +1782,7 @@ onBeforeUnmount(() => {
 }
 
 .s-card-host {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--el-text-color-secondary);
   min-width: 0;
   overflow: hidden;
@@ -1776,7 +1791,7 @@ onBeforeUnmount(() => {
 }
 
 .s-card-user {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--el-text-color-secondary);
   white-space: nowrap;
   flex-shrink: 0;
@@ -1792,6 +1807,23 @@ onBeforeUnmount(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
   flex-shrink: 0;
+}
+
+.s-card-badges {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--el-border-color-extra-light);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.s-card-os-badge {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
 }
 
 .s-card-state {
@@ -2115,8 +2147,14 @@ onBeforeUnmount(() => {
 }
 
 .info-card {
-  margin-top: 12px;
+  margin-top: 8px;
   padding: 2px;
+}
+.info-card :deep(.el-card__body) {
+  padding: 10px 16px;
+}
+.info-card :deep(.el-form-item) {
+  margin-bottom: 10px;
 }
 
 .live-task-card {
@@ -2139,7 +2177,7 @@ onBeforeUnmount(() => {
 .card-title {
   font-size: 15px;
   font-weight: 600;
-  margin-bottom: 14px;
+  margin-bottom: 10px;
 }
 
 .action-card {
@@ -2988,8 +3026,18 @@ onBeforeUnmount(() => {
   padding: 8px 0;
 }
 .cancel-intro {
-  margin: 0 0 16px 0;
+  margin: 0 0 12px 0;
   font-size: 14px;
-  line-height: 1.6;
+  font-weight: 600;
+}
+.cancel-checklist {
+  margin: 0;
+  padding-left: 18px;
+  line-height: 2.2;
+  font-size: 14px;
+  color: var(--el-text-color-regular);
+}
+.cancel-checklist strong {
+  color: var(--el-text-color-primary);
 }
 </style>

@@ -54,7 +54,7 @@
       </div>
 
       <div class="task-list hpc-glow-row-group" v-loading="loading">
-        <el-empty v-if="historyItems.length === 0 && !loading" description="暂无任务记录" />
+        <el-empty v-if="historyItems.length === 0 && !loading" description="历史一片空白… 你还没干过活呢" />
         <template v-for="item in historyItems" :key="item.key">
           <TaskCard
             v-if="item.type === 'task'"
@@ -195,7 +195,7 @@
       </div>
 
       <div class="batch-list" v-loading="batchLoading">
-        <el-empty v-if="batchItems.length === 0 && !batchLoading" description="暂无批量任务记录" />
+        <el-empty v-if="batchItems.length === 0 && !batchLoading" description="没有批量任务… 世界和平 🌍" />
         <el-table
           v-else
           ref="batchTableRef"
@@ -668,7 +668,12 @@
     <!-- 取消任务确认弹窗 -->
     <el-dialog v-model="cancelDialogVisible" title="取消任务" width="420px" :close-on-click-modal="false">
       <div class="cancel-dialog-body">
-        <p class="cancel-intro">确认取消当前任务？平台会先标记任务为已取消，远端进程终止为 best-effort，不会删除远端目录。</p>
+        <p class="cancel-intro">确认取消当前任务？</p>
+        <ul class="cancel-checklist">
+          <li><strong>数据库标记</strong> — 状态改为已取消</li>
+          <li><strong>远端进程</strong> — 尝试终止（服务器可达时确认）</li>
+          <li><strong>远端目录</strong> — 保留不删除</li>
+        </ul>
       </div>
       <template #footer>
         <el-button @click="cancelDialogVisible = false">取消</el-button>
@@ -681,7 +686,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onActivated, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { cancelBatch, cancelTask, downloadBatchReportZip, downloadTaskLogs, getTask, getTaskLogs, getTaskMonitor, listArtifacts, listBatches, getBatchDetail, listTasks, type ArtifactFileDetail, type BatchDetailResponse, type BatchQuery, type BatchSummaryItem, type BatchTaskDetailItem, type MonitorType, type TaskLogRecord, type TaskListQuery, type TaskMonitorStructuredResponse, type TaskRecord } from '@/api/task'
 import { formatDateTime } from '@/utils/time'
 import { getApiErrorMessage as readApiErrorMessage } from '@/utils/apiError'
@@ -695,6 +700,7 @@ import TaskDiagnosisDialog from '@/components/TaskDiagnosisDialog.vue'
 import { Loading } from '@element-plus/icons-vue'
 
 const route = useRoute()
+const router = useRouter()
 
 const loading = ref(false)
 const tasks = ref<TaskRecord[]>([])
@@ -1538,6 +1544,7 @@ function resetFilters() {
   filters.keyword = undefined
   filters.limit = 50
   filters.offset = 0
+  router.replace({ query: {} })
   loadTasks()
 }
 
@@ -1743,12 +1750,22 @@ async function downloadBatchReports(row: BatchSummaryItem) {
 async function confirmCancelBatch(row: BatchSummaryItem) {
   try {
     await ElMessageBox.confirm(
-      '确认取消该批次下所有未完成任务吗？\n已完成任务不会受影响，远端目录不会删除。\n如果服务器不可达，平台会将任务标记为已取消，但远端进程无法确认。',
+      `<div style="line-height:1.8">
+        <p style="margin:0 0 8px;font-weight:600">确认取消该批次下所有未完成任务？</p>
+        <p style="margin:0 0 12px;color:#909399;font-size:13px">已完成任务不受影响</p>
+        <ul style="margin:0 0 12px;padding-left:18px">
+          <li><b>数据库标记</b> — 状态改为已取消</li>
+          <li><b>远端进程</b> — 尝试终止（服务器可达时确认）</li>
+          <li><b>远端目录</b> — 保留不删除</li>
+        </ul>
+        <p style="margin:0;color:#e6a23c;font-size:13px">⚠ 服务器不可达时仅标记数据库，远端进程无法确认</p>
+      </div>`,
       '取消批次',
       {
         confirmButtonText: '确认取消批次',
         cancelButtonText: '取消',
         type: 'warning',
+        dangerouslyUseHTMLString: true,
       }
     )
   } catch {
@@ -1851,6 +1868,7 @@ function resetBatchFilters() {
   batchFilters.keyword = undefined
   batchFilters.page = 1
   expandedBatchKeys.value = []
+  router.replace({ query: {} })
   loadBatches()
 }
 
@@ -3226,9 +3244,19 @@ onUnmounted(() => {
   padding: 8px 0;
 }
 .cancel-intro {
-  margin: 0 0 16px 0;
+  margin: 0 0 12px 0;
   font-size: 14px;
-  line-height: 1.6;
+  font-weight: 600;
+}
+.cancel-checklist {
+  margin: 0;
+  padding-left: 18px;
+  line-height: 2.2;
+  font-size: 14px;
+  color: var(--el-text-color-regular);
+}
+.cancel-checklist strong {
+  color: var(--el-text-color-primary);
 }
 
 </style>

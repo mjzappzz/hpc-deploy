@@ -92,7 +92,7 @@
         border
         stripe
         v-loading="loading"
-        empty-text="暂无任务"
+        empty-text="任务列表比我的脸还干净"
         highlight-current-row
         :row-style="{ cursor: 'pointer' }"
         @row-click="goToTask"

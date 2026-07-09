@@ -37,7 +37,7 @@
     </div>
     <div v-if="task.error_message" class="task-card__error">{{ task.error_message }}</div>
     <div class="task-card__actions">
-      <el-tooltip v-if="showCancelButton" content="平台会先标记任务为已取消；远端进程终止为 best-effort，不会删除远端目录。" placement="top">
+      <el-tooltip v-if="showCancelButton" content="取消后：数据库标记已取消 → 终止远端进程(可达时) → 保留远端目录" placement="top">
         <el-button size="small" type="danger" plain class="hpc-interactive-pulse" @click="$emit('cancelTask', task)">取消任务</el-button>
       </el-tooltip>
       <el-button v-if="showCancelingButton" size="small" type="warning" plain disabled>正在取消</el-button>

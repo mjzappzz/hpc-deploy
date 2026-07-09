@@ -59,19 +59,23 @@
       <main class="app-content">
         <router-view />
       </main>
+
     </div>
+    <AppCritters />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Cpu, Document, List, Monitor, Operation, Setting, Tickets } from '@element-plus/icons-vue'
+import AppCritters from '@/components/AppCritters.vue'
 
 const route = useRoute()
 const router = useRouter()
 
 const routeTitle = computed(() => String(route.meta.title ?? 'HPCDeploy'))
+
 
 function goHome() {
   router.push('/')
@@ -320,4 +324,6 @@ html, body, #app {
   flex: 1;
   padding: 20px 24px;
 }
+
+
 </style>

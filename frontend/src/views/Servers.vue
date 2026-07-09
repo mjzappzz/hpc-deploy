@@ -3,8 +3,7 @@
     <el-card shadow="never" class="server-table-card">
       <div class="toolbar">
         <el-button @click="openCreate">新增服务器</el-button>
-        <el-button type="primary" plain :loading="isTestingAll" :disabled="isProbingAll" @click="testAllSsh">SSH 测试全部</el-button>
-        <el-button type="primary" plain :loading="isProbingAll" :disabled="isTestingAll" @click="probeAll">⚡ {{ isProbingAll ? '探测中' : '探测全部' }}</el-button>
+        <el-button type="warning" plain :loading="isDetectingAll" @click="detectAll">全部检测</el-button>
         <el-badge
           :value="pendingPublicKeyDeployCount"
           :hidden="pendingPublicKeyDeployCount === 0"
@@ -14,7 +13,7 @@
             class="page-deploy-key-button"
             :class="{ 'page-deploy-key-button--attention': pendingPublicKeyDeployCount > 0 }"
             :type="pendingPublicKeyDeployCount > 0 ? 'warning' : 'default'"
-            :disabled="isTestingAll || isProbingAll"
+            :disabled="isDetectingAll"
             @click="openPublicKeyManager"
           >部署公钥</el-button>
         </el-badge>
@@ -39,39 +38,38 @@
             v-if="loading || onlineServers.length > 0"
             :servers="onlineServers"
             :loading="loading"
-            :testing-ids="testingIds"
-            :detecting-ids="detectingIds"
-            :is-probing-all="isProbingAll"
+            :probing-ids="probingIds"
+            :is-detecting-all="isDetectingAll"
             @edit="openEdit"
             @delete="removeServer"
-            @test="testSsh"
-            @detect="detectInfo"
+            @detect="detectOne"
             @detail="openDetail"
             @update-tags="updateServerTags"
           />
-          <el-empty v-else description="暂无在线服务器" :image-size="60" />
+          <el-empty v-else description="一个在线服务器都没有… (•ˋ _ˊ•)" :image-size="60" />
         </div>
 
         <div class="server-group server-group--offline">
-          <div class="server-group__header">
+          <div class="server-group__header server-group__header--clickable" @click="showOfflineServers = !showOfflineServers">
+            <span class="server-group__toggle">{{ showOfflineServers ? '▼' : '▶' }}</span>
             <span class="server-group__title">离线/未知服务器</span>
             <el-tag size="small" type="info" effect="plain">{{ offlineServers.length }}</el-tag>
           </div>
-          <ServerTable
-            v-if="loading || offlineServers.length > 0"
-            :servers="offlineServers"
-            :loading="loading"
-            :testing-ids="testingIds"
-            :detecting-ids="detectingIds"
-            :is-probing-all="isProbingAll"
-            @edit="openEdit"
-            @delete="removeServer"
-            @test="testSsh"
-            @detect="detectInfo"
-            @detail="openDetail"
-            @update-tags="updateServerTags"
-          />
-          <el-empty v-else description="暂无离线服务器" :image-size="60" />
+          <div v-show="showOfflineServers">
+            <ServerTable
+              v-if="loading || offlineServers.length > 0"
+              :servers="offlineServers"
+              :loading="loading"
+              :probing-ids="probingIds"
+              :is-detecting-all="isDetectingAll"
+              @edit="openEdit"
+              @delete="removeServer"
+              @detect="detectOne"
+              @detail="openDetail"
+              @update-tags="updateServerTags"
+            />
+            <el-empty v-else description="离线服务器都没有… 世界和平 🌍" :image-size="60" />
+          </div>
         </div>
       </div>
     </el-card>
@@ -289,8 +287,7 @@
               </el-descriptions-item>
             </el-descriptions>
             <div class="detail-actions">
-              <el-button size="small" :loading="detailActionsLoading" @click="detailTestSsh">测试 SSH</el-button>
-              <el-button size="small" type="warning" :loading="detailActionsLoading" @click="detailDetect">⚡ 探测</el-button>
+              <el-button size="small" type="warning" :loading="detailActionsLoading" @click="detailDetect">重新检测</el-button>
             </div>
           </div>
 
@@ -432,6 +429,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { formatDateTime } from '@/utils/time'
 import { getApiErrorMessage as readApiErrorMessage } from '@/utils/apiError'
+import { getDetectMessage } from '@/composables/useFunMessages'
 import { getTaskTypeLabel } from '@/utils/taskDisplay'
 import {
   createServer,
@@ -484,11 +482,10 @@ const editingId = ref<number | null>(null)
 const servers = ref<ServerRecord[]>([])
 const onlineServers = computed(() => servers.value.filter((server) => server.status === 'online'))
 const offlineServers = computed(() => servers.value.filter((server) => server.status !== 'online'))
+const showOfflineServers = ref(false)
 const pendingPublicKeyDeployCount = computed(() => servers.value.filter((server) => server.auth_type === 'password').length)
-const testingIds = ref<number[]>([])
-const detectingIds = ref<number[]>([])
-const isProbingAll = ref(false)
-const isTestingAll = ref(false)
+const probingIds = ref<number[]>([])
+const isDetectingAll = ref(false)
 const detailVisible = ref(false)
 const activeServer = ref<ServerRecord | null>(null)
 const sshKeys = ref<SSHKeyItem[]>([])
@@ -966,112 +963,71 @@ async function removeServer(server: ServerRecord) {
   await loadServers()
 }
 
-async function testSsh(server: ServerRecord) {
-  if (!testingIds.value.includes(server.id)) {
-    testingIds.value.push(server.id)
-  }
-  ElMessage.info(`正在测试 ${server.name} SSH 连接`)
+/** 单台检测：SSH 测试 + 探测信息 */
+async function detectOne(server: ServerRecord) {
+  if (probingIds.value.includes(server.id)) return
+  probingIds.value.push(server.id)
+  ElMessage.info(`${server.name}：${getDetectMessage()}`)
   try {
-    const result = (await testServerSsh(server.id)).data
-    if (result.success) {
-      ElMessage.success(`SSH 测试成功：${result.hostname ?? server.host}`)
-    } else {
-      ElMessage.error(`SSH 测试失败：${result.error ?? '未知错误'}`)
+    // 1. SSH 测试
+    const sshResp = (await testServerSsh(server.id)).data
+    if (!sshResp.success) {
+      ElMessage.error(`${server.name} 不理你：${sshResp.error ?? '连接被拒'}`)
+      await loadServers()
+      return
     }
-    await loadServers()
-    // Refresh detail drawer if open
-    if (detailVisible.value && activeServer.value?.id === server.id) {
-      await refreshDetail()
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : '请求失败'
-    ElMessage.error(`SSH 测试失败：${message}`)
-  } finally {
-    testingIds.value = testingIds.value.filter((id) => id !== server.id)
-  }
-}
-
-async function testAllSsh() {
-  const targetIds = servers.value.map((server) => server.id)
-  if (targetIds.length === 0) {
-    ElMessage.warning('当前没有可测试的服务器')
-    return
-  }
-
-  isTestingAll.value = true
-  testingIds.value = Array.from(new Set([...testingIds.value, ...targetIds]))
-  try {
-    const resp: SSHTestAllResponse = (await testAllServerSsh(targetIds)).data
-    await loadServers()
-    if (resp.online > 0) {
-      ElMessage.success(`SSH 测试成功：${resp.online} 台`)
-    }
-    if (resp.offline > 0) {
-      ElMessage.error(`SSH 测试失败：${resp.offline} 台`)
-    }
-  } catch (error) {
-    ElMessage.error(`批量 SSH 测试失败：${getApiErrorMessage(error)}`)
-  } finally {
-    testingIds.value = []
-    isTestingAll.value = false
-  }
-}
-
-async function detectInfo(server: ServerRecord) {
-  if (!detectingIds.value.includes(server.id)) {
-    detectingIds.value.push(server.id)
-  }
-  ElMessage.info(`正在探测 ${server.name} 服务器信息`)
-  try {
-    const result = (await detectServer(server.id)).data
+    // 2. 探测信息
+    ElMessage.info(`${server.name} SSH 通了，${getDetectMessage()}`)
+    const detectResp = (await detectServer(server.id)).data
     await reloadAndSelectServer(server.id)
-    if (result.success) {
-      ElMessage.success('探测完成')
+    if (detectResp.success) {
+      ElMessage.success(`${server.name} 被彻底拿捏了 ✅`)
       detailVisible.value = true
-      // Refresh detail drawer after detection
       await refreshDetail()
     } else {
-      ElMessage.error(`探测失败：${result.last_error ?? result.error ?? '未知错误'}`)
+      ElMessage.error(`${server.name} 倔强不肯配合：${detectResp.last_error ?? detectResp.error ?? '未知错误'}`)
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : '请求失败'
-    ElMessage.error(`探测失败：${message}`)
+    ElMessage.error(`${server.name} 傲娇中：${getApiErrorMessage(error)}`)
   } finally {
-    detectingIds.value = detectingIds.value.filter((id) => id !== server.id)
+    probingIds.value = probingIds.value.filter((id) => id !== server.id)
+    await loadServers()
   }
 }
 
-async function probeAll() {
-  if (isTestingAll.value) return
-  isProbingAll.value = true
-
-  const idsToProbe = servers.value.map((s) => s.id)
-  if (idsToProbe.length === 0) {
-    ElMessage.warning('当前没有可探测的服务器')
-    isProbingAll.value = false
+/** 全部检测：先 SSH 测试全部，再探测在线服务器 */
+async function detectAll() {
+  const targetIds = servers.value.map((s) => s.id)
+  if (targetIds.length === 0) {
+    ElMessage.warning(getDetectMessage())
     return
   }
-  for (const id of idsToProbe) {
-    if (!detectingIds.value.includes(id)) {
-      detectingIds.value.push(id)
-    }
-  }
 
+  isDetectingAll.value = true
+  probingIds.value = [...targetIds]
   try {
-    const resp: ProbeAllResponse = (await probeAllServers(idsToProbe)).data
+    // 1. 批量 SSH 测试
+    const sshResp: SSHTestAllResponse = (await testAllServerSsh(targetIds)).data
     await loadServers()
-    if (resp.online > 0) {
-      ElMessage.success(`探测在线：${resp.online} 台`)
+    if (sshResp.offline > 0) {
+      ElMessage.warning(`SSH 连接失败：${sshResp.offline} 台，跳过探测`)
     }
-    if (resp.offline > 0) {
-      ElMessage.error(`探测离线：${resp.offline} 台`)
+    // 2. 在线服务器探测
+    const onlineIds = servers.value
+      .filter((s) => s.status === 'online' && targetIds.includes(s.id))
+      .map((s) => s.id)
+    if (onlineIds.length > 0) {
+      const probeResp: ProbeAllResponse = (await probeAllServers(onlineIds)).data
+      if (probeResp.online > 0) {
+        ElMessage.success(`全部检测完成：${probeResp.online} 台在线`)
+      }
     }
+    await loadServers()
   } catch (error) {
-    const message = error instanceof Error ? error.message : '请求失败'
-    ElMessage.error(`批量探测失败：${message}`)
+    ElMessage.error(`全部检测失败：${getApiErrorMessage(error)}`)
   } finally {
-    detectingIds.value = []
-    isProbingAll.value = false
+    probingIds.value = []
+    isDetectingAll.value = false
   }
 }
 
@@ -1191,22 +1147,11 @@ function viewArtifacts(task: TaskRecord) {
   router.push(`/task-runner?task_id=${task.task_id}`)
 }
 
-async function detailTestSsh() {
-  if (!currentServerId.value) return
-  detailActionsLoading.value = true
-  try {
-    await testSsh(activeServer.value!)
-    await refreshDetail()
-  } finally {
-    detailActionsLoading.value = false
-  }
-}
-
 async function detailDetect() {
-  if (!currentServerId.value) return
+  if (!currentServerId.value || !activeServer.value) return
   detailActionsLoading.value = true
   try {
-    await detectInfo(activeServer.value!)
+    await detectOne(activeServer.value)
     if (activeServer.value) {
       await refreshDetail()
     }
@@ -1402,6 +1347,20 @@ onMounted(() => {
   align-items: center;
   gap: 8px;
   margin-bottom: 8px;
+}
+.server-group__header--clickable {
+  cursor: pointer;
+  user-select: none;
+}
+.server-group__header--clickable:hover .server-group__title {
+  color: var(--el-color-primary);
+}
+.server-group__toggle {
+  font-size: 10px;
+  color: var(--el-text-color-secondary);
+  width: 12px;
+  text-align: center;
+  flex-shrink: 0;
 }
 
 .server-group__title {

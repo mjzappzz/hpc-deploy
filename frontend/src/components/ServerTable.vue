@@ -69,9 +69,15 @@
         </div>
       </template>
     </el-table-column>
-    <el-table-column label="OS" width="105">
+    <el-table-column label="OS" width="130">
       <template #default="{ row }">
-        <span class="table-ellipsis">{{ osSummary(row.os_info) }}</span>
+        <el-tag
+          v-if="row.os_info"
+          size="small"
+          :type="osTagType(row.os_info)"
+          class="table-os-tag"
+        >{{ osSummary(row.os_info) }}</el-tag>
+        <span v-else class="table-ellipsis">-</span>
       </template>
     </el-table-column>
     <el-table-column label="CPU" min-width="185" class-name="server-cpu-column">
@@ -94,24 +100,16 @@
         <span>{{ formatDateTime(row.last_check_at) }}</span>
       </template>
     </el-table-column>
-    <el-table-column label="操作" width="240" class-name="server-actions-column">
+    <el-table-column label="操作" width="200" class-name="server-actions-column">
       <template #default="{ row }">
         <div class="server-actions">
           <el-button
             link
-            type="success"
-            :loading="testingIds.includes(row.id)"
-            @click="$emit('test', row)"
-          >
-            测试 SSH
-          </el-button>
-          <el-button
-            link
             type="warning"
-            :loading="detectingIds.includes(row.id)"
+            :loading="probingIds.includes(row.id)"
             @click="$emit('detect', row)"
           >
-            探测
+            检测
           </el-button>
           <el-button
             link
@@ -144,20 +142,17 @@ import StatusTag from './StatusTag.vue'
 const props = withDefaults(defineProps<{
   servers: ServerRecord[]
   loading?: boolean
-  testingIds?: number[]
-  detectingIds?: number[]
-  isProbingAll?: boolean
+  probingIds?: number[]
+  isDetectingAll?: boolean
 }>(), {
   loading: false,
-  testingIds: () => [],
-  detectingIds: () => [],
-  isProbingAll: false,
+  probingIds: () => [],
+  isDetectingAll: false,
 })
 
 const emit = defineEmits<{
   edit: [server: ServerRecord]
   delete: [server: ServerRecord]
-  test: [server: ServerRecord]
   detect: [server: ServerRecord]
   detail: [server: ServerRecord]
   'update-tags': [serverId: number, tags: string[]]
@@ -189,6 +184,13 @@ function osSummary(value: string | null | undefined) {
   if (redHat) return `RHEL ${redHat[1]}`
 
   return text
+}
+
+function osTagType(os: string): 'success' | 'primary' | 'info' {
+  const v = os.toLowerCase()
+  if (v.includes('windows') || v.includes('win')) return 'primary'
+  if (v.includes('linux') || v.includes('ubuntu') || v.includes('centos') || v.includes('debian') || v.includes('red hat') || v.includes('fedora') || v.includes('rocky') || v.includes('suse') || v.includes('alpine') || v.includes('amazon linux')) return 'success'
+  return 'info'
 }
 
 function gpuSummary(value: string | null | undefined, status: string | null | undefined) {
@@ -386,5 +388,13 @@ function cancelEditing() {
   height: 22px;
   line-height: 22px;
   font-size: 13px;
+}
+
+/* ── OS tag column ── */
+.table-os-tag {
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>
