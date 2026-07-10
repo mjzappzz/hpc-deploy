@@ -149,7 +149,7 @@ export function calcProgress(
 
   // Stress task with progress
   if (elapsedSeconds !== undefined && elapsedSeconds >= 0) {
-    const pct = Math.min(100, Math.round((elapsedSeconds / duration) * 100))
+    const pct = Math.min(100, (elapsedSeconds / duration) * 100)
     return pct
   }
 
@@ -158,7 +158,7 @@ export function calcProgress(
     // Use actual elapsed from start/end
     const elapsed = calcDurationSeconds(task.start_time, task.end_time)
     if (elapsed !== null && duration > 0) {
-      return Math.min(100, Math.round((elapsed / duration) * 100))
+      return Math.min(100, (elapsed / duration) * 100)
     }
   }
 
@@ -199,7 +199,8 @@ export function formatTaskDurationLabel(task: TaskRecord): string {
 export function formatProgressLabel(task: TaskRecord, progress: number | null): string {
   if (progress === null) return ''
   if (task.status === 'SUCCESS') return '任务完成'
-  if (task.status === 'FAILED') return `执行失败（${progress}%）`
-  if (task.status === 'CANCELED') return `已取消（${progress}%）`
-  return `${progress}%`
+  const label = `${progress.toFixed(2)}%`
+  if (task.status === 'FAILED') return `执行失败（${label}）`
+  if (task.status === 'CANCELED') return `已取消（${label}）`
+  return label
 }

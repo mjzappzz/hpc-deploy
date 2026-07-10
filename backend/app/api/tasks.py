@@ -72,7 +72,7 @@ from app.schemas.task import (
 )
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import FileResponse, Response, StreamingResponse
-from sqlalchemy import case, func
+from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
 
@@ -204,13 +204,18 @@ def list_tasks(
         query = query.filter(Task.server_id == server_id)
     if keyword is not None:
         like_pattern = f"%{keyword}%"
+        query = query.outerjoin(Server, Task.server_id == Server.id)
         query = query.filter(
-            Task.task_id.ilike(like_pattern)
-            | Task.batch_id.ilike(like_pattern)
-            | Task.file_name.ilike(like_pattern)
-            | Task.file_path.ilike(like_pattern)
-            | Task.remote_work_dir.ilike(like_pattern)
-            | Task.error_message.ilike(like_pattern)
+            or_(
+                Task.task_id.ilike(like_pattern),
+                Task.batch_id.ilike(like_pattern),
+                Task.file_name.ilike(like_pattern),
+                Task.file_path.ilike(like_pattern),
+                Task.remote_work_dir.ilike(like_pattern),
+                Task.error_message.ilike(like_pattern),
+                Server.name.ilike(like_pattern),
+                Server.host.ilike(like_pattern),
+            )
         )
 
     # --- order ---
@@ -1171,7 +1176,7 @@ def list_batches(
 ) -> BatchSummaryListResponse:
     """List all batch groups with aggregate summaries."""
     # Subquery: group tasks by batch_id (non-null only)
-    subq = (
+    batch_query = (
         db.query(
             Task.batch_id,
             func.min(Task.task_type).label("task_type"),
@@ -1185,9 +1190,21 @@ def list_batches(
         )
         .filter(Task.batch_id.isnot(None))
         .filter(Task.hidden_from_history == 0)
-        .group_by(Task.batch_id)
-        .subquery()
     )
+
+    if keyword is not None:
+        like_pattern = f"%{keyword}%"
+        batch_query = batch_query.outerjoin(Server, Task.server_id == Server.id).filter(
+            or_(
+                Task.batch_id.ilike(like_pattern),
+                Task.file_name.ilike(like_pattern),
+                Task.file_path.ilike(like_pattern),
+                Server.name.ilike(like_pattern),
+                Server.host.ilike(like_pattern),
+            )
+        )
+
+    subq = batch_query.group_by(Task.batch_id).subquery()
 
     # Build main query from subquery
     q = db.query(subq)
@@ -1196,9 +1213,6 @@ def list_batches(
         # We need to filter by computed status — re-derive in SQL is complex;
         # instead filter after fetching. Limit pre-fetch.
         pass
-
-    if keyword is not None:
-        q = q.filter(subq.c.batch_id.ilike(f"%{keyword}%"))
 
     total_q = q.count()
     items_q = q.order_by(subq.c.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()

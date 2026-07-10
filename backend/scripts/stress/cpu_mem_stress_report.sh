@@ -85,12 +85,29 @@ XLSX_REPORT="${WORKDIR}/cpu_mem_report_${TIME_TAG}.xlsx"
 CPU_WORKERS=${WORKERS:-$(nproc)}
 CPU_CORES=$(nproc)
 
+# 当前可用内存(MB)
+MEM_AVAILABLE_MB=$(free -m | awk '/Mem:/ {print $7}')
+
+# 默认占当前 available 内存 85%
+MEMORY_PERCENT=${MEMORY_PERCENT:-85}
+
+# 目标总压力内存
+VM_TOTAL_MB=$(( MEM_AVAILABLE_MB * MEMORY_PERCENT / 100 ))
+
+# VM worker数量
 VM_WORKERS=$(( CPU_WORKERS / 8 ))
 [ "$VM_WORKERS" -lt 1 ] && VM_WORKERS=1
 
-VM_BYTES="${MEMORY_PERCENT:-85}%"
+# 每个VM worker分配内存
+VM_BYTES_MB=$(( VM_TOTAL_MB / VM_WORKERS ))
 
-CRITICAL_ERR_PATTERN="out of memory|oom-killer|killed process|hardware error|machine check error|machine check exception|mce:.*error|edac.*error|ecc.*uncorrected|uncorrected error|thermal thrott|throttling|segfault|general protection fault|verification failed"
+# 防止单worker太小
+[ "$VM_BYTES_MB" -lt 256 ] && VM_BYTES_MB=256
+
+VM_BYTES="${VM_BYTES_MB}M"
+
+
+CRITICAL_ERR_PATTERN="out of memory|oom-killer|killed process|hardware error|machine check error|machine check exception|mce:.*error|edac.*error|ecc.*uncorrected|uncorrected error|thermal thrott|throttling|verification failed"
 
 command -v stress-ng >/dev/null || { echo "ERROR: stress-ng not found"; exit 1; }
 command -v python3 >/dev/null || { echo "ERROR: python3 not found"; exit 1; }
@@ -212,6 +229,10 @@ trap _cleanup EXIT
 # ===== 启动后台监控 =====
 echo "[STAGE] monitor_start"
 
+# 记录测试开始前已有的内核日志数量，避免历史错误误判
+DMESG_LINES_BEFORE=$(dmesg | wc -l)
+
+
 (
 echo "timestamp,load1,load5,load15,mem_total_MB,mem_used_MB,mem_free_MB,mem_available_MB,swap_total_MB,swap_used_MB"
 while [ ! -f "$STOP_FILE" ]; do
@@ -229,14 +250,31 @@ done
 MON_PID=$!
 
 # dmesg -w 可能在没有新消息时阻塞；放到独立进程组，便于完整清理管道
+# dmesg增量监控，只捕获本次测试产生的新内核日志
 DMESG_MONITOR_TIMEOUT=$((DURATION + 300))
+
 if command -v setsid >/dev/null 2>&1; then
-  CRITICAL_ERR_PATTERN="$CRITICAL_ERR_PATTERN" ERR_LOG="$ERR_LOG" DMESG_MONITOR_TIMEOUT="$DMESG_MONITOR_TIMEOUT" \
-    setsid bash -c 'timeout "$DMESG_MONITOR_TIMEOUT" dmesg -w 2>/dev/null | grep -Ei "$CRITICAL_ERR_PATTERN" > "$ERR_LOG"' &
+  CRITICAL_ERR_PATTERN="$CRITICAL_ERR_PATTERN" \
+  ERR_LOG="$ERR_LOG" \
+  DMESG_MONITOR_TIMEOUT="$DMESG_MONITOR_TIMEOUT" \
+  DMESG_LINES_BEFORE="$DMESG_LINES_BEFORE" \
+    setsid bash -c '
+      timeout "$DMESG_MONITOR_TIMEOUT" dmesg -w 2>/dev/null \
+      | tail -n +$((DMESG_LINES_BEFORE+1)) \
+      | grep -Ei "$CRITICAL_ERR_PATTERN" > "$ERR_LOG"
+    ' &
 else
-  CRITICAL_ERR_PATTERN="$CRITICAL_ERR_PATTERN" ERR_LOG="$ERR_LOG" DMESG_MONITOR_TIMEOUT="$DMESG_MONITOR_TIMEOUT" \
-    bash -c 'timeout "$DMESG_MONITOR_TIMEOUT" dmesg -w 2>/dev/null | grep -Ei "$CRITICAL_ERR_PATTERN" > "$ERR_LOG"' &
+  CRITICAL_ERR_PATTERN="$CRITICAL_ERR_PATTERN" \
+  ERR_LOG="$ERR_LOG" \
+  DMESG_MONITOR_TIMEOUT="$DMESG_MONITOR_TIMEOUT" \
+  DMESG_LINES_BEFORE="$DMESG_LINES_BEFORE" \
+    bash -c '
+      timeout "$DMESG_MONITOR_TIMEOUT" dmesg -w 2>/dev/null \
+      | tail -n +$((DMESG_LINES_BEFORE+1)) \
+      | grep -Ei "$CRITICAL_ERR_PATTERN" > "$ERR_LOG"
+    ' &
 fi
+
 ERR_PID=$!
 ERR_PGID=$(ps -o pgid= "$ERR_PID" 2>/dev/null | tr -d ' ')
 
@@ -1033,4 +1071,8 @@ FINAL_EXIT=0
 
 echo "[STAGE] script_exit exit_code=${FINAL_EXIT}"
 exit "$FINAL_EXIT"
+
+
+
+
 

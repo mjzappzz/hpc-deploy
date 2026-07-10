@@ -9,7 +9,7 @@
           placeholder="全部状态"
           clearable
           style="width:140px"
-          @change="handleFilterChange"
+          @change="applyTaskFilters"
         >
           <el-option label="全部状态" value="" />
           <el-option label="等待中" value="PENDING" />
@@ -28,7 +28,7 @@
           placeholder="全部类型"
           clearable
           style="width:140px"
-          @change="handleFilterChange"
+          @change="applyTaskFilters"
         >
           <el-option label="全部类型" value="" />
           <el-option label="服务器环境" value="script" />
@@ -38,14 +38,13 @@
 
         <el-input
           v-model="filters.keyword"
-          placeholder="搜索任务、脚本、目录、错误"
+          placeholder="搜索服务器、任务、脚本、目录、错误"
           clearable
           class="keyword-input"
-          @keyup.enter="handleFilterChange"
+          @input="scheduleTaskSearch"
+          @keyup.enter="applyTaskFilters"
           @clear="handleFilterClear"
         />
-
-        <el-button :type="hasActiveFilters ? 'primary' : 'default'" @click="handleFilterChange">搜索</el-button>
 
         <el-button @click="resetFilters">重置</el-button>
         <el-tag v-if="isAutoRefreshing" type="info" size="small" effect="plain" class="auto-refresh-tag">
@@ -169,7 +168,7 @@
           placeholder="全部状态"
           clearable
           style="width:160px"
-          @change="loadBatches"
+          @change="applyBatchFilters"
         >
           <el-option label="全部状态" value="" />
           <el-option label="运行中" value="RUNNING" />
@@ -181,13 +180,13 @@
         </el-select>
         <el-input
           v-model="batchFilters.keyword"
-          placeholder="搜索批次 ID / 脚本名"
+          placeholder="搜索服务器、批次 ID、脚本"
           clearable
           class="keyword-input"
-          @keyup.enter="loadBatches"
-          @clear="loadBatches"
+          @input="scheduleBatchSearch"
+          @keyup.enter="applyBatchFilters"
+          @clear="clearBatchSearch"
         />
-        <el-button type="primary" @click="loadBatches">搜索</el-button>
         <el-button @click="resetBatchFilters">重置</el-button>
         <el-tag v-if="isAutoRefreshing" type="info" size="small" effect="plain" class="auto-refresh-tag">
           自动刷新中 (5s)
@@ -493,6 +492,8 @@
             :stroke-width="16"
             :text-inside="true"
             :status="drawerProgressStatus"
+            :format="formatProgressPercentage"
+            class="task-drawer-progress"
           />
         </div>
 
@@ -548,10 +549,10 @@
           <template v-else-if="drawerActivePanel === 'cpu_mem'">
             <div v-if="drawerMonitorLoading && !drawerMonitorData" class="task-drawer-loading-inline">
               <el-icon class="is-loading"><Loading /></el-icon>
-              <span>正在获取 CPU/内存快照...</span>
+              <span>正在获取 CPU 与内存快照...</span>
             </div>
             <div v-else-if="!drawerMonitorData?.cpu_memory.available" class="task-drawer-empty">
-              <el-empty description="暂无 CPU/内存实时监控数据" :image-size="60" />
+              <el-empty description="暂无 CPU 与内存实时监控数据" :image-size="60" />
               <div v-if="drawerMonitorData?.cpu_memory.message" class="task-drawer-empty-msg">{{ drawerMonitorData.cpu_memory.message }}</div>
             </div>
             <div v-else class="task-drawer-monitor-grid">
@@ -614,18 +615,35 @@
         <template v-if="batchDetailData">
           <div class="batch-detail-summary-bar">
             <div class="batch-detail-summary-row">
-              <code class="bd-batch-id">{{ batchDetailData.batch_id }}</code>
+              <div class="bd-batch-chip" :title="batchDetailData.batch_id">
+                <span class="bd-batch-chip__label">批次 ID</span>
+                <code class="bd-batch-id">{{ batchDetailData.batch_id }}</code>
+              </div>
               <span class="bd-tag-group">
                 <el-tag size="small">{{ batchSummaryModuleLabels(batchDetailData.tasks).join('、') || '-' }}</el-tag>
                 <el-tag :type="batchStatusTagType(batchDetailData.summary.status)" size="small">{{ batchStatusLabel(batchDetailData.summary.status) }}</el-tag>
               </span>
             </div>
             <div class="batch-detail-summary-sub">
-              <span class="bd-label">目标</span>
-              <span>{{ batchDetailServerPlans(batchDetailData.tasks).join('；') }}</span>
-              <span class="bd-sep">|</span>
-              <span class="bd-label">创建</span>
-              <span>{{ formatDate(batchDetailData.summary.created_at) }}</span>
+              <div class="bd-summary-field bd-summary-field--target" :title="batchDetailTargetSummary(batchDetailData.tasks)">
+                <span class="bd-label">目标</span>
+                <span class="bd-summary-value">{{ batchDetailTargetSummary(batchDetailData.tasks) }}</span>
+              </div>
+              <span class="bd-summary-sep">|</span>
+              <div class="bd-summary-field bd-summary-field--user" :title="batchDetailUserSummary(batchDetailData.tasks)">
+                <span class="bd-label">用户</span>
+                <span class="bd-summary-value">{{ batchDetailUserSummary(batchDetailData.tasks) }}</span>
+              </div>
+              <span class="bd-summary-sep">|</span>
+              <div class="bd-summary-field bd-summary-field--plan" :title="batchDetailPlanSummary(batchDetailData.tasks)">
+                <span class="bd-label">计划</span>
+                <span class="bd-summary-value">{{ batchDetailPlanSummary(batchDetailData.tasks) }}</span>
+              </div>
+              <span class="bd-summary-sep">|</span>
+              <div class="bd-summary-field">
+                <span class="bd-label">创建</span>
+                <span class="bd-summary-value">{{ formatDate(batchDetailData.summary.created_at) }}</span>
+              </div>
             </div>
           </div>
 
@@ -711,8 +729,15 @@
                         >取消任务</el-button>
                       </div>
                     </div>
-                    <div class="detail-panel__id-row">
-                      <code>{{ batchDetailSelectedTaskId }}</code><span class="detail-panel__sep">·</span><span class="detail-panel__server">{{ selectedTaskData.server_name }} ({{ selectedTaskData.host }})</span>
+                    <div class="detail-panel__meta-row">
+                      <span class="detail-panel__meta-item detail-panel__meta-item--id" :title="batchDetailSelectedTaskId || ''">
+                        <span class="detail-panel__meta-label">任务 ID</span>
+                        <code>{{ batchDetailSelectedTaskId }}</code>
+                      </span>
+                      <span class="detail-panel__meta-item detail-panel__meta-item--server" :title="`${selectedTaskData.server_name} (${selectedTaskData.host})`">
+                        <span class="detail-panel__meta-label">服务器</span>
+                        <span>{{ selectedTaskData.server_name }} ({{ selectedTaskData.host }})</span>
+                      </span>
                     </div>
                   </div>
 
@@ -770,6 +795,7 @@
                     :stroke-width="12"
                     :text-inside="true"
                     :status="detailProgressStatus"
+                    :format="formatProgressPercentage"
                     class="detail-panel__progress"
                   />
 
@@ -812,13 +838,13 @@
                       </div>
                     </el-tab-pane>
 
-                    <el-tab-pane v-if="detailShowMonitorCpuMem" label="CPU/内存" name="cpu_mem">
+                    <el-tab-pane v-if="detailShowMonitorCpuMem" label="CPU 与内存" name="cpu_mem">
                       <div v-if="detailMonitorLoading && !detailMonitorData" class="detail-panel-loading-inline">
                         <el-icon class="is-loading"><Loading /></el-icon>
-                        <span>正在获取 CPU/内存快照...</span>
+                        <span>正在获取 CPU 与内存快照...</span>
                       </div>
                       <div v-else-if="!detailMonitorData?.cpu_memory.available" class="detail-panel-empty-action">
-                        <el-empty description="暂无 CPU/内存实时监控数据" :image-size="40" />
+                        <el-empty description="暂无 CPU 与内存实时监控数据" :image-size="40" />
                         <div v-if="detailMonitorData?.cpu_memory.message" class="detail-monitor-msg">{{ detailMonitorData.cpu_memory.message }}</div>
                       </div>
                       <div v-else class="detail-monitor-grid">
@@ -1191,7 +1217,7 @@ function compactTaskDate(value?: string | null): string {
 function batchStepLabel(task: TaskRecord): string {
   const seq = task.sequence_index
   if (seq === 1) return 'GPU'
-  if (seq === 2) return 'CPU/内存'
+  if (seq === 2) return 'CPU 与内存'
   if (seq === 3) return '磁盘'
   return taskDisplayModuleName(task).replace('压测', '') || `子任务 ${task.task_id}`
 }
@@ -1220,11 +1246,11 @@ function batchGroupDuration(tasks: TaskRecord[]): number | null {
 function taskDisplayModuleName(task: TaskRecord): string {
   const seq = task.sequence_index
   if (seq === 1) return 'GPU压测'
-  if (seq === 2) return 'CPU/内存压测'
+  if (seq === 2) return 'CPU 与内存压测'
   if (seq === 3) return '磁盘压测'
   const fileName = (task.file_name || task.file_path || '').toLowerCase()
   if (fileName.includes('gpu')) return 'GPU压测'
-  if (fileName.includes('cpu') || fileName.includes('mem')) return 'CPU/内存压测'
+  if (fileName.includes('cpu') || fileName.includes('mem')) return 'CPU 与内存压测'
   if (fileName.includes('disk')) return '磁盘压测'
   return getTaskTypeLabel(task.task_type, '任务')
 }
@@ -1232,11 +1258,11 @@ function taskDisplayModuleName(task: TaskRecord): string {
 function batchDetailTaskLabel(task: BatchTaskDetailItem): string {
   const seq = task.sequence_index
   if (seq === 1) return 'GPU压测'
-  if (seq === 2) return 'CPU/内存压测'
+  if (seq === 2) return 'CPU 与内存压测'
   if (seq === 3) return '磁盘压测'
   const name = (task.task_name || '').toLowerCase()
   if (name.includes('gpu')) return 'GPU压测'
-  if (name.includes('cpu') || name.includes('mem')) return 'CPU/内存压测'
+  if (name.includes('cpu') || name.includes('mem')) return 'CPU 与内存压测'
   if (name.includes('disk')) return '磁盘压测'
   return task.task_name || `子任务 ${task.task_id}`
 }
@@ -1281,8 +1307,32 @@ function batchDetailServerPlans(tasks: BatchTaskDetailItem[]): string[] {
   return Array.from(grouped.entries()).map(([server, plans]) => `${server} / 计划 ${Array.from(plans).join('、')}`)
 }
 
+function batchDetailTargetSummary(tasks: BatchTaskDetailItem[]): string {
+  const targets = new Set<string>()
+  for (const task of tasks) {
+    targets.add(`${task.server_name} (${task.host})`)
+  }
+  return Array.from(targets).join('、') || '-'
+}
+
+function batchDetailUserSummary(tasks: BatchTaskDetailItem[]): string {
+  const users = new Set<string>()
+  for (const task of tasks) {
+    users.add(task.username || '-')
+  }
+  return Array.from(users).join('、') || '-'
+}
+
+function batchDetailPlanSummary(tasks: BatchTaskDetailItem[]): string {
+  const plans = new Set<string>()
+  for (const task of tasks) {
+    plans.add(`${batchDetailTaskLabel(task)} ${formatStressDuration(task.params)}`)
+  }
+  return Array.from(plans).join('、') || '-'
+}
+
 function batchSummaryModuleLabels(tasks: BatchTaskDetailItem[]): string[] {
-  const ordered = ['GPU压测', 'CPU/内存压测', '磁盘压测']
+  const ordered = ['GPU压测', 'CPU 与内存压测', '磁盘压测']
   const labels = new Set(tasks.map(batchDetailTaskLabel))
   return ordered.filter(label => labels.has(label)).concat(Array.from(labels).filter(label => !ordered.includes(label)))
 }
@@ -1292,11 +1342,11 @@ function batchSummaryScriptLabels(scriptNames: string[]): string[] {
   for (const name of scriptNames) {
     const normalized = name.toLowerCase()
     if (normalized.includes('gpu')) labels.add('GPU压测')
-    else if (normalized.includes('cpu') || normalized.includes('mem')) labels.add('CPU/内存压测')
+    else if (normalized.includes('cpu') || normalized.includes('mem')) labels.add('CPU 与内存压测')
     else if (normalized.includes('disk')) labels.add('磁盘压测')
     else if (name) labels.add(name)
   }
-  const ordered = ['GPU压测', 'CPU/内存压测', '磁盘压测']
+  const ordered = ['GPU压测', 'CPU 与内存压测', '磁盘压测']
   return ordered.filter(label => labels.has(label)).concat(Array.from(labels).filter(label => !ordered.includes(label)))
 }
 
@@ -1397,6 +1447,9 @@ const filters = reactive<TaskListQuery>({
   offset: 0,
 })
 const total = ref(0)
+const SEARCH_DEBOUNCE_MS = 300
+let taskSearchTimer: number | undefined
+let batchSearchTimer: number | undefined
 
 type HistoryTaskItem = {
   type: 'task'
@@ -1461,15 +1514,6 @@ const currentPage = computed(() => {
   return Math.floor((filters.offset ?? 0) / filters.limit) + 1
 })
 
-const hasActiveFilters = computed(() => {
-  return Boolean(
-    filters.status ||
-    filters.task_type ||
-    filters.server_id ||
-    filters.keyword?.trim()
-  )
-})
-
 const drawerTaskDisplayName = computed(() => {
   return drawerTask.value ? formatTaskDisplayName(drawerTask.value) : drawerSelectedTaskId.value || '-'
 })
@@ -1513,6 +1557,10 @@ const drawerProgressStatus = computed<'success' | 'exception' | 'warning' | unde
   return undefined
 })
 
+function formatProgressPercentage(percentage: number): string {
+  return `${percentage.toFixed(2)}%`
+}
+
 /**
  * For the detail drawer: prefer final_status over raw execution status.
  * This ensures stress tasks with SUCCESS execution + FAIL report show as FAIL.
@@ -1553,7 +1601,7 @@ const drawerVisibleMonitorTabs = computed<Array<{ name: DrawerMonitorPanel; labe
   if (type === 'stress') {
     return [
       ...base,
-      { name: 'cpu_mem', label: 'CPU/内存', monitorType: 'cpu_mem' },
+      { name: 'cpu_mem', label: 'CPU 与内存', monitorType: 'cpu_mem' },
       { name: 'disk', label: '磁盘', monitorType: 'disk' },
       { name: 'gpu', label: 'GPU', monitorType: 'gpu' },
     ]
@@ -1652,7 +1700,7 @@ const detailProgressValue = computed<number | null>(() => {
   const elapsed = detailRunningDuration.value
   if (elapsed === null) return null
   if (task.params && typeof task.params.duration_seconds === 'number') {
-    const pct = Math.round((elapsed / task.params.duration_seconds) * 100)
+    const pct = (elapsed / task.params.duration_seconds) * 100
     if (status === 'RUNNING') return Math.min(99, pct)
     return Math.min(100, pct)
   }
@@ -1951,13 +1999,27 @@ async function loadTasks(silent = false) {
   checkAutoRefresh()
 }
 
-function handleFilterChange() {
-  if (!filters.keyword) filters.keyword = undefined
+function clearTaskSearchTimer() {
+  if (taskSearchTimer !== undefined) {
+    window.clearTimeout(taskSearchTimer)
+    taskSearchTimer = undefined
+  }
+}
+
+function applyTaskFilters() {
+  clearTaskSearchTimer()
+  filters.keyword = filters.keyword?.trim() || undefined
   filters.offset = 0
   loadTasks()
 }
 
+function scheduleTaskSearch() {
+  clearTaskSearchTimer()
+  taskSearchTimer = window.setTimeout(applyTaskFilters, SEARCH_DEBOUNCE_MS)
+}
+
 function handleFilterClear() {
+  clearTaskSearchTimer()
   filters.keyword = undefined
   filters.offset = 0
   loadTasks()
@@ -1975,6 +2037,7 @@ function handleSizeChange(size: number) {
 }
 
 function resetFilters() {
+  clearTaskSearchTimer()
   filters.status = undefined
   filters.task_type = undefined
   filters.server_id = undefined
@@ -1986,6 +2049,32 @@ function resetFilters() {
 }
 
 // ── Batch view functions ──
+
+function clearBatchSearchTimer() {
+  if (batchSearchTimer !== undefined) {
+    window.clearTimeout(batchSearchTimer)
+    batchSearchTimer = undefined
+  }
+}
+
+function applyBatchFilters() {
+  clearBatchSearchTimer()
+  batchFilters.keyword = batchFilters.keyword?.trim() || undefined
+  batchFilters.page = 1
+  loadBatches()
+}
+
+function scheduleBatchSearch() {
+  clearBatchSearchTimer()
+  batchSearchTimer = window.setTimeout(applyBatchFilters, SEARCH_DEBOUNCE_MS)
+}
+
+function clearBatchSearch() {
+  clearBatchSearchTimer()
+  batchFilters.keyword = undefined
+  batchFilters.page = 1
+  loadBatches()
+}
 
 function switchView(mode: 'tasks' | 'batches') {
   viewMode.value = mode
@@ -2537,6 +2626,7 @@ function handleBatchSizeChange(size: number) {
 }
 
 function resetBatchFilters() {
+  clearBatchSearchTimer()
   batchFilters.status = undefined
   batchFilters.keyword = undefined
   batchFilters.page = 1
@@ -3029,6 +3119,8 @@ onActivated(() => {
   loadTasks()
 })
 onUnmounted(() => {
+  clearTaskSearchTimer()
+  clearBatchSearchTimer()
   stopAutoRefresh()
   stopBatchDetailRefresh()
   stopDrawerRealtime()
@@ -3573,9 +3665,42 @@ onUnmounted(() => {
   overflow: visible;
 }
 
+.batch-detail-summary-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.bd-batch-chip {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 520px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 6px;
+  background: var(--el-bg-color);
+}
+
+.bd-batch-chip__label {
+  flex-shrink: 0;
+  margin-right: 8px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
 .bd-batch-id {
-  font-size: 14px;
-  font-weight: 500;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+  background: transparent;
 }
 
 .bd-tag-group {
@@ -3592,10 +3717,46 @@ onUnmounted(() => {
 .batch-detail-summary-sub {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
   flex-wrap: wrap;
+  min-width: 0;
   font-size: 13px;
   color: var(--el-text-color-regular);
+}
+
+.bd-summary-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 26px;
+  box-sizing: border-box;
+}
+
+.bd-summary-field--target {
+  max-width: 360px;
+}
+
+.bd-summary-field--user {
+  max-width: 160px;
+}
+
+.bd-summary-field--plan {
+  max-width: 520px;
+}
+
+.bd-summary-sep {
+  flex-shrink: 0;
+  color: var(--el-border-color);
+  font-size: 12px;
+}
+
+.bd-summary-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .batch-detail-split {
@@ -3848,27 +4009,54 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
-.detail-panel__id-row {
+.detail-panel__meta-row {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.detail-panel__meta-item {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 6px;
+  background: var(--el-fill-color-lighter);
+  color: var(--el-text-color-regular);
   font-size: 12px;
+}
+
+.detail-panel__meta-item--id {
+  max-width: 360px;
+}
+
+.detail-panel__meta-item--server {
+  max-width: 320px;
+}
+
+.detail-panel__meta-label {
+  flex-shrink: 0;
+  margin-right: 6px;
   color: var(--el-text-color-secondary);
 }
 
-.detail-panel__server {
-  color: var(--el-text-color-secondary);
+.detail-panel__meta-item code,
+.detail-panel__meta-item span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-/* ── Detail panel header ── */
-.detail-panel__sep {
-  color: var(--el-text-color-placeholder);
+.detail-panel__meta-item code {
   font-size: 12px;
-  margin: 0 2px;
-}
-
-.detail-panel__id-row code {
-  font-size: 12px;
+  color: var(--el-text-color-primary);
+  background: transparent;
 }
 
 /* ── Detail panel info grid (label-value pairs) ── */
@@ -3935,6 +4123,24 @@ onUnmounted(() => {
 
 .detail-panel__progress {
   margin-top: 10px;
+}
+
+.task-drawer-progress :deep(.el-progress-bar__inner),
+.detail-panel__progress :deep(.el-progress-bar__inner) {
+  min-width: 52px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 6px;
+}
+
+.task-drawer-progress :deep(.el-progress-bar__innerText),
+.detail-panel__progress :deep(.el-progress-bar__innerText) {
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
 }
 
 /* ── Action buttons ── */

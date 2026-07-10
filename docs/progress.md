@@ -137,6 +137,8 @@ HPCDeploy 已形成完整闭环，端到端链路全部打通：
 
 ## 最近完成事项
 
+说明：本节是维护流水，按完成顺序记录。README 只保留当前版本摘要，阶段边界见 `docs/development-stages.md`。
+
 1. **管理员密码确认式高风险操作保护** — 移除账号登录体系，高风险操作（删除/清理/审计日志/设置保存/SSH 密钥生成）通过密码确认弹窗保护。
 2. **取消分组，只保留标签** — 所有 `group_name` 相关功能已移除
 3. **修复编辑服务器标签不显示** — 根因：Pydantic from_attributes 不读取 hybrid_property，修复：ServerRead 增加 model_validator 显式解析 tags_json
@@ -175,16 +177,15 @@ HPCDeploy 已形成完整闭环，端到端链路全部打通：
 36. **煤球对话系统** — 同卡 2 只可互相回应，加权随机选边（上下 74%/左右 26%）
 37. **煤球消失/出现动画** — 缓慢滑入 2.5~4s、打招呼、随机说话、滑出带走
 38. **任务执行页滚动条去除** — `.page-section` overflow:auto → hidden，④ 配置区垂直间距缩小
-27. **管理员密码修改** — 系统设置新增修改密码功能，DB 存储 + 环境变量回退
-
-28. **公钥检测逻辑修复** — 区分检测失败/未安装：远端没有 authorized_keys 显示"未安装"而非"检测失败"；SSH 连不上/密钥文件不存在才显示"检测失败"。使用 `exec_capture` + `|| true` 替代 `exec_simple`，避免远端命令非零退出码抛异常。远端路径统一用 `$HOME` 替代 `~` 避免 tilde 展开问题。
-29. **公钥部署兼容 key/password 双认证** — 每台服务器按自身 `auth_type` 和 `key_path`/`password` 独立认证登录，不再固定用 `id_ed25519` 私钥或只支持 password 登录。单台失败不影响其他服务器。
-30. **密钥路径统一解析** — 新增 `_resolve_server_key_path()` 统一处理 `/backend/keys/xxx` 前缀和相对路径，解析为绝对路径，避免 systemd 下 CWD 不同导致密钥找不到。
-31. **部署公钥弹窗优化** — 打开弹窗不再自动 SSH 检测全部服务器。直接读取服务器已有 `auth_type` 判断：`auth_type=key` 显示"已安装"，`auth_type=password` 显示"未安装"。"检测全部"按钮保留供手动验证。
-32. **异常兜底保护** — 批量检查/部署线程新增 `except Exception` 捕获未知异常，防止单线程崩溃导致结果丢失。
-33. **部署与运行数据文档化** — 新增 `docs/deployment.md`、SQLite 备份/恢复脚本，明确 systemd 开发部署、Docker+SQLite、Docker+MySQL 路线。
-34. **系统设置重组** — 清理中心本机结果文件功能融合到系统设置，运行数据与路径展示关键本机目录大小/文件数，管理员密码改为左上角弹窗入口。
-35. **部署公钥流程补强** — 默认 SSH 密钥生成迁移到服务器管理部署公钥流程；无可部署密钥时弹窗生成 `id_ed25519`。
+39. **管理员密码修改** — 系统设置新增修改密码功能，DB 存储 + 环境变量回退
+40. **公钥检测逻辑修复** — 区分检测失败/未安装：远端没有 authorized_keys 显示"未安装"而非"检测失败"；SSH 连不上/密钥文件不存在才显示"检测失败"。使用 `exec_capture` + `|| true` 替代 `exec_simple`，避免远端命令非零退出码抛异常。远端路径统一用 `$HOME` 替代 `~` 避免 tilde 展开问题。
+41. **公钥部署兼容 key/password 双认证** — 每台服务器按自身 `auth_type` 和 `key_path`/`password` 独立认证登录，不再固定用 `id_ed25519` 私钥或只支持 password 登录。单台失败不影响其他服务器。
+42. **密钥路径统一解析** — 新增 `_resolve_server_key_path()` 统一处理 `/backend/keys/xxx` 前缀和相对路径，解析为绝对路径，避免 systemd 下 CWD 不同导致密钥找不到。
+43. **部署公钥弹窗优化** — 打开弹窗不再自动 SSH 检测全部服务器。直接读取服务器已有 `auth_type` 判断：`auth_type=key` 显示"已安装"，`auth_type=password` 显示"未安装"。"检测全部"按钮保留供手动验证。
+44. **异常兜底保护** — 批量检查/部署线程新增 `except Exception` 捕获未知异常，防止单线程崩溃导致结果丢失。
+45. **部署与运行数据文档化** — 新增 `docs/deployment.md`、SQLite 备份/恢复脚本，明确 systemd 开发部署、Docker+SQLite、Docker+MySQL 路线。
+46. **系统设置重组** — 清理中心本机结果文件功能融合到系统设置，运行数据与路径展示关键本机目录大小/文件数，管理员密码改为左上角弹窗入口。
+47. **部署公钥流程补强** — 默认 SSH 密钥生成迁移到服务器管理部署公钥流程；无可部署密钥时弹窗生成 `id_ed25519`。
 
 ---
 
@@ -340,7 +341,7 @@ HPCDeploy 已形成完整闭环，端到端链路全部打通：
 
 ## 明天继续的明确入口
 
-1. 先读 `README.md`、`docs/architecture.md`、`docs/development-stages.md`、`docs/progress.md`
+1. 先读 `README.md`、`docs/architecture.md`、`docs/deployment.md`、`docs/development-stages.md`、`docs/progress.md`
 2. 所有 29 个阶段已全部完成，项目进入维护期
 3. 后续以修复缺陷、优化体验为主，不再新增大型功能
 4. 不要做强制全站登录、复杂 RBAC、多用户管理
