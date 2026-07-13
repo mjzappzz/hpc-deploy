@@ -95,14 +95,6 @@ def _build_runtime_paths() -> list[dict[str, object]]:
             attention=True,
         ),
         _runtime_path(
-            key="task_logs",
-            label="任务日志",
-            path=DB_PATH,
-            kind="database",
-            description="任务日志记录在 SQLite 数据库内，不是独立日志文件。",
-            attention=True,
-        ),
-        _runtime_path(
             key="ssh_keys",
             label="SSH 密钥目录",
             path=KEYS_DIR,

@@ -27,6 +27,7 @@ def create_app() -> FastAPI:
         init_db()
         recover_stuck_tasks()
         tasks.resume_pending_tasks_after_startup()
+        tasks.resume_running_stress_tasks_after_startup()
         schedule_missing_report_summary_backfill()
         app.state.auto_cleanup_task = start_auto_cleanup_scheduler()
 

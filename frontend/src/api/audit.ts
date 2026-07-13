@@ -33,6 +33,7 @@ export interface AuditLogQuery {
   keyword?: string
   start_time?: string
   end_time?: string
+  risk_only?: boolean
 }
 
 export function listAuditLogs(params: AuditLogQuery) {

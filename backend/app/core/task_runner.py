@@ -5,6 +5,7 @@ import re
 import threading
 from time import monotonic
 
+from app.core.artifact_collector import collect_artifacts
 from app.core.report_summary import schedule_report_summary_generation
 from app.core.script_library import get_library_file_record, resolve_library_path
 from app.core.script_validator import ScriptValidationError
@@ -91,6 +92,7 @@ def run_task_stage8b(task_id: str) -> None:
             port=server.port,
             username=server.username,
             key_path=server.key_path,
+            password=server.password,
         )
         _ensure_task_not_canceled(db, task)
         _add_log(db, task_id, "SYSTEM", "connected")
@@ -594,7 +596,6 @@ def _execute_stress_async(db, executor: SSHExecutor, task: Task, task_id: str, c
     4. duration + grace 过后仍未生成报告则强制收尾
     """
     from time import sleep as _poll_sleep
-    from app.core.artifact_collector import collect_artifacts
 
     params = task.params or {}
     duration_seconds = params.get("duration_seconds", 0)
@@ -642,99 +643,206 @@ def _execute_stress_async(db, executor: SSHExecutor, task: Task, task_id: str, c
 
     _add_log(db, task_id, "SYSTEM", "stress script started in background (async mode)")
 
-    # ── 轮询循环 ──
+    # ── 进入轮询循环（委托给共享函数） ──
+    _stress_poll_loop(db, executor, task, task_id)
+
+
+def _stress_poll_loop(
+    db,
+    executor: SSHExecutor,
+    task: Task,
+    task_id: str,
+    *,
+    elapsed_baseline: int = 0,
+    last_log_pos: int = 0,
+    full_log_text: str = "",
+) -> None:
+    """核心轮询循环：监控远端压测进度，检测报告生成。
+
+    由 _execute_stress_async（新启动）和 _stress_recovery_monitor（重启恢复）共用。
+    """
+    from time import sleep as _poll_sleep
+
+    params = task.params or {}
+    duration_seconds = params.get("duration_seconds", 0) or 0
+    grace = _calculate_stress_grace(duration_seconds)
     deadline = duration_seconds + grace
-    elapsed = 0
-    last_log_pos = 0
-    full_log_text = ""
+    poll_interval = 10
+    pid_file = _build_remote_pid_file_path(task.remote_work_dir)
+    log_file = shell_quote(f"{task.remote_work_dir.rstrip('/')}/task.log")
+
+    elapsed = elapsed_baseline
+    _full_log = full_log_text
+    _last_pos = last_log_pos
+    _ssh_fail_count = 0          # 连续 SSH 失败计数，触发新鲜连接
 
     while elapsed < deadline:
         _poll_sleep(poll_interval)
         elapsed += poll_interval
 
-        # 1. 检查是否被取消
-        db.refresh(task)
-        if task.status in ("CANCELED", "CANCELING"):
-            _add_log(db, task_id, "SYSTEM", "stress async: task canceled, stopping poll")
-            return
+        try:
+            # 0. 主动 SSH 健康检查：检测 executor 传输层是否已降解
+            #    _exec_with_reconnect 会静默返回 None 而不是抛异常，
+            #    导致下方日志读取被跳过但 try-except 感知不到。
+            #    连续失败 _SSH_FAIL_LIMIT 次则抛异常触发新鲜连接创建。
+            _SSH_FAIL_LIMIT = 3
+            if _ssh_fail_count >= _SSH_FAIL_LIMIT:
+                _add_log(db, task_id, "SYSTEM",
+                         f"stress async: SSH failed {_ssh_fail_count}x consecutively, forcing executor refresh")
+                raise SSHExecutorError(f"SSH degraded after {_ssh_fail_count} consecutive failures")
+            _health = _exec_with_reconnect(executor, "echo ok")
+            if _health is None:
+                _ssh_fail_count += 1
+            else:
+                _ssh_fail_count = 0
 
-        # 2. 拉取最新日志（含连接失败自动重连）
-        _sz_raw = _exec_with_reconnect(executor, f"wc -c < {log_file} 2>/dev/null || echo 0")
-        if _sz_raw is not None:
-            _cur = int(_sz_raw.strip()) if _sz_raw.strip().isdigit() else 0
-            if _cur > last_log_pos:
-                _seg_raw = _exec_with_reconnect(
-                    executor, f"tail -c +{last_log_pos + 1} {log_file} 2>/dev/null"
-                )
-                if _seg_raw:
-                    full_log_text += _seg_raw
-                    for _ln in _seg_raw.strip().split("\n"):
-                        _ln = _ln.strip()
-                        if _ln:
-                            _add_log(db, task_id, "INFO", _ln)
-                last_log_pos = _cur
-
-        fatal_reason = _classify_stress_fatal_log(full_log_text)
-        if fatal_reason:
-            _add_log(db, task_id, "ERROR", f"stress async: fatal startup error detected: {fatal_reason}")
-            _terminate_remote_pid_group(executor, pid_file)
-            _fail_running_stress_task(db, task, task_id, fatal_reason)
-            return
-
-        startup_stall_reason = _classify_stress_startup_stall(full_log_text, elapsed)
-        if startup_stall_reason:
-            _add_log(db, task_id, "ERROR", f"stress async: startup stalled: {startup_stall_reason}")
-            _terminate_remote_pid_group(executor, pid_file)
-            _fail_running_stress_task(db, task, task_id, startup_stall_reason)
-            return
-
-        # 3. 检查报告是否生成（含连接失败自动重连）
-        _rx_raw = _exec_with_reconnect(
-            executor, f"ls {shell_quote(task.remote_work_dir)}/*report*.xlsx 2>/dev/null | head -1"
-        )
-        if _rx_raw:
-            _rx = _rx_raw.strip()
-            if _rx:
-                _add_log(db, task_id, "SYSTEM", f"stress async: xlsx report found ({_rx})")
-                downloaded = collect_artifacts(db, task_id, task.remote_work_dir, executor)
-                db.refresh(task)
-                if task.status not in ("CANCELED", "CANCELING", "SUCCESS"):
-                    recovered = _attempt_stress_recovery(db, task_id, task)
-                    if recovered:
-                        _add_log(db, task_id, "SYSTEM", "stress async: completed via report detection")
-                    else:
-                        _add_log(
-                            db,
-                            task_id,
-                            "ERROR",
-                            "stress async: remote report detected but local artifact recovery failed",
-                        )
-                        task.status = "FAILED"
-                        task.exit_code = None
-                        task.end_time = datetime.utcnow()
-                        task.error_message = (
-                            "remote report detected but local artifact recovery failed"
-                            if downloaded else
-                            "remote report detected but no report artifact was collected"
-                        )
-                        db.commit()
-                        _broadcast_done_safe(task_id, "FAILED")
+            # 1. 检查是否被取消
+            db.refresh(task)
+            if task.status in ("CANCELED", "CANCELING"):
+                _add_log(db, task_id, "SYSTEM", "stress async: task canceled, stopping poll")
                 return
 
-        pid_alive = _is_remote_pid_alive(executor, pid_file)
-        if pid_alive is False:
-            reason = _extract_stress_exit_reason(full_log_text)
-            _add_log(db, task_id, "ERROR", f"stress async: remote script exited without report: {reason}")
+            # 2. 拉取最新日志（含连接失败自动重连）
+            _sz_raw = _exec_with_reconnect(executor, f"wc -c < {log_file} 2>/dev/null || echo 0")
+            if _sz_raw is not None:
+                _cur = int(_sz_raw.strip()) if _sz_raw.strip().isdigit() else 0
+                if _cur > _last_pos:
+                    _seg_raw = _exec_with_reconnect(
+                        executor, f"tail -c +{_last_pos + 1} {log_file} 2>/dev/null"
+                    )
+                    if _seg_raw:
+                        _full_log += _seg_raw
+                        for _ln in _seg_raw.strip().split("\n"):
+                            _ln = _ln.strip()
+                            if _ln:
+                                _add_log(db, task_id, "INFO", _ln)
+                    _last_pos = _cur
+
+            fatal_reason = _classify_stress_fatal_log(_full_log)
+            if fatal_reason:
+                _add_log(db, task_id, "ERROR", f"stress async: fatal startup error detected: {fatal_reason}")
+                _terminate_remote_pid_group(executor, pid_file)
+                _fail_running_stress_task(db, task, task_id, fatal_reason)
+                return
+
+            startup_stall_reason = _classify_stress_startup_stall(_full_log, elapsed)
+            if startup_stall_reason:
+                _add_log(db, task_id, "ERROR", f"stress async: startup stalled: {startup_stall_reason}")
+                _terminate_remote_pid_group(executor, pid_file)
+                _fail_running_stress_task(db, task, task_id, startup_stall_reason)
+                return
+
+            # 3. 检查报告是否生成（含连接失败自动重连）
+            _rx_raw = _exec_with_reconnect(
+                executor, f"ls {shell_quote(task.remote_work_dir)}/*report*.xlsx 2>/dev/null | head -1"
+            )
+            if _rx_raw:
+                _rx = _rx_raw.strip()
+                if _rx:
+                    _add_log(db, task_id, "SYSTEM", f"stress async: xlsx report found ({_rx})")
+                    _downloaded = collect_artifacts(db, task_id, task.remote_work_dir, executor)
+                    db.refresh(task)
+                    if task.status not in ("CANCELED", "CANCELING", "SUCCESS"):
+                        if _attempt_stress_recovery(db, task_id, task):
+                            _add_log(db, task_id, "SYSTEM", "stress async: completed via report detection")
+                        else:
+                            _add_log(
+                                db, task_id, "ERROR",
+                                "stress async: remote report detected but local artifact recovery failed",
+                            )
+                            task.status = "FAILED"
+                            task.exit_code = None
+                            task.end_time = datetime.utcnow()
+                            task.error_message = (
+                                "remote report detected but local artifact recovery failed"
+                                if _downloaded else
+                                "remote report detected but no report artifact was collected"
+                            )
+                            db.commit()
+                            _broadcast_done_safe(task_id, "FAILED")
+                    return
+
+            pid_alive = _is_remote_pid_alive(executor, pid_file)
+            if pid_alive is False:
+                reason = _extract_stress_exit_reason(_full_log)
+                _add_log(db, task_id, "ERROR", f"stress async: remote script exited without report: {reason}")
+                try:
+                    collect_artifacts(db, task_id, task.remote_work_dir, executor)
+                except Exception:
+                    pass
+                if not _attempt_stress_recovery(db, task_id, task):
+                    _fail_running_stress_task(db, task, task_id, reason)
+                return
+
+            # 4. 保持 RUNNING 广播（前端进度可见）
+            _broadcast_status_safe(task_id, "RUNNING")
+
+        except Exception as _poll_exc:
+            # ── 轮询异常保护：捕获所有未预期异常，避免守护线程静默死亡 ──
+            import traceback as _tb_mod
+            _tb_str = _tb_mod.format_exc()
+            _elapsed_s = int(elapsed)
+            _poll_msg = f"stress async: poll loop crashed at {_elapsed_s}s: {_poll_exc}"
+            try:
+                _add_log(db, task_id, "ERROR", _poll_msg)
+                _add_log(db, task_id, "ERROR", f"traceback: {_tb_str[-300:]}")
+            except Exception:
+                pass
+            # 先尝试 SSH 重连
+            try:
+                executor.reconnect()
+                try:
+                    _add_log(db, task_id, "SYSTEM",
+                             f"stress async: reconnected after crash at {_elapsed_s}s, resuming poll")
+                except Exception:
+                    pass
+                continue
+            except Exception:
+                pass
+            # 重连失败 → 新建一个完全全新的 SSH 连接（而非复用有问题的 executor 对象）
+            try:
+                _add_log(db, task_id, "SYSTEM",
+                         f"stress async: reconnect failed, creating fresh SSH connection at {_elapsed_s}s")
+            except Exception:
+                pass
+            try:
+                executor.close()
+            except Exception:
+                pass
+            _fresh_executor = SSHExecutor()
+            try:
+                _server = db.get(Server, task.server_id)
+                if _server is not None:
+                    _fresh_executor.connect(
+                        host=_server.host, port=_server.port,
+                        username=_server.username, key_path=_server.key_path,
+                        password=_server.password,
+                    )
+                    executor = _fresh_executor
+                    try:
+                        _add_log(db, task_id, "SYSTEM",
+                                 "stress async: fresh SSH connection created, resuming poll")
+                    except Exception:
+                        pass
+                    continue
+            except Exception:
+                try:
+                    _fresh_executor.close()
+                except Exception:
+                    pass
+            # 新鲜连接也失败 → 最后一次产物检查 + FAILED
+            try:
+                _add_log(db, task_id, "ERROR",
+                         "stress async: fresh SSH connection also failed, giving up")
+            except Exception:
+                pass
             try:
                 collect_artifacts(db, task_id, task.remote_work_dir, executor)
             except Exception:
                 pass
             if not _attempt_stress_recovery(db, task_id, task):
-                _fail_running_stress_task(db, task, task_id, reason)
+                _fail_running_stress_task(db, task, task_id, _poll_msg)
             return
-
-        # 4. 保持 RUNNING 广播（前端进度可见）
-        _broadcast_status_safe(task_id, "RUNNING")
 
     # ── deadline 超时 ──
     _add_log(db, task_id, "SYSTEM", f"stress async: deadline exceeded ({deadline}s), final check")
@@ -751,6 +859,122 @@ def _execute_stress_async(db, executor: SSHExecutor, task: Task, task_id: str, c
             task.error_message = f"stress deadline exceeded ({deadline}s), no report found"
             db.commit()
             _broadcast_done_safe(task_id, "FAILED")
+
+
+def _stress_recovery_monitor(task_id: str) -> None:
+    """Backend 重启后重新 attach 到孤立的 RUNNING stress 任务。
+
+    1. SSH 到远端服务器
+    2. 如果远端脚本还在跑 → 恢复轮询
+    3. 如果脚本已退出但有报告 → 采集产物 + SUCCESS
+    4. 如果脚本已退出且无报告 → FAILED
+    """
+    db = SessionLocal()
+    executor = SSHExecutor()
+    try:
+        task = db.query(Task).filter(Task.task_id == task_id).first()
+        if task is None:
+            return
+
+        server = db.get(Server, task.server_id)
+        if server is None:
+            _fail_running_stress_task(db, task, task_id, "recovery: server not found")
+            return
+
+        try:
+            executor.connect(
+                host=server.host, port=server.port,
+                username=server.username, key_path=server.key_path,
+                password=server.password,
+            )
+        except Exception as exc:
+            _fail_running_stress_task(db, task, task_id, f"recovery: SSH connect failed: {exc}")
+            return
+
+        _add_log(db, task_id, "SYSTEM", "startup recovery: SSH connected, checking remote state")
+
+        pid_file = _build_remote_pid_file_path(task.remote_work_dir)
+        pid_alive = _is_remote_pid_alive(executor, pid_file)
+
+        if pid_alive is True:
+            _add_log(db, task_id, "SYSTEM", "startup recovery: remote process still alive, resuming monitoring")
+            task.status = "RUNNING"
+            db.commit()
+            # 计算已过去的时间，作为轮询的起始偏移
+            elapsed_baseline = 0
+            if task.start_time:
+                elapsed_baseline = int((datetime.utcnow() - task.start_time).total_seconds())
+            _stress_poll_loop(db, executor, task, task_id, elapsed_baseline=elapsed_baseline)
+            return
+
+        if pid_alive is False:
+            _add_log(db, task_id, "SYSTEM", "startup recovery: remote script exited, checking for reports")
+            db.commit()
+            try:
+                collect_artifacts(db, task_id, task.remote_work_dir, executor)
+            except Exception:
+                pass
+            log_file = f"{task.remote_work_dir.rstrip('/')}/task.log"
+            try:
+                full_log = executor.exec_simple(f"cat {log_file} 2>/dev/null || true") or ""
+            except Exception:
+                full_log = ""
+            reason = _extract_stress_exit_reason(full_log)
+            if not _attempt_stress_recovery(db, task_id, task):
+                _fail_running_stress_task(db, task, task_id, f"recovery: {reason}")
+            return
+
+        _fail_running_stress_task(db, task, task_id,
+                                  "recovery: could not determine remote process state")
+    finally:
+        executor.close()
+        db.close()
+
+
+def resume_running_stress_tasks_after_startup() -> int:
+    """后端重启后，重新 attach 到所有 RUNNING stress 任务。
+
+    重启后所有 daemon thread 都被杀了，即使租约没到期 worker 也不在了。
+    所以必须对所有 RUNNING 任务做恢复，不能跳过有效租约的。
+    恢复线程会 SSH 到远端判断实际状态：
+    - 进程还活着 → 继续轮询
+    - 进程已退出有报告 → 采集 + SUCCESS
+    - 进程已退出无报告 → FAILED
+    """
+    db = SessionLocal()
+    resumed = 0
+    try:
+        running_tasks = (
+            db.query(Task)
+            .filter(
+                Task.status == "RUNNING",
+                Task.task_type == "stress",
+            )
+            .all()
+        )
+        for task in running_tasks:
+            db.add(TaskLog(
+                task_id=task.task_id, level="SYSTEM",
+                message="startup recovery: spawning recovery monitor for orphaned RUNNING stress task",
+            ))
+            db.commit()
+
+            thread = threading.Thread(
+                target=_stress_recovery_monitor,
+                args=(task.task_id,),
+                daemon=True,
+            )
+            thread.start()
+            resumed += 1
+
+        if resumed:
+            import logging as _logging
+            _logging.getLogger(__name__).info(
+                "startup recovery: spawned %d recovery monitor(s) for RUNNING stress tasks", resumed)
+
+        return resumed
+    finally:
+        db.close()
 
 
 def _attempt_stress_recovery(db, task_id: str, task: Task) -> bool:
@@ -843,6 +1067,7 @@ def _connect_recovery_executor(task: Task) -> SSHExecutor | None:
             port=server.port,
             username=server.username,
             key_path=server.key_path,
+            password=server.password,
         )
         return fresh
     except Exception:

@@ -31,6 +31,9 @@
             <el-option label="失败" value="failed" />
           </el-select>
         </el-form-item>
+        <el-form-item label="显示范围">
+          <el-switch v-model="filters.risk_only" active-text="仅高风险操作" inactive-text="完整流水" @change="handleSearch" />
+        </el-form-item>
         <el-form-item label="关键词">
           <el-input v-model="filters.keyword" placeholder="搜索名称/消息/操作" clearable style="width:220px" />
         </el-form-item>
@@ -39,6 +42,7 @@
           <el-button @click="handleReset">重置</el-button>
         </el-form-item>
       </el-form>
+      <div class="audit-scope-note">默认保留删除、清理、远端访问、设置和任务取消等关键操作；关闭“仅高风险操作”可查看完整流水。</div>
     </el-card>
 
     <!-- Table -->
@@ -123,12 +127,14 @@ const ACTION_LABELS: Record<string, string> = {
   'server.delete': '删除服务器',
   'server.test_ssh': '测试 SSH',
   'server.deploy_public_key': '部署公钥',
+  'server.deploy_public_key_all': '批量部署公钥',
   'server.probe': '探测服务器',
   'server.probe_all': '批量探测',
   'task.create': '创建任务',
   'task.batch_create': '批量创建任务',
   'task.stress_suite_create': '创建压测套件',
   'task.cancel': '取消任务',
+  'task.batch_cancel': '取消批次任务',
   'task.diagnose': '诊断任务',
   'task.delete': '删除任务',
   'script.upload': '上传脚本',
@@ -136,6 +142,8 @@ const ACTION_LABELS: Record<string, string> = {
   'cleanup.local_artifacts.delete': '清理本地产物',
   'cleanup.remote.delete': '清理远端目录',
   'settings.update': '更新设置',
+  'settings.change_password': '修改管理员密码',
+  'auto_cleanup_local_artifacts': '自动清理本地产物',
 }
 
 const filters = reactive({
@@ -143,6 +151,7 @@ const filters = reactive({
   target_type: '',
   status: '',
   keyword: '',
+  risk_only: true,
 })
 
 const page = reactive<AuditLogPage>({
@@ -163,6 +172,7 @@ async function fetchData() {
     const params: Record<string, any> = {
       page: page.page,
       page_size: page.page_size,
+      risk_only: filters.risk_only,
     }
     if (filters.action) params.action = filters.action
     if (filters.target_type) params.target_type = filters.target_type
@@ -212,6 +222,7 @@ function handleReset() {
   filters.target_type = ''
   filters.status = ''
   filters.keyword = ''
+  filters.risk_only = true
   page.page = 1
   if (auditUnlocked.value) {
     fetchData()
@@ -241,6 +252,13 @@ function formatDetailValue(val: any): string {
 
 .filter-card .el-form {
   margin-bottom: -18px;
+}
+
+.audit-scope-note {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.5;
 }
 
 .audit-gate-card {

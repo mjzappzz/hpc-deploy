@@ -55,6 +55,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 ### tasks API (`/api/tasks`)
 - 任务创建、批量创建（`/batch`）
 - 压测套件创建（`/stress-suite`），同服务器内按 GPU → CPU/内存 → 磁盘串行推进
+- 批次压测子任务重跑（`/{task_id}/retry-in-batch`）：仅支持白名单压测脚本中执行失败、取消、超时或报告 FAIL 的子任务；重跑任务追加到同批次、同服务器队列末尾，并阻止重复排队
 - 状态查询、取消、删除
 - 日志查询、日志下载、WebSocket 实时日志（`/logs/ws`）
 - 失败诊断（`/{task_id}/diagnosis`）
@@ -91,6 +92,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 ### audit API (`/api/audit-logs`)
 - **需 `require_admin_token()` 保护**（需要管理员密码确认）
 - 审计日志查询与分页（支持 action / target_type / status / keyword 筛选）
+- 支持 `risk_only=true`：仅返回删除、清理、远端访问、公钥部署、设置修改和任务取消等高风险操作；接口默认保留完整流水，前端默认启用该筛选
 - 统一英文 action 命名（`server.create`、`task.cancel` 等），前端中文标签映射
 - 记录任务创建/删除/取消/诊断、压测套件创建、清理、设置保存、服务器增删改/探测/SSH 测试/公钥部署等操作
 - 所有调用点包含 `detail_json` 结构化上下文（参数、结果、错误信息）
@@ -323,6 +325,10 @@ PENDING → CONNECTING → PREPARING → UPLOADING → RUNNING → SUCCESS
 
 终态：SUCCESS、FAILED、CANCELED。仅终态允许删除。
 
+### 压测任务最终状态
+
+压测任务的展示状态由 `backend/app/core/task_state_resolver.py` 统一计算，优先级为：报告 `FAIL` → `FAILED`，报告 `PASS` → `SUCCESS`，执行状态 `FAILED` → `FAILED`，其余为 `UNKNOWN`。该规则用于任务卡、批次详情、诊断与批次汇总；不改变数据库中的原始执行状态。
+
 ---
 
 ## 8. WebSocket 实时日志（Phase 23A）
@@ -354,6 +360,8 @@ PENDING → CONNECTING → PREPARING → UPLOADING → RUNNING → SUCCESS
 | `.app-main-area` | `margin-left: 236px` | `height: 100vh; overflow-y: auto` |
 | `.app-topbar` | `position: sticky; top: 0` | `height: 56px; z-index: 20` |
 | `.app-content` | 在 main-area 内 flex: 1 | `padding: 20px 24px` |
+
+侧边栏“历史任务”每 10 秒轻量查询一次 `RUNNING` 任务总数；存在运行任务时显示绿色状态点和数量，页面不可见时暂停轮询。
 
 ---
 

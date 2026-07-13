@@ -29,6 +29,7 @@ from app.core.task_runner import (
     TERMINAL_TASK_STATUSES,
     UNFINISHED_TASK_STATUSES,
     _build_remote_pid_file_path,
+    resume_running_stress_tasks_after_startup,
     run_task_stage8b,
 )
 from app.core.artifact_collector import ARTIFACTS_DIR

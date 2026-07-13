@@ -14,6 +14,24 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/audit-logs", tags=["audit"])
 
+# Operations that change credentials, configuration, remote access, or delete data.
+# The UI uses this as its default view while the complete audit stream remains available.
+HIGH_RISK_AUDIT_ACTIONS = {
+    "auto_cleanup_local_artifacts",
+    "cleanup.local_artifacts.delete",
+    "cleanup.remote.delete",
+    "script.delete",
+    "script.upload",
+    "server.delete",
+    "server.deploy_public_key",
+    "server.deploy_public_key_all",
+    "settings.change_password",
+    "settings.update",
+    "task.batch_cancel",
+    "task.cancel",
+    "task.delete",
+}
+
 
 def _row_to_item(row: AuditLog) -> AuditLogItem:
     """Convert ORM row to response item, parsing detail_json."""
@@ -51,6 +69,7 @@ def list_audit_logs(
     keyword: str | None = Query(None),
     start_time: str | None = Query(None),
     end_time: str | None = Query(None),
+    risk_only: bool = Query(False),
     db: Session = Depends(get_db),
     _: str = Depends(require_admin_token),
 ) -> AuditLogPage:
@@ -64,6 +83,8 @@ def list_audit_logs(
         query = query.filter(AuditLog.target_type == target_type)
     if status:
         query = query.filter(AuditLog.status == status)
+    if risk_only:
+        query = query.filter(AuditLog.action.in_(HIGH_RISK_AUDIT_ACTIONS))
     if keyword:
         like = f"%{keyword}%"
         query = query.filter(

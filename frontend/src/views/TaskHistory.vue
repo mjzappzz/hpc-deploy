@@ -482,6 +482,7 @@
             <span v-if="drawerTask.batch_id"><b>批次</b><code>{{ drawerTask.batch_id }}</code></span>
             <span><b>服务器</b>{{ drawerServerLabel }}</span>
             <span><b>任务</b>{{ taskDisplayModuleName(drawerTask) }}</span>
+            <span><b>报告状态</b><el-tag size="small" :type="drawerReportTagType" effect="plain">{{ drawerReportLabel }}</el-tag></span>
             <span><b>远端目录</b><code>{{ drawerTask.remote_work_dir || '-' }}</code></span>
             <span><b>开始</b>{{ formatDate(drawerTask.start_time) }}</span>
             <span><b>已运行</b>{{ drawerRunningDuration !== null ? formatSeconds(drawerRunningDuration) : '-' }}</span>
@@ -1573,6 +1574,20 @@ const drawerDisplayStatus = computed(() => {
     return task.final_status
   }
   return task.status
+})
+
+const drawerReportLabel = computed(() => {
+  const reportStatus = (drawerTask.value?.report_status || '').toUpperCase()
+  if (reportStatus === 'PASS') return 'PASS'
+  if (reportStatus === 'FAIL') return 'FAIL'
+  return '无报告'
+})
+
+const drawerReportTagType = computed<'' | 'success' | 'danger' | 'info'>(() => {
+  const reportStatus = (drawerTask.value?.report_status || '').toUpperCase()
+  if (reportStatus === 'PASS') return 'success'
+  if (reportStatus === 'FAIL') return 'danger'
+  return 'info'
 })
 
 const drawerShowCancelButton = computed(() => {

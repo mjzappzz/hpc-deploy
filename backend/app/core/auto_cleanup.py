@@ -8,9 +8,11 @@ from pathlib import Path
 
 from app.core.artifact_collector import ARTIFACTS_DIR
 from app.core.audit import write_audit_log
+from app.core.task_runner import _attempt_stress_recovery
 from app.db.database import SessionLocal
 from app.models.settings import SystemSetting
 from app.models.task import Task
+from app.models.task_log import TaskLog
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
@@ -44,6 +46,7 @@ async def _auto_cleanup_loop() -> None:
             wait_seconds = _seconds_until_next_check()
             await asyncio.sleep(wait_seconds)
             await asyncio.to_thread(run_due_auto_cleanup)
+            await asyncio.to_thread(recover_stuck_stress_tasks)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -272,3 +275,80 @@ def _str_to_int(value: str | None, default: int) -> int:
         return int(str(value))
     except (TypeError, ValueError):
         return default
+
+
+def recover_stuck_stress_tasks() -> int:
+    """Second-layer guard: recover stress tasks stuck in RUNNING with expired leases.
+
+    The primary poll-loop in _execute_stress_async now has try-except protection,
+    but if the entire daemon thread somehow dies (e.g. process-level interruption),
+    this periodic recovery will find and clean up orphaned RUNNING tasks.
+
+    Recovery strategy (no SSH — may not be available in this context):
+    1. Find RUNNING stress tasks with expired leases
+    2. If local artifacts already exist (from a prior partial collection), attempt recovery
+    3. Otherwise, mark FAILED so the UI reflects the broken state instead of hanging
+    """
+    db = SessionLocal()
+    recovered = 0
+    try:
+        now = datetime.utcnow()
+        stale_tasks = (
+            db.query(Task)
+            .filter(
+                Task.status == "RUNNING",
+                Task.task_type == "stress",
+                Task.lease_expire_time.isnot(None),
+                Task.lease_expire_time < now,
+            )
+            .all()
+        )
+        for task in stale_tasks:
+            _elapsed = ""
+            if task.start_time:
+                _delta = now - task.start_time
+                _elapsed = f" (elapsed {int(_delta.total_seconds())}s)"
+            db.add(TaskLog(
+                task_id=task.task_id,
+                level="WARN",
+                message=(
+                    f"stuck task recovery: RUNNING with expired lease{_elapsed}, "
+                    f"lease_expire={task.lease_expire_time}"
+                ),
+            ))
+            # Check if local artifacts exist (from prior partial collection)
+            task_artifact_dir = ARTIFACTS_DIR / task.task_id
+            if task_artifact_dir.is_dir() and _attempt_stress_recovery(db, task.task_id, task):
+                recovered += 1
+                continue
+            # No artifacts → fail the task to unstick it
+            task.status = "FAILED"
+            task.exit_code = None
+            task.end_time = now
+            task.error_message = (
+                f"stuck task recovery: stress poll loop did not complete, "
+                f"lease expired at {task.lease_expire_time}{_elapsed}"
+            )
+            db.commit()
+            db.add(TaskLog(
+                task_id=task.task_id,
+                level="ERROR",
+                message=f"stuck task recovery: marked FAILED (no artifacts found)",
+            ))
+            db.commit()
+            try:
+                from app.core.ws_manager import ws_manager
+                ws_manager.broadcast_status_sync(task.task_id, "FAILED")
+                ws_manager.broadcast_done_sync(task.task_id, "FAILED")
+            except Exception:
+                pass
+            recovered += 1
+        if stale_tasks:
+            logger.info("[stuck-task-recovery] recovered %d/%d stuck stress tasks",
+                        recovered, len(stale_tasks))
+        return recovered
+    except Exception:
+        logger.warning("[stuck-task-recovery] iteration failed", exc_info=True)
+        return recovered
+    finally:
+        db.close()

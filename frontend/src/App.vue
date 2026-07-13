@@ -25,7 +25,13 @@
         </el-menu-item>
         <el-menu-item index="/history" class="hpc-nav-pulse-item" :class="{ 'hpc-nav-pulse-active': isActiveMenu('/history') }">
           <el-icon><Tickets /></el-icon>
-          <span>历史任务</span>
+          <span class="history-menu-label">
+            <span>历史任务</span>
+            <span v-if="runningTaskCount > 0" class="history-running-badge" role="status" aria-live="polite">
+              <span class="history-running-dot" aria-hidden="true" />
+              运行 {{ runningTaskCount }}
+            </span>
+          </span>
         </el-menu-item>
       </el-menu>
 
@@ -66,13 +72,17 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Cpu, Document, List, Monitor, Operation, Setting, Tickets } from '@element-plus/icons-vue'
 import AppCritters from '@/components/AppCritters.vue'
+import { listTasks } from '@/api/task'
 
 const route = useRoute()
 const router = useRouter()
+const runningTaskCount = ref(0)
+const runningTaskLoading = ref(false)
+let runningTaskTimer: number | undefined
 
 const routeTitle = computed(() => String(route.meta.title ?? 'HPCDeploy'))
 
@@ -87,6 +97,34 @@ function isActiveMenu(index: string) {
   }
   return route.path === index
 }
+
+async function refreshRunningTaskCount() {
+  if (document.hidden || runningTaskLoading.value) return
+  runningTaskLoading.value = true
+  try {
+    const response = await listTasks({ status: 'RUNNING', limit: 1 })
+    runningTaskCount.value = response.data.total
+  } catch {
+    // Keep the last known count; sidebar status must not interrupt normal navigation.
+  } finally {
+    runningTaskLoading.value = false
+  }
+}
+
+function handleVisibilityChange() {
+  if (!document.hidden) void refreshRunningTaskCount()
+}
+
+onMounted(() => {
+  void refreshRunningTaskCount()
+  runningTaskTimer = window.setInterval(() => void refreshRunningTaskCount(), 10_000)
+  document.addEventListener('visibilitychange', handleVisibilityChange)
+})
+
+onUnmounted(() => {
+  if (runningTaskTimer !== undefined) window.clearInterval(runningTaskTimer)
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
+})
 </script>
 
 <style>
@@ -245,6 +283,10 @@ html, body, #app {
       0 0 8px rgba(64, 158, 255, 0.18),
       0 0 16px rgba(64, 158, 255, 0.1);
   }
+
+  .history-running-dot {
+    animation: none;
+  }
 }
 
 .nav-menu .el-menu-item.is-active .el-icon {
@@ -267,6 +309,43 @@ html, body, #app {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.history-menu-label {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  gap: 6px;
+}
+
+.history-running-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  padding: 1px 6px;
+  border: 1px solid #a7f3d0;
+  border-radius: 999px;
+  background: #ecfdf5;
+  color: #047857;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.history-running-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #10b981;
+  animation: history-running-breathe 1.8s ease-in-out infinite;
+}
+
+@keyframes history-running-breathe {
+  0%, 100% { opacity: 0.45; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.15); }
 }
 
 .admin-badge {

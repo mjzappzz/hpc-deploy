@@ -37,9 +37,6 @@
     </div>
     <div v-if="task.error_message" class="task-card__error">{{ task.error_message }}</div>
     <div class="task-card__actions">
-      <el-tooltip v-if="showCancelButton" content="取消后：数据库标记已取消 → 终止远端进程(可达时) → 保留远端目录" placement="top">
-        <el-button size="small" type="danger" plain class="hpc-interactive-pulse" @click="$emit('cancelTask', task)">取消任务</el-button>
-      </el-tooltip>
       <el-button v-if="showCancelingButton" size="small" type="warning" plain disabled>正在取消</el-button>
       <el-button size="small" type="primary" class="hpc-interactive-pulse" @click="$emit('continueTask', task)">查看任务详情</el-button>
       <el-tooltip
@@ -74,7 +71,8 @@
           @click="$emit('copyVerifyCommands', task)"
         >复制验证命令</el-button>
       </el-tooltip>
-      <el-button v-if="isStressCompleted" size="small" class="hpc-interactive-pulse" @click="$emit('downloadReport', task)">结果文件</el-button>
+      <el-button size="small" class="hpc-interactive-pulse" :disabled="!isStressCompleted" @click="$emit('downloadReport', task)">结果文件</el-button>
+      <el-button v-if="showCancelButton" size="small" type="danger" plain class="hpc-interactive-pulse" @click="$emit('cancelTask', task)">取消任务</el-button>
       <el-button v-if="task.batch_id" size="small" type="default" plain class="hpc-interactive-pulse" @click="$emit('viewBatch', task)">查看批次</el-button>
     </div>
   </el-card>
