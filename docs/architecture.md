@@ -56,12 +56,14 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - 任务创建、批量创建（`/batch`）
 - 压测套件创建（`/stress-suite`），同服务器内按 GPU → CPU/内存 → 磁盘串行推进
 - 批次压测子任务重跑（`/{task_id}/retry-in-batch`）：仅支持白名单压测脚本中执行失败、取消、超时或报告 FAIL 的子任务；重跑任务追加到同批次、同服务器队列末尾，并阻止重复排队
+- 任务列表 `scope=single|batch`：按是否存在 `batch_id` 筛选单次任务或批次子任务，保持分页总数准确
 - 状态查询、取消、删除
 - 日志查询、日志下载、WebSocket 实时日志（`/logs/ws`）
 - 失败诊断（`/{task_id}/diagnosis`）
 - 结构化监控（`/{task_id}/monitor` — CPU/内存/磁盘/GPU 5s 轮询）
 - 历史任务统一展示：普通任务按单次任务卡展示；同一 `batch_id` 在前端聚合为批次卡，首页展示批次概览，批次详情弹窗展示完整子任务信息
 - 历史任务卡片统一展示模块、文件、远程目录、命令、计划时长、开始/结束/耗时、报告状态和失败原因
+- 重跑链以最新一次尝试计算批次当前状态；旧尝试仅作为历史审计记录保留
 - 结果文件入口先展示 artifact/result 文件列表，再由用户选择具体文件下载
 - 批次报告下载：单服务器批次生成 `服务器名称_压测报告_日期.zip`，多服务器批次生成 `batch_id.zip` 并按服务器目录拆分
 - 任务历史查询默认过滤 `hidden_from_history=1` 的软隐藏记录；keyword 支持匹配 `task_id`、脚本名、`batch_id`
@@ -329,6 +331,11 @@ PENDING → CONNECTING → PREPARING → UPLOADING → RUNNING → SUCCESS
 
 压测任务的展示状态由 `backend/app/core/task_state_resolver.py` 统一计算，优先级为：报告 `FAIL` → `FAILED`，报告 `PASS` → `SUCCESS`，执行状态 `FAILED` → `FAILED`，其余为 `UNKNOWN`。该规则用于任务卡、批次详情、诊断与批次汇总；不改变数据库中的原始执行状态。
 
+### 压测运行续租与报告回收
+
+- 远端脚本先写入临时 XLSX，再原子替换最终文件名；采集端下载到本地 `.part`，完成 ZIP 完整性校验后再原子入库。
+- 运行中的压测任务每次 SSH 健康轮询都会更新 heartbeat/lease；后端重启后通过 SSH 检查远端 PID，并恢复对应监控线程。
+
 ---
 
 ## 8. WebSocket 实时日志（Phase 23A）
@@ -361,7 +368,7 @@ PENDING → CONNECTING → PREPARING → UPLOADING → RUNNING → SUCCESS
 | `.app-topbar` | `position: sticky; top: 0` | `height: 56px; z-index: 20` |
 | `.app-content` | 在 main-area 内 flex: 1 | `padding: 20px 24px` |
 
-侧边栏“历史任务”每 10 秒轻量查询一次 `RUNNING` 任务总数；存在运行任务时显示绿色状态点和数量，页面不可见时暂停轮询。
+侧边栏“历史任务”每 10 秒轻量查询一次 `RUNNING` 任务总数；存在运行任务时显示绿色状态点和数量，页面不可见时暂停轮询。点击“运行 N”会跳转历史任务并应用 `RUNNING` 状态筛选。
 
 ---
 

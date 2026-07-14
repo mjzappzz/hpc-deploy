@@ -3,6 +3,11 @@
     <template v-if="viewMode === 'tasks'">
       <div class="filter-bar">
         <el-button class="page-refresh-button" @click="refreshCurrentView">刷新</el-button>
+        <el-select v-model="filters.scope" placeholder="全部任务" clearable style="width:120px" @change="applyTaskFilters">
+          <el-option label="全部任务" value="" />
+          <el-option label="单次任务" value="single" />
+          <el-option label="批次任务" value="batch" />
+        </el-select>
 
         <el-select
           v-model="filters.status"
@@ -13,11 +18,7 @@
         >
           <el-option label="全部状态" value="" />
           <el-option label="等待中" value="PENDING" />
-          <el-option label="连接中" value="CONNECTING" />
-          <el-option label="准备中" value="PREPARING" />
-          <el-option label="上传中" value="UPLOADING" />
           <el-option label="运行中" value="RUNNING" />
-          <el-option label="取消中" value="CANCELING" />
           <el-option label="成功" value="SUCCESS" />
           <el-option label="失败" value="FAILED" />
           <el-option label="已取消" value="CANCELED" />
@@ -66,6 +67,7 @@
             @prefetch-verify-commands="prefetchVerifyCommands"
             @copy-env-commands="copyEnvCommands"
             @copy-verify-commands="copyVerifyCommands"
+            @copy-task-id="copyTaskId"
             @cancel-task="cancelHistoryTask"
           />
           <el-card v-else shadow="never" class="task-card batch-history-card hpc-glow-row">
@@ -76,7 +78,8 @@
                   <el-tag size="small" type="warning" effect="plain">{{ item.tasks.length }} 个子任务</el-tag>
                 </div>
                 <div class="batch-history-card__meta">
-                  {{ item.batchId }} / {{ batchGroupServerMetaLabel(item.tasks) }} / 创建 {{ formatDate(batchGroupCreatedAt(item.tasks)) }}
+                  <span class="id-copy-control"><code>{{ item.batchId }}</code><el-tooltip content="复制批次 ID" placement="top"><el-button circle size="small" :icon="DocumentCopy" class="copy-id-button" aria-label="复制批次 ID" @click="copyBatchId(item.batchId)" /></el-tooltip></span>
+                  <span>/ {{ batchGroupServerMetaLabel(item.tasks) }} / 创建 {{ formatDate(batchGroupCreatedAt(item.tasks)) }}</span>
                 </div>
                 <div class="batch-history-card__badges">
                   <el-tag size="small" type="warning" effect="plain">批次</el-tag>
@@ -85,9 +88,7 @@
               </div>
               <div class="batch-history-card__status-block">
                 <StatusTag :status="batchGroupStatus(item.tasks)" />
-                <div v-if="batchReportResult(item.tasks).visible" class="batch-report-pill" :class="batchReportResult(item.tasks).className">
-                  {{ batchReportResult(item.tasks).label }}
-                </div>
+                <span class="task-card__status-label">{{ batchGroupChineseStatus(item.tasks) }}</span>
               </div>
             </div>
 
@@ -114,6 +115,12 @@
               <div v-for="reason in batchFailureReasons(item.tasks)" :key="reason.title + reason.message" class="batch-history-failure__item">
                 <b>{{ reason.title }}：</b>
                 <span>{{ reason.message }}</span>
+              </div>
+            </div>
+            <div v-if="batchRetryNotices(item.tasks).length > 0" class="batch-history-retry">
+              <div v-for="notice in batchRetryNotices(item.tasks)" :key="notice.title + notice.message" class="batch-history-retry__item" :class="notice.className">
+                <b>{{ notice.title }}：</b>
+                <span>{{ notice.message }}</span>
               </div>
             </div>
 
@@ -171,12 +178,11 @@
           @change="applyBatchFilters"
         >
           <el-option label="全部状态" value="" />
+          <el-option label="等待中" value="PENDING" />
           <el-option label="运行中" value="RUNNING" />
           <el-option label="成功" value="SUCCESS" />
-          <el-option label="部分成功" value="PARTIAL_FAILED" />
           <el-option label="失败" value="FAILED" />
           <el-option label="已取消" value="CANCELED" />
-          <el-option label="部分取消" value="PARTIAL_CANCELED" />
         </el-select>
         <el-input
           v-model="batchFilters.keyword"
@@ -290,7 +296,7 @@
           </el-table-column>
           <el-table-column label="批次 ID" min-width="220" show-overflow-tooltip>
             <template #default="{ row }">
-              <span class="batch-id-cell">{{ row.batch_id }}</span>
+              <span class="batch-id-cell id-copy-control"><code>{{ row.batch_id }}</code><el-tooltip content="复制批次 ID" placement="top"><el-button circle size="small" :icon="DocumentCopy" class="copy-id-button" aria-label="复制批次 ID" @click.stop="copyBatchId(row.batch_id)" /></el-tooltip></span>
             </template>
           </el-table-column>
           <el-table-column label="服务器" min-width="140" show-overflow-tooltip>
@@ -393,6 +399,7 @@
               <div v-if="group.remoteDir" class="art-dir-bar art-dir-bar--compact">
                 <span class="art-dir-label">远端服务器目录：</span>
                 <code class="art-dir-path">{{ group.remoteDir }}</code>
+                <el-button size="small" text @click="copyPath(group.remoteDir)">复制路径</el-button>
               </div>
               <template v-if="group.files.length === 0">
                 <div class="art-empty-inline">暂无结果文件</div>
@@ -478,13 +485,14 @@
             <StatusTag :status="drawerDisplayStatus" />
           </div>
           <div class="task-drawer-grid">
-            <span><b>任务 ID</b><code>{{ drawerTask.task_id }}</code></span>
-            <span v-if="drawerTask.batch_id"><b>批次</b><code>{{ drawerTask.batch_id }}</code></span>
+            <span><b>任务 ID</b><code>{{ drawerTask.task_id }}</code><el-tooltip content="复制任务 ID" placement="top"><el-button circle size="small" :icon="DocumentCopy" class="copy-id-button" aria-label="复制任务 ID" @click="copyTaskId(drawerTask)" /></el-tooltip></span>
+            <span v-if="drawerTask.batch_id"><b>批次</b><code>{{ drawerTask.batch_id }}</code><el-tooltip content="复制批次 ID" placement="top"><el-button circle size="small" :icon="DocumentCopy" class="copy-id-button" aria-label="复制批次 ID" @click="copyBatchId(drawerTask.batch_id)" /></el-tooltip></span>
             <span><b>服务器</b>{{ drawerServerLabel }}</span>
             <span><b>任务</b>{{ taskDisplayModuleName(drawerTask) }}</span>
             <span><b>报告状态</b><el-tag size="small" :type="drawerReportTagType" effect="plain">{{ drawerReportLabel }}</el-tag></span>
             <span><b>远端目录</b><code>{{ drawerTask.remote_work_dir || '-' }}</code></span>
             <span><b>开始</b>{{ formatDate(drawerTask.start_time) }}</span>
+            <span><b>{{ drawerEndTimeLabel }}</b>{{ formatDate(drawerEndTime) }}</span>
             <span><b>已运行</b>{{ drawerRunningDuration !== null ? formatSeconds(drawerRunningDuration) : '-' }}</span>
             <span v-if="drawerEstimatedRemaining !== null"><b>预计剩余</b>{{ formatSeconds(drawerEstimatedRemaining) }}</span>
           </div>
@@ -618,7 +626,7 @@
             <div class="batch-detail-summary-row">
               <div class="bd-batch-chip" :title="batchDetailData.batch_id">
                 <span class="bd-batch-chip__label">批次 ID</span>
-                <code class="bd-batch-id">{{ batchDetailData.batch_id }}</code>
+                <span class="id-copy-control"><code class="bd-batch-id">{{ batchDetailData.batch_id }}</code><el-tooltip content="复制批次 ID" placement="top"><el-button circle size="small" :icon="DocumentCopy" class="copy-id-button" aria-label="复制批次 ID" @click="copyBatchId(batchDetailData.batch_id)" /></el-tooltip></span>
               </div>
               <span class="bd-tag-group">
                 <el-tag size="small">{{ batchSummaryModuleLabels(batchDetailData.tasks).join('、') || '-' }}</el-tag>
@@ -668,7 +676,7 @@
                         <span class="batch-detail-subtask__seq">{{ batchDetailTaskOrder(task) }}</span>
                         <span class="batch-detail-subtask__name">{{ batchDetailTaskLabel(task) }}</span>
                       </div>
-                      <StatusTag :status="task.status" />
+                      <StatusTag :status="batchChildDisplayStatus(task)" />
                     </div>
                     <div class="batch-detail-subtask__meta">{{ task.server_name }} ({{ task.host }})</div>
                     <div class="batch-detail-subtask__actions">
@@ -734,6 +742,7 @@
                       <span class="detail-panel__meta-item detail-panel__meta-item--id" :title="batchDetailSelectedTaskId || ''">
                         <span class="detail-panel__meta-label">任务 ID</span>
                         <code>{{ batchDetailSelectedTaskId }}</code>
+                        <el-tooltip content="复制任务 ID" placement="top"><el-button circle size="small" :icon="DocumentCopy" class="copy-id-button" aria-label="复制任务 ID" @click="copyTaskIdValue(batchDetailSelectedTaskId)" /></el-tooltip>
                       </span>
                       <span class="detail-panel__meta-item detail-panel__meta-item--server" :title="`${selectedTaskData.server_name} (${selectedTaskData.host})`">
                         <span class="detail-panel__meta-label">服务器</span>
@@ -769,8 +778,8 @@
                       <span>{{ formatDate(selectedTaskData.started_at) || '-' }}</span>
                     </div>
                     <div class="detail-grid__item">
-                      <span class="detail-grid__label">结束时间</span>
-                      <span>{{ formatDate(selectedTaskData.ended_at) || '-' }}</span>
+                      <span class="detail-grid__label">{{ detailEndTimeLabel }}</span>
+                      <span>{{ formatDate(detailEndTime) || '-' }}</span>
                     </div>
                     <div class="detail-grid__item">
                       <span class="detail-grid__label">已运行</span>
@@ -952,13 +961,13 @@ import { cancelBatch, cancelTask, downloadBatchReportZip, downloadTaskLogs, getT
 import { formatDateTime } from '@/utils/time'
 import { getApiErrorMessage as readApiErrorMessage } from '@/utils/apiError'
 import { useTaskWebSocket } from '@/composables/useTaskWebSocket'
-import { calcDurationSeconds, calcEstimatedRemaining, calcProgress, formatSeconds, getTaskDuration, statusLabel } from '@/composables/useTaskProgress'
+import { calcDurationSeconds, calcEstimatedEndTime, calcEstimatedRemaining, calcProgress, formatSeconds, getTaskDuration, statusLabel } from '@/composables/useTaskProgress'
 import { formatTaskDisplayName, getTaskTypeLabel } from '@/utils/taskDisplay'
 import LogViewer from '@/components/LogViewer.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import TaskCard from '@/components/TaskCard.vue'
 import TaskDiagnosisDialog from '@/components/TaskDiagnosisDialog.vue'
-import { Loading } from '@element-plus/icons-vue'
+import { DocumentCopy, Loading } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -1158,8 +1167,36 @@ function taskDisplayStatus(task: TaskRecord): string {
   return task.status
 }
 
+function batchEffectiveTasks(tasks: TaskRecord[]): TaskRecord[] {
+  const byTaskId = new Map(tasks.map(task => [task.task_id, task]))
+  const latestByRoot = new Map<string, TaskRecord>()
+
+  function rootTaskId(task: TaskRecord): string {
+    let current = task
+    const visited = new Set<string>()
+    while (!visited.has(current.task_id)) {
+      visited.add(current.task_id)
+      const retryOf = current.params?.__retry_of_task_id
+      if (typeof retryOf !== 'string') break
+      const original = byTaskId.get(retryOf)
+      if (!original) break
+      current = original
+    }
+    return current.task_id
+  }
+
+  for (const task of tasks) {
+    const root = rootTaskId(task)
+    const previous = latestByRoot.get(root)
+    if (!previous || (task.sequence_index ?? 0) > (previous.sequence_index ?? 0) || ((task.sequence_index ?? 0) === (previous.sequence_index ?? 0) && task.id > previous.id)) {
+      latestByRoot.set(root, task)
+    }
+  }
+  return Array.from(latestByRoot.values())
+}
+
 function batchGroupStatus(tasks: TaskRecord[]): string {
-  const stats = batchGroupStats(tasks)
+  const stats = batchGroupStats(batchEffectiveTasks(tasks))
   if (stats.running > 0) return 'RUNNING'
   if (stats.pending > 0) return 'PENDING'
   if (stats.failed > 0 && stats.success > 0) return 'PARTIAL_FAILED'
@@ -1168,6 +1205,10 @@ function batchGroupStatus(tasks: TaskRecord[]): string {
   if (stats.success > 0 && stats.success === stats.total) return 'SUCCESS'
   if (stats.canceled > 0) return 'PARTIAL_CANCELED'
   return 'UNKNOWN'
+}
+
+function batchGroupChineseStatus(tasks: TaskRecord[]): string {
+  return statusLabel(batchGroupStatus(tasks))
 }
 
 function batchGroupCreatedAt(tasks: TaskRecord[]): string | null {
@@ -1369,19 +1410,8 @@ function batchGroupTypeTags(tasks: TaskRecord[]): string[] {
   return ordered.filter(tag => seen.has(tag)).concat(Array.from(seen).filter(tag => !ordered.includes(tag)))
 }
 
-function batchReportResult(tasks: TaskRecord[]) {
-  const statuses = tasks.map(task => (task.report_status || '').toUpperCase()).filter(Boolean)
-  if (statuses.includes('FAIL')) {
-    return { visible: true, label: '压测失败', className: 'is-fail' }
-  }
-  if (statuses.length > 0 && statuses.every(status => status === 'PASS')) {
-    return { visible: true, label: '压测通过', className: 'is-pass' }
-  }
-  return { visible: false, label: '', className: '' }
-}
-
 function batchFailureReasons(tasks: TaskRecord[]) {
-  return tasks
+  return batchEffectiveTasks(tasks)
     .filter(task => {
       const status = taskDisplayStatus(task).toUpperCase()
       return status === 'FAILED' || status === 'CANCELED' || (task.report_status || '').toUpperCase() === 'FAIL'
@@ -1399,6 +1429,30 @@ function batchFailureReasons(tasks: TaskRecord[]) {
         message: task.failure_reason || task.error_message || '报告检测到压测结果为 FAIL，请查看结果文件。',
       }
     })
+}
+
+function batchRetryNotices(tasks: TaskRecord[]) {
+  const byTaskId = new Map(tasks.map(task => [task.task_id, task]))
+  return batchEffectiveTasks(tasks)
+    .filter(task => typeof task.params?.__retry_of_task_id === 'string')
+    .map(task => {
+      const original = byTaskId.get(task.params?.__retry_of_task_id as string)
+      if (!original) return null
+      const originalStatus = taskDisplayStatus(original).toUpperCase()
+      const originalFailed = originalStatus === 'FAILED' || originalStatus === 'CANCELED' || (original.report_status || '').toUpperCase() === 'FAIL'
+      if (!originalFailed) return null
+
+      const status = taskDisplayStatus(task).toUpperCase()
+      const label = batchStepLabel(task)
+      if (status === 'SUCCESS' || status === 'PASS') {
+        return { title: `${label}已重跑通过`, message: '首次失败记录已保留在批次详情中。', className: 'is-pass' }
+      }
+      if (!isBatchTaskTerminal(status)) {
+        return { title: `${label}首次失败`, message: '重跑中，最终结果将以最新重跑任务为准。', className: 'is-running' }
+      }
+      return null
+    })
+    .filter((notice): notice is { title: string, message: string, className: string } => notice !== null)
 }
 
 function batchSummaryFromTasks(batchId: string, tasks: TaskRecord[]): BatchSummaryItem {
@@ -1441,6 +1495,7 @@ const batchFilters = reactive<BatchQuery>({
 
 const filters = reactive<TaskListQuery>({
   status: undefined,
+  scope: undefined,
   task_type: undefined,
   server_id: undefined,
   keyword: undefined,
@@ -1538,6 +1593,18 @@ const drawerEstimatedRemaining = computed(() => {
   if (!task || elapsed === null) return null
   return calcEstimatedRemaining(task, elapsed)
 })
+
+const drawerEndTime = computed(() => {
+  const task = drawerTask.value
+  if (!task) return null
+  if (task.end_time) return task.end_time
+  const status = task.status?.toUpperCase() ?? ''
+  if (['SUCCESS', 'FAILED', 'CANCELED'].includes(status)) return null
+  const duration = getTaskDuration(task)
+  return calcEstimatedEndTime(task.start_time, duration)
+})
+
+const drawerEndTimeLabel = computed(() => drawerTask.value?.end_time ? '结束时间' : '结束时间（预计）')
 
 const drawerProgressValue = computed(() => {
   const task = drawerTask.value
@@ -1690,6 +1757,24 @@ const detailEstimatedRemaining = computed<number | null>(() => {
   if (dur == null || typeof dur !== 'number' || dur <= 0) return null
   const elapsed = detailRunningDuration.value ?? 0
   return Math.max(0, dur - elapsed)
+})
+
+const detailEndTime = computed(() => {
+  const task = selectedTaskData.value
+  if (!task) return null
+  const actualEndTime = detailTaskData.value?.end_time ?? task.ended_at
+  if (actualEndTime) return actualEndTime
+  const status = task.status?.toUpperCase() ?? ''
+  if (TERMINAL_STATUSES.includes(status)) return null
+  const startTime = detailTaskData.value?.start_time ?? task.started_at
+  const duration = task.duration_seconds ?? (task.params?.duration_seconds as number | undefined)
+  return calcEstimatedEndTime(startTime, duration)
+})
+
+const detailEndTimeLabel = computed(() => {
+  const task = selectedTaskData.value
+  const actualEndTime = detailTaskData.value?.end_time ?? task?.ended_at
+  return actualEndTime ? '结束时间' : '结束时间（预计）'
 })
 
 const detailSequenceTotal = computed(() => {
@@ -2054,6 +2139,7 @@ function handleSizeChange(size: number) {
 function resetFilters() {
   clearTaskSearchTimer()
   filters.status = undefined
+  filters.scope = undefined
   filters.task_type = undefined
   filters.server_id = undefined
   filters.keyword = undefined
@@ -2416,6 +2502,7 @@ function batchDetailSelectTask(idx: number) {
   detailLogsLoaded.value = false
   detailLogsLoading.value = false
   detailMonitorData.value = null
+  detailMonitorLoading.value = false
   detailActivePanel.value = 'summary'
   detailNow.value = new Date()
   detailWsConnected.value = false
@@ -2544,6 +2631,10 @@ function handleDetailPanelChange(panelName: string | number) {
     void detailLoadLogs()
   } else if (panelName === 'logs') {
     void scrollDetailLogsToBottom()
+  } else if (['cpu_mem', 'disk', 'gpu'].includes(String(panelName))) {
+    // Do not wait for the 5s background poll: show a loading state as soon as
+    // the user opens a monitor tab, then render either the snapshot or error.
+    void detailFetchMonitor()
   }
 }
 
@@ -2739,22 +2830,24 @@ function batchChildDisplayStatus(t: BatchTaskDetailItem): string {
 
 function batchStatusLabel(status: string): string {
   const labels: Record<string, string> = {
+    PENDING: '等待中',
     RUNNING: '运行中',
-    SUCCESS: '全部成功',
-    FAILED: '全部失败',
-    PARTIAL_FAILED: '部分完成',
+    SUCCESS: '成功',
+    FAILED: '失败',
+    PARTIAL_FAILED: '失败',
     CANCELED: '已取消',
-    PARTIAL_CANCELED: '部分取消',
+    PARTIAL_CANCELED: '已取消',
   }
   return labels[status] || status
 }
 
 function batchStatusTagType(status: string): string {
   const types: Record<string, string> = {
+    PENDING: 'info',
     RUNNING: 'warning',
     SUCCESS: 'success',
     FAILED: 'danger',
-    PARTIAL_FAILED: 'warning',
+    PARTIAL_FAILED: 'danger',
     CANCELED: 'info',
     PARTIAL_CANCELED: 'info',
   }
@@ -2969,7 +3062,23 @@ function downloadArtifact(filename: string, taskId = activeArtTaskId.value) {
 }
 
 function copyArtifactDir() {
-  navigator.clipboard.writeText(artDir.value)
+  void copyPath(artDir.value)
+}
+
+function copyBatchId(batchId: string) {
+  void copyToClipboard(batchId, '批次 ID')
+}
+
+function copyTaskId(task: Pick<TaskRecord, 'task_id'>) {
+  copyTaskIdValue(task.task_id)
+}
+
+function copyTaskIdValue(taskId: string | null) {
+  void copyToClipboard(taskId || '', '任务 ID')
+}
+
+function copyPath(path: string) {
+  void copyToClipboard(path, '远端路径')
 }
 
 async function ensureTaskLogs(taskId: string) {
@@ -3040,8 +3149,36 @@ async function copyText(text: string, emptyMessage: string, successMessage: stri
     ElMessage.warning(emptyMessage)
     return
   }
-  await navigator.clipboard.writeText(text)
-  ElMessage.success(successMessage)
+  await copyToClipboard(text, successMessage.replace(/^已复制/, ''))
+}
+
+async function copyToClipboard(text: string, label: string) {
+  if (!text.trim()) {
+    ElMessage.warning(`${label}为空，无法复制`)
+    return
+  }
+  try {
+    if (navigator.clipboard?.writeText && window.isSecureContext) {
+      await navigator.clipboard.writeText(text)
+    } else if (!legacyCopy(text)) {
+      throw new Error('clipboard fallback failed')
+    }
+    ElMessage.success(`已复制${label}`)
+  } catch {
+    ElMessage.error(`复制${label}失败，请手动复制`)
+  }
+}
+
+function legacyCopy(text: string): boolean {
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', '')
+  textarea.style.cssText = 'position:fixed;opacity:0;pointer-events:none;'
+  document.body.appendChild(textarea)
+  textarea.select()
+  const copied = document.execCommand('copy')
+  textarea.remove()
+  return copied
 }
 
 async function prefetchEnvCommands(task: TaskRecord) {
@@ -3120,6 +3257,16 @@ onMounted(async () => {
 
   loadTasks()
 })
+
+watch(() => [route.query.status, route.query.running_filter], ([status]) => {
+  if (route.path !== '/history') return
+  const nextStatus = typeof status === 'string' && status ? status : undefined
+  if (filters.status === nextStatus) return
+  filters.status = nextStatus
+  filters.offset = 0
+  loadTasks()
+})
+
 watch(batchDetailVisible, (visible) => {
   if (!visible) {
     stopBatchDetailRefresh()
@@ -3446,25 +3593,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 6px;
-}
-
-.batch-report-pill {
-  padding: 3px 8px;
-  border-radius: 6px;
-  font-size: 12px;
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-.batch-report-pill.is-pass {
-  color: var(--el-color-success);
-  background: var(--el-color-success-light-9);
-}
-
-.batch-report-pill.is-fail {
-  color: var(--el-color-danger);
-  background: var(--el-color-danger-light-9);
+  gap: 2px;
 }
 
 .task-history-page .task-card__status-block {
@@ -3619,10 +3748,57 @@ onUnmounted(() => {
   white-space: normal;
 }
 
+.batch-history-retry {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.batch-history-retry__item {
+  display: flex;
+  gap: 4px;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+.batch-history-retry__item span {
+  min-width: 0;
+  white-space: normal;
+}
+
+.batch-history-retry__item.is-running {
+  color: #b45309;
+  background: #fffbeb;
+}
+
+.batch-history-retry__item.is-pass {
+  color: #15803d;
+  background: #f0fdf4;
+}
+
 /* ── Batch view ── */
 .batch-id-cell {
-  font-family: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
   font-size: 12px;
+}
+
+.id-copy-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.copy-id-button {
+  width: 22px;
+  height: 22px;
+  min-height: 22px;
+  padding: 0;
+  color: var(--el-text-color-secondary);
+}
+
+.copy-id-button:hover,
+.copy-id-button:focus-visible {
   color: var(--el-color-primary);
 }
 

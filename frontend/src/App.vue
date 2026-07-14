@@ -27,10 +27,16 @@
           <el-icon><Tickets /></el-icon>
           <span class="history-menu-label">
             <span>历史任务</span>
-            <span v-if="runningTaskCount > 0" class="history-running-badge" role="status" aria-live="polite">
+            <button
+              v-if="runningTaskCount > 0"
+              type="button"
+              class="history-running-badge"
+              aria-label="查看所有运行中的任务"
+              @click.stop="goRunningTasks"
+            >
               <span class="history-running-dot" aria-hidden="true" />
               运行 {{ runningTaskCount }}
-            </span>
+            </button>
           </span>
         </el-menu-item>
       </el-menu>
@@ -89,6 +95,10 @@ const routeTitle = computed(() => String(route.meta.title ?? 'HPCDeploy'))
 
 function goHome() {
   router.push('/')
+}
+
+function goRunningTasks() {
+  router.push({ path: '/history', query: { status: 'RUNNING', running_filter: String(Date.now()) } })
 }
 
 function isActiveMenu(index: string) {
@@ -333,6 +343,22 @@ html, body, #app {
   font-weight: 600;
   line-height: 18px;
   white-space: nowrap;
+  cursor: pointer;
+  font-family: inherit;
+  transition: color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+
+.history-running-badge:hover,
+.history-running-badge:focus-visible {
+  color: #065f46;
+  background: #d1fae5;
+  border-color: #6ee7b7;
+  transform: translateY(-1px);
+}
+
+.history-running-badge:focus-visible {
+  outline: 2px solid #34d399;
+  outline-offset: 2px;
 }
 
 .history-running-dot {

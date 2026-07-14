@@ -148,8 +148,12 @@
                       可选择 1-3 个服务器压测脚本；选择 1 个执行单任务，选择多个自动按 GPU → CPU/内存 → 磁盘顺序串行执行。
                     </div>
                     <div class="stress-select-actions">
-                      <el-button size="small" type="primary" plain :disabled="!canSelectFile || filteredFiles.length === 0" @click="selectAllStressScripts">全选服务器压测</el-button>
-                      <el-button size="small" :disabled="selectedStressScripts.length === 0" @click="clearStressScripts">清空</el-button>
+                      <el-checkbox
+                        :model-value="allStressScriptsSelected"
+                        :indeterminate="someStressScriptsSelected"
+                        :disabled="!canSelectFile || filteredFiles.length === 0"
+                        @change="toggleAllStressScripts"
+                      >全选压测脚本（{{ filteredFiles.length }}）</el-checkbox>
                     </div>
                   </div>
                   <div class="file-card-grid stress-cards">
@@ -631,6 +635,14 @@ function selectAllStressScripts() {
   stressSuiteMode.value = selectedStressScripts.value.length >= 2
 }
 
+function toggleAllStressScripts(checked: boolean | string | number) {
+  if (checked === true) {
+    selectAllStressScripts()
+  } else {
+    clearStressScripts()
+  }
+}
+
 function clearStressScripts() {
   selectedStressScripts.value = []
   selectedFilePath.value = ''
@@ -694,6 +706,15 @@ const selectedServers = computed(() => {
 })
 const hasSelectedServer = computed(() => selectedServerIds.value.length > 0)
 const canSelectFile = computed(() => hasSelectedServer.value && !!selectedTaskType.value)
+const allStressScriptsSelected = computed(() => {
+  const available = filteredFiles.value.map(file => file.path)
+  return available.length > 0 && available.every(path => selectedStressScripts.value.includes(path))
+})
+const someStressScriptsSelected = computed(() => {
+  const available = filteredFiles.value.map(file => file.path)
+  const selectedCount = available.filter(path => selectedStressScripts.value.includes(path)).length
+  return selectedCount > 0 && selectedCount < available.length
+})
 const canConfigureTask = computed(() => canSelectFile.value && isFileSelected.value)
 const selectedFile = computed(() => filteredFiles.value.find((file) => file.path === selectedFilePath.value) ?? null)
 const showDiskTestDir = computed(() => {
@@ -1915,9 +1936,9 @@ onBeforeUnmount(() => {
 
 .stress-mode-header {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
   margin-bottom: 8px;
 }
 
@@ -2000,6 +2021,20 @@ onBeforeUnmount(() => {
 
 .stress-card {
   position: relative;
+}
+
+/* Keep the stress choices compact: only the longer CPU script gets room for
+ * its selected marker, while the other two cards retain their normal width. */
+.stress-cards {
+  grid-template-columns: minmax(180px, 220px) minmax(210px, 250px) minmax(180px, 220px);
+  justify-content: start;
+  column-gap: 10px;
+}
+
+@media (max-width: 700px) {
+  .stress-cards {
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  }
 }
 
 .stress-suite-hint {

@@ -150,6 +150,7 @@ VALID_TASK_STATUSES: frozenset[str] = frozenset({
 })
 VALID_TASK_TYPES: frozenset[str] = frozenset({"script", "stress", "apptainer"})
 VALID_ORDER_VALUES: frozenset[str] = frozenset({"created_desc", "created_asc"})
+VALID_TASK_SCOPES: frozenset[str] = frozenset({"single", "batch"})
 
 
 def _get_task_or_404(db: Session, task_id: str) -> Task:
@@ -171,6 +172,7 @@ def list_tasks(
     db: Session = Depends(get_db),
     task_status: str | None = Query(None, alias="status"),
     task_type: str | None = Query(None),
+    task_scope: str | None = Query(None, alias="scope"),
     server_id: int | None = Query(None, ge=1),
     keyword: str | None = Query(None, min_length=1),
     limit: int = Query(50, ge=1, le=100),
@@ -188,6 +190,11 @@ def list_tasks(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"invalid task_type: {task_type}",
         )
+    if task_scope is not None and task_scope not in VALID_TASK_SCOPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"invalid scope: {task_scope}",
+        )
     if order not in VALID_ORDER_VALUES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -201,6 +208,10 @@ def list_tasks(
         query = query.filter(Task.status == task_status)
     if task_type is not None:
         query = query.filter(Task.task_type == task_type)
+    if task_scope == "single":
+        query = query.filter(Task.batch_id.is_(None))
+    elif task_scope == "batch":
+        query = query.filter(Task.batch_id.isnot(None))
     if server_id is not None:
         query = query.filter(Task.server_id == server_id)
     if keyword is not None:
@@ -1100,14 +1111,48 @@ BATCH_FAILED_STATUSES = {"FAILED", "TIMEOUT"}
 BATCH_CANCELED_STATUSES = {"CANCELED", "CANCELLED"}
 
 
+def _latest_batch_attempts(tasks: list[Task]) -> list[Task]:
+    """Return the latest attempt for every original task in a batch.
+
+    Retry tasks link to the attempt they replace through
+    ``params.__retry_of_task_id``.  Older attempts remain queryable, but do
+    not keep a batch in FAILED after a later retry succeeds.
+    """
+    by_task_id = {task.task_id: task for task in tasks}
+
+    def _root_task_id(task: Task) -> str:
+        current = task
+        visited: set[str] = set()
+        while current.task_id not in visited:
+            visited.add(current.task_id)
+            params = current.params if isinstance(current.params, dict) else {}
+            retry_of = params.get("__retry_of_task_id")
+            if not isinstance(retry_of, str) or retry_of not in by_task_id:
+                break
+            current = by_task_id[retry_of]
+        return current.task_id
+
+    latest_by_root: dict[str, Task] = {}
+    for task in tasks:
+        root_task_id = _root_task_id(task)
+        previous = latest_by_root.get(root_task_id)
+        if previous is None or (task.sequence_index or 0, task.id) > (previous.sequence_index or 0, previous.id):
+            latest_by_root[root_task_id] = task
+    return list(latest_by_root.values())
+
+
 def _compute_batch_status(tasks: list[Task], db: Session | None = None) -> str:
     """Derive the aggregate batch status from its child tasks.
 
     Uses final_status (considering report) where available, falling back
     to execution status for tasks without report summary.
     """
-    # Batch-load report summaries for all child tasks
-    task_ids = [t.task_id for t in tasks]
+    # A retry supersedes its original attempt for the batch's current outcome.
+    # The original task remains in the batch for audit/history purposes.
+    effective_tasks = _latest_batch_attempts(tasks)
+
+    # Batch-load report summaries for the effective child tasks
+    task_ids = [t.task_id for t in effective_tasks]
     report_map: dict[str, str] = {}
     if task_ids:
         try:
@@ -1130,14 +1175,14 @@ def _compute_batch_status(tasks: list[Task], db: Session | None = None) -> str:
         return resolve_final_status(t.status or "UNKNOWN", report_status)
 
     # Collect final statuses for all children
-    final_set = {_child_final(t) for t in tasks}
+    final_set = {_child_final(t) for t in effective_tasks}
 
     # Map final statuses back to batch-status concepts
     # Note: resolve_final_status maps report "FAIL" → "FAILED", report "PASS" → "SUCCESS"
     has_failed = "FAILED" in final_set
     has_pass = "SUCCESS" in final_set
     has_unknown = "UNKNOWN" in final_set
-    exec_statuses = {t.status for t in tasks}
+    exec_statuses = {t.status for t in effective_tasks}
 
     # Any still-non-terminal execution status → batch still running
     if exec_statuses & BATCH_UNFINISHED_STATUSES:

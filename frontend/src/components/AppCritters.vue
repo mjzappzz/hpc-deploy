@@ -5,19 +5,17 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted } from 'vue'
 
-const MAX = 3
+const MAX = 2
 const MIN = 1
-const SOOT_SIZE = 14
+const SOOT_SIZE = 11
 const SOOT_HALF = SOOT_SIZE / 2
-const ENSURE_INTERVAL_MS = 15_000
+const ENSURE_INTERVAL_MS = 20_000
 const CARD_SELECTOR = '.app-content .page-section .el-card'
-const PAIR_SPAWN_CHANCE = 0.42
-const PAIR_NEARBY_CHANCE = 0.58
 const DIALOGUE_COOLDOWN_MS = 20_000
 const DIALOGUE_MAX_DISTANCE_PX = 120
-const MIN_SOOT_DISTANCE_PX = 96
-const SOLO_BUBBLE_MIN_MS = 4_200
-const SOLO_BUBBLE_VARIANCE_MS = 1_200
+const MIN_SOOT_DISTANCE_PX = 120
+const SOLO_BUBBLE_MIN_MS = 3_400
+const SOLO_BUBBLE_VARIANCE_MS = 1_000
 const DIALOGUE_BUBBLE_MS = 3_000
 
 const PAIR_DIALOGUES = {
@@ -208,32 +206,32 @@ function injectShared() {
 function edgeLayout(edge: string) {
   switch (edge) {
     case 'top': return {
-      eL: 'top:56%;left:14%;right:auto;width:32%;height:35%',
-      eR: 'top:56%;right:14%;left:auto;width:32%;height:35%',
+      eL: 'top:53%;left:10%;right:auto;width:40%;height:42%',
+      eR: 'top:53%;right:10%;left:auto;width:40%;height:42%',
       pL: 'top:55%;left:18%', pR: 'top:55%;left:30%',
       nP: 'top:calc(100% + 7px);left:50%;transform:translateX(-50%)',
       bP: 'top:calc(100% + 26px);left:calc(50% + 8px)',
       bT: 'top:-7px;left:10px;border-left:6px solid transparent;border-right:6px solid transparent;border-bottom:7px solid #fff',
     }
     case 'bottom': return {
-      eL: 'top:22%;left:14%;right:auto;width:32%;height:35%',
-      eR: 'top:22%;right:14%;left:auto;width:32%;height:35%',
+      eL: 'top:18%;left:10%;right:auto;width:40%;height:42%',
+      eR: 'top:18%;right:10%;left:auto;width:40%;height:42%',
       pL: 'top:55%;left:18%', pR: 'top:55%;left:30%',
       nP: 'bottom:calc(100% + 12px);left:50%;transform:translateX(-50%)',
       bP: 'bottom:calc(100% + 26px);left:calc(50% + 8px)',
       bT: 'bottom:-7px;left:10px;border-left:6px solid transparent;border-right:6px solid transparent;border-top:7px solid #fff',
     }
     case 'right': return {
-      eL: 'top:30%;left:12%;right:auto;width:34%;height:30%',
-      eR: 'top:55%;left:12%;right:auto;width:34%;height:30%',
+      eL: 'top:27%;left:8%;right:auto;width:42%;height:36%',
+      eR: 'top:53%;left:8%;right:auto;width:42%;height:36%',
       pL: 'top:30%;left:55%', pR: 'top:30%;left:55%',
       nP: 'top:50%;left:calc(100% + 4px);transform:translateY(-50%)',
       bP: 'top:calc(50% + 8px);left:calc(100% + 26px)',
       bT: 'left:-7px;top:10px;border-top:6px solid transparent;border-bottom:6px solid transparent;border-right:7px solid #fff',
     }
     case 'left': return {
-      eL: 'top:30%;right:12%;left:auto;width:34%;height:30%',
-      eR: 'top:55%;right:12%;left:auto;width:34%;height:30%',
+      eL: 'top:27%;right:8%;left:auto;width:42%;height:36%',
+      eR: 'top:53%;right:8%;left:auto;width:42%;height:36%',
       pL: 'top:30%;left:30%', pR: 'top:30%;left:30%',
       nP: 'top:50%;right:calc(100% + 4px);transform:translateY(-50%)',
       bP: 'top:calc(50% + 8px);right:calc(100% + 26px)',
@@ -310,7 +308,7 @@ function showSootBubble(soot: HTMLElement, text: string, duration: number) {
   const content = bubble?.querySelector('div') as HTMLElement | null
   if (!bubble || !content || !soot.isConnected) return
   content.textContent = text
-  content.style.maxWidth = hasNearbySoot(soot) ? '260px' : 'min(360px, calc(100vw - 48px))'
+  content.style.maxWidth = hasNearbySoot(soot) ? '220px' : 'min(260px, calc(100vw - 48px))'
   if (!hasClearBubbleSpace(soot, bubble)) return
   bubble.style.visibility = 'visible'
   bubble.style.opacity = '1'
@@ -427,40 +425,13 @@ function getSoloMessage(card: HTMLElement, personaMessages: string[], preferPers
 }
 
 function spawnCrittersOnCard(card: HTMLElement) {
-  const first = spawnOnCard(card, pickEdge())
-  if (
-    !first
-    || Math.random() >= PAIR_SPAWN_CHANCE
-    || document.querySelectorAll('.isoot').length >= MAX
-  ) return
+  if (card.querySelector('.isoot')) return
   spawnOnCard(card, pickEdge())
 }
 
 function spawnOnCard(card: HTMLElement, edge: string): HTMLElement | null {
-  const existingOnCard = card.querySelectorAll('.isoot').length
-  if (existingOnCard >= 2 || document.querySelectorAll('.isoot').length >= MAX) return null
-  const existingSoot = existingOnCard === 1 ? card.querySelector<HTMLElement>('.isoot') : null
-
+  if (card.querySelector('.isoot') || document.querySelectorAll('.isoot').length >= MAX) return null
   let pos = 15 + Math.random() * 55
-  if (existingSoot) {
-    const existingEdge = existingSoot.dataset.edge
-    const existingPos = Number(existingSoot.dataset.anchorPosition)
-    if (existingEdge && !Number.isNaN(existingPos) && Math.random() < PAIR_NEARBY_CHANCE) {
-      edge = existingEdge
-      const rect = card.getBoundingClientRect()
-      const axisLength = edge === 'top' || edge === 'bottom' ? rect.width : rect.height
-      const minOffset = Math.min(55, Math.max(20, (MIN_SOOT_DISTANCE_PX / Math.max(axisLength, 1)) * 100))
-      const offset = (Math.random() < 0.5 ? -1 : 1) * (minOffset + Math.random() * 12)
-      pos = Math.max(15, Math.min(70, existingPos + offset))
-    } else if (existingEdge) {
-      edge = ['top', 'right', 'bottom', 'left'].filter(e => e !== existingEdge)[Math.floor(Math.random() * 3)]
-    }
-    for (let attempt = 0; attempt < 6 && !hasMinimumSootDistance(card, existingSoot, edge, pos); attempt += 1) {
-      edge = ['top', 'right', 'bottom', 'left'].filter(candidate => candidate !== existingSoot.dataset.edge)[Math.floor(Math.random() * 3)]
-      pos = 15 + Math.random() * 55
-    }
-    if (!hasMinimumSootDistance(card, existingSoot, edge, pos)) return null
-  }
 
   const size = SOOT_SIZE, half = SOOT_HALF
   const eo = `${-half}px`
@@ -512,7 +483,7 @@ function spawnOnCard(card: HTMLElement, edge: string): HTMLElement | null {
 </div>
 ${name && lo.nP ? `<div style="position:absolute;z-index:2;${lo.nP};font-size:10px;font-weight:500;color:#0f172a;line-height:1.25;${nameStyle};pointer-events:none">${name}</div>` : ''}
 <div class="sb" style="position:absolute;${lo.bP};visibility:hidden;opacity:0;transform:translateY(4px);z-index:20;pointer-events:none;transition:opacity .24s ease,transform .24s ease">
-  <div style="position:relative;display:-webkit-box;width:max-content;max-width:min(360px,calc(100vw - 48px));min-width:76px;overflow:hidden;background:rgba(255,255,255,0.98);border:1px solid #d8dee8;border-radius:8px;padding:4px 8px;font-size:11px;font-weight:500;line-height:1.42;color:#334155;white-space:normal;overflow-wrap:anywhere;-webkit-box-orient:vertical;-webkit-line-clamp:2;box-shadow:0 2px 8px rgba(0,0,0,0.12)"></div>
+  <div style="position:relative;display:-webkit-box;width:max-content;max-width:min(260px,calc(100vw - 48px));min-width:64px;overflow:hidden;background:rgba(255,255,255,0.96);border:1px solid #d8dee8;border-radius:7px;padding:3px 7px;font-size:10px;font-weight:500;line-height:1.38;color:#334155;white-space:normal;overflow-wrap:anywhere;-webkit-box-orient:vertical;-webkit-line-clamp:2;box-shadow:0 1px 5px rgba(0,0,0,0.10)"></div>
   <div style="position:absolute;${lo.bT};filter:drop-shadow(0 0 0 #d8dee8)"></div>
 </div>
 `
@@ -551,7 +522,7 @@ ${name && lo.nP ? `<div style="position:absolute;z-index:2;${lo.nP};font-size:10
     const timer = window.setTimeout(() => {
       if (!el.isConnected || el.dataset.leaving) return
       const speechDuration = !el.dataset.pairedDialogue ? say() : 0
-      scheduleSpeech(speechDuration + 2_500 + Math.random() * 1_500)
+      scheduleSpeech(speechDuration + 4_000 + Math.random() * 2_000)
     }, delay)
     const instance = sootInstances.get(el)
     if (instance) instance.timer = timer
@@ -579,9 +550,6 @@ ${name && lo.nP ? `<div style="position:absolute;z-index:2;${lo.nP};font-size:10
 
   sootInstances.set(el, { timer: undefined, lifeTimer })
   scheduleSpeech(t1)
-  if (existingSoot && areSootNeighbors(card, existingSoot, el)) {
-    schedulePairDialogue(card, existingSoot, el, (slideDelay + slideDur) * 1000 + 3_200)
-  }
   return el
 }
 

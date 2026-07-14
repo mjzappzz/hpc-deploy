@@ -164,6 +164,7 @@ export interface TaskDeleteResponse {
 
 export interface TaskListQuery {
   status?: string
+  scope?: 'single' | 'batch'
   task_type?: string
   server_id?: number
   keyword?: string

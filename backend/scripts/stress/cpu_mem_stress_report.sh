@@ -69,6 +69,10 @@ PYCHK
 install_deps
 echo "[STAGE] dependency_check_done"
 
+STRESS_NG_VERSION=$(stress-ng --version 2>/dev/null | awk '{print $3}' | tr -d ',')
+echo "[INFO] stress-ng version: ${STRESS_NG_VERSION:-unknown}"
+echo "[INFO] VM method: write64 (override with VM_METHOD=<method>)"
+
 DURATION=${1:-43200}
 INTERVAL=${2:-2}
 TIME_TAG=$(date +%F_%H%M%S)
@@ -106,6 +110,8 @@ VM_BYTES_MB=$(( VM_TOTAL_MB / VM_WORKERS ))
 
 VM_BYTES="${VM_BYTES_MB}M"
 
+# 内存测试方法：默认使用 write64，规避旧版 stress-ng 的 prime-* 方法误报
+VM_METHOD=${VM_METHOD:-write64}
 
 CRITICAL_ERR_PATTERN="out of memory|oom-killer|killed process|hardware error|machine check error|machine check exception|mce:.*error|edac.*error|ecc.*uncorrected|uncorrected error|thermal thrott|throttling|verification failed"
 
@@ -136,6 +142,7 @@ echo "CPU + Memory Stress Test Start"
 echo "CPU Workers : ${CPU_WORKERS}"
 echo "VM Workers  : ${VM_WORKERS}"
 echo "VM Bytes    : ${VM_BYTES}"
+echo "VM Method   : ${VM_METHOD}"
 echo "Duration    : ${DURATION}s"
 echo "Interval    : ${INTERVAL}s"
 echo "Workdir     : ${WORKDIR}"
@@ -299,7 +306,7 @@ if command -v setsid >/dev/null 2>&1; then
     --cpu-method all \
     --vm "${VM_WORKERS}" \
     --vm-bytes "${VM_BYTES}" \
-    --vm-method all \
+    --vm-method "${VM_METHOD}" \
     --vm-keep \
     --verify \
     --timeout "${DURATION}s" \
@@ -311,7 +318,7 @@ else
     --cpu-method all \
     --vm "${VM_WORKERS}" \
     --vm-bytes "${VM_BYTES}" \
-    --vm-method all \
+    --vm-method "${VM_METHOD}" \
     --vm-keep \
     --verify \
     --timeout "${DURATION}s" \
@@ -469,7 +476,7 @@ CPU压力线程           : ${CPU_WORKERS}
 CPU测试方法           : all
 内存压力线程          : ${VM_WORKERS}
 内存占用比例          : ${VM_BYTES}
-内存测试方法          : all
+内存测试方法          : ${VM_METHOD}
 数据校验              : verify enabled
 测试时长              : ${DURATION} 秒
 脚本强制结束阈值      : ${STRESS_FORCE_KILL_AFTER} 秒
@@ -632,7 +639,7 @@ for k, v in [
     ("CPU测试方法", "all"),
     ("内存压力线程", "${VM_WORKERS}"),
     ("内存占用比例", "${VM_BYTES}"),
-    ("内存测试方法", "all"),
+    ("内存测试方法", "${VM_METHOD}"),
     ("数据校验", "verify enabled"),
     ("测试时长", "${DURATION} 秒"),
     ("脚本强制结束阈值", "${STRESS_FORCE_KILL_AFTER} 秒"),
@@ -884,7 +891,7 @@ for k, v in [
     ("CPU测试方法", "all"),
     ("内存压力线程", "${VM_WORKERS}"),
     ("内存占用比例", "${VM_BYTES}"),
-    ("内存测试方法", "all"),
+    ("内存测试方法", "${VM_METHOD}"),
     ("数据校验", "verify enabled"),
     ("测试时长", "${DURATION} 秒"),
     ("脚本强制结束阈值", "${STRESS_FORCE_KILL_AFTER} 秒"),
@@ -1048,7 +1055,7 @@ echo "[STAGE] report_xlsx_done (no-timeout mode) exit_code=${XLSX_EXIT_CODE}"
 fi
 
 # 最终输出
-XLSX_FINAL_STATUS="NOT_GENERATED"
+XLSX_FINAL_STATUS=ERATED"
 [ "$XLSX_OK" = "1" ] && XLSX_FINAL_STATUS="GENERATED"
 
 echo
@@ -1059,6 +1066,7 @@ echo "Reason       : ${REASON}"
 echo "XLSX Status  : ${XLSX_FINAL_STATUS} (duration: ${XLSX_DURATION}s)"
 echo "CPU Workers  : ${CPU_WORKERS}"
 echo "VM Workers   : ${VM_WORKERS}"
+echo "VM Method    : ${VM_METHOD}"
 echo "Stress Log   : ${STRESS_LOG}"
 echo "Monitor CSV  : ${MON_LOG}"
 echo "Kernel Error : ${ERR_LOG}"
@@ -1071,8 +1079,4 @@ FINAL_EXIT=0
 
 echo "[STAGE] script_exit exit_code=${FINAL_EXIT}"
 exit "$FINAL_EXIT"
-
-
-
-
 

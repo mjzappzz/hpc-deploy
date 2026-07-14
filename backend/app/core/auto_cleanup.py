@@ -2,13 +2,14 @@ import asyncio
 import fcntl
 import logging
 import shutil
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from app.core.artifact_collector import ARTIFACTS_DIR
 from app.core.audit import write_audit_log
-from app.core.task_runner import _attempt_stress_recovery
+from app.core.task_runner import TASK_LEASE_SECONDS, _attempt_stress_recovery, _stress_recovery_monitor
 from app.db.database import SessionLocal
 from app.models.settings import SystemSetting
 from app.models.task import Task
@@ -284,10 +285,11 @@ def recover_stuck_stress_tasks() -> int:
     but if the entire daemon thread somehow dies (e.g. process-level interruption),
     this periodic recovery will find and clean up orphaned RUNNING tasks.
 
-    Recovery strategy (no SSH — may not be available in this context):
+    Recovery strategy:
     1. Find RUNNING stress tasks with expired leases
     2. If local artifacts already exist (from a prior partial collection), attempt recovery
-    3. Otherwise, mark FAILED so the UI reflects the broken state instead of hanging
+    3. Otherwise, renew the lease and attach an SSH recovery monitor.  An
+       expired local lease alone is not proof that a remote stress process died.
     """
     db = SessionLocal()
     recovered = 0
@@ -321,27 +323,24 @@ def recover_stuck_stress_tasks() -> int:
             if task_artifact_dir.is_dir() and _attempt_stress_recovery(db, task.task_id, task):
                 recovered += 1
                 continue
-            # No artifacts → fail the task to unstick it
-            task.status = "FAILED"
-            task.exit_code = None
-            task.end_time = now
-            task.error_message = (
-                f"stuck task recovery: stress poll loop did not complete, "
-                f"lease expired at {task.lease_expire_time}{_elapsed}"
-            )
+            # Lease expiry alone is insufficient to declare a long-running
+            # stress task failed.  Prevent duplicate recoveries, then ask the
+            # existing SSH recovery path to inspect the remote PID/report.
+            task.last_heartbeat = now
+            task.lease_expire_time = now + timedelta(seconds=TASK_LEASE_SECONDS)
             db.commit()
             db.add(TaskLog(
                 task_id=task.task_id,
-                level="ERROR",
-                message=f"stuck task recovery: marked FAILED (no artifacts found)",
+                level="SYSTEM",
+                message="stuck task recovery: lease renewed; launching SSH recovery monitor",
             ))
             db.commit()
-            try:
-                from app.core.ws_manager import ws_manager
-                ws_manager.broadcast_status_sync(task.task_id, "FAILED")
-                ws_manager.broadcast_done_sync(task.task_id, "FAILED")
-            except Exception:
-                pass
+            threading.Thread(
+                target=_stress_recovery_monitor,
+                args=(task.task_id,),
+                daemon=True,
+                name=f"stress-lease-recovery-{task.task_id}",
+            ).start()
             recovered += 1
         if stale_tasks:
             logger.info("[stuck-task-recovery] recovered %d/%d stuck stress tasks",

@@ -842,7 +842,12 @@ if mon_ws.max_row > 2:
 for sheet in wb.worksheets:
     sheet.freeze_panes = "A2"
 
-wb.save(xlsx)
+# Do not expose the final filename until openpyxl has finished writing the ZIP
+# container.  The platform polls for *.xlsx and would otherwise be able to
+# collect a partially-written workbook.
+tmp_xlsx = xlsx.with_suffix(xlsx.suffix + ".tmp")
+wb.save(tmp_xlsx)
+os.replace(tmp_xlsx, xlsx)
 
 print(f"Text Report : {report}")
 print(f"XLSX Report : {xlsx}")

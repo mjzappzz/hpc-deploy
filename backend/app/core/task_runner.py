@@ -702,6 +702,13 @@ def _stress_poll_loop(
                 _add_log(db, task_id, "SYSTEM", "stress async: task canceled, stopping poll")
                 return
 
+            # A stress workload can stay quiet for hours.  Lease ownership must
+            # reflect a healthy polling loop, not whether the remote script has
+            # emitted a new log line since the last poll.
+            if _health is not None:
+                _touch_task_heartbeat(task)
+                db.commit()
+
             # 2. 拉取最新日志（含连接失败自动重连）
             _sz_raw = _exec_with_reconnect(executor, f"wc -c < {log_file} 2>/dev/null || echo 0")
             if _sz_raw is not None:
@@ -741,6 +748,16 @@ def _stress_poll_loop(
                 if _rx:
                     _add_log(db, task_id, "SYSTEM", f"stress async: xlsx report found ({_rx})")
                     _downloaded = collect_artifacts(db, task_id, task.remote_work_dir, executor)
+                    report_name = Path(_rx).name
+                    if report_name not in _downloaded:
+                        _add_log(
+                            db,
+                            task_id,
+                            "SYSTEM",
+                            "stress async: xlsx report is not complete locally yet; retrying collection",
+                        )
+                        _broadcast_status_safe(task_id, "RUNNING")
+                        continue
                     db.refresh(task)
                     if task.status not in ("CANCELED", "CANCELING", "SUCCESS"):
                         if _attempt_stress_recovery(db, task_id, task):

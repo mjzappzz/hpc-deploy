@@ -13,19 +13,19 @@ import type { TaskRecord } from '@/api/task'
 /** English → Chinese status mapping */
 export const STATUS_LABELS: Record<string, string> = {
   PENDING: '等待中',
-  CONNECTING: '连接服务器',
-  PREPARING: '准备执行环境',
-  UPLOADING: '上传文件',
-  RUNNING: '执行中',
-  CANCELING: '正在取消',
-  SUCCESS: '已完成',
+  CONNECTING: '运行中',
+  PREPARING: '运行中',
+  UPLOADING: '运行中',
+  RUNNING: '运行中',
+  CANCELING: '运行中',
+  SUCCESS: '成功',
   FAILED: '失败',
-  PARTIAL_FAILED: '部分完成',
-  PARTIAL_CANCELED: '部分取消',
+  PARTIAL_FAILED: '失败',
+  PARTIAL_CANCELED: '已取消',
   CANCELED: '已取消',
   // PASS kept for report_status display (diagnosis), label unified to "已完成"
-  PASS: '已完成',
-  TIMEOUT: '超时',
+  PASS: '成功',
+  TIMEOUT: '失败',
   UNKNOWN: '未知',
 }
 
@@ -55,6 +55,21 @@ function parseUtcDate(value: string | null | undefined): Date | null {
   const dateStr = value.trim().replace(' ', 'T') + 'Z'
   const d = new Date(dateStr)
   return isNaN(d.getTime()) ? null : d
+}
+
+/**
+ * Calculate the planned end time from an actual start time and planned duration.
+ * The return value is ISO-8601 UTC so it can be passed to the shared formatter.
+ */
+export function calcEstimatedEndTime(
+  startTime: string | null | undefined,
+  durationSeconds: number | null | undefined,
+): string | null {
+  const start = parseUtcDate(startTime)
+  if (!start || durationSeconds === null || durationSeconds === undefined || !Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+    return null
+  }
+  return new Date(start.getTime() + durationSeconds * 1000).toISOString()
 }
 
 /**

@@ -18,8 +18,8 @@ const label = computed(() => {
   if (normalized.value === 'ONLINE') return '在线'
   if (normalized.value === 'OFFLINE') return '离线'
   if (normalized.value === 'UNKNOWN') return '未探测'
-  if (normalized.value === 'PARTIAL_FAILED') return '部分完成'
-  if (normalized.value === 'PARTIAL_CANCELED') return '部分取消'
+  if (normalized.value === 'PARTIAL_FAILED') return 'FAILED'
+  if (normalized.value === 'PARTIAL_CANCELED') return 'CANCELED'
   return String(props.status ?? 'unknown')
 })
 
@@ -29,10 +29,10 @@ const tagVariant = computed(() => {
   }
   // execution status values (final_status SUCCESS unified here too)
   if (['ONLINE', 'SUCCESS'].includes(normalized.value)) return 'success'
-  if (['FAILED', 'OFFLINE', 'TIMEOUT'].includes(normalized.value)) return 'danger'
+  if (['FAILED', 'PARTIAL_FAILED', 'OFFLINE', 'TIMEOUT'].includes(normalized.value)) return 'danger'
   if (['RUNNING', 'CONNECTING', 'PREPARING', 'UPLOADING', 'CANCELING'].includes(normalized.value)) return 'progress'
   if (['PENDING', 'UNKNOWN'].includes(normalized.value)) return 'info'
-  if (['CANCELLED', 'CANCELED', 'WARN', 'WARNING', 'PARTIAL_FAILED', 'PARTIAL_CANCELED'].includes(normalized.value)) return 'warning'
+  if (['CANCELLED', 'CANCELED', 'WARN', 'WARNING', 'PARTIAL_CANCELED'].includes(normalized.value)) return 'warning'
   return 'info'
 })
 </script>

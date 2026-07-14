@@ -1,5 +1,6 @@
 import os
 import stat
+import zipfile
 from pathlib import Path
 
 from app.models.task_log import TaskLog
@@ -67,12 +68,17 @@ def collect_artifacts(
 
         remote_path = f"{remote_work_dir.rstrip('/')}/{safe}"
         local_path = local_dir / safe
+        temp_path = local_dir / f".{safe}.part"
 
         try:
-            executor.sftp.get(remote_path, str(local_path))
+            executor.sftp.get(remote_path, str(temp_path))
+            if local_path.suffix.lower() == ".xlsx":
+                _validate_xlsx(temp_path)
+            os.replace(temp_path, local_path)
             downloaded.append(safe)
             _add_log(db, task_id, "SYSTEM", f"artifact downloaded: {safe}")
         except Exception as exc:
+            temp_path.unlink(missing_ok=True)
             errors.append(safe)
             _add_log(db, task_id, "ERROR", f"artifact download failed: {safe} - {exc}")
 
@@ -108,6 +114,17 @@ def _safe_basename(filename: str) -> str | None:
     if "/" in name:
         return None
     return name
+
+
+def _validate_xlsx(path: Path) -> None:
+    """Raise when an XLSX artifact is not a complete ZIP container."""
+    try:
+        with zipfile.ZipFile(path) as workbook:
+            bad_member = workbook.testzip()
+    except zipfile.BadZipFile as exc:
+        raise ValueError("incomplete or invalid XLSX artifact") from exc
+    if bad_member:
+        raise ValueError(f"corrupt XLSX member: {bad_member}")
 
 
 def _add_log(db, task_id: str, level: str, message: str) -> None:

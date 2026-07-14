@@ -3,7 +3,13 @@
     <div class="task-card__header">
       <div>
         <div class="task-card__title" :title="displayName">{{ displayName }}</div>
-        <div class="task-card__meta">{{ task.task_id }} / {{ serverLabel }} / 创建 {{ formatTime(task.created_at) }}</div>
+        <div class="task-card__meta">
+          <code>{{ task.task_id }}</code>
+          <el-tooltip content="复制任务 ID" placement="top">
+            <el-button circle size="small" :icon="DocumentCopy" class="id-copy-button" aria-label="复制任务 ID" @click="$emit('copyTaskId', task)" />
+          </el-tooltip>
+          <span>/ {{ serverLabel }} / 创建 {{ formatTime(task.created_at) }}</span>
+        </div>
         <div class="task-card__badges">
           <el-tag v-if="!task.batch_id" size="small" type="info" effect="plain">单次</el-tag>
           <template v-else>
@@ -32,6 +38,7 @@
       <div class="task-card__time-line">
         <template v-if="task.start_time">开始 {{ formatTime(task.start_time) }}</template>
         <template v-if="task.end_time"> | 结束 {{ formatTime(task.end_time) }}</template>
+        <template v-else-if="estimatedEndTime"> | 预计结束 {{ formatTime(estimatedEndTime) }}</template>
         <template v-if="runtime"> | 耗时 {{ formatSeconds(runtime) }}</template>
       </div>
     </div>
@@ -80,9 +87,10 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { DocumentCopy } from '@element-plus/icons-vue'
 import type { TaskRecord } from '@/api/task'
 import { formatDateTime } from '@/utils/time'
-import { calcDurationSeconds, formatSeconds, statusLabel } from '@/composables/useTaskProgress'
+import { calcDurationSeconds, calcEstimatedEndTime, formatSeconds, statusLabel } from '@/composables/useTaskProgress'
 import StatusTag from './StatusTag.vue'
 
 defineEmits<{
@@ -92,6 +100,7 @@ defineEmits<{
   prefetchVerifyCommands: [task: TaskRecord]
   copyEnvCommands: [task: TaskRecord]
   copyVerifyCommands: [task: TaskRecord]
+  copyTaskId: [task: TaskRecord]
   cancelTask: [task: TaskRecord]
   viewBatch: [task: TaskRecord]
 }>()
@@ -192,6 +201,18 @@ const plannedDuration = computed(() => {
   return formatPlanDuration(seconds)
 })
 
+const plannedDurationSeconds = computed(() => {
+  const raw = props.task.params?.duration_seconds ?? props.task.duration_seconds
+  const seconds = typeof raw === 'number' ? raw : Number(raw)
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : null
+})
+
+const estimatedEndTime = computed(() => {
+  const status = props.task.status?.toUpperCase() ?? ''
+  if (props.task.end_time || ['SUCCESS', 'FAILED', 'CANCELED'].includes(status)) return null
+  return calcEstimatedEndTime(props.task.start_time, plannedDurationSeconds.value)
+})
+
 const BATCH_STEP_LABELS: Record<number, string> = {
   1: 'GPU',
   2: 'CPU/内存',
@@ -254,6 +275,13 @@ const formatTime = formatDateTime
   white-space: nowrap;
 }
 
+.task-card__meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
 .task-card__error {
   font-size: 13px;
   color: #f56c6c;
@@ -270,6 +298,19 @@ const formatTime = formatDateTime
   flex-wrap: wrap;
   gap: 4px;
   margin-top: 4px;
+}
+
+.id-copy-button {
+  width: 22px;
+  height: 22px;
+  min-height: 22px;
+  margin: 0 2px;
+  color: var(--el-text-color-secondary);
+}
+
+.id-copy-button:hover,
+.id-copy-button:focus-visible {
+  color: var(--el-color-primary);
 }
 
 .tag-mono {
