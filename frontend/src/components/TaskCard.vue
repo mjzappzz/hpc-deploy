@@ -8,7 +8,7 @@
           <el-tooltip content="复制任务 ID" placement="top">
             <el-button circle size="small" :icon="DocumentCopy" class="id-copy-button" aria-label="复制任务 ID" @click="$emit('copyTaskId', task)" />
           </el-tooltip>
-          <span>/ {{ serverLabel }} / 创建 {{ formatTime(task.created_at) }}</span>
+          <span>/ {{ serverLabel }} / 用户 {{ task.server_username || '-' }} / 创建 {{ formatTime(task.created_at) }}</span>
         </div>
         <div class="task-card__badges">
           <el-tag v-if="!task.batch_id" size="small" type="info" effect="plain">单次</el-tag>

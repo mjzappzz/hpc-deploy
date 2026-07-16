@@ -9,6 +9,7 @@ export interface TaskRecord {
   server_id: number
   server_name: string | null
   server_host: string | null
+  server_username: string | null
   script_id: number | null
   task_type: TaskType | null
   file_path: string | null
@@ -164,6 +165,10 @@ export interface TaskDeleteResponse {
 
 export interface TaskListQuery {
   status?: string
+  /** Only include tasks currently in active execution. */
+  active_only?: boolean
+  /** Preserve every subtask when a status filter matches part of a batch. */
+  include_batch_context?: boolean
   scope?: 'single' | 'batch'
   task_type?: string
   server_id?: number

@@ -30,7 +30,6 @@
 backend/data/artifacts/    # 结果文件回收目录
 backend/apptainer/         # .sif 容器文件
 backend/scripts/           # 白名单脚本目录
-  test/                    # 测试脚本
   stress/                  # 压测脚本
   mpi/                     # MPI / 编译环境脚本
 backend/keys/              # SSH 私钥和同名 .pub 公钥
@@ -42,10 +41,11 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 
 ### servers API (`/api/servers`)
 - 服务器 CRUD
+- 创建服务器后立即执行首次 SSH/环境探测；首次探测失败时保留服务器记录和错误信息
 - SSH 测试（`/test`、`/test-ssh-all`）
 - 信息探测（`/probe`、`/detect`、`/probe-all`）
 - 批量公钥检测（`/public-key/check`）— 按每台服务器自身 `auth_type` 独立认证登录，检测远端 `$HOME/.ssh/authorized_keys` 是否包含当前公钥。SSH 连不上/认证失败 → CHECK_FAILED，文件不存在或不含公钥 → NOT_INSTALLED
-- 批量公钥部署（`/public-key/deploy`）— 按每台服务器自身认证方式登录，创建 `$HOME/.ssh` + `authorized_keys`，公钥已存在不重复追加。单台失败不影响其他
+- 批量公钥部署（`/public-key/deploy`）— 仅允许首次探测成功且状态为 online 的服务器；按每台服务器自身认证方式登录，创建 `$HOME/.ssh` + `authorized_keys`，公钥已存在不重复追加。单台失败不影响其他
 - 单台公钥部署（`/{id}/deploy-public-key`）
 - 单台/批量 SSH 测试（`/{id}/test`、`/test-ssh-all`）
 - 探测全部（`/probe-all`），默认跳过离线服务器，支持显式指定 server_ids
@@ -56,7 +56,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - 任务创建、批量创建（`/batch`）
 - 压测套件创建（`/stress-suite`），同服务器内按 GPU → CPU/内存 → 磁盘串行推进
 - 批次压测子任务重跑（`/{task_id}/retry-in-batch`）：仅支持白名单压测脚本中执行失败、取消、超时或报告 FAIL 的子任务；重跑任务追加到同批次、同服务器队列末尾，并阻止重复排队
-- 任务列表 `scope=single|batch`：按是否存在 `batch_id` 筛选单次任务或批次子任务，保持分页总数准确
+- 任务列表 `scope=single|batch`：按是否存在 `batch_id` 筛选单次任务或批次子任务，保持分页总数准确；`active_only=true` 统计 CONNECTING、PREPARING、UPLOADING、RUNNING、CANCELING 全部活动任务；`include_batch_context=true` 在状态筛选时保留命中批次的完整子任务
 - 状态查询、取消、删除
 - 日志查询、日志下载、WebSocket 实时日志（`/logs/ws`）
 - 失败诊断（`/{task_id}/diagnosis`）
@@ -66,11 +66,11 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - 重跑链以最新一次尝试计算批次当前状态；旧尝试仅作为历史审计记录保留
 - 结果文件入口先展示 artifact/result 文件列表，再由用户选择具体文件下载
 - 批次报告下载：单服务器批次生成 `服务器名称_压测报告_日期.zip`，多服务器批次生成 `batch_id.zip` 并按服务器目录拆分
-- 任务历史查询默认过滤 `hidden_from_history=1` 的软隐藏记录；keyword 支持匹配 `task_id`、脚本名、`batch_id`
+- 任务历史查询默认过滤 `hidden_from_history=1` 的软隐藏记录；keyword 支持匹配任务 ID、批次 ID、脚本名、服务器名称与主机地址
 
 ### scripts API (`/api/scripts`)
 - 脚本知识库文件列表、上传、预览、下载、删除
-- 按类型筛选（test/stress/mpi/apptainer）
+- 按类型筛选（mpi/stress/apptainer）
 
 ### cleanup API (`/api/cleanup`)
 - 本地结果文件目录扫描与删除已整合到系统设置页面，旧清理中心页面和 `/cleanup` 前端路由已删除
@@ -108,10 +108,11 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 
 ### task runner
 - 基于 `setsid --wait` 启动进程组
-- PID 写入 `.hpcdeploy.pid` 文件
+- PID 写入 `.hpcdeploy.pid` 文件；脚本任务结束时写入 `.hpcdeploy.exit_code`
 - SSH executor 封装 Paramiko 连接、重试、超时
 - stress 后台执行使用完全 detach 的 `setsid bash -lc ... < /dev/null`，远端启动成功只代表任务进入 `RUNNING`
 - stress-suite 调度按 `server_id` 加锁，只有前序子任务进入终态后才启动下一子任务
+- 后端重启后，RUNNING 脚本任务通过远端 PID 与退出码文件恢复监控，不重新下发远端命令；已恢复的活动压测子任务结束后，套件调度继续后续任务
 
 ### ssh detector
 - 执行固定的安全探测命令
@@ -171,7 +172,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 |------|------|------|
 | `task_id` | VARCHAR(64) | 任务唯一 ID；本地 artifacts 一级目录名 |
 | `batch_id` | VARCHAR(64) | 批次 ID；同一批次下多个子任务共享 |
-| `task_type` | VARCHAR(50) | 任务类型：test / stress_gpu / stress_cpu_memory / stress_disk / mpi 等 |
+| `task_type` | VARCHAR(50) | 任务类型：script / stress / apptainer |
 | `file_name` | VARCHAR(255) | 执行脚本文件名 |
 | `status` | VARCHAR(30) | PENDING / RUNNING / SUCCESS / FAILED / CANCELED 等 |
 | `sequence_index` | INTEGER | 压测套件子任务顺序 |
@@ -201,7 +202,7 @@ $HOME/hpcdeploy/
 ## 5. 安全设计
 
 ### 白名单脚本
-- 脚本必须命中 `backend/scripts/test/`、`backend/scripts/stress/`、`backend/scripts/mpi/`
+- 脚本必须命中 `backend/scripts/`（当前内置 `stress/`、`mpi/`）；Apptainer 文件必须位于 `backend/apptainer/`
 - 文件名通过 `_safe_basename()` 校验（禁止 `..`、禁止 `/`）
 - 路径通过 `resolve()` + `startswith()` 防逃逸
 
@@ -223,6 +224,7 @@ $HOME/hpcdeploy/
 - 远端路径固定为 `$HOME/.ssh/authorized_keys`，后端硬编码，不接收前端参数
 - 公钥内容从本地 `.pub` 文件读取，不接收前端传入的 key 内容
 - 每台服务器按自身 `auth_type` 独立认证（key 用 `key_path`，password 用 `password`），不固定同一私钥
+- 新增服务器必须先完成首次探测且状态为 online，才允许部署公钥
 - `key_path` 通过 `_resolve_server_key_path()` 统一解析为 `KEYS_DIR` 下的绝对路径，防止相对路径/前缀问题
 
 ### Apptainer 不执行
@@ -368,7 +370,7 @@ PENDING → CONNECTING → PREPARING → UPLOADING → RUNNING → SUCCESS
 | `.app-topbar` | `position: sticky; top: 0` | `height: 56px; z-index: 20` |
 | `.app-content` | 在 main-area 内 flex: 1 | `padding: 20px 24px` |
 
-侧边栏“历史任务”每 10 秒轻量查询一次 `RUNNING` 任务总数；存在运行任务时显示绿色状态点和数量，页面不可见时暂停轮询。点击“运行 N”会跳转历史任务并应用 `RUNNING` 状态筛选。
+侧边栏“历史任务”每 5 秒轻量查询一次活动任务总数（CONNECTING、PREPARING、UPLOADING、RUNNING、CANCELING）；存在活动任务时显示绿色状态点和数量，页面不可见时暂停轮询。创建任务后立即刷新，点击“运行 N”会跳转历史任务并应用 `RUNNING` 状态筛选。
 
 ---
 

@@ -52,6 +52,7 @@ def serialize_task_record(task: Task, db: Session) -> dict[str, object]:
         "server_id": task.server_id,
         "server_name": server.name if server else None,
         "server_host": server.host if server else None,
+        "server_username": server.username if server else None,
         "script_id": task.script_id,
         "task_type": task.task_type,
         "file_path": task.file_path,

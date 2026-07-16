@@ -923,6 +923,10 @@ const executeButtonText = computed(() => {
   return '开始执行'
 })
 
+function notifyTaskCreated() {
+  window.dispatchEvent(new Event('hpcdeploy:task-created'))
+}
+
 async function loadOptions() {
   const [serverResp, fileResp] = await Promise.all([listServers(), listScriptFiles()])
   servers.value = serverResp.data
@@ -1092,6 +1096,7 @@ async function createTask() {
       payload.params = { overwrite: apptainerOverwrite.value }
     }
     const result = (await runTask(payload)).data
+    notifyTaskCreated()
     ElMessage.success('任务已创建，正在跳转历史任务。')
     await router.push({
       path: '/history',
@@ -1146,6 +1151,7 @@ async function createStressSuiteTask() {
       params: buildStressParams(),
     }
     const result = (await createStressSuite(payload)).data
+    notifyTaskCreated()
     stressSuiteResult.value = result
     showStressSuiteResult.value = false
     ElMessage.success('压测套件已创建，正在跳转历史任务。')
@@ -1479,6 +1485,7 @@ async function batchCreate() {
           ? { overwrite: apptainerOverwrite.value }
           : {},
     })).data
+    if (res.created > 0) notifyTaskCreated()
     batchResult.value = res
     showBatchResult.value = false
     const parts: string[] = []

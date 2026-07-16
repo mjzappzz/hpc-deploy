@@ -79,6 +79,7 @@ class TaskRead(BaseModel):
     server_id: int
     server_name: str | None = None
     server_host: str | None = None
+    server_username: str | None = None
     script_id: int | None
     task_type: str | None
     file_path: str | None

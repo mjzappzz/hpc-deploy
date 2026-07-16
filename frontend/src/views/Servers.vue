@@ -13,7 +13,7 @@
             class="page-deploy-key-button"
             :class="{ 'page-deploy-key-button--attention': pendingPublicKeyDeployCount > 0 }"
             :type="pendingPublicKeyDeployCount > 0 ? 'warning' : 'default'"
-            :disabled="isDetectingAll"
+            :disabled="isDetectingAll || publicKeyTargetServers.length === 0"
             @click="openPublicKeyManager"
           >部署公钥</el-button>
         </el-badge>
@@ -52,7 +52,7 @@
         <div class="server-group server-group--offline">
           <div class="server-group__header server-group__header--clickable" @click="showOfflineServers = !showOfflineServers">
             <span class="server-group__toggle">{{ showOfflineServers ? '▼' : '▶' }}</span>
-            <span class="server-group__title">离线/未知服务器</span>
+            <span class="server-group__title">离线服务器</span>
             <el-tag size="small" type="info" effect="plain">{{ offlineServers.length }}</el-tag>
           </div>
           <div v-show="showOfflineServers">
@@ -171,12 +171,12 @@
           </el-option>
         </el-select>
         <el-button :loading="sshKeyGenerating" @click="generateDeployKey">生成默认密钥</el-button>
-        <el-button :loading="publicKeyChecking" @click="checkPublicKeyStatuses">检测全部</el-button>
-        <el-button type="primary" plain :loading="publicKeyDeploying" @click="deployMissingPublicKeys">安装到未安装服务器</el-button>
+        <el-button :loading="publicKeyChecking" :disabled="publicKeyRows.length === 0" @click="checkPublicKeyStatuses">检测全部</el-button>
+        <el-button type="primary" plain :loading="publicKeyDeploying" :disabled="publicKeyRows.length === 0" @click="deployMissingPublicKeys">安装到未安装服务器</el-button>
         <el-button @click="refreshPublicKeyPanel">刷新</el-button>
       </div>
 
-      <el-empty v-if="publicKeyRows.length === 0" description="当前没有可操作的服务器" />
+      <el-empty v-if="publicKeyRows.length === 0" description="暂无完成首次探测且在线的服务器" />
       <el-table v-else :data="publicKeyRows" size="small" border class="public-key-table hpc-table" max-height="420">
         <el-table-column prop="server.name" label="服务器名称" min-width="120" show-overflow-tooltip />
         <el-table-column label="地址" min-width="150">
@@ -480,10 +480,12 @@ const saving = ref(false)
 const dialogVisible = ref(false)
 const editingId = ref<number | null>(null)
 const servers = ref<ServerRecord[]>([])
-const onlineServers = computed(() => servers.value.filter((server) => server.status === 'online'))
-const offlineServers = computed(() => servers.value.filter((server) => server.status !== 'online'))
+const onlineServers = computed(() => servers.value.filter((server) => server.status !== 'offline'))
+const offlineServers = computed(() => servers.value.filter((server) => server.status === 'offline'))
 const showOfflineServers = ref(false)
-const pendingPublicKeyDeployCount = computed(() => servers.value.filter((server) => server.auth_type === 'password').length)
+const serverReadyForPublicKeyDeploy = (server: ServerRecord) => server.status === 'online' && !!server.last_check_at
+const publicKeyTargetServers = computed(() => servers.value.filter(serverReadyForPublicKeyDeploy))
+const pendingPublicKeyDeployCount = computed(() => publicKeyTargetServers.value.filter((server) => server.auth_type === 'password').length)
 const probingIds = ref<number[]>([])
 const isDetectingAll = ref(false)
 const detailVisible = ref(false)
@@ -554,7 +556,6 @@ const saveDisabled = computed(() => {
   }
   return !form.key_path?.trim() || (!editingId.value && !hasSelectableSshKey.value)
 })
-const publicKeyTargetServers = computed(() => servers.value)
 const publicKeyRows = computed<PublicKeyRow[]>(() => publicKeyTargetServers.value.map((server) => {
   const state = publicKeyStatusMap.value[server.id]
   return {
@@ -722,12 +723,19 @@ async function saveServer() {
       payload.key_path = form.key_path || null
       payload.password = null
     }
+    let createdServer: ServerRecord | null = null
     if (editingId.value) {
       await updateServer(editingId.value, payload)
     } else {
-      await createServer(payload as ServerPayload)
+      createdServer = (await createServer(payload as ServerPayload)).data
     }
-    ElMessage.success('服务器已保存')
+    if (editingId.value) {
+      ElMessage.success('服务器已保存')
+    } else if (serverReadyForPublicKeyDeploy(createdServer!)) {
+      ElMessage.success('服务器已保存并完成首次探测')
+    } else {
+      ElMessage.warning(`服务器已保存，但首次探测失败：${createdServer?.last_error ?? '请检查 SSH 配置后重新检测'}`)
+    }
     dialogVisible.value = false
     await loadServers()
     await loadTags()
@@ -751,7 +759,7 @@ async function openPublicKeyManager() {
   // 直接根据服务器已有 auth_type 判断，不 SSH 检测全部
   // auth_type=key → 已安装，auth_type=password → 未安装
   const initial: Record<number, { status: PublicKeyStatus; message: string }> = {}
-  for (const s of servers.value) {
+  for (const s of publicKeyTargetServers.value) {
     if (s.auth_type === 'key') {
       initial[s.id] = { status: 'INSTALLED', message: 'SSH Key 认证，无需部署' }
     } else if (s.auth_type === 'password') {

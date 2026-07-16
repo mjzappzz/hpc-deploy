@@ -79,7 +79,7 @@
                 </div>
                 <div class="batch-history-card__meta">
                   <span class="id-copy-control"><code>{{ item.batchId }}</code><el-tooltip content="复制批次 ID" placement="top"><el-button circle size="small" :icon="DocumentCopy" class="copy-id-button" aria-label="复制批次 ID" @click="copyBatchId(item.batchId)" /></el-tooltip></span>
-                  <span>/ {{ batchGroupServerMetaLabel(item.tasks) }} / 创建 {{ formatDate(batchGroupCreatedAt(item.tasks)) }}</span>
+                  <span>/ {{ batchGroupServerMetaLabel(item.tasks) }} / 用户 {{ batchGroupUsernameMetaLabel(item.tasks) }} / 创建 {{ formatDate(batchGroupCreatedAt(item.tasks)) }}</span>
                 </div>
                 <div class="batch-history-card__badges">
                   <el-tag size="small" type="warning" effect="plain">批次</el-tag>
@@ -558,10 +558,10 @@
           <template v-else-if="drawerActivePanel === 'cpu_mem'">
             <div v-if="drawerMonitorLoading && !drawerMonitorData" class="task-drawer-loading-inline">
               <el-icon class="is-loading"><Loading /></el-icon>
-              <span>正在获取 CPU 与内存快照...</span>
+              <span>正在获取 CPU与内存快照...</span>
             </div>
             <div v-else-if="!drawerMonitorData?.cpu_memory.available" class="task-drawer-empty">
-              <el-empty description="暂无 CPU 与内存实时监控数据" :image-size="60" />
+              <el-empty description="暂无 CPU与内存实时监控数据" :image-size="60" />
               <div v-if="drawerMonitorData?.cpu_memory.message" class="task-drawer-empty-msg">{{ drawerMonitorData.cpu_memory.message }}</div>
             </div>
             <div v-else class="task-drawer-monitor-grid">
@@ -848,13 +848,13 @@
                       </div>
                     </el-tab-pane>
 
-                    <el-tab-pane v-if="detailShowMonitorCpuMem" label="CPU 与内存" name="cpu_mem">
+                    <el-tab-pane v-if="detailShowMonitorCpuMem" label="CPU与内存" name="cpu_mem">
                       <div v-if="detailMonitorLoading && !detailMonitorData" class="detail-panel-loading-inline">
                         <el-icon class="is-loading"><Loading /></el-icon>
-                        <span>正在获取 CPU 与内存快照...</span>
+                        <span>正在获取 CPU与内存快照...</span>
                       </div>
                       <div v-else-if="!detailMonitorData?.cpu_memory.available" class="detail-panel-empty-action">
-                        <el-empty description="暂无 CPU 与内存实时监控数据" :image-size="40" />
+                        <el-empty description="暂无 CPU与内存实时监控数据" :image-size="40" />
                         <div v-if="detailMonitorData?.cpu_memory.message" class="detail-monitor-msg">{{ detailMonitorData.cpu_memory.message }}</div>
                       </div>
                       <div v-else class="detail-monitor-grid">
@@ -1236,6 +1236,11 @@ function batchGroupServerMetaLabel(tasks: TaskRecord[]): string {
   return Array.from(servers).join(', ') || '-'
 }
 
+function batchGroupUsernameMetaLabel(tasks: TaskRecord[]): string {
+  const usernames = new Set(tasks.map(task => task.server_username).filter(Boolean))
+  return Array.from(usernames).join(', ') || '-'
+}
+
 function batchGroupDisplayName(tasks: TaskRecord[]): string {
   const serverLabel = batchGroupServerLabel(tasks)
   const typeLabel = tasks.some(task => task.task_type === 'stress') ? '服务器压测' : getTaskTypeLabel(tasks[0]?.task_type, '任务')
@@ -1259,7 +1264,7 @@ function compactTaskDate(value?: string | null): string {
 function batchStepLabel(task: TaskRecord): string {
   const seq = task.sequence_index
   if (seq === 1) return 'GPU'
-  if (seq === 2) return 'CPU 与内存'
+  if (seq === 2) return 'CPU与内存'
   if (seq === 3) return '磁盘'
   return taskDisplayModuleName(task).replace('压测', '') || `子任务 ${task.task_id}`
 }
@@ -1288,11 +1293,11 @@ function batchGroupDuration(tasks: TaskRecord[]): number | null {
 function taskDisplayModuleName(task: TaskRecord): string {
   const seq = task.sequence_index
   if (seq === 1) return 'GPU压测'
-  if (seq === 2) return 'CPU 与内存压测'
+  if (seq === 2) return 'CPU与内存压测'
   if (seq === 3) return '磁盘压测'
   const fileName = (task.file_name || task.file_path || '').toLowerCase()
   if (fileName.includes('gpu')) return 'GPU压测'
-  if (fileName.includes('cpu') || fileName.includes('mem')) return 'CPU 与内存压测'
+  if (fileName.includes('cpu') || fileName.includes('mem')) return 'CPU与内存压测'
   if (fileName.includes('disk')) return '磁盘压测'
   return getTaskTypeLabel(task.task_type, '任务')
 }
@@ -1300,11 +1305,11 @@ function taskDisplayModuleName(task: TaskRecord): string {
 function batchDetailTaskLabel(task: BatchTaskDetailItem): string {
   const seq = task.sequence_index
   if (seq === 1) return 'GPU压测'
-  if (seq === 2) return 'CPU 与内存压测'
+  if (seq === 2) return 'CPU与内存压测'
   if (seq === 3) return '磁盘压测'
   const name = (task.task_name || '').toLowerCase()
   if (name.includes('gpu')) return 'GPU压测'
-  if (name.includes('cpu') || name.includes('mem')) return 'CPU 与内存压测'
+  if (name.includes('cpu') || name.includes('mem')) return 'CPU与内存压测'
   if (name.includes('disk')) return '磁盘压测'
   return task.task_name || `子任务 ${task.task_id}`
 }
@@ -1374,7 +1379,7 @@ function batchDetailPlanSummary(tasks: BatchTaskDetailItem[]): string {
 }
 
 function batchSummaryModuleLabels(tasks: BatchTaskDetailItem[]): string[] {
-  const ordered = ['GPU压测', 'CPU 与内存压测', '磁盘压测']
+  const ordered = ['GPU压测', 'CPU与内存压测', '磁盘压测']
   const labels = new Set(tasks.map(batchDetailTaskLabel))
   return ordered.filter(label => labels.has(label)).concat(Array.from(labels).filter(label => !ordered.includes(label)))
 }
@@ -1384,11 +1389,11 @@ function batchSummaryScriptLabels(scriptNames: string[]): string[] {
   for (const name of scriptNames) {
     const normalized = name.toLowerCase()
     if (normalized.includes('gpu')) labels.add('GPU压测')
-    else if (normalized.includes('cpu') || normalized.includes('mem')) labels.add('CPU 与内存压测')
+    else if (normalized.includes('cpu') || normalized.includes('mem')) labels.add('CPU与内存压测')
     else if (normalized.includes('disk')) labels.add('磁盘压测')
     else if (name) labels.add(name)
   }
-  const ordered = ['GPU压测', 'CPU 与内存压测', '磁盘压测']
+  const ordered = ['GPU压测', 'CPU与内存压测', '磁盘压测']
   return ordered.filter(label => labels.has(label)).concat(Array.from(labels).filter(label => !ordered.includes(label)))
 }
 
@@ -1683,7 +1688,7 @@ const drawerVisibleMonitorTabs = computed<Array<{ name: DrawerMonitorPanel; labe
   if (type === 'stress') {
     return [
       ...base,
-      { name: 'cpu_mem', label: 'CPU 与内存', monitorType: 'cpu_mem' },
+      { name: 'cpu_mem', label: 'CPU与内存', monitorType: 'cpu_mem' },
       { name: 'disk', label: '磁盘', monitorType: 'disk' },
       { name: 'gpu', label: 'GPU', monitorType: 'gpu' },
     ]
@@ -2090,7 +2095,10 @@ function openDrawerArtifacts() {
 async function loadTasks(silent = false) {
   if (!silent) loading.value = true
   try {
-    const resp = (await listTasks(filters)).data
+    const resp = (await listTasks({
+      ...filters,
+      include_batch_context: Boolean(filters.status),
+    })).data
     tasks.value = resp.items
     total.value = resp.total
   } finally {
@@ -2834,9 +2842,9 @@ function batchStatusLabel(status: string): string {
     RUNNING: '运行中',
     SUCCESS: '成功',
     FAILED: '失败',
-    PARTIAL_FAILED: '失败',
+    PARTIAL_FAILED: '部分失败',
     CANCELED: '已取消',
-    PARTIAL_CANCELED: '已取消',
+    PARTIAL_CANCELED: '部分取消',
   }
   return labels[status] || status
 }

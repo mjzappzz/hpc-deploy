@@ -7,6 +7,7 @@ from app.models.task_log import TaskLog
 
 
 ACTIVE_RECOVERY_STATUSES = ("RUNNING", "CONNECTING", "PREPARING", "UPLOADING")
+PRE_EXECUTION_STATUSES = ("CONNECTING", "PREPARING", "UPLOADING")
 SCHEDULER_RECOVERED_MARKER = "scheduler recovered"
 DEFAULT_STALE_AFTER_SECONDS = 600
 
@@ -23,6 +24,17 @@ def _is_stale(task: Task, now: datetime, stale_after: timedelta) -> bool:
         return task.lease_expire_time < now
     heartbeat = task.last_heartbeat or task.updated_at
     return heartbeat is not None and heartbeat < now - stale_after
+
+
+def should_requeue_after_restart(task_status: str, is_stale: bool) -> bool:
+    """Only retry work that had not reached remote command execution.
+
+    A RUNNING task may outlive the backend by hours.  It is recovered by a
+    remote PID monitor, never requeued merely because its local heartbeat is
+    old; otherwise a restart could launch the same workload twice.
+    """
+    del is_stale
+    return task_status in PRE_EXECUTION_STATUSES
 
 
 def _reset_task_to_pending(task: Task, now: datetime, message: str) -> None:
@@ -54,7 +66,7 @@ def recover_stuck_tasks(stale_after_seconds: int = DEFAULT_STALE_AFTER_SECONDS) 
             .all()
         )
         for task in active_tasks:
-            if not _is_stale(task, now, stale_after):
+            if not should_requeue_after_restart(task.status, _is_stale(task, now, stale_after)):
                 continue
             _reset_task_to_pending(
                 task,

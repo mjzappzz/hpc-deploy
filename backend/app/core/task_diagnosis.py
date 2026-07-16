@@ -141,6 +141,9 @@ CATEGORIES: list[CategoryDef] = [
             "Unable to connect",
             "SSH connection timed out",
             "ssh_exchange_identification",
+            "SSH degraded after",
+            "consecutive failures",
+            "fresh SSH connection also failed",
         ],
     },
     {
@@ -1134,6 +1137,8 @@ def diagnose_task_failure(
     # ── Phase 2: Pattern matching (existing rules) ──
     for cat in CATEGORIES:
         if cat["category"] == "unknown":
+            continue
+        if cat["category"] == "apptainer_upload_failed" and task_type != "apptainer":
             continue
 
         matched: list[str] = []

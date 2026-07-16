@@ -86,6 +86,19 @@ def _server_public_key_auth_kwargs(server: Server) -> dict[str, str | None]:
     return {"key_path": _resolve_server_key_path(server.key_path), "password": None}
 
 
+def server_ready_for_public_key_deploy(server: Server) -> bool:
+    """Only servers successfully probed after creation may receive a public key."""
+    return server.status == "online" and server.last_check_at is not None
+
+
+def _require_server_ready_for_public_key_deploy(server: Server) -> None:
+    if not server_ready_for_public_key_deploy(server):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="请先完成服务器首次探测并确认在线后再部署公钥",
+        )
+
+
 def _build_probe_response(server: Server, *, success: bool, error: str | None = None, timings: dict[str, float] | None = None) -> ServerDetectResponse:
     return ServerDetectResponse(
         success=success,
@@ -198,6 +211,7 @@ def create_server(
         message=f"created server {server.name} ({server.host})",
         detail={"host": server.host, "port": server.port, "username": server.username, "auth_type": server.auth_type, "tags": tags_list},
     )
+    _probe_server(db, server)
     return server
 
 
@@ -769,6 +783,7 @@ def deploy_public_key(
     db: Session = Depends(get_db),
 ) -> DeployPublicKeyResponse:
     server = _get_server_or_404(db, server_id)
+    _require_server_ready_for_public_key_deploy(server)
     private_key_file, public_key = _load_public_key(payload.private_key_path)
     try:
         _deploy_public_key_to_server(db, server, private_key_file, public_key)
@@ -817,6 +832,13 @@ def deploy_public_key_all(
             server = thread_db.get(Server, sid)
             if server is None:
                 return DeployPublicKeyAllItem(server_id=sid, server_name="(deleted)", success=False, message="server not found")
+            if not server_ready_for_public_key_deploy(server):
+                return DeployPublicKeyAllItem(
+                    server_id=server.id,
+                    server_name=server.name,
+                    success=False,
+                    message="请先完成服务器首次探测并确认在线后再部署公钥",
+                )
             try:
                 _deploy_public_key_to_server(thread_db, server, private_key_file, public_key)
                 write_audit_log(

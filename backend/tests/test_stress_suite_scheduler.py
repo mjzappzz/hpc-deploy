@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 import unittest
 
-from app.api.tasks import _fail_suite_task_records_for_scheduler
+from app.api.tasks import _fail_suite_task_records_for_scheduler, _wait_for_active_suite_task
 
 
 class FakeDb:
@@ -34,6 +34,22 @@ class StressSuiteSchedulerTests(unittest.TestCase):
         self.assertEqual(tasks[0].error_message, "scheduler blocked")
         self.assertEqual(len(db.added), 2)
         self.assertEqual(db.commits, 1)
+
+    def test_recovery_worker_waits_for_active_predecessor_to_finish(self) -> None:
+        task = SimpleNamespace(status="RUNNING")
+
+        class RefreshDb:
+            def refresh(self, _task) -> None:
+                pass
+
+        def finish_task(_seconds: float) -> None:
+            task.status = "SUCCESS"
+
+        with unittest.mock.patch("app.api.tasks.sleep", side_effect=finish_task):
+            completed = _wait_for_active_suite_task(RefreshDb(), task)
+
+        self.assertTrue(completed)
+        self.assertEqual(task.status, "SUCCESS")
 
 
 if __name__ == "__main__":

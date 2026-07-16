@@ -103,7 +103,7 @@ VM_WORKERS=$(( CPU_WORKERS / 8 ))
 [ "$VM_WORKERS" -lt 1 ] && VM_WORKERS=1
 
 # 每个VM worker分配内存
-VM_BYTES_MB=$(( VM_TOTAL_MB / VM_WORKERS ))
+VM_BYTES_MB=$VM_TOTAL_MB
 
 # 防止单worker太小
 [ "$VM_BYTES_MB" -lt 256 ] && VM_BYTES_MB=256
@@ -308,6 +308,7 @@ if command -v setsid >/dev/null 2>&1; then
     --vm-bytes "${VM_BYTES}" \
     --vm-method "${VM_METHOD}" \
     --vm-keep \
+    --vm-populate \
     --verify \
     --timeout "${DURATION}s" \
     --metrics-brief \
@@ -320,11 +321,13 @@ else
     --vm-bytes "${VM_BYTES}" \
     --vm-method "${VM_METHOD}" \
     --vm-keep \
+    --vm-populate \
     --verify \
     --timeout "${DURATION}s" \
     --metrics-brief \
     > "$STRESS_LOG" 2>&1 &
 fi
+
 STRESS_PID=$!
 STRESS_PGID=$(ps -o pgid= "$STRESS_PID" 2>/dev/null | tr -d ' ')
 
@@ -1055,7 +1058,7 @@ echo "[STAGE] report_xlsx_done (no-timeout mode) exit_code=${XLSX_EXIT_CODE}"
 fi
 
 # 最终输出
-XLSX_FINAL_STATUS=ERATED"
+XLSX_FINAL_STATUS="NOT_GENERATED"
 [ "$XLSX_OK" = "1" ] && XLSX_FINAL_STATUS="GENERATED"
 
 echo

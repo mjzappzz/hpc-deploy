@@ -5,6 +5,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 from secrets import token_hex
+from time import sleep
 from urllib.parse import quote
 
 from app.core.batch_report_exporter import export_batch_report_zip
@@ -148,6 +149,9 @@ VALID_TASK_STATUSES: frozenset[str] = frozenset({
     "PENDING", "CONNECTING", "PREPARING", "UPLOADING",
     "RUNNING", "CANCELING", "SUCCESS", "FAILED", "CANCELED",
 })
+EXECUTING_TASK_STATUSES: frozenset[str] = frozenset({
+    "CONNECTING", "PREPARING", "UPLOADING", "RUNNING", "CANCELING",
+})
 VALID_TASK_TYPES: frozenset[str] = frozenset({"script", "stress", "apptainer"})
 VALID_ORDER_VALUES: frozenset[str] = frozenset({"created_desc", "created_asc"})
 VALID_TASK_SCOPES: frozenset[str] = frozenset({"single", "batch"})
@@ -175,9 +179,11 @@ def list_tasks(
     task_scope: str | None = Query(None, alias="scope"),
     server_id: int | None = Query(None, ge=1),
     keyword: str | None = Query(None, min_length=1),
+    include_batch_context: bool = Query(False),
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
     order: str = Query("created_desc"),
+    active_only: bool = Query(False, description="only return tasks in active execution"),
 ) -> TaskListResponse:
     # --- parameter validation ---
     if task_status is not None and task_status not in VALID_TASK_STATUSES:
@@ -204,8 +210,9 @@ def list_tasks(
     # --- build query ---
     query = db.query(Task).filter(Task.hidden_from_history == 0)
 
-    if task_status is not None:
-        query = query.filter(Task.status == task_status)
+    if active_only is True:
+        query = query.filter(Task.status.in_(EXECUTING_TASK_STATUSES))
+
     if task_type is not None:
         query = query.filter(Task.task_type == task_type)
     if task_scope == "single":
@@ -229,6 +236,31 @@ def list_tasks(
                 Server.host.ilike(like_pattern),
             )
         )
+
+    if task_status is not None:
+        matched_query = query.filter(Task.status == task_status)
+        if include_batch_context is True:
+            batch_ids = [
+                batch_id
+                for (batch_id,) in matched_query
+                .filter(Task.batch_id.isnot(None))
+                .with_entities(Task.batch_id)
+                .distinct()
+                .all()
+            ]
+            if batch_ids:
+                # Keep matching single tasks status-filtered, while preserving every
+                # subtask for batches that contain a matching task.
+                query = query.filter(
+                    or_(
+                        Task.status == task_status,
+                        Task.batch_id.in_(batch_ids),
+                    )
+                )
+            else:
+                query = matched_query
+        else:
+            query = matched_query
 
     # --- order ---
     if order == "created_asc":
@@ -725,6 +757,14 @@ def _is_suite_task_terminal(db: Session, task_id: str) -> bool:
     return status_value in TERMINAL_TASK_STATUSES
 
 
+def _wait_for_active_suite_task(db: Session, task: Task) -> bool:
+    """Wait for a recovered suite predecessor, then let the scheduler continue."""
+    while task.status in UNFINISHED_TASK_STATUSES and task.status != "PENDING":
+        sleep(1)
+        db.refresh(task)
+    return task.status in TERMINAL_TASK_STATUSES
+
+
 def _run_stress_suite_for_server(server_id: int, batch_id: str, wait_for_lock: bool = False) -> None:
     """Run stress suite tasks sequentially for a single server.
 
@@ -766,10 +806,11 @@ def _run_stress_suite_for_server(server_id: int, batch_id: str, wait_for_lock: b
                 db.add(TaskLog(
                     task_id=task_record.task_id,
                     level="SYSTEM",
-                    message=f"stress suite scheduler found active task {task_record.status}, leave it untouched",
+                    message=f"stress suite scheduler waiting for recovered active task {task_record.status}",
                 ))
                 db.commit()
-                break
+                _wait_for_active_suite_task(db, task_record)
+                continue
 
             if task_record.depends_on_task_id and not _is_suite_task_terminal(db, task_record.depends_on_task_id):
                 db.add(TaskLog(

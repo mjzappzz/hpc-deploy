@@ -18,8 +18,8 @@ const label = computed(() => {
   if (normalized.value === 'ONLINE') return '在线'
   if (normalized.value === 'OFFLINE') return '离线'
   if (normalized.value === 'UNKNOWN') return '未探测'
-  if (normalized.value === 'PARTIAL_FAILED') return 'FAILED'
-  if (normalized.value === 'PARTIAL_CANCELED') return 'CANCELED'
+  if (normalized.value === 'PARTIAL_FAILED') return 'PARTIAL FAILED'
+  if (normalized.value === 'PARTIAL_CANCELED') return 'PARTIAL CANCELED'
   return String(props.status ?? 'unknown')
 })
 

@@ -3,7 +3,7 @@ from pathlib import Path
 import os
 import re
 import threading
-from time import monotonic
+from time import monotonic, sleep
 
 from app.core.artifact_collector import collect_artifacts
 from app.core.report_summary import schedule_report_summary_generation
@@ -45,6 +45,7 @@ STDERR_WARN_PATTERNS = (
     "apt does not have a stable CLI interface",
 )
 PID_FILE_NAME = ".hpcdeploy.pid"
+EXIT_CODE_FILE_NAME = ".hpcdeploy.exit_code"
 CANCELED_EXIT_CODE = -15
 TASK_LEASE_SECONDS = 600
 STRESS_STARTUP_TIMEOUT_SECONDS = 300
@@ -994,6 +995,83 @@ def resume_running_stress_tasks_after_startup() -> int:
         db.close()
 
 
+def _read_remote_exit_code(executor: SSHExecutor, exit_code_path: str) -> int | None:
+    try:
+        output = executor.exec_simple(f"cat {shell_quote(exit_code_path)} 2>/dev/null || true").strip()
+    except SSHExecutorError:
+        return None
+    return int(output) if output.isdigit() else None
+
+
+def _command_recovery_monitor(task_id: str) -> None:
+    """Reattach to a RUNNING script after backend restart without rerunning it."""
+    db = SessionLocal()
+    executor = SSHExecutor()
+    try:
+        task = db.query(Task).filter(Task.task_id == task_id).first()
+        if task is None or task.task_type != "script" or task.status != "RUNNING":
+            return
+        server = db.get(Server, task.server_id)
+        if server is None or not task.remote_work_dir:
+            _fail_running_stress_task(db, task, task_id, "startup recovery: script server or work directory missing")
+            return
+        executor.connect(
+            host=server.host,
+            port=server.port,
+            username=server.username,
+            key_path=server.key_path,
+            password=server.password,
+        )
+        pid_file = _build_remote_pid_file_path(task.remote_work_dir)
+        exit_code_file = f"{task.remote_work_dir.rstrip('/')}/{EXIT_CODE_FILE_NAME}"
+        while True:
+            db.refresh(task)
+            if task.status in TERMINAL_TASK_STATUSES:
+                return
+            if _is_remote_pid_alive(executor, pid_file) is True:
+                _touch_task_heartbeat(task)
+                db.commit()
+                sleep(5)
+                continue
+            exit_code = _read_remote_exit_code(executor, exit_code_file)
+            task.end_time = datetime.utcnow()
+            if exit_code == 0:
+                task.status = "SUCCESS"
+                task.exit_code = 0
+                task.error_message = None
+            else:
+                task.status = "FAILED"
+                task.exit_code = exit_code
+                task.error_message = "startup recovery: remote command ended without a readable exit code" if exit_code is None else f"command exited with code {exit_code}"
+            db.commit()
+            _broadcast_done_safe(task_id, task.status)
+            return
+    except SSHExecutorError as exc:
+        if 'task' in locals() and task is not None and task.status == "RUNNING":
+            _fail_running_stress_task(db, task, task_id, f"startup recovery: script SSH connect failed: {exc}")
+    finally:
+        executor.close()
+        db.close()
+
+
+def resume_running_script_tasks_after_startup() -> int:
+    """Resume monitoring every script task whose in-process worker was lost."""
+    db = SessionLocal()
+    try:
+        task_ids = [
+            task_id
+            for (task_id,) in db.query(Task.task_id)
+            .filter(Task.status == "RUNNING", Task.task_type == "script")
+            .all()
+        ]
+    finally:
+        db.close()
+
+    for task_id in task_ids:
+        threading.Thread(target=_command_recovery_monitor, args=(task_id,), daemon=True).start()
+    return len(task_ids)
+
+
 def _attempt_stress_recovery(db, task_id: str, task: Task) -> bool:
     """检查 stress 报告 artifact 并根据产物结果更新任务状态。
 
@@ -1184,8 +1262,8 @@ def _classify_stderr_level(message: str) -> str:
 
 
 def _build_remote_execution_command(command: str, pid_file_path: str) -> str:
-    # Move leading env var assignments before exec so that
-    #   exec KEY=VALUE ./script.sh  →  KEY=VALUE exec ./script.sh
+    # Keep the shell as the PID-file owner so it can persist the child exit code
+    # for recovery after the backend process has restarted.
     env_part = ""
     cmd = command
     while True:
@@ -1195,10 +1273,15 @@ def _build_remote_execution_command(command: str, pid_file_path: str) -> str:
         env_part += m.group(0)
         cmd = cmd[m.end():]
 
-    if env_part:
-        inner_command = f"printf '%s' $$ > {shell_quote(pid_file_path)}; {env_part}exec {cmd}"
-    else:
-        inner_command = f"printf '%s' $$ > {shell_quote(pid_file_path)}; exec {command}"
+    exit_code_path = f"{Path(pid_file_path).parent}/{EXIT_CODE_FILE_NAME}"
+    runnable_command = f"{env_part}{cmd}" if env_part else command
+    inner_command = (
+        f"printf '%s' $$ > {shell_quote(pid_file_path)}; "
+        f"rm -f {shell_quote(exit_code_path)}; "
+        f"{runnable_command}; exit_code=$?; "
+        f"printf '%s' \"$exit_code\" > {shell_quote(exit_code_path)}; "
+        "exit \"$exit_code\""
+    )
     return f"setsid --wait bash -lc {shell_quote(inner_command)}"
 
 

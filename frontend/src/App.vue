@@ -112,7 +112,7 @@ async function refreshRunningTaskCount() {
   if (document.hidden || runningTaskLoading.value) return
   runningTaskLoading.value = true
   try {
-    const response = await listTasks({ status: 'RUNNING', limit: 1 })
+    const response = await listTasks({ active_only: true, limit: 1 })
     runningTaskCount.value = response.data.total
   } catch {
     // Keep the last known count; sidebar status must not interrupt normal navigation.
@@ -125,15 +125,22 @@ function handleVisibilityChange() {
   if (!document.hidden) void refreshRunningTaskCount()
 }
 
+function handleTaskCreated() {
+  void refreshRunningTaskCount()
+  window.setTimeout(() => void refreshRunningTaskCount(), 500)
+}
+
 onMounted(() => {
   void refreshRunningTaskCount()
-  runningTaskTimer = window.setInterval(() => void refreshRunningTaskCount(), 10_000)
+  runningTaskTimer = window.setInterval(() => void refreshRunningTaskCount(), 5_000)
   document.addEventListener('visibilitychange', handleVisibilityChange)
+  window.addEventListener('hpcdeploy:task-created', handleTaskCreated)
 })
 
 onUnmounted(() => {
   if (runningTaskTimer !== undefined) window.clearInterval(runningTaskTimer)
   document.removeEventListener('visibilitychange', handleVisibilityChange)
+  window.removeEventListener('hpcdeploy:task-created', handleTaskCreated)
 })
 </script>
 
