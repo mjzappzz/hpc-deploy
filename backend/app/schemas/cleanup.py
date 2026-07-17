@@ -78,6 +78,23 @@ class LocalLogsScanResult(BaseModel):
     message: str | None = None
 
 
+class DatabaseTaskLogItem(BaseModel):
+    id: int
+    task_id: str
+    level: str
+    message: str
+    message_bytes: int = 0
+    created_at: datetime | None = None
+
+
+class DatabaseTaskLogsScanResult(BaseModel):
+    mode: str = "database"
+    total_logs: int = 0
+    total_message_bytes: int = 0
+    returned_logs: int = 0
+    items: list[DatabaseTaskLogItem] = []
+
+
 class LocalArtifactsDeleteRequest(BaseModel):
     paths: list[str] = Field(min_length=1, max_length=100)
     recursive: bool = False

@@ -100,6 +100,27 @@ export function getAutoCleanupStatus() {
   return request.get<AutoCleanupStatus>('/cleanup/auto-cleanup/status')
 }
 
+export interface DatabaseTaskLogItem {
+  id: number
+  task_id: string
+  level: string
+  message: string
+  message_bytes: number
+  created_at: string | null
+}
+
+export interface DatabaseTaskLogsScanResult {
+  mode: 'database'
+  total_logs: number
+  total_message_bytes: number
+  returned_logs: number
+  items: DatabaseTaskLogItem[]
+}
+
+export function scanLocalLogs(limit = 1000) {
+  return request.get<DatabaseTaskLogsScanResult>('/cleanup/local-logs/scan', { params: { limit } })
+}
+
 // ── Remote (single server) ──
 
 export interface RemoteDirInfo {

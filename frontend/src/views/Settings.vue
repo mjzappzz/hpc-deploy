@@ -177,6 +177,49 @@
         </el-table>
       </el-card>
 
+      <el-card shadow="never" class="settings-card">
+        <template #header>
+          <div class="card-header">
+            <div>
+              <span class="card-title">数据库任务日志</span>
+              <div v-if="logsScanned" class="section-summary-text">
+                共 {{ localLogsTotal }} 条，日志内容 {{ formatBytes(localLogsTotalBytes) }}；当前展示最近 {{ localLogs.length }} 条
+              </div>
+            </div>
+            <el-button :loading="scanLogsLoading" @click="doScanLocalLogs">扫描</el-button>
+          </div>
+        </template>
+        <div v-if="!logsScanned" class="section-placeholder">点击“扫描”查看 SQLite <code>task_logs</code> 中的任务日志。</div>
+        <div v-else-if="localLogs.length === 0" class="section-placeholder">没有数据库任务日志</div>
+        <el-table
+          v-else
+          :data="sortedLocalLogs"
+          size="small"
+          border
+          max-height="420"
+          @sort-change="onLocalLogsSortChange"
+        >
+          <el-table-column label="任务 ID" min-width="240" show-overflow-tooltip>
+            <template #default="{ row }"><code class="artifact-task-id">{{ row.task_id }}</code></template>
+          </el-table-column>
+          <el-table-column label="级别" width="88" align="center">
+            <template #default="{ row }"><el-tag size="small" effect="plain" :type="logLevelTagType(row.level)">{{ row.level }}</el-tag></template>
+          </el-table-column>
+          <el-table-column label="日志内容" min-width="340" show-overflow-tooltip>
+            <template #default="{ row }"><span class="database-log-message">{{ row.message }}</span></template>
+          </el-table-column>
+          <el-table-column label="内容大小" width="120" align="right" sortable="custom" prop="message_bytes">
+            <template #default="{ row }">{{ formatBytes(row.message_bytes) }}</template>
+          </el-table-column>
+          <el-table-column label="记录时间" width="170" sortable="custom" prop="created_at">
+            <template #default="{ row }">{{ row.created_at ? formatDate(row.created_at) : '-' }}</template>
+          </el-table-column>
+        </el-table>
+        <div v-if="logsScanned" class="form-help logs-size-note">
+          内容大小按日志消息 UTF-8 字节数统计，不等同于 SQLite 文件中单行记录的物理占用；SQLite 页、索引与空闲空间无法精确分摊到单条日志。
+        </div>
+      </el-card>
+
       <el-dialog v-model="passwordDialogVisible" title="修改管理员密码" width="520px">
         <el-form label-width="110px">
           <el-form-item label="当前密码">
@@ -234,8 +277,10 @@ import {
   deleteLocalArtifacts,
   getAutoCleanupStatus,
   scanLocalArtifacts,
+  scanLocalLogs,
   type AutoCleanupStatus,
   type LocalArtifactDirectory,
+  type DatabaseTaskLogItem,
 } from '@/api/cleanup'
 import { adminMode, requireAdminConfirm } from '@/composables/useAdminConfirm'
 import { useSettingsStore } from '@/stores/settings'
@@ -518,6 +563,13 @@ const artifactSortBy = ref<string>('modified_at')
 const artifactSortOrder = ref<'asc' | 'desc'>('desc')
 const selectedArtifactDirPaths = ref<string[]>([])
 const deletingArtifactDir = ref('')
+const scanLogsLoading = ref(false)
+const logsScanned = ref(false)
+const localLogsTotal = ref(0)
+const localLogsTotalBytes = ref(0)
+const localLogs = ref<DatabaseTaskLogItem[]>([])
+const localLogsSortBy = ref<'created_at' | 'message_bytes'>('created_at')
+const localLogsSortOrder = ref<'asc' | 'desc'>('desc')
 
 const sortedArtifactDirectories = computed(() => {
   const data = [...artifactDirectories.value]
@@ -539,6 +591,16 @@ const sortedArtifactDirectories = computed(() => {
     return (va - vb) * order
   })
   return data
+})
+
+const sortedLocalLogs = computed(() => {
+  const order = localLogsSortOrder.value === 'desc' ? -1 : 1
+  return [...localLogs.value].sort((a, b) => {
+    if (localLogsSortBy.value === 'message_bytes') {
+      return (a.message_bytes - b.message_bytes) * order
+    }
+    return (sortableTime(a.created_at) - sortableTime(b.created_at)) * order
+  })
 })
 
 // ── Drag-to-select ──
@@ -571,6 +633,20 @@ function onArtifactSortChange({ prop, order }: { prop?: string; order?: 'asc' | 
     artifactSortBy.value = 'modified_at'
     artifactSortOrder.value = 'desc'
   }
+}
+
+function onLocalLogsSortChange({ prop, order }: { prop?: string; order?: 'asc' | 'desc' | null }) {
+  if (prop === 'message_bytes' || prop === 'created_at') {
+    localLogsSortBy.value = prop
+    localLogsSortOrder.value = order || 'desc'
+  }
+}
+
+function logLevelTagType(level: string): 'danger' | 'warning' | 'success' | 'info' {
+  if (level === 'ERROR') return 'danger'
+  if (level === 'WARN') return 'warning'
+  if (level === 'SYSTEM') return 'info'
+  return 'success'
 }
 
 function sortableTime(value?: string | null, fallbackName = '') {
@@ -616,6 +692,24 @@ async function doScanArtifacts() {
     ElMessage.error('扫描本机结果文件失败')
   } finally {
     scanArtifactsLoading.value = false
+  }
+}
+
+async function doScanLocalLogs() {
+  if (!requireSettingsAdmin('扫描数据库任务日志')) return
+  scanLogsLoading.value = true
+  try {
+    const res = (await scanLocalLogs()).data
+    localLogsTotal.value = res.total_logs
+    localLogsTotalBytes.value = res.total_message_bytes
+    localLogs.value = res.items
+    localLogsSortBy.value = 'created_at'
+    localLogsSortOrder.value = 'desc'
+    logsScanned.value = true
+  } catch {
+    ElMessage.error('扫描数据库任务日志失败')
+  } finally {
+    scanLogsLoading.value = false
   }
 }
 
@@ -875,5 +969,13 @@ onMounted(async () => {
   display: flex;
   gap: 12px;
   padding-top: 8px;
+}
+
+.logs-size-note {
+  margin-top: 10px;
+}
+
+.database-log-message {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 </style>

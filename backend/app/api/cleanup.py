@@ -28,6 +28,8 @@ from app.schemas.cleanup import (
     ApptainerImageScanResult,
     AutoCleanupStatusResponse,
     DeleteResultItem,
+    DatabaseTaskLogItem,
+    DatabaseTaskLogsScanResult,
     LocalArtifactDirectory,
     LocalArtifactFile,
     LocalArtifactTaskItem,
@@ -47,6 +49,7 @@ from app.schemas.cleanup import (
     RemoteTaskDirInfo,
 )
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import LargeBinary, cast, func
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
@@ -602,6 +605,36 @@ def scan_local_artifacts(db: Session = Depends(get_db)) -> LocalArtifactsScanRes
         total_files=total_files,
         total_size_bytes=total_size,
         items=directories,
+    )
+
+
+@router.get("/local-logs/scan", response_model=DatabaseTaskLogsScanResult)
+def scan_local_logs(
+    limit: int = Query(default=500, ge=1, le=2000),
+    db: Session = Depends(get_db),
+) -> DatabaseTaskLogsScanResult:
+    """List database-backed task logs with their UTF-8 message payload sizes."""
+    logs = db.query(TaskLog).order_by(TaskLog.created_at.desc(), TaskLog.id.desc()).limit(limit).all()
+    total_logs = db.query(TaskLog).count()
+    total_message_bytes = int(
+        db.query(func.coalesce(func.sum(func.length(cast(TaskLog.message, LargeBinary))), 0)).scalar() or 0
+    )
+
+    return DatabaseTaskLogsScanResult(
+        total_logs=total_logs,
+        total_message_bytes=total_message_bytes,
+        returned_logs=len(logs),
+        items=[
+            DatabaseTaskLogItem(
+                id=log.id,
+                task_id=log.task_id,
+                level=log.level,
+                message=log.message,
+                message_bytes=len((log.message or "").encode("utf-8")),
+                created_at=log.created_at,
+            )
+            for log in logs
+        ],
     )
 
 
