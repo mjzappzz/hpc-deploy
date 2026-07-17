@@ -1,5 +1,7 @@
 # HPCDeploy 项目进度记录
 
+> 维护流水与会话交接材料。它记录变化背景和待办，不替代 [architecture.md](architecture.md) 中的当前架构、安全边界或 [../deploy/README.md](../deploy/README.md) 中的可执行部署步骤。
+
 ## 当前完成度
 
 ### 2026-07-17 — 管理员模式、任务清理与执行页复检

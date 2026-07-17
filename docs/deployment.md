@@ -1,8 +1,10 @@
 # HPCDeploy Deployment Notes
 
-本文档记录当前部署模式、后续 Docker 路线、数据库选择和备份恢复方式。
+本文档用于**运行数据运维与部署演进决策**：SQLite 适用边界、备份恢复、Docker / MySQL 路线。首次安装、日常更新和 systemd 排障请阅读 [../deploy/README.md](../deploy/README.md)。
 
 ## 当前模式：systemd 开发部署
+
+本节只说明当前形态及其适用范围；安装命令以 [部署与运维手册](../deploy/README.md) 为准。
 
 当前默认部署用于复刻本机开发环境：
 

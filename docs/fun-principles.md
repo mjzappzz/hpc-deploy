@@ -1,5 +1,7 @@
 # 趣味性设计原则
 
+适用于修改 `frontend/src/components/AppCritters.vue`、趣味文案或相关交互时。与任务执行、权限和安全无关的视觉调整也必须遵守本文件；通用前端架构请参阅 [architecture.md](architecture.md)。
+
 > 生效日期：2026-07-08
 
 ## 原则

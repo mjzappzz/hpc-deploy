@@ -2,6 +2,8 @@
 
 > 本文档描述 HPCDeploy 当前实际系统架构，非设计阶段草案。
 
+适用于修改 API、任务调度、SSH/SFTP、数据模型、权限或安全边界前的影响评估。安装、升级和服务排障请阅读 [../deploy/README.md](../deploy/README.md)。
+
 ---
 
 ## 1. 总体架构

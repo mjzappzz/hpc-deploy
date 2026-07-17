@@ -1,7 +1,7 @@
-# HPCDeploy 阶段开发计划
+# HPCDeploy 阶段交付归档
 
 版本：v1.02 Linux 维护版
-用途：记录已完成阶段，供后续开发参考。本文档只记录阶段边界；近期维护流水见 `docs/progress.md`。
+用途：归档已完成阶段及长期约束，不作为当前迭代计划或功能行为的唯一依据。近期维护流水见 [progress.md](progress.md)，当前架构以 [architecture.md](architecture.md) 为准。
 
 ---
 

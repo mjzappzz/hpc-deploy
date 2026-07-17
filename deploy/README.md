@@ -1,11 +1,15 @@
-# HPCDeploy Deployment
+# HPCDeploy 部署与运维手册
 
-推荐部署方式：
+用于**首次安装、日常更新和 systemd 服务排障**。SQLite 备份恢复与 Docker / MySQL 演进请阅读 [../docs/deployment.md](../docs/deployment.md)；架构和安全模型请阅读 [../docs/architecture.md](../docs/architecture.md)。
 
-- 后端：`systemd` 运行 `uvicorn`
-- 前端：`systemd` 运行 Vite dev server
-- 当前模式：开发模式复刻，访问 `http://<server-ip>:5173`
-- 后续生产化：建议切换为 Docker 或 nginx 静态托管
+当前部署形态为 systemd 开发服务复刻：后端运行 `uvicorn`，前端运行 Vite dev server，访问地址为 `http://<server-ip>:5173`。这不是 Nginx 静态托管或容器化生产部署。
+
+## 前提与边界
+
+- 部署机需为 Linux，执行安装脚本的用户需具备 `sudo` 权限。
+- 脚本自动识别 `apt-get`、`dnf` 或 `yum`，并在缺少时安装 `python3`、`python3-venv`、`python3-pip`、`nodejs`、`npm`。
+- 后端仅监听 `127.0.0.1:8000`；前端监听 `0.0.0.0:5173`。如需跨主机访问，请按现场安全策略放行或限制 `5173/tcp`。
+- 生产使用前必须通过环境变量设置非默认的 `SECRET_KEY` 与 `HPCDEPLOY_ADMIN_PASSWORD`；详见根目录 [README.md](../README.md#环境变量)。
 
 ## 文件说明
 
@@ -48,3 +52,10 @@ systemctl status hpcdeploy-frontend
 journalctl -u hpcdeploy-backend -n 200 --no-pager
 journalctl -u hpcdeploy-frontend -n 200 --no-pager
 ```
+
+## 排障入口
+
+1. 服务未启动：先执行 `systemctl status hpcdeploy-backend hpcdeploy-frontend --no-pager -l`。
+2. 页面无法访问：确认前端服务为 active，确认监听 `5173/tcp`，再检查主机防火墙和网络访问策略。
+3. API 或任务异常：查看后端日志 `journalctl -u hpcdeploy-backend -n 200 --no-pager`。
+4. 更新后异常：重新执行 `sudo deploy/scripts/redeploy_hpcdeploy.sh`；该脚本会更新依赖并重启两个服务。
