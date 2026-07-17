@@ -49,12 +49,16 @@ EXIT_CODE_FILE_NAME = ".hpcdeploy.exit_code"
 CANCELED_EXIT_CODE = -15
 TASK_LEASE_SECONDS = 600
 STRESS_STARTUP_TIMEOUT_SECONDS = 300
+STRESS_RECOVERY_SSH_CONNECT_RETRIES = 3
+STRESS_RECOVERY_SSH_RETRY_DELAY_SECONDS = 60
 TASK_LOG_MAX_MESSAGE_BYTES = 4096
 WGET_PROGRESS_LINE = re.compile(
     r"^\s*\d+(?:\.\d+)?[KMG]?\s+(?:\.{10}\s+){2,}\d+%",
 )
 _progress_notice_task_ids: set[str] = set()
 _progress_notice_lock = threading.Lock()
+_scheduled_stress_recovery_task_ids: set[str] = set()
+_scheduled_stress_recovery_lock = threading.Lock()
 STRESS_FATAL_LOG_RULES: tuple[tuple[re.Pattern, str], ...] = (
     (re.compile(r"nvidia-smi not found", re.IGNORECASE), "GPU stress failed before start: nvidia-smi not found"),
     (re.compile(r"未检测到 NVIDIA GPU", re.IGNORECASE), "GPU stress failed before start: no NVIDIA GPU detected"),
@@ -905,14 +909,36 @@ def _stress_recovery_monitor(task_id: str) -> None:
             _fail_running_stress_task(db, task, task_id, "recovery: server not found")
             return
 
-        try:
-            executor.connect(
-                host=server.host, port=server.port,
-                username=server.username, key_path=server.key_path,
-                password=server.password,
+        last_connect_error: Exception | None = None
+        for attempt in range(1, STRESS_RECOVERY_SSH_CONNECT_RETRIES + 1):
+            try:
+                executor.connect(
+                    host=server.host, port=server.port,
+                    username=server.username, key_path=server.key_path,
+                    password=server.password,
+                )
+                last_connect_error = None
+                break
+            except Exception as exc:
+                last_connect_error = exc
+                if attempt < STRESS_RECOVERY_SSH_CONNECT_RETRIES:
+                    _add_log(
+                        db, task_id, "WARNING",
+                        f"recovery: SSH connect failed ({attempt}/{STRESS_RECOVERY_SSH_CONNECT_RETRIES}), retrying: {exc}",
+                    )
+                    sleep(1)
+
+        if last_connect_error is not None:
+            # A recovery monitor has no evidence that the detached remote process exited.
+            # Keep the task RUNNING and retry later instead of turning a transient control-plane
+            # SSH failure into a false task failure.
+            _add_log(
+                db, task_id, "WARNING",
+                f"recovery: SSH connect unavailable; task remains RUNNING and recovery will retry: {last_connect_error}",
             )
-        except Exception as exc:
-            _fail_running_stress_task(db, task, task_id, f"recovery: SSH connect failed: {exc}")
+            task.status = "RUNNING"
+            db.commit()
+            _schedule_stress_recovery_retry(task_id)
             return
 
         _add_log(db, task_id, "SYSTEM", "startup recovery: SSH connected, checking remote state")
@@ -953,6 +979,23 @@ def _stress_recovery_monitor(task_id: str) -> None:
     finally:
         executor.close()
         db.close()
+
+
+def _schedule_stress_recovery_retry(task_id: str) -> None:
+    """Schedule one deferred monitor retry per task after recovery SSH is unavailable."""
+    with _scheduled_stress_recovery_lock:
+        if task_id in _scheduled_stress_recovery_task_ids:
+            return
+        _scheduled_stress_recovery_task_ids.add(task_id)
+
+    def _retry() -> None:
+        with _scheduled_stress_recovery_lock:
+            _scheduled_stress_recovery_task_ids.discard(task_id)
+        _stress_recovery_monitor(task_id)
+
+    timer = threading.Timer(STRESS_RECOVERY_SSH_RETRY_DELAY_SECONDS, _retry)
+    timer.daemon = True
+    timer.start()
 
 
 def resume_running_stress_tasks_after_startup() -> int:

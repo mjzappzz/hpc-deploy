@@ -31,6 +31,22 @@ class TaskDiagnosisTests(unittest.TestCase):
 
         self.assertEqual(diagnosis["category"], "apptainer_upload_failed")
 
+    def test_recovery_ssh_error_is_not_misclassified_as_gpu_failure(self) -> None:
+        diagnosis = diagnose_task_failure(
+            task_status="FAILED",
+            error_message="recovery: SSH connect failed: SSH network error: [Errno 1] Operation not permitted",
+            logs=[
+                "[INFO] nvidia-smi path: /usr/bin/nvidia-smi",
+                "[INFO] CUDA Toolkit Version: 12.8.61",
+                "[INFO] Start gpu-burn.",
+                "recovery: SSH connect failed: SSH network error: [Errno 1] Operation not permitted",
+            ],
+            task_type="stress",
+            file_name="gpu_stress_report.sh",
+        )
+
+        self.assertEqual(diagnosis["category"], "ssh_connection_failed")
+
 
 if __name__ == "__main__":
     unittest.main()

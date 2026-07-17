@@ -1,8 +1,10 @@
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 import unittest
+from unittest.mock import Mock, patch
 
 from app.core.task_recovery import _is_stale, _reset_task_to_pending, should_requeue_after_restart
+from app.core import task_runner
 from app.core.task_runner import _build_remote_execution_command
 
 
@@ -55,6 +57,33 @@ class TaskRecoveryTests(unittest.TestCase):
         command = _build_remote_execution_command("bash ./install.sh", "/tmp/task/.hpcdeploy.pid")
 
         self.assertIn(".hpcdeploy.exit_code", command)
+
+    @patch("app.core.task_runner._schedule_stress_recovery_retry")
+    @patch("app.core.task_runner._fail_running_stress_task")
+    @patch("app.core.task_runner._add_log")
+    @patch("app.core.task_runner.SSHExecutor")
+    @patch("app.core.task_runner.SessionLocal")
+    def test_recovery_ssh_connect_failure_keeps_stress_task_running_for_retry(
+        self,
+        session_local: Mock,
+        executor_cls: Mock,
+        add_log: Mock,
+        fail_task: Mock,
+        schedule_retry: Mock,
+    ) -> None:
+        task = SimpleNamespace(task_id="task-recovery-ssh", server_id=14, status="RUNNING")
+        db = Mock()
+        db.query.return_value.filter.return_value.first.return_value = task
+        db.get.return_value = SimpleNamespace(host="10.0.0.1", port=22, username="root", key_path=None, password=None)
+        session_local.return_value = db
+        executor_cls.return_value.connect.side_effect = OSError(1, "Operation not permitted")
+
+        task_runner._stress_recovery_monitor(task.task_id)
+
+        fail_task.assert_not_called()
+        self.assertEqual(task.status, "RUNNING")
+        schedule_retry.assert_called_once_with(task.task_id)
+        self.assertTrue(any(call.args[2] == "WARNING" for call in add_log.call_args_list))
 
 
 if __name__ == "__main__":

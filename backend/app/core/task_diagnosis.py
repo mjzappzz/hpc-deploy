@@ -144,6 +144,9 @@ CATEGORIES: list[CategoryDef] = [
             "SSH degraded after",
             "consecutive failures",
             "fresh SSH connection also failed",
+            "SSH network error",
+            "recovery: SSH connect failed",
+            "Operation not permitted",
         ],
     },
     {
