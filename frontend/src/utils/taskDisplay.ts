@@ -43,20 +43,7 @@ function normalizeServerLabel(value?: string | null): string {
 }
 
 function formatTaskDate(value?: string | null): string {
-  if (!value) return ''
-
-  const isoMatch = value.match(/^(\d{4})-(\d{2})-(\d{2})/)
-  if (isoMatch) {
-    return `${isoMatch[1]}${isoMatch[2]}${isoMatch[3]}`
-  }
-
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return ''
-
-  const year = String(date.getFullYear())
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${year}${month}${day}`
+  return formatBeijingDateKey(value)
 }
 
 function extractScriptBaseName(value?: string | null): string {
@@ -67,3 +54,4 @@ function extractScriptBaseName(value?: string | null): string {
   const basename = normalized.split('/').pop() || ''
   return basename.replace(/\.(sh|py|txt|md|sif)$/i, '')
 }
+import { formatBeijingDateKey } from './time'

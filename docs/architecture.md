@@ -77,7 +77,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - 本地结果文件目录扫描与删除已整合到系统设置页面，旧清理中心页面和 `/cleanup` 前端路由已删除
 - 本地结果文件按真实任务记录聚合：普通任务返回任务名称、任务 ID、任务类型；批次任务按 `batch_id` 聚合并返回所有子任务名称、task_id、目录、文件数和大小
 - 本地结果删除后默认只软隐藏历史记录：设置 `tasks.hidden_from_history=1`、`hidden_reason`、`hidden_at`，保留数据库记录
-- 本地结果按目录 mtime 降序排列（最新在前）
+- 本地结果按任务完成时间（无结束时间时开始/创建时间）排序；未匹配数据库任务的遗留目录才使用文件 mtime
 - 本地报告自动清理状态查询（`GET /api/cleanup/auto-cleanup/status`），配置保存走 settings API
 - Apptainer 镜像目录只读查看
 - 远端单台/全部在线服务器临时目录扫描与清理，自动匹配数据库任务记录，返回显示元数据（display_title、server_name、batch_id 等）
@@ -87,7 +87,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 
 ### settings API (`/api/settings`)
 - 系统设置读写
-- 当前：SSH 默认私钥名称、远端目录只读说明、本地报告自动清理开关/保留天数/执行时间
+- 当前：SSH 默认私钥名称、远端目录只读说明、结果文件与数据库任务日志共用的自动清理开关/保留天数/执行时间
 - 修改管理员密码（`POST /api/settings/change-password`），需要 admin_token + 当前密码验证
 - `admin_password` 在 `FORBIDDEN_KEYS` 中，不能通过 PUT /settings 读写
 - GET /settings 返回 `admin_password_configured: bool`，不返回密码明文
@@ -243,13 +243,18 @@ $HOME/hpcdeploy/
 - 每次检查流程：读配置 → 判断是否启用 → 判断是否到达设定时间 → 尝试获取文件锁（`fcntl.LOCK_EX|LOCK_NB`，文件 `.auto_cleanup.lock`） → 判断当天是否已执行过
 - 实际清理函数 `run_local_artifacts_auto_cleanup()`：
   - 只扫描 `backend/data/artifacts` 一级任务结果目录
-  - 按目录 mtime 判断是否超过保留天数
+  - 按任务 `end_time` 判断是否超过保留天数，无结束时间时使用 `created_at`；未匹配任务的遗留目录使用目录 mtime
   - 删除前通过 `resolve()` + `relative_to(ARTIFACTS_DIR)` 确认路径仍在 artifacts 根目录内
   - RUNNING / PENDING / CONNECTING / PREPARING / UPLOADING 任务对应目录跳过
+  - 同步删除过期终态任务的 `task_logs`；运行中任务及其日志跳过
   - 每个目录操作写入一条 `actor=system`、`action=auto_cleanup_local_artifacts` 审计日志，最后汇总写入一条
   - 执行结果保存到 `system_settings` 表（`auto_cleanup_last_run_at` / `last_deleted_dirs` / ...），前端通过 settings API 或 auto-cleanup/status 端点读取
 - 默认关闭，默认保留 30 天，默认每日 03:00 执行
-- 不自动清理远端服务器目录、downloads/tmp、Apptainer 镜像、数据库、keys、scripts
+- 不自动清理任务记录、远端服务器目录、downloads/tmp、Apptainer 镜像、keys、scripts
+
+### 时间约定
+- SQLite 中任务、日志时间以 UTC 无时区值存储；前端和任务日志下载统一转换为 `Asia/Shanghai`（北京时间）展示
+- 本机/远端扫描接口的文件 mtime 统一以 UTC 返回，避免前端重复加时区
 
 ### 敏感信息过滤
 - `GET /api/ssh-keys` 不返回私钥/公钥内容
@@ -292,11 +297,11 @@ $HOME/hpcdeploy/
 
 ```
 用户开启管理员模式
-  → POST /auth/admin/verify 输入管理员密码
-    → 后端签发 5 分钟 JWT，并写入 HttpOnly、SameSite=Lax Cookie
+  → POST /auth/admin/verify 输入管理员密码、选择 5 / 15 / 30 / 60 分钟或本标签页持续
+    → 后端签发绑定 `tab_id` 的 JWT，并写入 HttpOnly、SameSite=Lax Cookie
   → 前端显示倒计时；刷新时 GET /auth/admin/status 恢复未过期会话
-  → 高风险 API 由 require_admin_token() 从 Cookie（兼容 X-Admin-Token header）验证 JWT 签名 + scope=admin
-  → 手动退出 POST /auth/admin/logout 清除 Cookie；超时自动切回普通模式
+  → 高风险 API 由 require_admin_token() 验证 JWT 签名 + scope=admin，并要求 `X-Admin-Tab-Id` 与 JWT 内 `tab_id` 一致
+  → 手动退出 POST /auth/admin/logout 清除 Cookie；超时或关闭标签页后切回普通模式
   → 通过后执行操作，审计日志 actor="admin"
 ```
 
@@ -310,7 +315,7 @@ $HOME/hpcdeploy/
 ### 文件说明
 | 文件 | 说明 |
 |------|------|
-| `backend/app/core/auth.py` | `verify_admin_password()`、`create_admin_token()`(5min JWT)、`require_admin_token()` 依赖 |
+| `backend/app/core/auth.py` | `verify_admin_password()`、`create_admin_token()`（可选时长/标签页绑定 JWT）、`require_admin_token()` 依赖 |
 | `backend/app/api/auth.py` | 管理员验证、会话状态与退出端点 |
 | `frontend/src/composables/useAdminConfirm.ts` | 管理员模式、倒计时、会话恢复与退出 |
 

@@ -95,6 +95,21 @@ class DatabaseTaskLogsScanResult(BaseModel):
     items: list[DatabaseTaskLogItem] = []
 
 
+class DatabaseTaskLogSizeItem(BaseModel):
+    """Aggregated SQLite task-log message size for one task."""
+    task_id: str
+    log_count: int = 0
+    message_bytes: int = 0
+    last_logged_at: datetime | None = None
+
+
+class DatabaseTaskLogSizesScanResult(BaseModel):
+    mode: str = "database"
+    total_tasks: int = 0
+    total_message_bytes: int = 0
+    items: list[DatabaseTaskLogSizeItem] = []
+
+
 class LocalArtifactsDeleteRequest(BaseModel):
     paths: list[str] = Field(min_length=1, max_length=100)
     recursive: bool = False

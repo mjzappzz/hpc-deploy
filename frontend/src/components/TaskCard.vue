@@ -44,8 +44,8 @@
     </div>
     <div v-if="task.error_message" class="task-card__error">{{ task.error_message }}</div>
     <div class="task-card__actions">
-      <el-button v-if="showCancelingButton" size="small" type="warning" plain disabled>正在取消</el-button>
       <el-button size="small" type="primary" class="hpc-interactive-pulse" @click="$emit('continueTask', task)">查看任务详情</el-button>
+      <el-button size="small" class="hpc-interactive-pulse" :disabled="!isStressCompleted" @click="$emit('downloadReport', task)">结果文件</el-button>
       <el-tooltip
         v-if="showCommandCopyButtons"
         placement="top"
@@ -78,7 +78,7 @@
           @click="$emit('copyVerifyCommands', task)"
         >复制验证命令</el-button>
       </el-tooltip>
-      <el-button size="small" class="hpc-interactive-pulse" :disabled="!isStressCompleted" @click="$emit('downloadReport', task)">结果文件</el-button>
+      <el-button v-if="showCancelingButton" size="small" type="warning" plain disabled>正在取消</el-button>
       <el-button v-if="showLocalArtifactsCleanup" size="small" type="danger" plain class="hpc-interactive-pulse" @click="$emit('cleanupLocalArtifacts', task)">删除任务</el-button>
       <el-button v-if="showCancelButton" size="small" type="danger" plain class="hpc-interactive-pulse" @click="$emit('cancelTask', task)">取消任务</el-button>
       <el-button v-if="task.batch_id" size="small" type="default" plain class="hpc-interactive-pulse" @click="$emit('viewBatch', task)">查看批次</el-button>
@@ -90,7 +90,7 @@
 import { computed } from 'vue'
 import { DocumentCopy } from '@element-plus/icons-vue'
 import type { TaskRecord } from '@/api/task'
-import { formatDateTime } from '@/utils/time'
+import { formatBeijingDateKey, formatDateTime } from '@/utils/time'
 import { calcDurationSeconds, calcEstimatedEndTime, formatSeconds, statusLabel } from '@/composables/useTaskProgress'
 import StatusTag from './StatusTag.vue'
 
@@ -231,12 +231,7 @@ function batchStepLabel(seq: number): string {
 }
 
 function compactTaskDate(value?: string | null): string {
-  if (!value) return ''
-  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})/)
-  if (match) return `${match[1]}${match[2]}${match[3]}`
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return ''
-  return `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`
+  return formatBeijingDateKey(value)
 }
 
 function formatPlanDuration(value: number): string {

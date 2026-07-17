@@ -10,6 +10,7 @@ from pathlib import Path
 from app.core.artifact_collector import ARTIFACTS_DIR
 from app.core.audit import write_audit_log
 from app.core.task_runner import TASK_LEASE_SECONDS, _attempt_stress_recovery, _stress_recovery_monitor
+from app.core.time_utils import beijing_now
 from app.db.database import SessionLocal
 from app.models.settings import SystemSetting
 from app.models.task import Task
@@ -29,6 +30,7 @@ class AutoCleanupConfig:
 @dataclass
 class AutoCleanupResult:
     deleted_dirs: int = 0
+    deleted_log_rows: int = 0
     freed_bytes: int = 0
     failed_count: int = 0
     skipped_count: int = 0
@@ -56,7 +58,7 @@ async def _auto_cleanup_loop() -> None:
 
 
 def _seconds_until_next_check() -> float:
-    now = datetime.now()
+    now = beijing_now()
     next_minute = (now + timedelta(minutes=1)).replace(second=0, microsecond=0)
     return max((next_minute - now).total_seconds(), 1.0)
 
@@ -69,7 +71,7 @@ def run_due_auto_cleanup() -> AutoCleanupResult | None:
         if not config.enabled:
             return None
 
-        now = datetime.now()
+        now = beijing_now()
         if now.strftime("%H:%M") != config.cleanup_time:
             return None
 
@@ -112,13 +114,14 @@ def _try_acquire_cleanup_lock():
 
 def run_local_artifacts_auto_cleanup(db: Session, retention_days: int) -> AutoCleanupResult:
     result = AutoCleanupResult()
-    started_at = datetime.now()
+    started_at = datetime.utcnow()
     cutoff = started_at - timedelta(days=retention_days)
     artifacts_root = ARTIFACTS_DIR.resolve()
+    result.deleted_log_rows = _delete_expired_task_logs(db, cutoff)
 
     if not artifacts_root.is_dir():
         result.status = "skipped"
-        result.message = "artifacts directory not found"
+        result.message = f"artifacts directory not found; deleted {result.deleted_log_rows} expired task log rows"
         _save_result(db, started_at, result)
         _write_summary_audit(db, result, retention_days)
         return result
@@ -146,8 +149,8 @@ def run_local_artifacts_auto_cleanup(db: Session, retention_days: int) -> AutoCl
                 )
                 continue
 
-            mtime = datetime.fromtimestamp(resolved.stat().st_mtime)
-            if mtime >= cutoff:
+            artifact_time = _task_retention_time(task) if task is not None else datetime.utcfromtimestamp(resolved.stat().st_mtime)
+            if artifact_time >= cutoff:
                 continue
 
             size_bytes = _directory_size(resolved)
@@ -161,7 +164,7 @@ def run_local_artifacts_auto_cleanup(db: Session, retention_days: int) -> AutoCl
                 f"deleted local artifact dir, freed {size_bytes} bytes",
                 {
                     "retention_days": retention_days,
-                    "modified_at": mtime.isoformat(timespec="seconds"),
+                    "retention_time": artifact_time.isoformat(timespec="seconds"),
                     "freed_bytes": size_bytes,
                 },
             )
@@ -180,11 +183,36 @@ def run_local_artifacts_auto_cleanup(db: Session, retention_days: int) -> AutoCl
     result.message = (
         f"deleted {result.deleted_dirs} local artifact dirs, "
         f"freed {result.freed_bytes} bytes, "
+        f"deleted {result.deleted_log_rows} task log rows, "
         f"failed {result.failed_count}, skipped {result.skipped_count}"
     )
     _save_result(db, started_at, result)
     _write_summary_audit(db, result, retention_days)
     return result
+
+
+def _task_retention_time(task: Task) -> datetime:
+    """Use terminal time when available, otherwise task creation time."""
+    return task.end_time or task.created_at
+
+
+def _delete_expired_task_logs(db: Session, cutoff: datetime) -> int:
+    expired_task_ids = [
+        task_id
+        for task_id, status, created_at, end_time in db.query(
+            Task.task_id, Task.status, Task.created_at, Task.end_time
+        ).all()
+        if status not in ACTIVE_TASK_STATUSES and (end_time or created_at) < cutoff
+    ]
+    if not expired_task_ids:
+        return 0
+    deleted = (
+        db.query(TaskLog)
+        .filter(TaskLog.task_id.in_(expired_task_ids))
+        .delete(synchronize_session=False)
+    )
+    db.flush()
+    return int(deleted or 0)
 
 
 def _load_config(db: Session) -> AutoCleanupConfig:
@@ -212,6 +240,7 @@ def _save_result(db: Session, started_at: datetime, result: AutoCleanupResult) -
     values = {
         "auto_cleanup_last_run_at": started_at.isoformat(timespec="seconds"),
         "auto_cleanup_last_deleted_dirs": str(result.deleted_dirs),
+        "auto_cleanup_last_deleted_log_rows": str(result.deleted_log_rows),
         "auto_cleanup_last_freed_bytes": str(result.freed_bytes),
         "auto_cleanup_last_failed_count": str(result.failed_count),
         "auto_cleanup_last_status": result.status,
@@ -260,6 +289,7 @@ def _write_summary_audit(db: Session, result: AutoCleanupResult, retention_days:
         detail={
             "retention_days": retention_days,
             "deleted_dirs": result.deleted_dirs,
+            "deleted_log_rows": result.deleted_log_rows,
             "freed_bytes": result.freed_bytes,
             "failed_count": result.failed_count,
             "skipped_count": result.skipped_count,

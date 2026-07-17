@@ -8,7 +8,7 @@
       </div>
 
       <!-- ═══ 运行数据与路径 ═══ -->
-      <el-card shadow="never" class="settings-card">
+      <el-card v-loading="scanArtifactsLoading" shadow="never" class="settings-card">
         <template #header>
           <div class="card-header">
             <span class="card-title">运行数据与路径</span>
@@ -59,8 +59,7 @@
               </div>
             </div>
             <div class="card-actions">
-              <el-button size="small" :loading="scanArtifactsLoading" @click="doScanArtifacts">扫描</el-button>
-              <el-button size="small" @click="openAutoCleanupDialog">自动清理设置</el-button>
+              <el-button size="small" @click="openAutoCleanupDialog">自动清理设置（共用）</el-button>
               <el-button
                 size="small"
                 type="danger"
@@ -70,15 +69,14 @@
             </div>
           </div>
         </template>
-        <div v-if="!artifactsScanned" class="section-placeholder">点击“扫描”查看 <code>backend/data/artifacts</code> 下的本机结果文件。</div>
+        <div v-if="!artifactsScanned" class="section-placeholder">正在加载 <code>backend/data/artifacts</code> 下的本机结果文件。</div>
         <div v-else-if="artifactDirectories.length === 0" class="section-placeholder">没有本机结果文件</div>
         <el-table
           v-else
           ref="tableRef"
-          :data="sortedArtifactDirectories"
+          :data="pagedArtifactDirectories"
           size="small"
           border
-          max-height="520"
           :class="['artifact-table', { 'is-dragging': isDragSelecting }]"
           @selection-change="onArtifactDirSelection"
           @sort-change="onArtifactSortChange"
@@ -97,7 +95,12 @@
                     <template #default="{ row: t }">{{ t.display_title || t.task_display_name || '-' }}</template>
                   </el-table-column>
                   <el-table-column label="任务 ID" min-width="240" show-overflow-tooltip>
-                    <template #default="{ row: t }"><code class="artifact-task-id">{{ t.task_id }}</code></template>
+                    <template #default="{ row: t }">
+                      <span class="id-copy-control">
+                        <code class="artifact-task-id">{{ t.task_id }}</code>
+                        <el-tooltip content="复制任务 ID" placement="top"><el-button circle size="small" :icon="DocumentCopy" class="copy-id-button" aria-label="复制任务 ID" @click.stop="copyTaskId(t.task_id)" /></el-tooltip>
+                      </span>
+                    </template>
                   </el-table-column>
                   <el-table-column label="目录" min-width="220" show-overflow-tooltip>
                     <template #default="{ row: t }">{{ t.relative_path }}</template>
@@ -134,8 +137,14 @@
           </el-table-column>
           <el-table-column label="任务 ID" min-width="240" show-overflow-tooltip>
             <template #default="{ row }">
-              <code v-if="row.type === 'batch'" class="artifact-task-id">{{ row.batch_id || row.name }}</code>
-              <code v-else-if="row.task_id" class="artifact-task-id">{{ row.task_id }}</code>
+              <span v-if="row.type === 'batch'" class="id-copy-control">
+                <code class="artifact-task-id">{{ row.batch_id || row.name }}</code>
+                <el-tooltip content="复制批次 ID" placement="top"><el-button circle size="small" :icon="DocumentCopy" class="copy-id-button" aria-label="复制批次 ID" @click.stop="copyTaskId(row.batch_id || row.name, '批次 ID')" /></el-tooltip>
+              </span>
+              <span v-else-if="row.task_id" class="id-copy-control">
+                <code class="artifact-task-id">{{ row.task_id }}</code>
+                <el-tooltip content="复制任务 ID" placement="top"><el-button circle size="small" :icon="DocumentCopy" class="copy-id-button" aria-label="复制任务 ID" @click.stop="copyTaskId(row.task_id)" /></el-tooltip>
+              </span>
               <span v-else class="noop-text">{{ row.name }}</span>
             </template>
           </el-table-column>
@@ -158,7 +167,7 @@
           <el-table-column label="大小" width="110" align="right" sortable="custom" prop="size_bytes">
             <template #default="{ row }">{{ row.size_text }}</template>
           </el-table-column>
-          <el-table-column label="更新时间" width="170" sortable="custom" prop="modified_at">
+          <el-table-column label="任务完成时间" width="170" sortable="custom" prop="modified_at">
             <template #default="{ row }">{{ row.modified_at ? formatDate(row.modified_at) : '-' }}</template>
           </el-table-column>
           <el-table-column label="操作" width="90" align="right">
@@ -175,48 +184,68 @@
             </template>
           </el-table-column>
         </el-table>
+        <el-pagination
+          v-if="artifactDirectories.length > artifactPageSize"
+          v-model:current-page="artifactPage"
+          v-model:page-size="artifactPageSize"
+          class="table-pagination"
+          background
+          layout="total, sizes, prev, pager, next"
+          :page-sizes="[10, 20, 50, 100]"
+          :total="artifactDirectories.length"
+        />
       </el-card>
 
-      <el-card shadow="never" class="settings-card">
+      <el-card v-loading="scanLogsLoading" shadow="never" class="settings-card">
         <template #header>
           <div class="card-header">
             <div>
-              <span class="card-title">数据库任务日志</span>
+              <span class="card-title">数据库任务日志（按任务汇总）</span>
               <div v-if="logsScanned" class="section-summary-text">
-                共 {{ localLogsTotal }} 条，日志内容 {{ formatBytes(localLogsTotalBytes) }}；当前展示最近 {{ localLogs.length }} 条
+                共 {{ localLogsTotal }} 个任务，日志内容 {{ formatBytes(localLogsTotalBytes) }}；默认按最后记录时间从新到旧排列
               </div>
             </div>
-            <el-button :loading="scanLogsLoading" @click="doScanLocalLogs">扫描</el-button>
           </div>
         </template>
-        <div v-if="!logsScanned" class="section-placeholder">点击“扫描”查看 SQLite <code>task_logs</code> 中的任务日志。</div>
+        <div v-if="!logsScanned" class="section-placeholder">正在按任务汇总 SQLite <code>task_logs</code> 中的日志大小。</div>
         <div v-else-if="localLogs.length === 0" class="section-placeholder">没有数据库任务日志</div>
         <el-table
           v-else
-          :data="sortedLocalLogs"
+          :data="pagedLocalLogs"
           size="small"
           border
-          max-height="420"
           @sort-change="onLocalLogsSortChange"
         >
           <el-table-column label="任务 ID" min-width="240" show-overflow-tooltip>
-            <template #default="{ row }"><code class="artifact-task-id">{{ row.task_id }}</code></template>
+            <template #default="{ row }">
+              <span class="id-copy-control">
+                <code class="artifact-task-id">{{ row.task_id }}</code>
+                <el-tooltip content="复制任务 ID" placement="top"><el-button circle size="small" :icon="DocumentCopy" class="copy-id-button" aria-label="复制任务 ID" @click.stop="copyTaskId(row.task_id)" /></el-tooltip>
+              </span>
+            </template>
           </el-table-column>
-          <el-table-column label="级别" width="88" align="center">
-            <template #default="{ row }"><el-tag size="small" effect="plain" :type="logLevelTagType(row.level)">{{ row.level }}</el-tag></template>
+          <el-table-column label="日志记录" width="110" align="right">
+            <template #default="{ row }">{{ formatCount(row.log_count) }}</template>
           </el-table-column>
-          <el-table-column label="日志内容" min-width="340" show-overflow-tooltip>
-            <template #default="{ row }"><span class="database-log-message">{{ row.message }}</span></template>
-          </el-table-column>
-          <el-table-column label="内容大小" width="120" align="right" sortable="custom" prop="message_bytes">
+          <el-table-column label="日志内容总大小" width="150" align="right" sortable="custom" prop="message_bytes">
             <template #default="{ row }">{{ formatBytes(row.message_bytes) }}</template>
           </el-table-column>
-          <el-table-column label="记录时间" width="170" sortable="custom" prop="created_at">
-            <template #default="{ row }">{{ row.created_at ? formatDate(row.created_at) : '-' }}</template>
+          <el-table-column label="最后记录时间" width="170" sortable="custom" prop="last_logged_at">
+            <template #default="{ row }">{{ row.last_logged_at ? formatDate(row.last_logged_at) : '-' }}</template>
           </el-table-column>
         </el-table>
+        <el-pagination
+          v-if="localLogs.length > logPageSize"
+          v-model:current-page="logPage"
+          v-model:page-size="logPageSize"
+          class="table-pagination"
+          background
+          layout="total, sizes, prev, pager, next"
+          :page-sizes="[10, 20, 50, 100]"
+          :total="localLogs.length"
+        />
         <div v-if="logsScanned" class="form-help logs-size-note">
-          内容大小按日志消息 UTF-8 字节数统计，不等同于 SQLite 文件中单行记录的物理占用；SQLite 页、索引与空闲空间无法精确分摊到单条日志。
+          内容总大小按同一任务下所有日志消息的 UTF-8 字节数汇总，不等同于 SQLite 页、索引与空闲空间的物理占用。
         </div>
       </el-card>
 
@@ -238,12 +267,12 @@
         </template>
       </el-dialog>
 
-      <el-dialog v-model="autoCleanupDialogVisible" title="自动清理设置" width="560px">
+      <el-dialog v-model="autoCleanupDialogVisible" title="自动清理设置（结果文件与数据库日志共用）" width="560px">
         <el-form label-width="130px">
           <el-form-item label="启用自动清理">
             <el-switch v-model="autoCleanupForm.enabled" :disabled="!adminMode" active-text="开启" inactive-text="关闭" />
           </el-form-item>
-          <el-form-item label="保留天数">
+          <el-form-item label="共用保留天数">
             <el-input-number v-model="autoCleanupForm.retention_days" :disabled="!adminMode" :min="1" :max="3650" controls-position="right" />
           </el-form-item>
           <el-form-item label="每日执行时间">
@@ -259,7 +288,7 @@
             </div>
           </el-form-item>
         </el-form>
-        <div class="form-help">自动清理只处理本机 <code>backend/data/artifacts</code> 结果目录，不会清理数据库、keys、脚本、Apptainer 镜像或远端服务器目录。</div>
+        <div class="form-help">自动清理按任务结束时间（无结束时间时按创建时间）处理：删除本机 <code>backend/data/artifacts</code> 结果目录，并同步删除同一批过期任务的数据库日志；不会删除任务记录、keys、脚本、Apptainer 镜像或远端服务器目录。</div>
         <template #footer>
           <el-button @click="autoCleanupDialogVisible = false">取消</el-button>
           <el-button type="primary" :loading="autoCleanupSaving" @click="saveAutoCleanupSettings">保存设置</el-button>
@@ -272,19 +301,20 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { DocumentCopy } from '@element-plus/icons-vue'
 import { changePassword, getSettings, updateSettings, type RuntimePathInfo } from '@/api/settings'
 import {
   deleteLocalArtifacts,
   getAutoCleanupStatus,
   scanLocalArtifacts,
-  scanLocalLogs,
+  scanDatabaseTaskLogSizes,
   type AutoCleanupStatus,
   type LocalArtifactDirectory,
-  type DatabaseTaskLogItem,
+  type DatabaseTaskLogSizeItem,
 } from '@/api/cleanup'
 import { adminMode, requireAdminConfirm } from '@/composables/useAdminConfirm'
 import { useSettingsStore } from '@/stores/settings'
-import { formatDateTime } from '@/utils/time'
+import { formatDateTime, parseBackendDate } from '@/utils/time'
 import { formatBytes } from '@/utils/format'
 
 const settingsStore = useSettingsStore()
@@ -560,21 +590,25 @@ const artifactsTotalFiles = ref(0)
 const artifactsTotalSize = ref(0)
 const artifactDirectories = ref<LocalArtifactDirectory[]>([])
 const artifactSortBy = ref<string>('modified_at')
-const artifactSortOrder = ref<'asc' | 'desc'>('desc')
+const artifactSortOrder = ref<'ascending' | 'descending'>('descending')
+const artifactPage = ref(1)
+const artifactPageSize = ref(20)
 const selectedArtifactDirPaths = ref<string[]>([])
 const deletingArtifactDir = ref('')
 const scanLogsLoading = ref(false)
 const logsScanned = ref(false)
 const localLogsTotal = ref(0)
 const localLogsTotalBytes = ref(0)
-const localLogs = ref<DatabaseTaskLogItem[]>([])
-const localLogsSortBy = ref<'created_at' | 'message_bytes'>('created_at')
-const localLogsSortOrder = ref<'asc' | 'desc'>('desc')
+const localLogs = ref<DatabaseTaskLogSizeItem[]>([])
+const localLogsSortBy = ref<'last_logged_at' | 'message_bytes'>('last_logged_at')
+const localLogsSortOrder = ref<'ascending' | 'descending'>('descending')
+const logPage = ref(1)
+const logPageSize = ref(20)
 
 const sortedArtifactDirectories = computed(() => {
   const data = [...artifactDirectories.value]
   if (!artifactSortBy.value) return data
-  const order = artifactSortOrder.value === 'desc' ? -1 : 1
+  const order = artifactSortOrder.value === 'descending' ? -1 : 1
   data.sort((a, b) => {
     let va: number, vb: number
     if (artifactSortBy.value === 'size_bytes') {
@@ -594,13 +628,23 @@ const sortedArtifactDirectories = computed(() => {
 })
 
 const sortedLocalLogs = computed(() => {
-  const order = localLogsSortOrder.value === 'desc' ? -1 : 1
+  const order = localLogsSortOrder.value === 'descending' ? -1 : 1
   return [...localLogs.value].sort((a, b) => {
     if (localLogsSortBy.value === 'message_bytes') {
       return (a.message_bytes - b.message_bytes) * order
     }
-    return (sortableTime(a.created_at) - sortableTime(b.created_at)) * order
+    return (sortableTime(a.last_logged_at) - sortableTime(b.last_logged_at)) * order
   })
+})
+
+const pagedArtifactDirectories = computed(() => {
+  const start = (artifactPage.value - 1) * artifactPageSize.value
+  return sortedArtifactDirectories.value.slice(start, start + artifactPageSize.value)
+})
+
+const pagedLocalLogs = computed(() => {
+  const start = (logPage.value - 1) * logPageSize.value
+  return sortedLocalLogs.value.slice(start, start + logPageSize.value)
 })
 
 // ── Drag-to-select ──
@@ -624,41 +668,34 @@ function onCellDragEnter(row: LocalArtifactDirectory) {
   tableRef.value?.toggleRowSelection(row, true)
 }
 
-function onArtifactSortChange({ prop, order }: { prop?: string; order?: 'asc' | 'desc' | null }) {
+function onArtifactSortChange({ prop, order }: { prop?: string; order?: 'ascending' | 'descending' | null }) {
   if (prop && order) {
     artifactSortBy.value = prop
     artifactSortOrder.value = order
   } else {
     // Reset to default: sort by modified_at desc
     artifactSortBy.value = 'modified_at'
-    artifactSortOrder.value = 'desc'
+    artifactSortOrder.value = 'descending'
   }
+  artifactPage.value = 1
 }
 
-function onLocalLogsSortChange({ prop, order }: { prop?: string; order?: 'asc' | 'desc' | null }) {
-  if (prop === 'message_bytes' || prop === 'created_at') {
+function onLocalLogsSortChange({ prop, order }: { prop?: string; order?: 'ascending' | 'descending' | null }) {
+  if (prop === 'message_bytes' || prop === 'last_logged_at') {
     localLogsSortBy.value = prop
-    localLogsSortOrder.value = order || 'desc'
+    localLogsSortOrder.value = order || 'descending'
   }
-}
-
-function logLevelTagType(level: string): 'danger' | 'warning' | 'success' | 'info' {
-  if (level === 'ERROR') return 'danger'
-  if (level === 'WARN') return 'warning'
-  if (level === 'SYSTEM') return 'info'
-  return 'success'
+  logPage.value = 1
 }
 
 function sortableTime(value?: string | null, fallbackName = '') {
-  if (value) {
-    const parsed = Date.parse(value)
-    if (!Number.isNaN(parsed)) return parsed
-  }
+  const date = parseBackendDate(value)
+  if (date) return date.getTime()
   const match = fallbackName.match(/(20\d{6})[-_]?(\d{6})?/)
   if (!match) return 0
-  const date = match[1]
+  const dateLabel = match[1]
   const time = match[2] || '000000'
-  const parsed = Date.parse(`${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}T${time.slice(0, 2)}:${time.slice(2, 4)}:${time.slice(4, 6)}`)
+  const parsed = Date.parse(`${dateLabel.slice(0, 4)}-${dateLabel.slice(4, 6)}-${dateLabel.slice(6, 8)}T${time.slice(0, 2)}:${time.slice(2, 4)}:${time.slice(4, 6)}`)
   return Number.isNaN(parsed) ? 0 : parsed
 }
 
@@ -673,8 +710,28 @@ function artifactDeletePaths(dir: LocalArtifactDirectory): string[] {
   return [dir.relative_path]
 }
 
+async function copyTaskId(value: string, label = '任务 ID') {
+  try {
+    if (navigator.clipboard?.writeText && window.isSecureContext) {
+      await navigator.clipboard.writeText(value)
+    } else {
+      const input = document.createElement('textarea')
+      input.value = value
+      input.style.position = 'fixed'
+      input.style.opacity = '0'
+      document.body.appendChild(input)
+      input.select()
+      const copied = document.execCommand('copy')
+      input.remove()
+      if (!copied) throw new Error('clipboard unavailable')
+    }
+    ElMessage.success(`${label} 已复制`)
+  } catch {
+    ElMessage.error(`${label} 复制失败`)
+  }
+}
+
 async function doScanArtifacts() {
-  if (!requireSettingsAdmin('扫描本机结果')) return
   scanArtifactsLoading.value = true
   try {
     const res = (await scanLocalArtifacts()).data
@@ -684,10 +741,10 @@ async function doScanArtifacts() {
     artifactDirectories.value = [...res.items]
     // 重置排序为默认：更新时间降序
     artifactSortBy.value = 'modified_at'
-    artifactSortOrder.value = 'desc'
+    artifactSortOrder.value = 'descending'
+    artifactPage.value = 1
     artifactsScanned.value = true
     selectedArtifactDirPaths.value = []
-    await loadSettings()
   } catch {
     ElMessage.error('扫描本机结果文件失败')
   } finally {
@@ -696,15 +753,15 @@ async function doScanArtifacts() {
 }
 
 async function doScanLocalLogs() {
-  if (!requireSettingsAdmin('扫描数据库任务日志')) return
   scanLogsLoading.value = true
   try {
-    const res = (await scanLocalLogs()).data
-    localLogsTotal.value = res.total_logs
+    const res = (await scanDatabaseTaskLogSizes()).data
+    localLogsTotal.value = res.total_tasks
     localLogsTotalBytes.value = res.total_message_bytes
     localLogs.value = res.items
-    localLogsSortBy.value = 'created_at'
-    localLogsSortOrder.value = 'desc'
+    localLogsSortBy.value = 'last_logged_at'
+    localLogsSortOrder.value = 'descending'
+    logPage.value = 1
     logsScanned.value = true
   } catch {
     ElMessage.error('扫描数据库任务日志失败')
@@ -769,8 +826,7 @@ async function doDeleteSelectedArtifacts() {
 }
 
 onMounted(async () => {
-  await loadSettings()
-  await loadAutoCleanupSettings()
+  await Promise.all([loadSettings(), loadAutoCleanupSettings(), doScanArtifacts(), doScanLocalLogs()])
 })
 </script>
 
@@ -877,6 +933,12 @@ onMounted(async () => {
 .artifact-table {
   width: 100%;
 }
+
+.table-pagination {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
 .artifact-table.is-dragging :deep(.el-table__body-wrapper) {
   user-select: none;
   cursor: pointer;
@@ -925,6 +987,17 @@ onMounted(async () => {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 12px;
   color: var(--el-color-primary);
+}
+
+.id-copy-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+}
+
+.copy-id-button {
+  flex: 0 0 auto;
 }
 
 .noop-text {

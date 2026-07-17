@@ -983,7 +983,7 @@ import { computed, nextTick, onMounted, onActivated, onUnmounted, reactive, ref,
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
 import { cancelBatch, cancelTask, cleanupBatchLocalArtifacts, cleanupTaskLocalArtifacts, downloadBatchReportZip, downloadTaskLogs, getTask, getTaskLogs, getTaskMonitor, listArtifacts, listBatches, getBatchDetail, listTasks, retryBatchTask, type ArtifactFileDetail, type BatchDetailResponse, type BatchQuery, type BatchSummaryItem, type BatchTaskDetailItem, type MonitorType, type TaskLogRecord, type TaskListQuery, type TaskMonitorStructuredResponse, type TaskRecord } from '@/api/task'
-import { formatDateTime } from '@/utils/time'
+import { formatBeijingDateKey, formatDateTime } from '@/utils/time'
 import { getApiErrorMessage as readApiErrorMessage } from '@/utils/apiError'
 import { useTaskWebSocket } from '@/composables/useTaskWebSocket'
 import { calcDurationSeconds, calcEstimatedEndTime, calcEstimatedRemaining, calcProgress, formatSeconds, getTaskDuration, statusLabel } from '@/composables/useTaskProgress'
@@ -1276,16 +1276,7 @@ function batchGroupDisplayName(tasks: TaskRecord[]): string {
 }
 
 function compactTaskDate(value?: string | null): string {
-  if (!value) return ''
-  const isoMatch = value.match(/^(\d{4})-(\d{2})-(\d{2})/)
-  if (isoMatch) return `${isoMatch[1]}${isoMatch[2]}${isoMatch[3]}`
-
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return ''
-  const year = String(date.getFullYear())
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${year}${month}${day}`
+  return formatBeijingDateKey(value)
 }
 
 function batchStepLabel(task: TaskRecord): string {
@@ -3215,7 +3206,7 @@ function extractEnvCommands(entries: TaskLogRecord[]) {
   return extractCommandBlock(
     entries,
     '如需仅当前终端临时加载，请执行：',
-    '如需当前用户永久加载',
+    '如需验证环境，请执行：',
     (line) => line.startsWith('source ') || line.startsWith('export ')
   )
 }

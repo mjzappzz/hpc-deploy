@@ -159,7 +159,11 @@ download_file() {
     echo "[INFO] 下载 ${name}：${file}"
     echo "[INFO] URL：${url}"
 
-    wget -O "${tmp_file}" "${url}"
+    if ! wget -q -O "${tmp_file}" "${url}"; then
+        echo "[ERROR] ${name} 下载失败：${url}"
+        rm -f "${tmp_file}"
+        exit 1
+    fi
 
     # 下载后检查临时文件
     if [ ! -s "${tmp_file}" ]; then
@@ -594,4 +598,3 @@ echo
 echo "  FORCE_REBUILD=1 sudo bash $0"
 echo
 echo "============================================================"
-

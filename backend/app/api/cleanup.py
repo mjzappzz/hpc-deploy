@@ -30,6 +30,8 @@ from app.schemas.cleanup import (
     DeleteResultItem,
     DatabaseTaskLogItem,
     DatabaseTaskLogsScanResult,
+    DatabaseTaskLogSizeItem,
+    DatabaseTaskLogSizesScanResult,
     LocalArtifactDirectory,
     LocalArtifactFile,
     LocalArtifactTaskItem,
@@ -558,7 +560,7 @@ def scan_local_artifacts(db: Session = Depends(get_db)) -> LocalArtifactsScanRes
             root_size += sz
             total_size += sz
             total_files += 1
-            mtime = datetime.fromtimestamp(entry.stat().st_mtime) if entry.stat().st_mtime else None
+            mtime = datetime.utcfromtimestamp(entry.stat().st_mtime) if entry.stat().st_mtime else None
             if mtime and (root_latest_mtime is None or mtime > root_latest_mtime):
                 root_latest_mtime = mtime
             root_files.append(LocalArtifactFile(
@@ -635,6 +637,39 @@ def scan_local_logs(
             )
             for log in logs
         ],
+    )
+
+
+@router.get("/local-logs/task-sizes", response_model=DatabaseTaskLogSizesScanResult)
+def scan_database_task_log_sizes(
+    db: Session = Depends(get_db),
+) -> DatabaseTaskLogSizesScanResult:
+    """Aggregate SQLite task-log message payloads by task, largest first."""
+    message_bytes = func.coalesce(func.sum(func.length(cast(TaskLog.message, LargeBinary))), 0)
+    rows = (
+        db.query(
+            TaskLog.task_id.label("task_id"),
+            func.count(TaskLog.id).label("log_count"),
+            message_bytes.label("message_bytes"),
+            func.max(TaskLog.created_at).label("last_logged_at"),
+        )
+        .group_by(TaskLog.task_id)
+        .order_by(message_bytes.desc(), TaskLog.task_id.asc())
+        .all()
+    )
+    items = [
+        DatabaseTaskLogSizeItem(
+            task_id=row.task_id,
+            log_count=int(row.log_count or 0),
+            message_bytes=int(row.message_bytes or 0),
+            last_logged_at=row.last_logged_at,
+        )
+        for row in rows
+    ]
+    return DatabaseTaskLogSizesScanResult(
+        total_tasks=len(items),
+        total_message_bytes=sum(item.message_bytes for item in items),
+        items=items,
     )
 
 
@@ -716,7 +751,7 @@ def _build_directory_entry(
             sz = f.stat().st_size
             dir_size += sz
             dir_file_count += 1
-            mtime = datetime.fromtimestamp(f.stat().st_mtime) if f.stat().st_mtime else None
+            mtime = datetime.utcfromtimestamp(f.stat().st_mtime) if f.stat().st_mtime else None
             if mtime and (latest_mtime is None or mtime > latest_mtime):
                 latest_mtime = mtime
             dir_files.append(LocalArtifactFile(
@@ -732,6 +767,7 @@ def _build_directory_entry(
     dir_files.sort(key=lambda x: x.name)
     task_id = entry.name if entry.name.startswith("task-") else None
     task = db.query(Task).filter(Task.task_id == task_id).first() if task_id and db is not None else None
+    task_time = (task.end_time or task.start_time or task.created_at) if task is not None else latest_mtime
     metadata = _build_task_display_metadata(
         task,
         db,
@@ -748,7 +784,7 @@ def _build_directory_entry(
         file_count=dir_file_count,
         size_bytes=dir_size,
         size_text=_format_size_text(dir_size),
-        modified_at=latest_mtime,
+        modified_at=task_time,
         task_id=task_id,
         task_display_name=metadata.get("display_title", ""),
         display_title=metadata.get("display_title", ""),
@@ -942,7 +978,7 @@ def scan_remote(
                                 _co = executor.exec_simple(_cnt).strip()
                                 _d_count = int(_co) if _co.isdigit() else 0
                                 _mt = executor.exec_simple(f"stat -c %Y {shell_quote(_fp)} 2>/dev/null").strip()
-                                _d_mtime = datetime.fromtimestamp(int(_mt)) if _mt.isdigit() else None
+                                _d_mtime = datetime.utcfromtimestamp(int(_mt)) if _mt.isdigit() else None
                             except SSHExecutorError:
                                 pass
                             task = _find_task_by_remote_dir(db, _fp, _dn)
@@ -1111,7 +1147,7 @@ def _scan_remote_server_worker(server_data: dict[str, Any]) -> RemoteServerScanR
                                 _co = executor.exec_simple(f"find {shell_quote(_fp)} -type f 2>/dev/null | wc -l").strip()
                                 _dc = int(_co) if _co.isdigit() else 0
                                 _mt = executor.exec_simple(f"stat -c %Y {shell_quote(_fp)} 2>/dev/null").strip()
-                                _dm = datetime.fromtimestamp(int(_mt)) if _mt.isdigit() else None
+                                _dm = datetime.utcfromtimestamp(int(_mt)) if _mt.isdigit() else None
                             except SSHExecutorError:
                                 pass
                             task = _find_task_by_remote_dir(db, _fp, _dn)
@@ -1520,7 +1556,7 @@ def scan_apptainer_images() -> ApptainerImageScanResult:
             rel = entry.relative_to(APPTAINER_DIR).as_posix()
             size = entry.stat().st_size
             total_size += size
-            mtime = datetime.fromtimestamp(entry.stat().st_mtime) if entry.stat().st_mtime else None
+            mtime = datetime.utcfromtimestamp(entry.stat().st_mtime) if entry.stat().st_mtime else None
             items.append(ApptainerImageItem(
                 filename=entry.name,
                 relative_path=rel,

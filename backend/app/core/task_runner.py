@@ -49,6 +49,12 @@ EXIT_CODE_FILE_NAME = ".hpcdeploy.exit_code"
 CANCELED_EXIT_CODE = -15
 TASK_LEASE_SECONDS = 600
 STRESS_STARTUP_TIMEOUT_SECONDS = 300
+TASK_LOG_MAX_MESSAGE_BYTES = 4096
+WGET_PROGRESS_LINE = re.compile(
+    r"^\s*\d+(?:\.\d+)?[KMG]?\s+(?:\.{10}\s+){2,}\d+%",
+)
+_progress_notice_task_ids: set[str] = set()
+_progress_notice_lock = threading.Lock()
 STRESS_FATAL_LOG_RULES: tuple[tuple[re.Pattern, str], ...] = (
     (re.compile(r"nvidia-smi not found", re.IGNORECASE), "GPU stress failed before start: nvidia-smi not found"),
     (re.compile(r"未检测到 NVIDIA GPU", re.IGNORECASE), "GPU stress failed before start: no NVIDIA GPU detected"),
@@ -1242,7 +1248,38 @@ def _mark_task_started(db, task: Task) -> None:
         db.commit()
 
 
+def _prepare_task_log_message(level: str, message: str) -> str | None:
+    """Drop noisy terminal progress and bound retained task-log message size."""
+    if level in {"INFO", "STDERR", "WARN"} and (
+        "\r" in message or WGET_PROGRESS_LINE.match(message)
+    ):
+        return None
+
+    encoded = message.encode("utf-8")
+    if len(encoded) <= TASK_LOG_MAX_MESSAGE_BYTES:
+        return message
+
+    suffix = "…[日志已截断]"
+    max_payload_bytes = TASK_LOG_MAX_MESSAGE_BYTES - len(suffix.encode("utf-8"))
+    return encoded[:max_payload_bytes].decode("utf-8", errors="ignore") + suffix
+
+
+def _should_write_progress_notice(task_id: str) -> bool:
+    with _progress_notice_lock:
+        if task_id in _progress_notice_task_ids:
+            return False
+        _progress_notice_task_ids.add(task_id)
+        return True
+
+
 def _add_log(db, task_id: str, level: str, message: str) -> None:
+    prepared_message = _prepare_task_log_message(level, message)
+    if prepared_message is None:
+        if _should_write_progress_notice(task_id):
+            _add_log(db, task_id, "SYSTEM", "已省略高频终端/下载进度输出；请查看阶段结果与最终报告。")
+        return
+
+    message = prepared_message
     db.add(TaskLog(task_id=task_id, level=level, message=message))
     task = db.query(Task).filter(Task.task_id == task_id).first()
     if task is not None and task.status in UNFINISHED_TASK_STATUSES:

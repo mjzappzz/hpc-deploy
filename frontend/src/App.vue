@@ -71,7 +71,7 @@
             inline-prompt
             @change="handleAdminModeChange"
           />
-          <span v-if="adminMode" class="admin-countdown">剩余 {{ adminCountdown }}</span>
+          <span v-if="adminMode" class="admin-countdown">{{ adminSessionUnlimited ? '本标签页持续' : `剩余 ${adminCountdown}` }}</span>
           <el-tag type="success" effect="plain" size="small">DEV</el-tag>
         </div>
       </header>
@@ -93,7 +93,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { Cpu, Document, List, Monitor, Operation, Setting, Tickets } from '@element-plus/icons-vue'
 import AppCritters from '@/components/AppCritters.vue'
 import { listTasks } from '@/api/task'
-import { adminMode, adminRemainingSeconds, enterAdminMode, exitAdminMode, restoreAdminMode } from '@/composables/useAdminConfirm'
+import { adminMode, adminRemainingSeconds, adminSessionUnlimited, enterAdminMode, exitAdminMode, restoreAdminMode } from '@/composables/useAdminConfirm'
 
 const route = useRoute()
 const router = useRouter()
@@ -201,6 +201,28 @@ html, body, #app {
 .app-shell {
   height: 100vh;
   overflow: hidden;
+}
+
+.admin-confirm-form {
+  display: grid;
+  gap: 12px;
+}
+
+.admin-confirm-description {
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.admin-confirm-duration-label {
+  margin-bottom: -4px;
+  color: var(--el-text-color-regular);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.admin-confirm-duration-select {
+  width: 100%;
 }
 
 /* === sidebar (fixed) === */

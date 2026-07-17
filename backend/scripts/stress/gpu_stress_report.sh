@@ -30,6 +30,7 @@ GPU_BURN_DIR="/opt/software/gpu-burn"
 GPU_BURN="${GPU_BURN_DIR}/gpu_burn"
 
 BURN_LOG="${WORKDIR}/stress_gpu_${TIME_TAG}.log"
+BURN_RAW_LOG="${BURN_LOG}.raw"
 MON_LOG="${WORKDIR}/gpu_monitor_${TIME_TAG}.csv"
 GPU_META_CSV="${WORKDIR}/gpu_metadata_${TIME_TAG}.csv"
 REPORT="${WORKDIR}/gpu_stress_report_${TIME_TAG}.txt"
@@ -202,7 +203,7 @@ build_gpu_burn_if_needed() {
         if [ ! -d gpu-burn ]; then
             echo "[INFO] Try download gpu-burn from CHFS..."
 
-            if wget -T 30 -O gpu-burn-master.zip \
+            if wget -q -T 30 -O gpu-burn-master.zip \
                 "http://171.221.252.54:8573/chfs/shared/%E5%85%B6%E4%BB%96%E5%B8%B8%E7%94%A8%E8%BD%AF%E4%BB%B6%EF%BC%88%E5%90%AB%E5%8E%8B%E6%B5%8B%E8%84%9A%E6%9C%AC%E7%AD%89%EF%BC%89/Stress%E5%8E%8B%E6%B5%8B%E7%9B%B8%E5%85%B3%E8%84%9A%E6%9C%AC/gpu-burn-master.zip"; then
 
                 echo "[INFO] CHFS download success"
@@ -304,8 +305,8 @@ main() {
     (
         cd "$GPU_BURN_DIR" || exit 1
         ./gpu_burn "$DURATION"
-    ) 2>&1 | tee "$BURN_LOG"
-    BURN_EXIT=${PIPESTATUS[0]}
+    ) > "$BURN_RAW_LOG" 2>&1
+    BURN_EXIT=$?
     set -e
 
     kill "$MON_PID" >/dev/null 2>&1 || true
@@ -319,10 +320,25 @@ main() {
     echo "======================================"
     echo
 
-    ERROR_COUNT="$(grep -E "errors:" "$BURN_LOG" | awk '{for(i=1;i<=NF;i++){if($i=="errors:"){print $(i+1)}}}' | sort -nr | head -1 || true)"
+    ERROR_COUNT="$(grep -E "errors:" "$BURN_RAW_LOG" | awk '{for(i=1;i<=NF;i++){if($i=="errors:"){print $(i+1)}}}' | sort -nr | head -1 || true)"
     ERROR_COUNT="${ERROR_COUNT:-0}"
 
-    GPU_ERROR="$(grep -Ei "cuda error|failed|xid|fallen off|couldn't init|named symbol not found|read.*error|died|no clients are alive|aborting|error in|segmentation fault|illegal memory" "$BURN_LOG" || true)"
+    GPU_ERROR="$(grep -Ei "cuda error|failed|xid|fallen off|couldn't init|named symbol not found|read.*error|died|no clients are alive|aborting|error in|segmentation fault|illegal memory" "$BURN_RAW_LOG" || true)"
+
+    # 保留开始、每 10% 的进度样本、结束和错误；不回收数万行刷新输出。
+    {
+        echo "[INFO] gpu-burn 原始高频进度已精简，仅保留阶段样本和错误。"
+        awk '
+            /^[[:space:]]*[0-9]+(\.[0-9]+)?%/ {
+                pct = $1; sub(/%$/, "", pct); bucket = int(pct / 10)
+                if (!(bucket in seen)) { print "[PROGRESS SAMPLE] " $0; seen[bucket] = 1 }
+                next
+            }
+            /cuda error|failed|xid|fallen off|couldn.t init|named symbol not found|read.*error|died|no clients are alive|aborting|error in|segmentation fault|illegal memory/ { print "[ERROR] " $0 }
+        ' "$BURN_RAW_LOG"
+        echo "[SUMMARY] gpu-burn exit=${BURN_EXIT}, max_errors=${ERROR_COUNT}"
+    } > "$BURN_LOG"
+    rm -f "$BURN_RAW_LOG"
 
     RESULT="PASS"
     REASON="No error detected."

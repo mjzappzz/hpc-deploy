@@ -2,13 +2,13 @@
  * 统一时间格式化函数。
  *
  * 后端返回的时间均为无时区 UTC 字符串（例如 "2026-07-01T06:52:50"），
- * 本函数将其按 UTC 解析，再转换为浏览器本地时间显示。
+ * 本函数将其按 UTC 解析，再固定转换为北京时间显示。
  *
  * 如果字符串已带时区信息（Z / +HH:MM / -HH:MM），则按标准 Date 解析。
  * 输出格式固定为 YYYY-MM-DD HH:mm:ss。
  */
-export function formatDateTime(value: string | null | undefined): string {
-  if (!value) return '-'
+export function parseBackendDate(value: string | null | undefined): Date | null {
+  if (!value) return null
 
   let dateStr = value.trim()
 
@@ -20,16 +20,35 @@ export function formatDateTime(value: string | null | undefined): string {
   }
 
   const date = new Date(dateStr)
-  if (isNaN(date.getTime())) return value
+  return isNaN(date.getTime()) ? null : date
+}
 
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  const hours = String(date.getHours()).padStart(2, '0')
-  const minutes = String(date.getMinutes()).padStart(2, '0')
-  const seconds = String(date.getSeconds()).padStart(2, '0')
+export function formatDateTime(value: string | null | undefined): string {
+  const date = parseBackendDate(value)
+  if (!date) return value || '-'
 
-  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(date)
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]))
+  return `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute}:${values.second}`
+}
+
+export function formatBeijingDateKey(value: string | null | undefined): string {
+  const date = parseBackendDate(value)
+  if (!date) return ''
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(date)
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]))
+  return `${values.year}${values.month}${values.day}`
 }
 
 /**

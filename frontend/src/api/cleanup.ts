@@ -121,6 +121,24 @@ export function scanLocalLogs(limit = 1000) {
   return request.get<DatabaseTaskLogsScanResult>('/cleanup/local-logs/scan', { params: { limit } })
 }
 
+export interface DatabaseTaskLogSizeItem {
+  task_id: string
+  log_count: number
+  message_bytes: number
+  last_logged_at: string | null
+}
+
+export interface DatabaseTaskLogSizesScanResult {
+  mode: 'database'
+  total_tasks: number
+  total_message_bytes: number
+  items: DatabaseTaskLogSizeItem[]
+}
+
+export function scanDatabaseTaskLogSizes() {
+  return request.get<DatabaseTaskLogSizesScanResult>('/cleanup/local-logs/task-sizes')
+}
+
 // ── Remote (single server) ──
 
 export interface RemoteDirInfo {

@@ -1,4 +1,5 @@
 import os
+import re
 import stat
 import zipfile
 from pathlib import Path
@@ -9,6 +10,8 @@ BACKEND_ROOT = Path(__file__).resolve().parents[2]
 ARTIFACTS_DIR = BACKEND_ROOT / "data" / "artifacts"
 
 ALLOWED_EXTENSIONS = {".log", ".txt", ".csv", ".xlsx", ".json"}
+WGET_PROGRESS_LINE = re.compile(r"^\s*\d+(?:\.\d+)?[KMG]?\s+(?:\.{10}\s+){2,}\d+%")
+PERCENT_PROGRESS_LINE = re.compile(r"^\s*(\d+(?:\.\d+)?)%")
 
 
 def collect_artifacts(
@@ -77,6 +80,8 @@ def collect_artifacts(
             os.replace(temp_path, local_path)
             downloaded.append(safe)
             _add_log(db, task_id, "SYSTEM", f"artifact downloaded: {safe}")
+            if local_path.suffix.lower() == ".log" and _compact_log_file(local_path):
+                _add_log(db, task_id, "SYSTEM", f"artifact log compacted: {safe}")
         except Exception as exc:
             temp_path.unlink(missing_ok=True)
             errors.append(safe)
@@ -125,6 +130,67 @@ def _validate_xlsx(path: Path) -> None:
         raise ValueError("incomplete or invalid XLSX artifact") from exc
     if bad_member:
         raise ValueError(f"corrupt XLSX member: {bad_member}")
+
+
+def _compact_log_file(path: Path) -> bool:
+    """Remove high-frequency progress rows from a recovered log in place.
+
+    Stage messages, errors, one sample per 10% progress bucket, and normal output
+    are retained. The replacement is atomic and the original is kept unchanged
+    when no compaction is needed.
+    """
+    compact_path = path.with_name(f".{path.name}.compact")
+    changed = False
+    skipped_progress = 0
+    sampled_buckets: set[int] = set()
+    previous_line: str | None = None
+
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as source, compact_path.open(
+            "w", encoding="utf-8"
+        ) as target:
+            for raw_line in source:
+                line = raw_line.rstrip("\r\n")
+                if "\r" in line:
+                    skipped_progress += line.count("\r")
+                    line = line.rsplit("\r", 1)[-1]
+                    changed = True
+
+                if WGET_PROGRESS_LINE.match(line):
+                    skipped_progress += 1
+                    changed = True
+                    continue
+
+                progress_match = PERCENT_PROGRESS_LINE.match(line)
+                if progress_match:
+                    bucket = int(float(progress_match.group(1)) // 10)
+                    if bucket in sampled_buckets:
+                        skipped_progress += 1
+                        changed = True
+                        continue
+                    sampled_buckets.add(bucket)
+
+                if line == previous_line:
+                    skipped_progress += 1
+                    changed = True
+                    continue
+
+                target.write(f"{line}\n")
+                previous_line = line
+
+            if skipped_progress:
+                target.write(
+                    f"[INFO] 已省略 {skipped_progress} 条高频进度/重复输出；保留阶段、错误和进度样本。\n"
+                )
+
+        if changed:
+            os.replace(compact_path, path)
+            return True
+        compact_path.unlink(missing_ok=True)
+        return False
+    except Exception:
+        compact_path.unlink(missing_ok=True)
+        raise
 
 
 def _add_log(db, task_id: str, level: str, message: str) -> None:

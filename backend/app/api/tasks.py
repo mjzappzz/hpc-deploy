@@ -33,6 +33,7 @@ from app.core.task_runner import (
     resume_running_stress_tasks_after_startup,
     run_task_stage8b,
 )
+from app.core.time_utils import format_beijing_time
 from app.core.artifact_collector import ARTIFACTS_DIR
 from app.core.audit import write_audit_log
 from app.core.auth import require_admin_token
@@ -1772,7 +1773,7 @@ def download_task_logs(task_id: str, db: Session = Depends(get_db)) -> Response:
     else:
         lines = []
         for log in logs:
-            ts = log.created_at.strftime("%Y-%m-%d %H:%M:%S")
+            ts = format_beijing_time(log.created_at)
             lines.append(f"[{ts}] [{log.level}] {log.message}")
         content = "\n".join(lines) + "\n"
 

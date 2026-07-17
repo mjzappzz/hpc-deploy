@@ -36,16 +36,27 @@ def verify_admin_password(password: str, db: Session | None = None) -> bool:
     return password == ADMIN_PASSWORD
 
 
-# ── Short-lived admin token (JWT, 5 min) ──
+# ── Admin session token ──
 
 ALGORITHM = "HS256"
 ADMIN_TOKEN_EXPIRE_MINUTES = 5
+ADMIN_SESSION_DURATION_MINUTES = frozenset({5, 15, 30, 60})
 
 
-def create_admin_token() -> str:
-    """Create a short-lived JWT for admin operation authorization."""
-    expire = datetime.utcnow() + timedelta(minutes=ADMIN_TOKEN_EXPIRE_MINUTES)
-    payload: dict = {"scope": "admin", "exp": expire}
+def create_admin_token(*, duration_minutes: int | None, tab_id: str) -> str:
+    """Create an admin JWT bound to one browser tab.
+
+    ``duration_minutes=None`` creates a session that remains valid until the
+    tab marker disappears or the user explicitly exits admin mode.
+    """
+    if duration_minutes is not None and duration_minutes not in ADMIN_SESSION_DURATION_MINUTES:
+        raise ValueError("unsupported admin session duration")
+    if not tab_id:
+        raise ValueError("admin tab id is required")
+
+    payload: dict = {"scope": "admin", "tab_id": tab_id}
+    if duration_minutes is not None:
+        payload["exp"] = datetime.utcnow() + timedelta(minutes=duration_minutes)
     return jwt.encode(payload, settings.secret_key, algorithm=ALGORITHM)
 
 
@@ -70,6 +81,7 @@ def decode_admin_token(token: str) -> dict | None:
 
 def require_admin_token(
     x_admin_token: str | None = Header(None, alias="X-Admin-Token"),
+    x_admin_tab_id: str | None = Header(None, alias="X-Admin-Tab-Id"),
     admin_token: str | None = Cookie(None),
 ) -> str:
     """Require a valid admin token. Raises 403 if missing or invalid."""
@@ -84,5 +96,10 @@ def require_admin_token(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="需要管理员权限",
+        )
+    if not x_admin_tab_id or payload.get("tab_id") != x_admin_tab_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="管理员会话仅在当前浏览器标签页有效",
         )
     return token
