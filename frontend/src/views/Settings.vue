@@ -198,13 +198,13 @@
       <el-dialog v-model="autoCleanupDialogVisible" title="自动清理设置" width="560px">
         <el-form label-width="130px">
           <el-form-item label="启用自动清理">
-            <el-switch v-model="autoCleanupForm.enabled" active-text="开启" inactive-text="关闭" />
+            <el-switch v-model="autoCleanupForm.enabled" :disabled="!adminMode" active-text="开启" inactive-text="关闭" />
           </el-form-item>
           <el-form-item label="保留天数">
-            <el-input-number v-model="autoCleanupForm.retention_days" :min="1" :max="3650" controls-position="right" />
+            <el-input-number v-model="autoCleanupForm.retention_days" :disabled="!adminMode" :min="1" :max="3650" controls-position="right" />
           </el-form-item>
           <el-form-item label="每日执行时间">
-            <el-time-picker v-model="autoCleanupForm.cleanup_time" format="HH:mm" value-format="HH:mm" placeholder="03:00" />
+            <el-time-picker v-model="autoCleanupForm.cleanup_time" :disabled="!adminMode" format="HH:mm" value-format="HH:mm" placeholder="03:00" />
           </el-form-item>
           <el-form-item label="最近一次执行">
             <div class="auto-cleanup-status">
@@ -237,7 +237,7 @@ import {
   type AutoCleanupStatus,
   type LocalArtifactDirectory,
 } from '@/api/cleanup'
-import { requireAdminConfirm } from '@/composables/useAdminConfirm'
+import { adminMode, requireAdminConfirm } from '@/composables/useAdminConfirm'
 import { useSettingsStore } from '@/stores/settings'
 import { formatDateTime } from '@/utils/time'
 import { formatBytes } from '@/utils/format'
@@ -399,6 +399,12 @@ function formatCount(value: number | null | undefined) {
   return String(value)
 }
 
+function requireSettingsAdmin(action: string): boolean {
+  if (adminMode.value) return true
+  ElMessage.warning(`${action}先放一放，管理员模式才有这把扳手～`)
+  return false
+}
+
 async function handleChangePassword() {
   if (!passwordForm.current_password) {
     ElMessage.warning('请输入当前密码')
@@ -475,11 +481,13 @@ async function loadAutoCleanupSettings() {
 }
 
 async function openAutoCleanupDialog() {
+  if (!requireSettingsAdmin('自动清理设置')) return
   await loadAutoCleanupSettings()
   autoCleanupDialogVisible.value = true
 }
 
 async function saveAutoCleanupSettings() {
+  if (!requireSettingsAdmin('保存自动清理设置')) return
   const ok = await requireAdminConfirm('保存自动清理设置')
   if (!ok) return
   autoCleanupSaving.value = true
@@ -590,6 +598,7 @@ function artifactDeletePaths(dir: LocalArtifactDirectory): string[] {
 }
 
 async function doScanArtifacts() {
+  if (!requireSettingsAdmin('扫描本机结果')) return
   scanArtifactsLoading.value = true
   try {
     const res = (await scanLocalArtifacts()).data
@@ -615,6 +624,7 @@ function onArtifactDirSelection(selection: LocalArtifactDirectory[]) {
 }
 
 async function doDeleteArtifactDir(dir: LocalArtifactDirectory) {
+  if (!requireSettingsAdmin('删除本机结果')) return
   const ok = await requireAdminConfirm('删除任务结果')
   if (!ok) return
   deletingArtifactDir.value = dir.relative_path
@@ -641,6 +651,7 @@ async function doDeleteArtifactDir(dir: LocalArtifactDirectory) {
 }
 
 async function doDeleteSelectedArtifacts() {
+  if (!requireSettingsAdmin('批量删除本机结果')) return
   const ok = await requireAdminConfirm('批量删除任务结果')
   if (!ok) return
   if (selectedArtifactDirPaths.value.length === 0) return

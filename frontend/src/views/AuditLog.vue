@@ -2,7 +2,7 @@
   <div class="audit-page">
     <el-card v-if="!auditUnlocked" class="audit-gate-card" shadow="never">
       <el-empty description="审计日志属于管理员功能，需要管理员确认后查看。">
-        <el-button type="primary" :loading="loading" @click="unlockAndLoad">
+        <el-button type="primary" :loading="loading" :disabled="!adminMode" @click="unlockAndLoad">
           查看审计日志
         </el-button>
       </el-empty>
@@ -42,8 +42,15 @@
           <el-button @click="handleReset">重置</el-button>
         </el-form-item>
       </el-form>
-      <div class="audit-scope-note">默认保留删除、清理、远端访问、设置和任务取消等关键操作；关闭“仅高风险操作”可查看完整流水。</div>
+      <div class="audit-scope-note">默认展示删除、清理、远端访问、设置和任务取消等关键事件；关闭“仅高风险操作”可查看全部操作流水。</div>
     </el-card>
+
+    <div v-if="auditUnlocked" class="audit-summary-grid">
+      <div class="audit-summary-item"><span>筛选结果</span><strong>{{ page.total }}</strong><small>条记录</small></div>
+      <div class="audit-summary-item audit-summary-item--success"><span>本页成功</span><strong>{{ successCount }}</strong><small>条</small></div>
+      <div class="audit-summary-item audit-summary-item--danger"><span>本页失败</span><strong>{{ failureCount }}</strong><small>条</small></div>
+      <div class="audit-summary-item"><span>本页展示</span><strong>{{ page.items.length }}</strong><small>/ {{ page.total }}</small></div>
+    </div>
 
     <!-- Table -->
     <el-card v-if="auditUnlocked" class="table-card" shadow="never">
@@ -53,19 +60,28 @@
             {{ formatDateTime(row.created_at) }}
           </template>
         </el-table-column>
-        <el-table-column prop="actor" label="操作人" width="120" />
-        <el-table-column prop="action" label="操作" width="170">
+        <el-table-column prop="actor" label="操作人" width="120" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.actor || '-' }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="150">
           <template #default="{ row }">
-            {{ ACTION_LABELS[row.action as keyof typeof ACTION_LABELS] || row.action }}
+            {{ actionLabel(row.action) }}
           </template>
         </el-table-column>
-        <el-table-column prop="target_type" label="对象类型" width="100">
+        <el-table-column label="操作对象" min-width="180" show-overflow-tooltip>
           <template #default="{ row }">
-            <el-tag size="small" effect="plain">{{ row.target_type }}</el-tag>
+            <el-tag size="small" effect="plain">{{ targetTypeLabel(row.target_type) }}</el-tag>
+            <span class="audit-target-name">{{ auditTarget(row) || '-' }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="target_name" label="对象名称" min-width="160" show-overflow-tooltip />
-        <el-table-column prop="server_name" label="服务器" width="140" show-overflow-tooltip />
+        <el-table-column label="目标服务器" min-width="150" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.server_name || '-' }}</template>
+        </el-table-column>
+        <el-table-column label="执行信息" min-width="260" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span :class="{ 'audit-event-error': row.status !== 'success' }">{{ auditDescription(row) }}</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="status" label="结果" width="90">
           <template #default="{ row }">
             <el-tag :type="row.status === 'success' ? 'success' : 'danger'" size="small" effect="light">
@@ -73,8 +89,7 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="message" label="消息" min-width="220" show-overflow-tooltip />
-        <el-table-column label="详情" width="70">
+        <el-table-column label="详情" width="80">
           <template #default="{ row }">
             <div class="hpc-actions">
               <el-button v-if="row.detail_json" link type="primary" size="small" @click="openDetail(row)">
@@ -101,11 +116,11 @@
 
     <!-- Detail dialog -->
     <el-dialog v-model="detailVisible" title="操作详情" width="700px" :close-on-click-modal="false">
-      <template v-if="detailData && typeof detailData === 'object' && !Array.isArray(detailData)">
+      <template v-if="detailRows.length > 0">
         <table class="detail-table">
-          <tr v-for="(val, key) in detailData" :key="key">
-            <td class="detail-key">{{ key }}</td>
-            <td class="detail-val">{{ formatDetailValue(val) }}</td>
+          <tr v-for="row in detailRows" :key="row.key">
+            <td class="detail-key">{{ row.label }}</td>
+            <td class="detail-val">{{ row.value }}</td>
           </tr>
         </table>
       </template>
@@ -115,10 +130,10 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { formatDateTime } from '@/utils/time'
-import { requireAdminConfirm } from '@/composables/useAdminConfirm'
+import { adminMode, exitAdminMode } from '@/composables/useAdminConfirm'
 import { listAuditLogs, type AuditLogItem, type AuditLogPage } from '@/api/audit'
 
 const ACTION_LABELS: Record<string, string> = {
@@ -126,6 +141,7 @@ const ACTION_LABELS: Record<string, string> = {
   'server.update': '更新服务器',
   'server.delete': '删除服务器',
   'server.test_ssh': '测试 SSH',
+  'server.test_ssh_all': '批量测试 SSH',
   'server.deploy_public_key': '部署公钥',
   'server.deploy_public_key_all': '批量部署公钥',
   'server.probe': '探测服务器',
@@ -135,8 +151,10 @@ const ACTION_LABELS: Record<string, string> = {
   'task.stress_suite_create': '创建压测套件',
   'task.cancel': '取消任务',
   'task.batch_cancel': '取消批次任务',
+  'task.batch_retry': '重试批次任务',
   'task.diagnose': '诊断任务',
   'task.delete': '删除任务',
+  'task.local_artifacts.cleanup': '清理本机任务结果',
   'script.upload': '上传脚本',
   'script.delete': '删除脚本',
   'cleanup.local_artifacts.delete': '清理本地产物',
@@ -144,6 +162,21 @@ const ACTION_LABELS: Record<string, string> = {
   'settings.update': '更新设置',
   'settings.change_password': '修改管理员密码',
   'auto_cleanup_local_artifacts': '自动清理本地产物',
+}
+
+const TARGET_TYPE_LABELS: Record<string, string> = {
+  server: '服务器', task: '任务', script: '脚本', cleanup: '清理', settings: '系统设置',
+}
+
+const DETAIL_LABELS: Record<string, string> = {
+  host: 'IP 地址', port: 'SSH 端口', username: '用户名', auth_type: '认证方式',
+  key_path: '私钥路径', task_type: '任务类型', file_name: '脚本名称', file_path: '脚本路径',
+  server_ids: '服务器列表', server_id: '服务器 ID', task_id: '任务 ID', batch_id: '批次 ID',
+  status: '状态', error: '错误信息', message: '说明', elapsed_seconds: '耗时（秒）',
+  total: '总数', tested: '检测数量', online: '在线数量', offline: '离线数量',
+  skipped: '跳过数量', params: '执行参数', remote_work_dir: '远端工作目录',
+  retention_days: '保留天数', deleted_count: '删除数量', failed_count: '失败数量',
+  action: '操作', result: '结果', timeout_seconds: '超时（秒）',
 }
 
 const filters = reactive({
@@ -165,6 +198,16 @@ const loading = ref(false)
 const auditUnlocked = ref(false)
 const detailVisible = ref(false)
 const detailData = ref<any>(null)
+const detailRows = computed(() => {
+  if (!detailData.value || typeof detailData.value !== 'object' || Array.isArray(detailData.value)) return []
+  return Object.entries(detailData.value).map(([key, value]) => ({
+    key,
+    label: DETAIL_LABELS[key] ?? key,
+    value: formatDetailValue(value),
+  }))
+})
+const successCount = computed(() => page.items.filter((item) => item.status === 'success').length)
+const failureCount = computed(() => page.items.filter((item) => item.status !== 'success').length)
 
 async function fetchData() {
   loading.value = true
@@ -186,6 +229,7 @@ async function fetchData() {
     page.page_size = res.data.page_size
   } catch (error: any) {
     if (error?.response?.status === 403) {
+      exitAdminMode()
       auditUnlocked.value = false
       page.items = []
       page.total = 0
@@ -199,8 +243,7 @@ async function fetchData() {
 }
 
 async function unlockAndLoad() {
-  const ok = await requireAdminConfirm('查看审计日志')
-  if (!ok) {
+  if (!adminMode.value) {
     page.items = []
     page.total = 0
     return
@@ -209,6 +252,24 @@ async function unlockAndLoad() {
   page.page = 1
   await fetchData()
 }
+
+function lockAuditView() {
+  auditUnlocked.value = false
+  page.items = []
+  page.total = 0
+}
+
+onMounted(() => {
+  if (adminMode.value) void unlockAndLoad()
+})
+
+watch(adminMode, (enabled) => {
+  if (enabled && !auditUnlocked.value) {
+    void unlockAndLoad()
+  } else if (!enabled) {
+    lockAuditView()
+  }
+})
 
 function handleSearch() {
   page.page = 1
@@ -234,10 +295,42 @@ function openDetail(row: AuditLogItem) {
   detailVisible.value = true
 }
 
+function actionLabel(action: string | null): string {
+  return ACTION_LABELS[action ?? ''] ?? action ?? '未知操作'
+}
+
+function auditTarget(row: AuditLogItem): string {
+  return row.target_name || TARGET_TYPE_LABELS[row.target_type ?? ''] || ''
+}
+
+function targetTypeLabel(targetType: string | null): string {
+  return TARGET_TYPE_LABELS[targetType ?? ''] ?? targetType ?? '其他'
+}
+
+function auditDescription(row: AuditLogItem): string {
+  if (row.status !== 'success') return row.message ? `失败原因：${row.message}` : '操作失败，未提供详细原因'
+  if (row.detail_json && typeof row.detail_json === 'object' && !Array.isArray(row.detail_json)) {
+    const preview = Object.entries(row.detail_json).slice(0, 3)
+      .map(([key, value]) => `${DETAIL_LABELS[key] ?? key}：${formatDetailValue(value)}`)
+      .join('；')
+    if (preview) return preview
+  }
+  return row.message || '操作已完成'
+}
+
 function formatDetailValue(val: any): string {
   if (val === null || val === undefined) return '-'
-  if (Array.isArray(val)) return val.join(', ')
-  if (typeof val === 'object') return JSON.stringify(val)
+  if (typeof val === 'boolean') return val ? '是' : '否'
+  if (Array.isArray(val)) return val.map(formatDetailValue).join('、')
+  if (typeof val === 'object') {
+    return Object.entries(val).map(([key, value]) => `${DETAIL_LABELS[key] ?? key}：${formatDetailValue(value)}`).join('；')
+  }
+  if (val === 'success') return '成功'
+  if (val === 'failed') return '失败'
+  if (val === 'online') return '在线'
+  if (val === 'offline') return '离线'
+  if (val === 'key') return 'SSH Key'
+  if (val === 'password') return '密码'
   return String(val)
 }
 
@@ -273,6 +366,15 @@ function formatDetailValue(val: any): string {
   justify-content: flex-end;
   margin-top: 16px;
 }
+
+.audit-summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.audit-summary-item { padding: 12px 16px; border: 1px solid var(--el-border-color-lighter); border-radius: 8px; background: var(--el-bg-color); }
+.audit-summary-item span, .audit-summary-item small { color: var(--el-text-color-secondary); font-size: 12px; }
+.audit-summary-item strong { margin: 0 6px; font-size: 22px; color: var(--el-text-color-primary); }
+.audit-summary-item--success strong { color: var(--el-color-success); }
+.audit-summary-item--danger strong { color: var(--el-color-danger); }
+.audit-target-name { margin-left: 6px; }
+.audit-event-error { color: var(--el-color-danger); }
 
 .detail-json {
   background: #1e293b;

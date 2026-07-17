@@ -49,6 +49,7 @@ from app.schemas.task import (
     BatchCancelRequest,
     BatchCancelResponse,
     BatchDetailResponse,
+    BatchLocalArtifactsCleanupResponse,
     BatchSummaryItem,
     BatchSummaryListResponse,
     BatchTaskRetryResponse,
@@ -62,6 +63,7 @@ from app.schemas.task import (
     TaskCancelRequest,
     TaskCancelResponse,
     TaskCleanupResponse,
+    TaskLocalArtifactsCleanupResponse,
     TaskDeleteResponse,
     TaskDiagnosisResponse,
     TaskListResponse,
@@ -2143,6 +2145,79 @@ def cleanup_task(task_id: str, db: Session = Depends(get_db)) -> TaskCleanupResp
         local_artifacts_removed=local_artifacts_removed,
         remote_work_dir_removed=remote_work_dir_removed,
         messages=messages,
+    )
+
+
+@router.post("/{task_id}/local-artifacts/cleanup", response_model=TaskLocalArtifactsCleanupResponse)
+def cleanup_task_local_artifacts(
+    task_id: str,
+    db: Session = Depends(get_db),
+    _: str = Depends(require_admin_token),
+) -> TaskLocalArtifactsCleanupResponse:
+    """Delete local artifacts and history for one terminal task; never touch remote files."""
+    task = _get_task_or_404(db, task_id)
+    if task.status not in TERMINAL_TASK_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"task is not completed (current status: {task.status})",
+        )
+
+    messages: list[str] = []
+    task_name = task.file_name or "unknown"
+    server_id = task.server_id
+    local_artifacts_removed = _cleanup_local_artifacts(task_id, messages, db)
+    logs_deleted = db.query(TaskLog).filter(TaskLog.task_id == task_id).delete()
+    db.delete(task)
+    db.commit()
+    messages.append(f"task history deleted: {logs_deleted} log entries")
+    write_audit_log(
+        db, action="task.local_artifacts.cleanup", target_type="task",
+        status="success",
+        actor="admin", target_id=task_id,
+        target_name=f"{task_name} · {task_id}",
+        server_id=server_id, task_id=task_id,
+        message="deleted local task artifacts and task history",
+        detail={"local_artifacts_removed": local_artifacts_removed, "logs_deleted": logs_deleted},
+    )
+    return TaskLocalArtifactsCleanupResponse(
+        task_id=task_id,
+        local_artifacts_removed=local_artifacts_removed,
+        task_history_deleted=True,
+        messages=messages,
+    )
+
+
+@router.post("/batches/{batch_id}/local-artifacts/cleanup", response_model=BatchLocalArtifactsCleanupResponse)
+def cleanup_batch_local_artifacts(
+    batch_id: str,
+    db: Session = Depends(get_db),
+    _: str = Depends(require_admin_token),
+) -> BatchLocalArtifactsCleanupResponse:
+    tasks = db.query(Task).filter(Task.batch_id == batch_id).all()
+    if not tasks:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="batch not found")
+    active_tasks = [task.task_id for task in tasks if task.status not in TERMINAL_TASK_STATUSES]
+    if active_tasks:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="batch has unfinished tasks")
+
+    messages: list[str] = []
+    removed_count = 0
+    for task in tasks:
+        task_messages: list[str] = []
+        if _cleanup_local_artifacts(task.task_id, task_messages, db):
+            removed_count += 1
+        db.query(TaskLog).filter(TaskLog.task_id == task.task_id).delete()
+        db.delete(task)
+        messages.extend(task_messages)
+    db.commit()
+    write_audit_log(
+        db, action="task.local_artifacts.cleanup", target_type="task", status="success",
+        actor="admin", target_id=batch_id, target_name=f"batch {batch_id}",
+        message="deleted local batch artifacts and task history",
+        detail={"batch_id": batch_id, "deleted_tasks": len(tasks), "local_artifacts_removed": removed_count},
+    )
+    return BatchLocalArtifactsCleanupResponse(
+        batch_id=batch_id, deleted_tasks=len(tasks), local_artifacts_removed=removed_count, messages=messages,
     )
 
 

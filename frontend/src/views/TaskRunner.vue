@@ -27,6 +27,9 @@
               <div class="selection-card">
                 <div class="selection-label-row">
                   <span class="selection-label step-label">① 选择目标服务器</span>
+                  <el-tooltip v-if="refreshingServerConnectivity" content="正在刷新在线服务器 SSH 状态" placement="top">
+                    <el-icon class="server-connectivity-spinner"><Loading /></el-icon>
+                  </el-tooltip>
                   <el-tag v-if="selectedServerIds.length > 0" type="success" size="small" effect="dark" class="step-complete-tag">已完成</el-tag>
                   <div class="tag-filter-inline">
                     <el-select v-model="selectedTag" placeholder="全部标签" clearable size="small" style="width:140px" @change="onTagFilterChange">
@@ -438,7 +441,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { listScriptFiles, type ScriptFileRecord } from '@/api/script'
-import { listServers, listTags, type ServerRecord, type TagSummary } from '@/api/server'
+import { listServers, listTags, testAllServerSsh, type ServerRecord, type TagSummary } from '@/api/server'
 import {
   batchRunTask,
   cancelTask,
@@ -531,6 +534,7 @@ const servers = ref<ServerRecord[]>([])
 const selectedTag = ref('')
 const tags = ref<TagSummary[]>([])
 const files = ref<TaskRunnerFile[]>([])
+const refreshingServerConnectivity = ref(false)
 const validating = ref(false)
 const submitting = ref(false)
 const cancelSubmitting = ref(false)
@@ -934,7 +938,25 @@ async function loadOptions() {
     ...file,
     displayCategory: file.display_category
   }))
+  const serverIds = serverResp.data
+    .filter((server) => server.status === 'online')
+    .map((server) => server.id)
+  if (serverIds.length > 0) void refreshServerConnectivity(serverIds)
   void loadTags()
+}
+
+async function refreshServerConnectivity(serverIds: number[]) {
+  refreshingServerConnectivity.value = true
+  try {
+    await testAllServerSsh(serverIds)
+    servers.value = (await listServers()).data
+    const onlineIds = new Set(servers.value.filter((server) => server.status === 'online').map((server) => server.id))
+    selectedServerIds.value = selectedServerIds.value.filter((id) => onlineIds.has(id))
+  } catch (error) {
+    console.warn('background server SSH refresh failed', error)
+  } finally {
+    refreshingServerConnectivity.value = false
+  }
 }
 
 function normalizeDurationParts(parts: DurationParts) {
@@ -1657,6 +1679,16 @@ onBeforeUnmount(() => {
 
 .runner-card :deep(.el-card__body) {
   padding: 16px;
+}
+
+.server-connectivity-spinner {
+  margin-left: 6px;
+  color: var(--el-color-primary);
+  animation: server-connectivity-spin 1s linear infinite;
+}
+
+@keyframes server-connectivity-spin {
+  to { transform: rotate(360deg); }
 }
 
 .runner-header {

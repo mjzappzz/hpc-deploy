@@ -12,7 +12,7 @@
     cell-class-name="server-table-cell"
   >
     <el-table-column prop="name" label="服务器名称" width="120" show-overflow-tooltip />
-    <el-table-column label="地址" width="145" show-overflow-tooltip>
+    <el-table-column label="IP 地址" width="145" show-overflow-tooltip>
       <template #default="{ row }">
         <span class="table-ellipsis">{{ row.host }}</span>
       </template>

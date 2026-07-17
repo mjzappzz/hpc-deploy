@@ -75,12 +75,12 @@
     </el-card>
 
     <el-dialog v-model="dialogVisible" :title="editingId ? '编辑服务器' : '新增服务器'" width="560px">
-      <el-form :model="form" label-width="110px">
+      <el-form :model="form" label-width="110px" @submit.prevent="submitServerForm" @keydown.enter.prevent="submitServerForm">
+        <el-form-item label="IP 地址" required>
+          <el-input v-model="form.host" placeholder="例如：47.109.105.242" />
+        </el-form-item>
         <el-form-item label="服务器名称" required>
           <el-input v-model="form.name" placeholder="例如：aliyun-gpu01" />
-        </el-form-item>
-        <el-form-item label="主机地址" required>
-          <el-input v-model="form.host" placeholder="例如：47.109.105.242" />
         </el-form-item>
         <el-form-item label="SSH 端口" required>
           <el-input-number v-model="form.port" :min="1" :max="65535" />
@@ -128,7 +128,7 @@
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" :disabled="saveDisabled" @click="saveServer">保存</el-button>
+        <el-button type="primary" native-type="submit" :loading="saving" :disabled="saveDisabled" @click="submitServerForm">{{ editingId ? '保存' : '确认新增' }}</el-button>
       </template>
     </el-dialog>
 
@@ -179,7 +179,7 @@
       <el-empty v-if="publicKeyRows.length === 0" description="暂无完成首次探测且在线的服务器" />
       <el-table v-else :data="publicKeyRows" size="small" border class="public-key-table hpc-table" max-height="420">
         <el-table-column prop="server.name" label="服务器名称" min-width="120" show-overflow-tooltip />
-        <el-table-column label="地址" min-width="150">
+        <el-table-column label="IP 地址" min-width="150">
           <template #default="{ row }">{{ row.server.host }}</template>
         </el-table-column>
         <el-table-column prop="server.username" label="用户" width="80" />
@@ -233,7 +233,7 @@
             <div class="detail-section__title">基础信息</div>
             <el-descriptions :column="1" border size="small">
               <el-descriptions-item label="服务器名称">{{ activeServer.name }}</el-descriptions-item>
-              <el-descriptions-item label="主机地址">{{ activeServer.host }}</el-descriptions-item>
+              <el-descriptions-item label="IP 地址">{{ activeServer.host }}</el-descriptions-item>
               <el-descriptions-item label="SSH 端口">{{ activeServer.port }}</el-descriptions-item>
               <el-descriptions-item label="远端用户">{{ activeServer.username }}</el-descriptions-item>
               <el-descriptions-item label="状态">
@@ -462,7 +462,7 @@ import ServerTable from '@/components/ServerTable.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import LogViewer from '@/components/LogViewer.vue'
 import TaskDiagnosisDialog from '@/components/TaskDiagnosisDialog.vue'
-import { requireAdminConfirm } from '@/composables/useAdminConfirm'
+import { adminMode, requireAdminConfirm } from '@/composables/useAdminConfirm'
 import { useSettingsStore } from '@/stores/settings'
 
 const settingsStore = useSettingsStore()
@@ -525,7 +525,7 @@ const form = reactive<ServerPayload>({
   name: '',
   host: '',
   port: 22,
-  username: '',
+  username: 'root',
   auth_type: 'password',
   key_path: '',
   password: '',
@@ -577,7 +577,7 @@ function resetForm() {
     name: '',
     host: '',
     port: 22,
-    username: '',
+    username: 'root',
     auth_type: 'password',
     key_path: '',
     password: '',
@@ -692,6 +692,11 @@ async function refreshSshKeys() {
   await loadSshKeys()
 }
 
+function submitServerForm() {
+  if (saving.value || saveDisabled.value) return
+  void saveServer()
+}
+
 async function saveServer() {
   saving.value = true
   try {
@@ -791,9 +796,6 @@ async function ensureDeployableSshKey() {
 }
 
 async function generateDeployKey(): Promise<boolean> {
-  const confirmed = await requireAdminConfirm('生成默认 SSH 密钥')
-  if (!confirmed) return false
-
   sshKeyGenerating.value = true
   try {
     const res = await generateDefaultSshKey()
@@ -963,6 +965,10 @@ function publicKeyStatusType(status: PublicKeyStatus) {
 }
 
 async function removeServer(server: ServerRecord) {
+  if (!adminMode.value) {
+    ElMessage.warning('哎哟，这台服务器还没办离职手续～切到管理员模式再删。')
+    return
+  }
   const ok = await requireAdminConfirm('删除服务器')
   if (!ok) return
   await ElMessageBox.confirm(`确认删除服务器 ${server.name}？`, '删除确认', { type: 'warning' })

@@ -131,6 +131,20 @@ export interface TaskCleanupResponse {
   messages: string[]
 }
 
+export interface TaskLocalArtifactsCleanupResponse {
+  task_id: string
+  local_artifacts_removed: boolean
+  task_history_deleted: boolean
+  messages: string[]
+}
+
+export interface BatchLocalArtifactsCleanupResponse {
+  batch_id: string
+  deleted_tasks: number
+  local_artifacts_removed: number
+  messages: string[]
+}
+
 export interface TaskCancelResponse {
   task_id: string
   status: string
@@ -216,6 +230,14 @@ export function cancelBatch(batchId: string) {
 
 export function cleanupTask(taskId: string) {
   return request.post<TaskCleanupResponse>(`/tasks/${taskId}/cleanup`)
+}
+
+export function cleanupTaskLocalArtifacts(taskId: string) {
+  return request.post<TaskLocalArtifactsCleanupResponse>(`/tasks/${taskId}/local-artifacts/cleanup`)
+}
+
+export function cleanupBatchLocalArtifacts(batchId: string) {
+  return request.post<BatchLocalArtifactsCleanupResponse>(`/tasks/batches/${batchId}/local-artifacts/cleanup`)
 }
 
 export function deleteTask(taskId: string) {

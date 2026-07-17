@@ -79,6 +79,7 @@
         >复制验证命令</el-button>
       </el-tooltip>
       <el-button size="small" class="hpc-interactive-pulse" :disabled="!isStressCompleted" @click="$emit('downloadReport', task)">结果文件</el-button>
+      <el-button v-if="showLocalArtifactsCleanup" size="small" type="danger" plain class="hpc-interactive-pulse" @click="$emit('cleanupLocalArtifacts', task)">删除任务</el-button>
       <el-button v-if="showCancelButton" size="small" type="danger" plain class="hpc-interactive-pulse" @click="$emit('cancelTask', task)">取消任务</el-button>
       <el-button v-if="task.batch_id" size="small" type="default" plain class="hpc-interactive-pulse" @click="$emit('viewBatch', task)">查看批次</el-button>
     </div>
@@ -102,6 +103,7 @@ defineEmits<{
   copyVerifyCommands: [task: TaskRecord]
   copyTaskId: [task: TaskRecord]
   cancelTask: [task: TaskRecord]
+  cleanupLocalArtifacts: [task: TaskRecord]
   viewBatch: [task: TaskRecord]
 }>()
 
@@ -172,6 +174,11 @@ const showCancelButton = computed(() => {
 
 const showCancelingButton = computed(() => {
   return (props.task.status?.toUpperCase() ?? '') === 'CANCELING'
+})
+
+const showLocalArtifactsCleanup = computed(() => {
+  const status = props.task.status?.toUpperCase() ?? ''
+  return ['SUCCESS', 'FAILED', 'CANCELED'].includes(status)
 })
 
 const runtime = computed(() => {

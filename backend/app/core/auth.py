@@ -3,7 +3,7 @@ import os
 from datetime import datetime, timedelta
 
 import jwt
-from fastapi import Depends, HTTPException, Header, status
+from fastapi import Cookie, Depends, HTTPException, Header, status
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -65,22 +65,24 @@ def decode_admin_token(token: str) -> dict | None:
         return None
 
 
-# ── Dependency: require admin token via X-Admin-Token header ──
+# ── Dependency: require admin token via header or HttpOnly cookie ──
 
 
 def require_admin_token(
     x_admin_token: str | None = Header(None, alias="X-Admin-Token"),
+    admin_token: str | None = Cookie(None),
 ) -> str:
     """Require a valid admin token. Raises 403 if missing or invalid."""
-    if x_admin_token is None:
+    token = x_admin_token or admin_token
+    if token is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="需要管理员权限",
         )
-    payload = decode_admin_token(x_admin_token)
+    payload = decode_admin_token(token)
     if payload is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="需要管理员权限",
         )
-    return x_admin_token
+    return token

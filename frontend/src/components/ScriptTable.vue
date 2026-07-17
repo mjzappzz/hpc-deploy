@@ -60,7 +60,7 @@ withDefaults(defineProps<{
   files: ScriptFileRecord[]
   loading?: boolean
 }>(), {
-  loading: false
+  loading: false,
 })
 
 defineEmits<{

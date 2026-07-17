@@ -57,7 +57,8 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - 压测套件创建（`/stress-suite`），同服务器内按 GPU → CPU/内存 → 磁盘串行推进
 - 批次压测子任务重跑（`/{task_id}/retry-in-batch`）：仅支持白名单压测脚本中执行失败、取消、超时或报告 FAIL 的子任务；重跑任务追加到同批次、同服务器队列末尾，并阻止重复排队
 - 任务列表 `scope=single|batch`：按是否存在 `batch_id` 筛选单次任务或批次子任务，保持分页总数准确；`active_only=true` 统计 CONNECTING、PREPARING、UPLOADING、RUNNING、CANCELING 全部活动任务；`include_batch_context=true` 在状态筛选时保留命中批次的完整子任务
-- 状态查询、取消、删除
+- 状态查询、取消；管理员删除本机任务记录（`POST /api/tasks/{task_id}/local-artifacts/cleanup`）和整批记录（`POST /api/tasks/batches/{batch_id}/local-artifacts/cleanup`）
+- 删除仅允许终态任务：清理本地 artifacts、任务日志和数据库任务记录，**不删除远端目录**，审计日志保留
 - 日志查询、日志下载、WebSocket 实时日志（`/logs/ws`）
 - 失败诊断（`/{task_id}/diagnosis`）
 - 结构化监控（`/{task_id}/monitor` — CPU/内存/磁盘/GPU 5s 轮询）
@@ -275,32 +276,28 @@ $HOME/hpcdeploy/
 
 所有访客操作审计日志 `actor="visitor"`。
 
-### 需要管理员密码确认的高风险操作
+### 管理员模式下的高风险操作
 | 操作 | 端点 | 依赖 |
 |------|------|------|
 | 删除服务器 | `DELETE /api/servers/{id}` | `require_admin_token()` |
-| 删除任务 | `DELETE /api/tasks/{id}` | `require_admin_token()` |
+| 删除本机任务/批次历史 | `POST /api/tasks/{task_id}/local-artifacts/cleanup`、`POST /api/tasks/batches/{batch_id}/local-artifacts/cleanup` | `require_admin_token()` |
 | 删除脚本 | `DELETE /api/scripts/files` | `require_admin_token()` |
 | 上传/修改脚本 | `POST/PUT /api/scripts/**` | `require_admin_token()` |
 | 清理本地 artifacts | `POST /api/cleanup/local-artifacts/delete` | `require_admin_token()` |
 | 清理远端目录 | `POST /api/cleanup/remote/delete` | `require_admin_token()` |
 | 查看审计日志 | `GET /api/audit-logs` | `require_admin_token()` |
 | 保存系统设置 | `PUT /api/settings` | `require_admin_token()` |
-| 生成默认 SSH 密钥 | `POST /api/settings/ssh-key/generate-default` | `require_admin_token()` |
 
 ### 认证流程
 
 ```
-前端点击高风险操作
-  → requireAdminConfirm() 检查缓存 admin_token
-    → 过期/为空：弹出 ElMessageBox.prompt 密码输入框
-    → 用户输入密码 → POST /auth/admin/verify
-      → 后端校验密码（plaintext 对比，5 分钟 JWT 签发）
-      → 返回 admin_token → 前端内存缓存 5 分钟
-    → 设置 axios.defaults.headers.common['X-Admin-Token'] = token
-  → 正式调用高风险 API（携带 X-Admin-Token header）
-    → 后端 require_admin_token() 依赖验证 JWT 签名 + scope=admin
-    → 通过后执行操作，审计日志 actor="admin"
+用户开启管理员模式
+  → POST /auth/admin/verify 输入管理员密码
+    → 后端签发 5 分钟 JWT，并写入 HttpOnly、SameSite=Lax Cookie
+  → 前端显示倒计时；刷新时 GET /auth/admin/status 恢复未过期会话
+  → 高风险 API 由 require_admin_token() 从 Cookie（兼容 X-Admin-Token header）验证 JWT 签名 + scope=admin
+  → 手动退出 POST /auth/admin/logout 清除 Cookie；超时自动切回普通模式
+  → 通过后执行操作，审计日志 actor="admin"
 ```
 
 ### 管理员密码
@@ -314,8 +311,8 @@ $HOME/hpcdeploy/
 | 文件 | 说明 |
 |------|------|
 | `backend/app/core/auth.py` | `verify_admin_password()`、`create_admin_token()`(5min JWT)、`require_admin_token()` 依赖 |
-| `backend/app/api/auth.py` | `POST /auth/admin/verify` 端点 |
-| `frontend/src/composables/useAdminConfirm.ts` | 密码弹窗 + admin_token 内存缓存 |
+| `backend/app/api/auth.py` | 管理员验证、会话状态与退出端点 |
+| `frontend/src/composables/useAdminConfirm.ts` | 管理员模式、倒计时、会话恢复与退出 |
 
 ---
 

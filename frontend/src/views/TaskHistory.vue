@@ -69,6 +69,7 @@
             @copy-verify-commands="copyVerifyCommands"
             @copy-task-id="copyTaskId"
             @cancel-task="cancelHistoryTask"
+            @cleanup-local-artifacts="cleanupTaskLocalArtifactsFor"
           />
           <el-card v-else shadow="never" class="task-card batch-history-card hpc-glow-row">
             <div class="batch-history-card__header">
@@ -138,6 +139,14 @@
                   :loading="artLoading"
                   @click="openBatchArtifacts(item.batchId, item.tasks)"
                 >结果文件</el-button>
+                <el-button
+                  v-if="item.tasks.every(task => isBatchTaskTerminal(task.status))"
+                  size="small"
+                  type="danger"
+                  plain
+                  class="hpc-interactive-pulse"
+                  @click="cleanupBatchLocalArtifactsFor(item.batchId, item.tasks.length)"
+                >删除批次任务</el-button>
                 <el-button
                   v-if="canCancelBatch(batchSummaryFromTasks(item.batchId, item.tasks))"
                   size="small"
@@ -350,6 +359,14 @@
                   :loading="artLoading"
                   @click.stop="openBatchSummaryArtifacts(row)"
                 >结果文件</el-button>
+                <el-button
+                  v-if="isBatchTaskTerminal(row.status)"
+                  size="small"
+                  link
+                  type="danger"
+                  class="task-action-button"
+                  @click.stop="cleanupBatchLocalArtifactsFor(row.batch_id, row.total)"
+                >删除批次任务</el-button>
               </div>
             </template>
           </el-table-column>
@@ -522,6 +539,14 @@
             size="small"
             @click="openDrawerArtifacts"
           >结果文件</el-button>
+          <el-button
+            v-if="drawerIsTerminal"
+            size="small"
+            type="danger"
+            plain
+            :loading="localArtifactsCleaning"
+            @click="cleanupDrawerLocalArtifacts"
+          >删除任务</el-button>
           <el-button size="small" :loading="drawerTaskLoading" @click="refreshTaskDrawer">刷新</el-button>
         </div>
 
@@ -957,12 +982,13 @@
 import { computed, nextTick, onMounted, onActivated, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
-import { cancelBatch, cancelTask, downloadBatchReportZip, downloadTaskLogs, getTask, getTaskLogs, getTaskMonitor, listArtifacts, listBatches, getBatchDetail, listTasks, retryBatchTask, type ArtifactFileDetail, type BatchDetailResponse, type BatchQuery, type BatchSummaryItem, type BatchTaskDetailItem, type MonitorType, type TaskLogRecord, type TaskListQuery, type TaskMonitorStructuredResponse, type TaskRecord } from '@/api/task'
+import { cancelBatch, cancelTask, cleanupBatchLocalArtifacts, cleanupTaskLocalArtifacts, downloadBatchReportZip, downloadTaskLogs, getTask, getTaskLogs, getTaskMonitor, listArtifacts, listBatches, getBatchDetail, listTasks, retryBatchTask, type ArtifactFileDetail, type BatchDetailResponse, type BatchQuery, type BatchSummaryItem, type BatchTaskDetailItem, type MonitorType, type TaskLogRecord, type TaskListQuery, type TaskMonitorStructuredResponse, type TaskRecord } from '@/api/task'
 import { formatDateTime } from '@/utils/time'
 import { getApiErrorMessage as readApiErrorMessage } from '@/utils/apiError'
 import { useTaskWebSocket } from '@/composables/useTaskWebSocket'
 import { calcDurationSeconds, calcEstimatedEndTime, calcEstimatedRemaining, calcProgress, formatSeconds, getTaskDuration, statusLabel } from '@/composables/useTaskProgress'
 import { formatTaskDisplayName, getTaskTypeLabel } from '@/utils/taskDisplay'
+import { adminMode, requireAdminConfirm } from '@/composables/useAdminConfirm'
 import LogViewer from '@/components/LogViewer.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import TaskCard from '@/components/TaskCard.vue'
@@ -1019,6 +1045,7 @@ const drawerLogs = ref<TaskLogRecord[]>([])
 const drawerLogsLoaded = ref(false)
 const drawerLogsLoading = ref(false)
 const drawerTaskLoading = ref(false)
+const localArtifactsCleaning = ref(false)
 const drawerActivePanel = ref<DrawerMonitorPanel>('summary')
 const drawerMonitorData = ref<TaskMonitorStructuredResponse | null>(null)
 const drawerMonitorLoading = ref(false)
@@ -2090,6 +2117,68 @@ function openDrawerDiagnosis() {
 
 function openDrawerArtifacts() {
   if (drawerTask.value) openArtifacts(drawerTask.value)
+}
+
+async function cleanupDrawerLocalArtifacts() {
+  const task = drawerTask.value
+  if (!task) return
+  await cleanupTaskLocalArtifactsFor(task)
+}
+
+async function cleanupTaskLocalArtifactsFor(task: TaskRecord) {
+  if (!adminMode.value) {
+    ElMessage.warning('管理员模式是删档小能手，先去右上角把它叫醒～')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      '将删除本机日志、报告、下载产物，以及该任务的历史记录；不会删除远端目录。此操作不可恢复。',
+      '删除任务',
+      { confirmButtonText: '确认删除', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  if (!await requireAdminConfirm('删除任务')) return
+
+  localArtifactsCleaning.value = true
+  try {
+    const result = (await cleanupTaskLocalArtifacts(task.task_id)).data
+    ElMessage.success('本机结果与历史任务记录已清理，远端目录和审计日志已保留')
+    if (taskDetailDrawerVisible.value && drawerSelectedTaskId.value === task.task_id) {
+      taskDetailDrawerVisible.value = false
+    }
+    await loadTasks(true)
+  } catch (error) {
+    ElMessage.error(`清理本机结果失败：${getApiErrorMessage(error) || '未知错误'}`)
+  } finally {
+    localArtifactsCleaning.value = false
+  }
+}
+
+async function cleanupBatchLocalArtifactsFor(batchId: string, taskCount: number) {
+  if (!adminMode.value) {
+    ElMessage.warning('这批任务还在排队等你点头，先切到管理员模式再送它们下班～')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `将删除该批次 ${taskCount} 个子任务的本机产物、任务日志和历史记录；不会删除远端目录。此操作不可恢复。`,
+      '删除批次任务',
+      { confirmButtonText: '确认删除', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  if (!await requireAdminConfirm('删除批次任务')) return
+  try {
+    const result = (await cleanupBatchLocalArtifacts(batchId)).data
+    ElMessage.success(`已删除 ${result.deleted_tasks} 个批次任务，远端目录和审计日志已保留`)
+    await loadTasks(true)
+    await loadBatches()
+  } catch (error) {
+    ElMessage.error(`删除批次任务失败：${getApiErrorMessage(error) || '未知错误'}`)
+  }
 }
 
 async function loadTasks(silent = false) {

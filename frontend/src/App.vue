@@ -1,5 +1,5 @@
 <template>
-  <div class="app-shell">
+  <div class="app-shell" :class="{ 'is-admin-mode': adminMode }">
     <!-- sidebar -->
     <aside class="app-sidebar">
       <div class="brand" style="cursor: pointer" @click="goHome">
@@ -7,6 +7,7 @@
         <div>
           <div class="brand-title">HPCDeploy</div>
           <div class="brand-subtitle">运维自动化控制台</div>
+          <div v-if="adminMode" class="brand-admin-status"><span aria-hidden="true" />管理员控制域</div>
         </div>
       </div>
 
@@ -46,7 +47,7 @@
           <el-icon><Document /></el-icon>
           <span>脚本知识库</span>
         </el-menu-item>
-        <el-menu-item index="/audit-logs" class="hpc-nav-pulse-item" :class="{ 'hpc-nav-pulse-active': isActiveMenu('/audit-logs') }">
+        <el-menu-item index="/audit-logs" class="hpc-nav-pulse-item" :class="{ 'hpc-nav-pulse-active': isActiveMenu('/audit-logs') }" @click.capture="handleAuditMenuClick">
           <el-icon><List /></el-icon>
           <span class="menu-label-row"><span>审计日志</span><el-tag size="small" class="admin-badge">Admin</el-tag></span>
         </el-menu-item>
@@ -63,6 +64,14 @@
       <header class="app-topbar">
         <h1 class="topbar-title">{{ routeTitle }}</h1>
         <div class="topbar-right">
+          <el-switch
+            :model-value="adminMode"
+            active-text="管理员模式"
+            inactive-text="普通模式"
+            inline-prompt
+            @change="handleAdminModeChange"
+          />
+          <span v-if="adminMode" class="admin-countdown">剩余 {{ adminCountdown }}</span>
           <el-tag type="success" effect="plain" size="small">DEV</el-tag>
         </div>
       </header>
@@ -79,10 +88,12 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { ElMessage } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
 import { Cpu, Document, List, Monitor, Operation, Setting, Tickets } from '@element-plus/icons-vue'
 import AppCritters from '@/components/AppCritters.vue'
 import { listTasks } from '@/api/task'
+import { adminMode, adminRemainingSeconds, enterAdminMode, exitAdminMode, restoreAdminMode } from '@/composables/useAdminConfirm'
 
 const route = useRoute()
 const router = useRouter()
@@ -91,7 +102,29 @@ const runningTaskLoading = ref(false)
 let runningTaskTimer: number | undefined
 
 const routeTitle = computed(() => String(route.meta.title ?? 'HPCDeploy'))
+const adminCountdown = computed(() => {
+  const minutes = Math.floor(adminRemainingSeconds.value / 60)
+  const seconds = adminRemainingSeconds.value % 60
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+})
 
+async function handleAdminModeChange(enabled: boolean | string | number) {
+  if (enabled === true) {
+    const ok = await enterAdminMode()
+    if (!ok) adminMode.value = false
+    return
+  }
+  exitAdminMode()
+}
+
+function handleAuditMenuClick(event: MouseEvent) {
+  event.stopImmediatePropagation()
+  if (!adminMode.value) {
+    ElMessage.warning('审计日志是管理员的小本本，普通模式先看看任务就好～')
+    return
+  }
+  void router.push('/audit-logs')
+}
 
 function goHome() {
   router.push('/')
@@ -131,6 +164,7 @@ function handleTaskCreated() {
 }
 
 onMounted(() => {
+  void restoreAdminMode()
   void refreshRunningTaskCount()
   runningTaskTimer = window.setInterval(() => void refreshRunningTaskCount(), 5_000)
   document.addEventListener('visibilitychange', handleVisibilityChange)
@@ -262,20 +296,35 @@ html, body, #app {
 }
 
 .nav-menu .el-menu-item.is-active {
-  background: #eaf3ff !important;
+  background: linear-gradient(90deg, rgba(64, 158, 255, 0.26), rgba(64, 158, 255, 0.08)) !important;
   color: #1677ff;
   font-weight: 600;
+  box-shadow: inset 3px 0 #409eff;
+  position: relative;
+}
+
+.nav-menu .el-menu-item.is-active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: #409eff;
 }
 
 @keyframes hpc-nav-blue-glow {
   0%,
   100% {
     box-shadow:
+      inset 3px 0 #409eff,
       0 0 8px rgba(64, 158, 255, 0.14),
       0 0 16px rgba(64, 158, 255, 0.08);
   }
   50% {
     box-shadow:
+      inset 3px 0 #6aaeff,
       0 0 14px rgba(64, 158, 255, 0.28),
       0 0 26px rgba(64, 158, 255, 0.16);
   }
@@ -431,11 +480,151 @@ html, body, #app {
   gap: 12px;
 }
 
+.admin-countdown {
+  color: #92400e;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* === administrator control-room theme === */
+.is-admin-mode .app-sidebar {
+  background:
+    radial-gradient(circle at 12% 0%, rgba(184, 144, 66, 0.16), transparent 30%),
+    linear-gradient(165deg, #112723 0%, #0b1a18 100%);
+  border-right-color: #29453d;
+}
+
+.is-admin-mode .brand {
+  background: rgba(7, 21, 18, 0.42);
+  border-bottom-color: rgba(216, 181, 99, 0.24);
+}
+
+.is-admin-mode .brand:hover {
+  background: rgba(216, 181, 99, 0.08);
+}
+
+.is-admin-mode .brand-mark {
+  background: linear-gradient(145deg, #d9b563, #a8782d);
+  color: #13231e;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28), inset 0 1px rgba(255, 255, 255, 0.4);
+}
+
+.is-admin-mode .brand-title {
+  color: #fff7e2;
+  letter-spacing: 0.2px;
+}
+
+.is-admin-mode .brand-subtitle {
+  color: #aebfb8;
+}
+
+.brand-admin-status {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 3px;
+  color: #e5c777;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.75px;
+}
+
+.brand-admin-status span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #e5c777;
+  box-shadow: 0 0 0 3px rgba(229, 199, 119, 0.12);
+}
+
+.is-admin-mode .nav-menu-admin {
+  border-top-color: rgba(216, 181, 99, 0.22) !important;
+}
+
+.is-admin-mode .nav-menu .el-menu-item {
+  color: #cbd8d1;
+}
+
+.is-admin-mode .nav-menu .el-menu-item .el-icon {
+  color: #91aaa0;
+}
+
+.is-admin-mode .nav-menu .el-menu-item:hover {
+  background: rgba(255, 255, 255, 0.065) !important;
+  color: #fff7e2;
+}
+
+.is-admin-mode .nav-menu .el-menu-item.is-active {
+  background: linear-gradient(90deg, rgba(216, 181, 99, 0.26), rgba(216, 181, 99, 0.08)) !important;
+  color: #fff7e2;
+  box-shadow: inset 3px 0 #d9b563;
+}
+
+.is-admin-mode .nav-menu .el-menu-item.is-active .el-icon {
+  color: #f2d48b;
+}
+
+.is-admin-mode .nav-menu .el-menu-item.is-active::before {
+  background: #d9b563;
+}
+
+.is-admin-mode .nav-menu .hpc-nav-pulse-item:hover,
+.is-admin-mode .nav-menu .hpc-nav-pulse-active {
+  animation: hpc-nav-gold-glow 1.8s ease-in-out infinite;
+}
+
+@keyframes hpc-nav-gold-glow {
+  0%, 100% { box-shadow: inset 3px 0 #d9b563, 0 0 10px rgba(216, 181, 99, 0.1); }
+  50% { box-shadow: inset 3px 0 #e9ca7a, 0 0 18px rgba(216, 181, 99, 0.2); }
+}
+
+.is-admin-mode .app-main-area {
+  background:
+    radial-gradient(118% 58% at -12% -15%, transparent 63%, rgba(207, 165, 75, 0.16) 63.5%, transparent 64.2%),
+    radial-gradient(108% 52% at 108% 112%, transparent 66%, rgba(207, 165, 75, 0.11) 66.5%, transparent 67.2%),
+    #f7f4ed;
+}
+
+.is-admin-mode .app-topbar {
+  background: #fffdf8;
+  border-bottom-color: #eadfca;
+}
+
+.is-admin-mode .topbar-title {
+  color: #19372f;
+}
+
+.is-admin-mode .admin-countdown {
+  padding: 4px 9px;
+  border: 1px solid #e2c77f;
+  border-radius: 999px;
+  background: #fff8df;
+  color: #70511a;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.is-admin-mode .app-content .el-card {
+  --el-card-bg-color: #fffdf8;
+  background: linear-gradient(135deg, #fffdf8 0%, #fffaf0 100%);
+  border-color: #e9ddc3;
+  box-shadow: 0 6px 18px rgba(92, 67, 20, 0.045);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .is-admin-mode .nav-menu .hpc-nav-pulse-item:hover,
+  .is-admin-mode .nav-menu .hpc-nav-pulse-active {
+    animation: none;
+  }
+}
+
 /* === content === */
 .app-content {
   flex: 1;
   padding: 20px 24px;
 }
+
 
 
 </style>

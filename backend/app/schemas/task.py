@@ -126,6 +126,20 @@ class TaskCleanupResponse(BaseModel):
     messages: list[str]
 
 
+class TaskLocalArtifactsCleanupResponse(BaseModel):
+    task_id: str
+    local_artifacts_removed: bool
+    task_history_deleted: bool
+    messages: list[str]
+
+
+class BatchLocalArtifactsCleanupResponse(BaseModel):
+    batch_id: str
+    deleted_tasks: int
+    local_artifacts_removed: int
+    messages: list[str]
+
+
 class TaskDeleteResponse(BaseModel):
     task_id: str
     deleted: bool
