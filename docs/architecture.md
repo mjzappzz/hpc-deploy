@@ -115,7 +115,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - SSH executor 封装 Paramiko 连接、重试、超时
 - stress 后台执行使用完全 detach 的 `setsid bash -lc ... < /dev/null`，远端启动成功只代表任务进入 `RUNNING`
 - stress-suite 调度按 `server_id` 加锁，只有前序子任务进入终态后才启动下一子任务
-- 后端重启后，RUNNING 脚本任务通过远端 PID 与退出码文件恢复监控，不重新下发远端命令；已恢复的活动压测子任务结束后，套件调度继续后续任务
+- 后端重启后，RUNNING 脚本任务通过远端 PID 与退出码文件恢复监控，不重新下发远端命令；stress 恢复 SSH 连接临时失败时，先重试 3 次，仍失败则保留 `RUNNING` 并在 60 秒后继续恢复，不将控制面连接错误误判为远端任务失败；已恢复的活动压测子任务结束后，套件调度继续后续任务
 
 ### ssh detector
 - 执行固定的安全探测命令
