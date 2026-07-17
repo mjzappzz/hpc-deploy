@@ -626,16 +626,18 @@
               <el-empty description="暂无 GPU 实时监控数据" :image-size="60" />
               <div v-if="drawerMonitorData?.gpu.message" class="task-drawer-empty-msg">{{ drawerMonitorData.gpu.message }}</div>
             </div>
-            <div v-else class="task-drawer-gpu-grid">
-              <div v-for="gpu in drawerMonitorData.gpu.items" :key="gpu.index" class="task-drawer-gpu-card">
-                <b>{{ gpu.name }} (Index {{ gpu.index }})</b>
-                <span>GPU：{{ gpu.utilization_gpu ?? '-' }}%</span>
-                <span>显存：{{ gpu.memory_used ?? '-' }} / {{ gpu.memory_total ?? '-' }} MiB</span>
-                <span>温度：{{ gpu.temperature ?? '-' }}°C</span>
-                <span>风扇：{{ gpu.fan_speed ?? '-' }}%</span>
-                <span>功耗：{{ gpu.power_draw ?? '-' }} / {{ gpu.power_limit ?? '-' }} W</span>
-                <span>性能状态：{{ gpu.performance_state ?? '-' }}</span>
-                <span>Bus-ID：{{ gpu.bus_id ?? '-' }}</span>
+            <div v-else class="detail-monitor-gpu-grid">
+              <div v-for="gpu in drawerMonitorData.gpu.items" :key="gpu.index" class="detail-monitor-gpu-card">
+                <div class="detail-gpu-name">{{ gpu.name }}<span class="detail-gpu-idx"> #{{ gpu.index }}</span></div>
+                <div class="detail-gpu-metrics">
+                  <span>GPU {{ gpu.utilization_gpu ?? '-' }}%</span>
+                  <span>显存 {{ gpu.memory_used ?? '-' }}/{{ gpu.memory_total ?? '-' }} MiB</span>
+                  <span>🌡 {{ gpu.temperature ?? '-' }}°C</span>
+                  <span>🌀 风扇 {{ gpu.fan_speed ?? '-' }}%</span>
+                  <span>⚡ 功耗 {{ gpu.power_draw ?? '-' }}/{{ gpu.power_limit ?? '-' }} W</span>
+                  <span>状态 {{ gpu.performance_state ?? '-' }}</span>
+                  <span>Bus {{ gpu.bus_id ?? '-' }}</span>
+                </div>
               </div>
             </div>
           </template>
@@ -4861,8 +4863,7 @@ onUnmounted(() => {
   gap: 10px;
 }
 
-.task-drawer-monitor-grid > div,
-.task-drawer-gpu-card {
+.task-drawer-monitor-grid > div {
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 8px;
   padding: 10px 12px;
@@ -4873,16 +4874,9 @@ onUnmounted(() => {
   font-size: 13px;
 }
 
-.task-drawer-monitor-grid b,
-.task-drawer-gpu-card b {
+.task-drawer-monitor-grid b {
   color: var(--el-text-color-secondary);
   font-weight: 500;
-}
-
-.task-drawer-gpu-grid {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 10px;
 }
 
 .task-drawer-sampled-at {
