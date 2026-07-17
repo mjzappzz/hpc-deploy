@@ -2607,7 +2607,7 @@ def _parse_gpu(executor: SSHExecutor) -> dict[str, object]:
 
         gpu_out = _exec_monitor_cmd(
             executor,
-            "nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu "
+            "nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,fan.speed,power.draw,power.limit,pstate,pci.bus_id "
             "--format=csv,noheader,nounits 2>/dev/null",
         )
         if not gpu_out:
@@ -2628,6 +2628,11 @@ def _parse_gpu(executor: SSHExecutor) -> dict[str, object]:
                     "memory_used": cols[3] if len(cols) > 3 else None,
                     "memory_total": cols[4] if len(cols) > 4 else None,
                     "temperature": cols[5] if len(cols) > 5 else None,
+                    "fan_speed": cols[6] if len(cols) > 6 else None,
+                    "power_draw": cols[7] if len(cols) > 7 else None,
+                    "power_limit": cols[8] if len(cols) > 8 else None,
+                    "performance_state": cols[9] if len(cols) > 9 else None,
+                    "bus_id": cols[10] if len(cols) > 10 else None,
                 })
 
         result["items"] = items

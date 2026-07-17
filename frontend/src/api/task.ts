@@ -99,6 +99,11 @@ export interface MonitorGpuItem {
   memory_used: string | null
   memory_total: string | null
   temperature: string | null
+  fan_speed: string | null
+  power_draw: string | null
+  power_limit: string | null
+  performance_state: string | null
+  bus_id: string | null
 }
 
 export interface MonitorGpu {

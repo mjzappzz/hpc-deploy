@@ -632,6 +632,10 @@
                 <span>GPU：{{ gpu.utilization_gpu ?? '-' }}%</span>
                 <span>显存：{{ gpu.memory_used ?? '-' }} / {{ gpu.memory_total ?? '-' }} MiB</span>
                 <span>温度：{{ gpu.temperature ?? '-' }}°C</span>
+                <span>风扇：{{ gpu.fan_speed ?? '-' }}%</span>
+                <span>功耗：{{ gpu.power_draw ?? '-' }} / {{ gpu.power_limit ?? '-' }} W</span>
+                <span>性能状态：{{ gpu.performance_state ?? '-' }}</span>
+                <span>Bus-ID：{{ gpu.bus_id ?? '-' }}</span>
               </div>
             </div>
           </template>
@@ -940,6 +944,10 @@
                             <span>GPU {{ gpu.utilization_gpu ?? '-' }}%</span>
                             <span>显存 {{ gpu.memory_used ?? '-' }}/{{ gpu.memory_total ?? '-' }} MiB</span>
                             <span>🌡 {{ gpu.temperature ?? '-' }}°C</span>
+                            <span>🌀 风扇 {{ gpu.fan_speed ?? '-' }}%</span>
+                            <span>⚡ 功耗 {{ gpu.power_draw ?? '-' }}/{{ gpu.power_limit ?? '-' }} W</span>
+                            <span>状态 {{ gpu.performance_state ?? '-' }}</span>
+                            <span>Bus {{ gpu.bus_id ?? '-' }}</span>
                           </div>
                         </div>
                       </div>

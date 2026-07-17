@@ -357,6 +357,7 @@ PENDING → CONNECTING → PREPARING → UPLOADING → RUNNING → SUCCESS
 
 - 端点：`GET /api/tasks/{task_id}/monitor`
 - 返回独立数据：CPU/内存、磁盘、GPU
+- GPU 数据直接取自 `nvidia-smi --query-gpu`：索引、名称、利用率、显存、温度、风扇转速、实时/上限功耗、性能状态与 PCIe Bus-ID；字段以可选方式扩展，兼容不支持部分指标的驱动或设备
 - 子系统隔离（单个 section 失败不影响其他）
 - SSH 连接失败 → 全部 section `available=false`
 - 5s 轮询，仅 activeTaskId + monitor tab 激活时拉取

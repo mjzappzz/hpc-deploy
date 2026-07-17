@@ -297,6 +297,11 @@ class MonitorGpuItem(BaseModel):
     memory_used: str | None = None
     memory_total: str | None = None
     temperature: str | None = None
+    fan_speed: str | None = None
+    power_draw: str | None = None
+    power_limit: str | None = None
+    performance_state: str | None = None
+    bus_id: str | None = None
 
 
 class MonitorGpu(BaseModel):
