@@ -395,6 +395,12 @@ export interface BatchTaskRetryResponse {
   status: string
 }
 
+export interface TaskRetryResponse {
+  original_task_id: string
+  retry_task_id: string
+  status: string
+}
+
 export function listBatches(params?: BatchQuery) {
   return request.get<BatchSummaryListResponse>('/tasks/batches', { params })
 }
@@ -405,6 +411,10 @@ export function getBatchDetail(batchId: string) {
 
 export function retryBatchTask(taskId: string) {
   return request.post<BatchTaskRetryResponse>(`/tasks/${taskId}/retry-in-batch`)
+}
+
+export function retryTask(taskId: string) {
+  return request.post<TaskRetryResponse>(`/tasks/${taskId}/retry`)
 }
 
 export function downloadBatchReportZip(batchId: string) {

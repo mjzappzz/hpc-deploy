@@ -328,14 +328,14 @@ main() {
     # 保留开始、每 10% 的进度样本、结束和错误；不回收数万行刷新输出。
     {
         echo "[INFO] gpu-burn 原始高频进度已精简，仅保留阶段样本和错误。"
-        awk '
+        tr '\r' '\n' < "$BURN_RAW_LOG" | awk '
             /^[[:space:]]*[0-9]+(\.[0-9]+)?%/ {
                 pct = $1; sub(/%$/, "", pct); bucket = int(pct / 10)
                 if (!(bucket in seen)) { print "[PROGRESS SAMPLE] " $0; seen[bucket] = 1 }
                 next
             }
-            /cuda error|failed|xid|fallen off|couldn.t init|named symbol not found|read.*error|died|no clients are alive|aborting|error in|segmentation fault|illegal memory/ { print "[ERROR] " $0 }
-        ' "$BURN_RAW_LOG"
+            tolower($0) ~ /cuda error|failed|xid|fallen off|couldn.t init|named symbol not found|read.*error|died|no clients are alive|aborting|error in|segmentation fault|illegal memory/ { print "[ERROR] " $0 }
+        '
         echo "[SUMMARY] gpu-burn exit=${BURN_EXIT}, max_errors=${ERROR_COUNT}"
     } > "$BURN_LOG"
     rm -f "$BURN_RAW_LOG"

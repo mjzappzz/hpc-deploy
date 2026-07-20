@@ -93,11 +93,13 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { formatDateTime, formatScriptUpdatedAt } from '@/utils/time'
 import { getApiErrorMessage as readApiErrorMessage } from '@/utils/apiError'
 import { formatBytes } from '@/utils/format'
+import { copyText } from '@/utils/clipboard'
 import { getTaskTypeLabel } from '@/utils/taskDisplay'
 import { adminMode, requireAdminConfirm } from '@/composables/useAdminConfirm'
 import ScriptTable from '@/components/ScriptTable.vue'
 import {
   deleteScriptFile,
+  getScriptFileContent,
   getScriptFileDownloadUrl,
   listScriptFiles,
   previewScriptFile,
@@ -179,15 +181,19 @@ function downloadFile(file: ScriptFileRecord | ScriptFilePreviewRecord) {
 }
 
 async function copyPreviewContent() {
-  if (previewContent.value === null) {
+  const file = previewFile.value
+  if (!file || previewContent.value === null) {
     ElMessage.warning('当前文件没有可复制的文本内容')
     return
   }
   try {
-    await navigator.clipboard.writeText(previewContent.value)
+    const content = file.truncated
+      ? (await getScriptFileContent(file.path)).data
+      : previewContent.value
+    if (!await copyText(content)) throw new Error('clipboard unavailable')
     ElMessage.success('脚本内容已复制')
   } catch {
-    ElMessage.error('复制失败，请手动选择内容复制')
+    ElMessage.error('复制失败：浏览器未授予剪贴板权限')
   }
 }
 

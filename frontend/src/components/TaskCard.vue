@@ -42,10 +42,10 @@
         <template v-if="runtime"> | 耗时 {{ formatSeconds(runtime) }}</template>
       </div>
     </div>
-    <div v-if="task.error_message" class="task-card__error">{{ task.error_message }}</div>
+    <div v-if="displayErrorMessage" class="task-card__error">{{ displayErrorMessage }}</div>
     <div class="task-card__actions">
-      <el-button size="small" type="primary" class="hpc-interactive-pulse" @click="$emit('continueTask', task)">查看任务详情</el-button>
-      <el-button size="small" class="hpc-interactive-pulse" :disabled="!isStressCompleted" @click="$emit('downloadReport', task)">结果文件</el-button>
+      <el-button size="small" type="primary" plain class="hpc-interactive-pulse" @click="$emit('continueTask', task)">查看任务详情</el-button>
+      <el-button size="small" type="primary" :icon="FolderOpened" class="task-card__result-button hpc-interactive-pulse" :disabled="!isStressCompleted" @click="$emit('downloadReport', task)">结果文件</el-button>
       <el-tooltip
         v-if="showCommandCopyButtons"
         placement="top"
@@ -88,11 +88,12 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { DocumentCopy } from '@element-plus/icons-vue'
+import { DocumentCopy, FolderOpened } from '@element-plus/icons-vue'
 import type { TaskRecord } from '@/api/task'
 import { formatBeijingDateKey, formatDateTime } from '@/utils/time'
 import { calcDurationSeconds, calcEstimatedEndTime, formatSeconds, statusLabel } from '@/composables/useTaskProgress'
 import StatusTag from './StatusTag.vue'
+import { formatTaskErrorMessage } from '@/utils/taskError'
 
 defineEmits<{
   continueTask: [task: TaskRecord]
@@ -153,6 +154,8 @@ const taskTypeTags = computed(() => {
 const taskModuleLabel = computed(() => {
   return taskTypeTags.value[0] || taskReadableType.value
 })
+
+const displayErrorMessage = computed(() => formatTaskErrorMessage(props.task.error_message))
 
 const isStressCompleted = computed(() => {
   // Use final_status for stress tasks, fall back to execution status
@@ -258,6 +261,10 @@ const formatTime = formatDateTime
   flex-wrap: wrap;
   gap: 8px;
   overflow: visible;
+}
+
+.task-card__result-button {
+  font-weight: 600;
 }
 
 .command-tooltip-content {

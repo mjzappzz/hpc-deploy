@@ -72,6 +72,7 @@ from app.schemas.task import (
     TaskMonitorResponse,
     TaskMonitorResponseStructured,
     TaskRead,
+    TaskRetryResponse,
     TaskRunRequest,
     TaskRunResponse,
 )
@@ -1004,12 +1005,68 @@ def create_stress_suite(
 RETRYABLE_BATCH_TASK_STATUSES = {"FAILED", "CANCELED", "TIMEOUT"}
 
 
+def _single_task_can_retry(task: Task, db: Session | None = None) -> bool:
+    """Single tasks retry as a new task; batch tasks use their queue-aware endpoint."""
+    if task.batch_id:
+        return False
+    status_value = (task.status or "").upper()
+    if status_value in RETRYABLE_BATCH_TASK_STATUSES:
+        return True
+    if db is not None:
+        summary = get_cached_report_summary(db, task.task_id)
+        return bool(summary and (summary.report_status or "").upper() == "FAIL")
+    return (getattr(task, "report_status", None) or "").upper() == "FAIL"
+
+
 def _batch_task_can_retry(task: Task, db: Session) -> bool:
     status_value = (task.status or "").upper()
     if status_value in RETRYABLE_BATCH_TASK_STATUSES:
         return True
     summary = get_cached_report_summary(db, task.task_id)
     return bool(summary and (summary.report_status or "").upper() == "FAIL")
+
+
+@router.post("/{task_id}/retry", response_model=TaskRetryResponse, status_code=status.HTTP_201_CREATED)
+def retry_single_task(
+    task_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> TaskRetryResponse:
+    """Create and start a fresh attempt for one failed non-batch task."""
+    original = _get_task_or_404(db, task_id)
+    if original.batch_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="batch task must use retry-in-batch")
+    if not _single_task_can_retry(original, db):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="task is not failed or canceled")
+    if not original.task_type or not original.file_path:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="task has no retryable script")
+
+    server = _get_server_or_400(db, original.server_id)
+    file_record = _get_library_file_or_400(original.file_path)
+    retry_params = dict(original.params or {})
+    retry_params["__retry_of_task_id"] = original.task_id
+    retry_params["__retry_created_at"] = datetime.utcnow().isoformat(timespec="seconds")
+    retry_task_id = _create_task_for_server(
+        db,
+        server,
+        original.task_type,
+        original.file_path,
+        original.file_name or str(file_record["name"]),
+        file_record,
+        retry_params,
+    )
+    retry_task = _get_task_or_404(db, retry_task_id)
+    db.add(TaskLog(task_id=retry_task_id, level="SYSTEM", message=f"retry task created from {original.task_id}"))
+    db.commit()
+    write_audit_log(
+        db, action="task.retry", target_type="task", status="success", actor="visitor",
+        target_id=retry_task_id, target_name=f"{server.name} · {retry_task.file_name}",
+        server_id=server.id, server_name=server.name, task_id=retry_task_id,
+        message=f"retry task {original.task_id} as {retry_task_id}",
+        detail={"original_task_id": original.task_id, "retry_task_id": retry_task_id},
+    )
+    background_tasks.add_task(run_task_stage8b, retry_task_id)
+    return TaskRetryResponse(original_task_id=original.task_id, retry_task_id=retry_task_id, status="PENDING")
 
 
 @router.post("/{task_id}/retry-in-batch", response_model=BatchTaskRetryResponse, status_code=status.HTTP_201_CREATED)

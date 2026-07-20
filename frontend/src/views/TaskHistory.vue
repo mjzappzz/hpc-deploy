@@ -129,12 +129,15 @@
                 <el-button
                   size="small"
                   type="primary"
+                  plain
                   class="hpc-interactive-pulse"
                   @click="openBatchDetail(batchSummaryFromTasks(item.batchId, item.tasks))"
                 >查看批次详情</el-button>
                 <el-button
                   size="small"
-                  class="hpc-interactive-pulse"
+                  type="primary"
+                  :icon="FolderOpened"
+                  class="task-result-button hpc-interactive-pulse"
                   :disabled="!canDownloadBatchReport(batchSummaryFromTasks(item.batchId, item.tasks))"
                   :loading="artLoading"
                   @click="openBatchArtifacts(item.batchId, item.tasks)"
@@ -264,9 +267,9 @@
                             <el-button size="small" link type="primary" class="task-action-button batch-view-button" @click.stop="continueBatchTask(t)">查看任务详情</el-button>
                             <el-button
                               size="small"
-                              link
                               type="primary"
-                              class="task-action-button"
+                              :icon="FolderOpened"
+                              class="task-action-button task-action-button--result"
                               :disabled="!isBatchTaskTerminal(t.status)"
                               @click.stop="openBatchTaskArtifacts(t)"
                             >结果文件</el-button>
@@ -352,9 +355,9 @@
                 >取消批次</el-button>
                 <el-button
                   size="small"
-                  link
                   type="primary"
-                  class="task-action-button"
+                  :icon="FolderOpened"
+                  class="task-action-button task-action-button--result"
                   :disabled="!canDownloadBatchReport(row)"
                   :loading="artLoading"
                   @click.stop="openBatchSummaryArtifacts(row)"
@@ -486,12 +489,13 @@
       :task-id="diagnosisTaskId"
     />
 
-    <el-drawer
+    <el-dialog
       v-model="taskDetailDrawerVisible"
       title="任务详情"
-      direction="rtl"
-      size="720px"
-      class="task-detail-drawer"
+      width="1200px"
+      top="4vh"
+      :close-on-click-modal="false"
+      class="batch-detail-dialog single-task-detail-dialog"
       @closed="closeTaskDetailDrawer"
     >
       <div v-if="drawerTaskLoading && !drawerTask" v-loading="true" class="task-drawer-loading" />
@@ -499,7 +503,17 @@
         <div class="task-drawer-summary">
           <div class="task-drawer-title-row">
             <div class="task-drawer-title" :title="drawerTaskDisplayName">{{ drawerTaskDisplayName }}</div>
-            <StatusTag :status="drawerDisplayStatus" />
+            <div class="task-drawer-title-actions">
+              <StatusTag :status="drawerDisplayStatus" />
+              <el-button
+                v-if="drawerCanRetry"
+                type="primary"
+                plain
+                size="small"
+                :loading="drawerRetrySubmitting"
+                @click="retryDrawerTask"
+              >重跑</el-button>
+            </div>
           </div>
           <div class="task-drawer-grid">
             <span><b>任务 ID</b><code>{{ drawerTask.task_id }}</code><el-tooltip content="复制任务 ID" placement="top"><el-button circle size="small" :icon="DocumentCopy" class="copy-id-button" aria-label="复制任务 ID" @click="copyTaskId(drawerTask)" /></el-tooltip></span>
@@ -539,14 +553,6 @@
             size="small"
             @click="openDrawerArtifacts"
           >结果文件</el-button>
-          <el-button
-            v-if="drawerIsTerminal"
-            size="small"
-            type="danger"
-            plain
-            :loading="localArtifactsCleaning"
-            @click="cleanupDrawerLocalArtifacts"
-          >删除任务</el-button>
           <el-button size="small" :loading="drawerTaskLoading" @click="refreshTaskDrawer">刷新</el-button>
         </div>
 
@@ -561,21 +567,45 @@
 
         <div class="task-drawer-panel">
           <template v-if="drawerActivePanel === 'summary'">
-            <div class="task-drawer-empty">
-              <el-empty description="任务详情已加载。执行日志不会自动拉取。" :image-size="60" />
-              <div class="task-drawer-empty-msg">需要日志时切换到“执行日志”并手动加载。</div>
+            <div class="task-drawer-overview">
+              <div class="task-drawer-overview__row">
+                <span>任务类型</span>
+                <strong>{{ taskDisplayModuleName(drawerTask) }}</strong>
+              </div>
+              <div class="task-drawer-overview__row">
+                <span>脚本文件</span>
+                <code>{{ drawerTask.file_name || drawerTask.file_path || '-' }}</code>
+              </div>
+              <div class="task-drawer-overview__row">
+                <span>远端用户</span>
+                <strong>{{ drawerTask.server_username || '-' }}</strong>
+              </div>
+              <div class="task-drawer-overview__row">
+                <span>创建时间</span>
+                <strong>{{ formatDate(drawerTask.created_at) }}</strong>
+              </div>
+              <div class="task-drawer-overview__row">
+                <span>计划时长</span>
+                <strong>{{ formatStressDuration(drawerTask.params) }}</strong>
+              </div>
+              <div class="task-drawer-overview__row">
+                <span>执行命令</span>
+                <code>{{ drawerTask.command_preview || '-' }}</code>
+              </div>
+              <div v-if="drawerFailureReason !== '-'" class="task-drawer-overview__row task-drawer-overview__row--error">
+                <span>失败原因</span>
+                <strong>{{ drawerFailureReason }}</strong>
+              </div>
             </div>
           </template>
           <template v-else-if="drawerActivePanel === 'logs'">
-            <div v-if="!drawerLogsLoaded && drawerLogs.length === 0" class="task-drawer-empty">
-              <el-empty description="未加载执行日志" :image-size="60" />
-              <el-button size="small" type="primary" :loading="drawerLogsLoading" @click="loadDrawerLogs">加载日志</el-button>
-            </div>
-            <LogViewer
-              v-else
+            <TaskExecutionLogPanel
               :logs="drawerLogs"
-              max-height="calc(100vh - 420px)"
-              toolbar
+              :loaded="drawerLogsLoaded"
+              :loading="drawerLogsLoading"
+              :manual-load="drawerShowManualLogLoad"
+              max-height="460px"
+              @load="loadDrawerLogs"
               @clear="drawerLogs = []"
               @download="downloadDrawerLogs"
             />
@@ -647,7 +677,10 @@
         </div>
       </template>
       <el-empty v-else description="请选择任务" />
-    </el-drawer>
+      <template #footer>
+        <el-button @click="taskDetailDrawerVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
 
     <!-- ─── Batch detail dialog (inline detail panel) ─── -->
     <el-dialog v-model="batchDetailVisible" title="批次详情" width="1200px" top="4vh" :close-on-click-modal="false" class="batch-detail-dialog">
@@ -863,20 +896,16 @@
                       </div>
                     </el-tab-pane>
                     <el-tab-pane label="执行日志" name="logs">
-                      <div v-loading="detailLogsLoading && !detailLogsLoaded" class="detail-panel-logs-wrap">
-                        <div v-if="detailShowManualLogLoad" class="detail-panel-empty-action">
-                          <el-button size="small" type="primary" :loading="detailLogsLoading" @click="detailLoadLogs">加载日志</el-button>
-                        </div>
-                        <LogViewer
-                          v-else
-                          ref="detailLogViewerRef"
-                          :logs="detailLogs"
-                          max-height="280px"
-                          toolbar
-                          @clear="detailLogs = []"
-                          @download="detailDownloadLogs"
-                        />
-                      </div>
+                      <TaskExecutionLogPanel
+                        ref="detailLogViewerRef"
+                        :logs="detailLogs"
+                        :loaded="detailLogsLoaded"
+                        :loading="detailLogsLoading"
+                        :manual-load="detailShowManualLogLoad"
+                        @load="detailLoadLogs"
+                        @clear="detailLogs = []"
+                        @download="detailDownloadLogs"
+                      />
                     </el-tab-pane>
 
                     <el-tab-pane v-if="detailShowMonitorCpuMem" label="CPU与内存" name="cpu_mem">
@@ -992,18 +1021,19 @@
 import { computed, nextTick, onMounted, onActivated, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
-import { cancelBatch, cancelTask, cleanupBatchLocalArtifacts, cleanupTaskLocalArtifacts, downloadBatchReportZip, downloadTaskLogs, getTask, getTaskLogs, getTaskMonitor, listArtifacts, listBatches, getBatchDetail, listTasks, retryBatchTask, type ArtifactFileDetail, type BatchDetailResponse, type BatchQuery, type BatchSummaryItem, type BatchTaskDetailItem, type MonitorType, type TaskLogRecord, type TaskListQuery, type TaskMonitorStructuredResponse, type TaskRecord } from '@/api/task'
+import { cancelBatch, cancelTask, cleanupBatchLocalArtifacts, cleanupTaskLocalArtifacts, downloadBatchReportZip, downloadTaskLogs, getTask, getTaskLogs, getTaskMonitor, listArtifacts, listBatches, getBatchDetail, listTasks, retryBatchTask, retryTask, type ArtifactFileDetail, type BatchDetailResponse, type BatchQuery, type BatchSummaryItem, type BatchTaskDetailItem, type MonitorType, type TaskLogRecord, type TaskListQuery, type TaskMonitorStructuredResponse, type TaskRecord } from '@/api/task'
 import { formatBeijingDateKey, formatDateTime } from '@/utils/time'
 import { getApiErrorMessage as readApiErrorMessage } from '@/utils/apiError'
+import { formatTaskErrorMessage } from '@/utils/taskError'
 import { useTaskWebSocket } from '@/composables/useTaskWebSocket'
 import { calcDurationSeconds, calcEstimatedEndTime, calcEstimatedRemaining, calcProgress, formatSeconds, getTaskDuration, statusLabel } from '@/composables/useTaskProgress'
 import { formatTaskDisplayName, getTaskTypeLabel } from '@/utils/taskDisplay'
 import { adminMode, requireAdminConfirm } from '@/composables/useAdminConfirm'
-import LogViewer from '@/components/LogViewer.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import TaskCard from '@/components/TaskCard.vue'
 import TaskDiagnosisDialog from '@/components/TaskDiagnosisDialog.vue'
-import { DocumentCopy, Loading } from '@element-plus/icons-vue'
+import TaskExecutionLogPanel from '@/components/TaskExecutionLogPanel.vue'
+import { DocumentCopy, FolderOpened, Loading } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -1056,6 +1086,7 @@ const drawerLogsLoaded = ref(false)
 const drawerLogsLoading = ref(false)
 const drawerTaskLoading = ref(false)
 const localArtifactsCleaning = ref(false)
+const drawerRetrySubmitting = ref(false)
 const drawerActivePanel = ref<DrawerMonitorPanel>('summary')
 const drawerMonitorData = ref<TaskMonitorStructuredResponse | null>(null)
 const drawerMonitorLoading = ref(false)
@@ -1083,7 +1114,7 @@ const detailActivePanel = ref<string>('summary')
 const detailLogs = ref<TaskLogRecord[]>([])
 const detailLogsLoaded = ref(false)
 const detailLogsLoading = ref(false)
-const detailLogViewerRef = ref<InstanceType<typeof LogViewer> | null>(null)
+const detailLogViewerRef = ref<InstanceType<typeof TaskExecutionLogPanel> | null>(null)
 const detailMonitorData = ref<TaskMonitorStructuredResponse | null>(null)
 const detailMonitorLoading = ref(false)
 const detailNow = ref(new Date())
@@ -1361,9 +1392,9 @@ function batchDetailFailureReason(task: BatchTaskDetailItem): string {
   const status = (task.status || '').toUpperCase()
   const hasExplicitError = Boolean(task.failure_reason || task.error_summary)
   if (reportStatus === 'PASS') return ''
-  if (status === 'CANCELED') return task.error_summary || task.failure_reason || '任务已被取消'
-  if (reportStatus === 'FAIL') return task.failure_reason || task.error_summary || '报告结果为 FAIL，请查看结果文件确认失败指标。'
-  if (hasExplicitError) return task.failure_reason || task.error_summary || ''
+  if (status === 'CANCELED') return formatTaskErrorMessage(task.error_summary || task.failure_reason) || '任务已被取消'
+  if (reportStatus === 'FAIL') return formatTaskErrorMessage(task.failure_reason || task.error_summary) || '报告结果为 FAIL，请查看结果文件确认失败指标。'
+  if (hasExplicitError) return formatTaskErrorMessage(task.failure_reason || task.error_summary)
   if (!isBatchTaskTerminal(status)) return ''
   if (status === 'SUCCESS') {
     return task.has_artifacts ? '已有结果文件，但摘要缓存未解析出 PASS/FAIL；请打开结果文件查看。' : ''
@@ -1454,12 +1485,12 @@ function batchFailureReasons(tasks: TaskRecord[]) {
       if (status === 'CANCELED') {
         return {
           title: `${batchStepLabel(task)}已取消`,
-          message: task.error_message || task.failure_reason || '任务已被取消',
+          message: formatTaskErrorMessage(task.error_message || task.failure_reason) || '任务已被取消',
         }
       }
       return {
         title: `${batchStepLabel(task)}压测失败`,
-        message: task.failure_reason || task.error_message || '报告检测到压测结果为 FAIL，请查看结果文件。',
+          message: formatTaskErrorMessage(task.failure_reason || task.error_message) || '报告检测到压测结果为 FAIL，请查看结果文件。',
       }
     })
 }
@@ -1690,15 +1721,32 @@ const drawerReportTagType = computed<'' | 'success' | 'danger' | 'info'>(() => {
   return 'info'
 })
 
+const drawerFailureReason = computed(() => {
+  const task = drawerTask.value
+  return formatTaskErrorMessage(task?.failure_reason || task?.error_message) || '-'
+})
+
 const drawerShowCancelButton = computed(() => {
   const status = drawerTask.value?.status?.toUpperCase() ?? ''
   return ['PENDING', 'CONNECTING', 'PREPARING', 'UPLOADING', 'RUNNING'].includes(status)
+})
+
+const drawerCanRetry = computed(() => {
+  const task = drawerTask.value
+  if (!task || task.batch_id) return false
+  const status = task.status?.toUpperCase() ?? ''
+  return ['FAILED', 'CANCELED', 'TIMEOUT'].includes(status)
+    || task.report_status?.toUpperCase() === 'FAIL'
 })
 
 const drawerShowArtifactsButton = computed(() => {
   const task = drawerTask.value
   if (!task) return false
   return task.task_type === 'stress' && ['SUCCESS', 'FAILED', 'CANCELED'].includes(task.status?.toUpperCase() ?? '')
+})
+
+const drawerShowManualLogLoad = computed(() => {
+  return drawerIsTerminal.value && !drawerLogsLoaded.value && drawerLogs.value.length === 0
 })
 
 const drawerIsTerminal = computed(() => {
@@ -2094,7 +2142,7 @@ async function fetchDrawerMonitorData() {
 
 async function refreshDrawerPanel() {
   if (drawerActivePanel.value === 'logs') {
-    if (!drawerLogsLoaded.value) await loadDrawerLogs()
+    if (!drawerIsTerminal.value && !drawerLogsLoaded.value) await loadDrawerLogs()
   } else if (drawerActivePanel.value === 'summary') {
     await refreshTaskDrawer(true)
   } else {
@@ -2110,6 +2158,22 @@ function cancelDrawerTask() {
   if (drawerTask.value) cancelHistoryTask(drawerTask.value)
 }
 
+async function retryDrawerTask() {
+  const task = drawerTask.value
+  if (!task || drawerRetrySubmitting.value) return
+  drawerRetrySubmitting.value = true
+  try {
+    const response = (await retryTask(task.task_id)).data
+    ElMessage.success(`已创建重跑任务：${response.retry_task_id}`)
+    await loadTasks(true)
+    await openTaskDetailDrawer(response.retry_task_id)
+  } catch (error) {
+    ElMessage.error(`重跑失败：${getApiErrorMessage(error) || '未知错误'}`)
+  } finally {
+    drawerRetrySubmitting.value = false
+  }
+}
+
 function openDrawerDiagnosis() {
   if (!drawerSelectedTaskId.value) return
   diagnosisTaskId.value = drawerSelectedTaskId.value
@@ -2118,12 +2182,6 @@ function openDrawerDiagnosis() {
 
 function openDrawerArtifacts() {
   if (drawerTask.value) openArtifacts(drawerTask.value)
-}
-
-async function cleanupDrawerLocalArtifacts() {
-  const task = drawerTask.value
-  if (!task) return
-  await cleanupTaskLocalArtifactsFor(task)
 }
 
 async function cleanupTaskLocalArtifactsFor(task: TaskRecord) {
@@ -2710,7 +2768,7 @@ async function detailLoadLogs() {
       detailLogs.value = resp.data
     }
     detailLogsLoaded.value = true
-    // LogViewer 常驻挂载，autoScroll 自动滚到底部
+    // 共用日志面板挂载后自动滚到底部。
     await scrollDetailLogsToBottom()
   } catch {
     // keep empty
@@ -4736,6 +4794,11 @@ onUnmounted(() => {
     color 0.14s ease;
 }
 
+.task-result-button,
+.task-action-button--result {
+  font-weight: 600;
+}
+
 .batch-task-actions :deep(.task-action-button.el-button:not(.is-disabled):hover),
 .batch-row-actions :deep(.task-action-button.el-button:not(.is-disabled):hover) {
   background: rgba(64, 158, 255, 0.10);
@@ -4758,8 +4821,8 @@ onUnmounted(() => {
     0 0 10px rgba(64, 158, 255, 0.20);
 }
 
-/* ── Task detail drawer ── */
-.task-detail-drawer :deep(.el-drawer__body) {
+/* ── Single task detail dialog ── */
+.single-task-detail-dialog :deep(.el-dialog__body) {
   padding: 14px 16px 18px;
 }
 
@@ -4789,6 +4852,13 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.task-drawer-title-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
 }
 
 .task-drawer-grid {
@@ -4834,6 +4904,42 @@ onUnmounted(() => {
 
 .task-drawer-panel {
   min-height: 260px;
+}
+
+.task-drawer-overview {
+  display: grid;
+  gap: 8px;
+}
+
+.task-drawer-overview__row {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  padding: 9px 10px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  background: var(--el-fill-color-lighter);
+  font-size: 13px;
+}
+
+.task-drawer-overview__row > span {
+  color: var(--el-text-color-secondary);
+}
+
+.task-drawer-overview__row strong,
+.task-drawer-overview__row code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.task-drawer-overview__row code {
+  color: var(--el-color-primary);
+  font-family: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+}
+
+.task-drawer-overview__row--error strong {
+  color: var(--el-color-danger);
 }
 
 .task-drawer-loading-inline,

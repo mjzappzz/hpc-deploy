@@ -1023,20 +1023,22 @@ async function detectAll() {
     // 1. 批量 SSH 测试
     const sshResp: SSHTestAllResponse = (await testAllServerSsh(targetIds)).data
     await loadServers()
-    if (sshResp.offline > 0) {
-      ElMessage.warning(`SSH 连接失败：${sshResp.offline} 台，跳过探测`)
-    }
     // 2. 在线服务器探测
     const onlineIds = servers.value
       .filter((s) => s.status === 'online' && targetIds.includes(s.id))
       .map((s) => s.id)
+    let detectedOnline = 0
     if (onlineIds.length > 0) {
       const probeResp: ProbeAllResponse = (await probeAllServers(onlineIds)).data
-      if (probeResp.online > 0) {
-        ElMessage.success(`全部检测完成：${probeResp.online} 台在线`)
-      }
+      detectedOnline = probeResp.online
     }
     await loadServers()
+    if (detectedOnline > 0) {
+      ElMessage.success(`检测成功：${detectedOnline} 台服务器在线`)
+    }
+    if (sshResp.offline > 0) {
+      ElMessage.warning(`离线服务器：${sshResp.offline} 台，已跳过检测`)
+    }
   } catch (error) {
     ElMessage.error(`全部检测失败：${getApiErrorMessage(error)}`)
   } finally {

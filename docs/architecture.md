@@ -295,6 +295,8 @@ $HOME/hpcdeploy/
 | 查看审计日志 | `GET /api/audit-logs` | `require_admin_token()` |
 | 保存系统设置 | `PUT /api/settings` | `require_admin_token()` |
 
+任务记录与本机 artifacts 的清理以单任务或整批为原子范围：任务同时关联批次、执行日志和报告摘要时，不应仅按空目录删除单条子任务，以免保留不完整的批次历史。
+
 ### 认证流程
 
 ```

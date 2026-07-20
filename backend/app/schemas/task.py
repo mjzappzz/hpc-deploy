@@ -21,6 +21,12 @@ class TaskRunResponse(BaseModel):
     status: str
 
 
+class TaskRetryResponse(BaseModel):
+    original_task_id: str
+    retry_task_id: str
+    status: str
+
+
 class BatchTaskRetryResponse(BaseModel):
     original_task_id: str
     retry_task_id: str

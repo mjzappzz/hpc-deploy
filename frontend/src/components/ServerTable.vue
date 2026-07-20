@@ -106,7 +106,9 @@
           <el-button
             link
             type="warning"
-            :loading="probingIds.includes(row.id)"
+            class="server-detect-button"
+            :disabled="probingIds.includes(row.id)"
+            :class="{ 'is-probing': probingIds.includes(row.id) }"
             @click="$emit('detect', row)"
           >
             检测
@@ -118,15 +120,8 @@
           >
             服务器详情
           </el-button>
-          <el-dropdown trigger="click" @command="(command: string) => handleMore(command, row)">
-            <el-button link type="info">更多</el-button>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item command="edit">编辑</el-dropdown-item>
-                <el-dropdown-item command="delete" class="danger-menu-item">删除</el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
+          <el-button link type="info" @click="$emit('edit', row)">编辑</el-button>
+          <el-button link type="danger" @click="$emit('delete', row)">删除</el-button>
         </div>
       </template>
     </el-table-column>
@@ -225,15 +220,6 @@ function cpuSummary(value: string | null | undefined) {
   return `${model || 'CPU'} / ${cores}C`
 }
 
-function handleMore(command: string, server: ServerRecord) {
-  if (command === 'edit') {
-    emit('edit', server)
-  }
-  if (command === 'delete') {
-    emit('delete', server)
-  }
-}
-
 // ── Inline tag editing ──
 
 function startEditing(row: ServerRecord) {
@@ -330,6 +316,17 @@ function cancelEditing() {
   margin-left: 0;
   padding-left: 0;
   padding-right: 0;
+}
+
+.server-actions :deep(.server-detect-button.is-probing) {
+  color: var(--el-color-warning);
+  animation: server-detect-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes server-detect-pulse {
+  50% {
+    opacity: 0.45;
+  }
 }
 
 .gpu-status-warning {

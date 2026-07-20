@@ -74,6 +74,13 @@ export function previewScriptFile(path: string) {
   return request.get<ScriptFilePreviewRecord>('/scripts/files/preview', { params: { path } })
 }
 
+export function getScriptFileContent(path: string) {
+  return request.get<string>('/scripts/files/download', {
+    params: { path },
+    responseType: 'text',
+  })
+}
+
 export async function uploadScriptFile(category: string, file: File) {
   const data = await file.arrayBuffer()
   return request.post<ScriptFileRecord>('/scripts/files/upload', data, {
