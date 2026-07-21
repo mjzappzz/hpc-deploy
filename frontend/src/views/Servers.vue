@@ -22,7 +22,7 @@
 
       <div class="filter-bar">
         <el-select v-model="filterTag" placeholder="按标签筛选" clearable size="small" style="width:140px" @change="loadServers" @clear="loadServers">
-          <el-option v-for="t in tags" :key="t.name" :label="t.name" :value="t.name" />
+          <el-option v-for="option in SERVER_TAG_OPTIONS" :key="option.name" :label="option.name" :value="option.name" />
         </el-select>
         <el-input v-model="filterKeyword" placeholder="搜索名称/主机" clearable size="small" style="width:200px" @clear="loadServers" @keyup.enter="loadServers" />
         <el-button size="small" @click="clearFilters">清除筛选</el-button>
@@ -95,7 +95,12 @@
           </el-select>
         </el-form-item>
         <el-form-item v-if="form.auth_type === 'password'" label="密码" required>
-          <el-input v-model="form.password" type="password" show-password placeholder="输入 SSH 登录密码" />
+          <el-input
+            v-model="form.password"
+            type="password"
+            show-password
+            :placeholder="editingId ? '留空则保留原密码' : DEFAULT_NEW_SERVER_PASSWORD"
+          />
         </el-form-item>
         <el-form-item v-else label="SSH 私钥" required>
           <div class="ssh-key-row">
@@ -241,7 +246,7 @@
               </el-descriptions-item>
               <el-descriptions-item label="标签">
                 <template v-if="activeServer.tags && activeServer.tags.length > 0">
-                  <el-tag v-for="tag in activeServer.tags" :key="tag" size="small" style="margin-right:4px">{{ tag }}</el-tag>
+                  <el-tag v-for="tag in activeServer.tags" :key="tag" size="small" :type="serverTagType(tag)" style="margin-right:4px">{{ tag }}</el-tag>
                 </template>
                 <span v-else class="detail-empty-text">暂无标签</span>
               </el-descriptions-item>
@@ -464,6 +469,7 @@ import LogViewer from '@/components/LogViewer.vue'
 import TaskDiagnosisDialog from '@/components/TaskDiagnosisDialog.vue'
 import { adminMode, requireAdminConfirm } from '@/composables/useAdminConfirm'
 import { useSettingsStore } from '@/stores/settings'
+import { SERVER_TAG_OPTIONS, serverTagType } from '@/constants/serverTags'
 
 const settingsStore = useSettingsStore()
 
@@ -532,6 +538,8 @@ const form = reactive<ServerPayload>({
   status: 'unknown',
 })
 
+const DEFAULT_NEW_SERVER_PASSWORD = 'Tjzs_2026'
+
 const availableSshKeyOptions = computed(() => {
   const items = [...sshKeys.value]
   const currentPath = form.key_path?.trim()
@@ -552,7 +560,7 @@ const hasSelectableSshKey = computed(() => availableSshKeyOptions.value.length >
 const sshKeysWithPublicKey = computed(() => sshKeys.value.filter((item) => item.has_public_key))
 const saveDisabled = computed(() => {
   if (form.auth_type === 'password') {
-    return !editingId.value && !form.password?.trim()
+    return false
   }
   return !form.key_path?.trim() || (!editingId.value && !hasSelectableSshKey.value)
 })
@@ -713,7 +721,6 @@ async function saveServer() {
       memory_info: form.memory_info,
       disk_info: form.disk_info,
       network_info: form.network_info,
-      // Tags are edited inline via the table, not in this dialog
     }
     if (form.auth_type === 'password') {
       payload.key_path = null
@@ -722,7 +729,7 @@ async function saveServer() {
           payload.password = form.password
         }
       } else {
-        payload.password = form.password || null
+        payload.password = form.password?.trim() || DEFAULT_NEW_SERVER_PASSWORD
       }
     } else {
       payload.key_path = form.key_path || null

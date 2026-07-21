@@ -3383,6 +3383,11 @@ function formatFileSize(size: number): string {
 }
 
 onMounted(async () => {
+  if (typeof route.query.reset === 'string' && route.query.reset) {
+    resetFilters()
+    return
+  }
+
   // apply route.query params to filters
   const qStatus = route.query.status
   const qTaskType = route.query.task_type
@@ -3421,6 +3426,11 @@ watch(() => [route.query.status, route.query.running_filter], ([status]) => {
   filters.status = nextStatus
   filters.offset = 0
   loadTasks()
+})
+
+watch(() => route.query.reset, (reset) => {
+  if (route.path !== '/history' || typeof reset !== 'string' || !reset) return
+  resetFilters()
 })
 
 watch(batchDetailVisible, (visible) => {

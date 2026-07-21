@@ -7,8 +7,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 # ── Tag validation helpers ──
 TAG_MAX_LENGTH = 30
-TAG_MAX_COUNT = 10
 TAG_FORBIDDEN_CHARS = set(";&|`$()\n\r")
+SERVER_TAG_OPTIONS = ("待压测", "测试机", "压测完成", "故障待处理")
 
 
 def _sanitize_tag(tag: str) -> str:
@@ -23,14 +23,12 @@ def _sanitize_tag(tag: str) -> str:
 
 
 def _normalize_tags(tags_raw: list[str]) -> list[str]:
-    seen: set[str] = set()
-    result: list[str] = []
-    for t in tags_raw:
-        cleaned = _sanitize_tag(t)
-        if cleaned not in seen:
-            seen.add(cleaned)
-            result.append(cleaned)
-    return result
+    if len(tags_raw) != 1:
+        raise ValueError("exactly one server tag must be selected")
+    cleaned = _sanitize_tag(tags_raw[0])
+    if cleaned not in SERVER_TAG_OPTIONS:
+        raise ValueError(f"unsupported server tag: {cleaned}")
+    return [cleaned]
 
 
 class ServerBase(BaseModel):
@@ -54,7 +52,7 @@ class ServerBase(BaseModel):
 
 class ServerCreate(ServerBase):
     password: str | None = Field(default=None, max_length=255)
-    tags: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=lambda: ["待压测"])
 
     @field_validator("tags")
     @classmethod
@@ -114,7 +112,7 @@ class ServerRead(ServerBase):
                     tags_val = json.loads(data.pop("tags_json", "[]"))
                 except (json.JSONDecodeError, TypeError):
                     tags_val = []
-                data = {**data, "tags": tags_val if isinstance(tags_val, list) else []}
+                data = {**data, "tags": tags_val if isinstance(tags_val, list) and tags_val else ["待压测"]}
             return data
 
         # ── SQLAlchemy ORM instance ──
@@ -126,7 +124,7 @@ class ServerRead(ServerBase):
                 tags_val = json.loads(d.pop("tags_json", "[]")) if d.get("tags_json") else []
             except (json.JSONDecodeError, TypeError):
                 tags_val = []
-            d["tags"] = tags_val if isinstance(tags_val, list) else []
+            d["tags"] = tags_val if isinstance(tags_val, list) and tags_val else ["待压测"]
             return d
 
         return data

@@ -5,6 +5,8 @@ from app.core.config import settings
 from app.core.report_summary import schedule_missing_report_summary_backfill
 from app.core.task_recovery import recover_stuck_tasks
 from app.core.task_runner import resume_running_script_tasks_after_startup
+from app.core.gpu_driver_runner import resume_gpu_driver_tasks_after_startup
+from app.core.cuda_toolkit_runner import resume_cuda_toolkit_tasks_after_startup
 from app.db.database import init_db
 from fastapi import FastAPI
 
@@ -30,6 +32,8 @@ def create_app() -> FastAPI:
         tasks.resume_pending_tasks_after_startup()
         tasks.resume_running_stress_tasks_after_startup()
         resume_running_script_tasks_after_startup()
+        resume_gpu_driver_tasks_after_startup()
+        resume_cuda_toolkit_tasks_after_startup()
         schedule_missing_report_summary_backfill()
         app.state.auto_cleanup_task = start_auto_cleanup_scheduler()
 

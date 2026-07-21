@@ -47,13 +47,18 @@ export interface ScriptFileRecord {
   path: string
   resolved_path?: string | null
   relative_path: string
-  physical_category: 'mpi' | 'stress' | 'apptainer'
+  physical_category: 'mpi' | 'stress' | 'windows' | 'apptainer'
   display_category: string
   size: number
   updated_at?: string | null
   executable: boolean
   is_text: boolean
   previewable: boolean
+  content_version: string | null
+  filename_version: string | null
+  version_consistent: boolean | null
+  sha256: string | null
+  encoding: string | null
 }
 
 export interface ScriptFilePreviewRecord extends ScriptFileRecord {

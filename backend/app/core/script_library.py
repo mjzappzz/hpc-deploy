@@ -1,3 +1,5 @@
+import hashlib
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -5,24 +7,39 @@ from app.core.script_validator import BACKEND_ROOT, SCRIPTS_ROOT, ScriptValidati
 
 
 APPTAINER_ROOT = BACKEND_ROOT / "apptainer"
-TEXT_FILE_SUFFIXES = {".sh", ".py", ".txt", ".md"}
+WINDOWS_SCRIPTS_ROOT = SCRIPTS_ROOT / "windows"
+TEXT_FILE_SUFFIXES = {".sh", ".py", ".txt", ".md", ".ps1", ".bat", ".cmd"}
 BINARY_FILE_SUFFIXES = {".sif"}
 ALLOWED_LIBRARY_SUFFIXES = TEXT_FILE_SUFFIXES | BINARY_FILE_SUFFIXES
 UPLOAD_DIRECTORIES = {
     "mpi": SCRIPTS_ROOT / "mpi",
     "stress": SCRIPTS_ROOT / "stress",
+    "windows": WINDOWS_SCRIPTS_ROOT,
     "apptainer": APPTAINER_ROOT,
 }
 ALLOWED_SUFFIXES_BY_CATEGORY = {
     "mpi": {".sh", ".py", ".txt", ".md"},
     "stress": {".sh", ".py", ".txt", ".md"},
+    "windows": {".ps1", ".bat", ".cmd"},
     "apptainer": {".sif"},
 }
 DISPLAY_CATEGORY_LABELS = {
     "mpi": "服务器环境",
     "stress": "服务器压测",
+    "windows": "Windows 压测",
     "apptainer": "Apptainer 容器",
 }
+MAX_WINDOWS_SCRIPT_BYTES = 2 * 1024 * 1024
+VERSION_VALUE = r"(?P<version>\d+(?:\.\d+){0,3}(?:[-+][A-Za-z0-9._-]+)?)"
+SCRIPT_VERSION_PATTERN = re.compile(
+    rf"^\s*(?:#|REM\s+)?\s*(?:script\s*version|version)\s*[:=]\s*['\"]?v?{VERSION_VALUE}",
+    re.IGNORECASE | re.MULTILINE,
+)
+SCRIPT_HEADER_VERSION_PATTERN = re.compile(
+    rf"\b(?:script|report|stress)\b[^\r\n]{{0,160}}?\bv?{VERSION_VALUE}\b",
+    re.IGNORECASE,
+)
+FILENAME_VERSION_PATTERN = re.compile(rf"(?:^|[_-])v?{VERSION_VALUE}(?:[_-]|\.|$)", re.IGNORECASE)
 
 
 def list_library_files() -> list[dict[str, object]]:
@@ -74,6 +91,8 @@ def save_library_file(category: str, filename: str, content: bytes) -> dict[str,
     suffix = Path(safe_name).suffix.lower()
     if suffix not in ALLOWED_SUFFIXES_BY_CATEGORY[category]:
         raise ScriptValidationError("unsupported file suffix")
+    if category == "windows" and len(content) > MAX_WINDOWS_SCRIPT_BYTES:
+        raise ScriptValidationError("Windows script must not exceed 2 MiB")
 
     destination_dir.mkdir(parents=True, exist_ok=True)
     destination = destination_dir / safe_name
@@ -105,11 +124,12 @@ def read_library_preview(file_path: str, max_bytes: int = 200_000) -> dict[str, 
 
     raw = resolved.read_bytes()
     truncated = len(raw) > max_bytes
-    content = raw[:max_bytes].decode("utf-8", errors="replace")
+    content, encoding = decode_text_content(raw[:max_bytes])
     return {
         **record,
         "content": content,
         "truncated": truncated,
+        "encoding": encoding,
         "message": None,
     }
 
@@ -127,7 +147,7 @@ def build_library_file_record(path: Path) -> dict[str, object]:
         updated_at = datetime.utcfromtimestamp(stat.st_mtime)
     except Exception:
         updated_at = None
-    return {
+    record: dict[str, object] = {
         "path": relative,
         "resolved_path": str(resolved),
         "relative_path": relative_path,
@@ -139,7 +159,63 @@ def build_library_file_record(path: Path) -> dict[str, object]:
         "executable": bool(stat.st_mode & 0o111),
         "is_text": suffix in TEXT_FILE_SUFFIXES,
         "previewable": suffix in TEXT_FILE_SUFFIXES,
+        "content_version": None,
+        "filename_version": None,
+        "version_consistent": None,
+        "sha256": None,
+        "encoding": None,
     }
+    if physical_category == "windows":
+        record.update(build_windows_script_metadata(resolved))
+    return record
+
+
+def build_windows_script_metadata(path: Path) -> dict[str, object]:
+    raw = path.read_bytes()
+    content, encoding = decode_text_content(raw[:64 * 1024])
+    content_version = extract_content_version(content)
+    filename_version = extract_filename_version(path.name)
+    version_consistent = (
+        content_version == filename_version
+        if content_version is not None and filename_version is not None
+        else None
+    )
+    return {
+        "content_version": content_version,
+        "filename_version": filename_version,
+        "version_consistent": version_consistent,
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "encoding": encoding,
+    }
+
+
+def decode_text_content(raw: bytes) -> tuple[str, str]:
+    if raw.startswith(b"\xef\xbb\xbf"):
+        return raw.decode("utf-8-sig", errors="replace"), "utf-8-sig"
+    if raw.startswith(b"\xff\xfe"):
+        return raw.decode("utf-16", errors="replace"), "utf-16le"
+    if raw.startswith(b"\xfe\xff"):
+        return raw.decode("utf-16", errors="replace"), "utf-16be"
+    try:
+        return raw.decode("utf-8"), "utf-8"
+    except UnicodeDecodeError:
+        try:
+            return raw.decode("gb18030"), "gb18030"
+        except UnicodeDecodeError:
+            return raw.decode("utf-8", errors="replace"), "utf-8-replace"
+
+
+def extract_content_version(content: str) -> str | None:
+    for pattern in (SCRIPT_VERSION_PATTERN, SCRIPT_HEADER_VERSION_PATTERN):
+        match = pattern.search(content)
+        if match:
+            return f"v{match.group('version')}"
+    return None
+
+
+def extract_filename_version(name: str) -> str | None:
+    match = FILENAME_VERSION_PATTERN.search(name)
+    return f"v{match.group('version')}" if match else None
 
 
 def detect_library_category(path: Path) -> str:
@@ -152,6 +228,8 @@ def detect_library_category(path: Path) -> str:
         return "mpi"
     if relative.parts and relative.parts[0] == "stress":
         return "stress"
+    if relative.parts and relative.parts[0] == "windows":
+        return "windows"
     return "mpi"
 
 

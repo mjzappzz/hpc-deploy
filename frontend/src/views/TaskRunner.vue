@@ -26,15 +26,28 @@
               <!-- ─── STEP 1: TARGET SERVER CARDS ─── -->
               <div class="selection-card">
                 <div class="selection-label-row">
-                  <span class="selection-label step-label">① 选择目标服务器</span>
-                  <el-tooltip v-if="refreshingServerConnectivity" content="正在刷新在线服务器 SSH 状态" placement="top">
-                    <el-icon class="server-connectivity-spinner"><Loading /></el-icon>
-                  </el-tooltip>
-                  <el-tag v-if="selectedServerIds.length > 0" type="success" size="small" effect="dark" class="step-complete-tag">已完成</el-tag>
-                  <div class="tag-filter-inline">
+                  <div class="selection-heading">
+                    <span class="selection-label step-label">① 选择目标服务器</span>
+                    <el-tooltip v-if="refreshingServerConnectivity" content="正在刷新在线服务器 SSH 状态" placement="top">
+                      <el-icon class="server-connectivity-spinner"><Loading /></el-icon>
+                    </el-tooltip>
+                    <el-tag v-if="selectedServerIds.length > 0" type="success" size="small" effect="dark" class="step-complete-tag">已完成</el-tag>
+                  </div>
+                  <div class="selection-header-actions">
                     <el-select v-model="selectedTag" placeholder="全部标签" clearable size="small" style="width:140px" @change="onTagFilterChange">
                       <el-option v-for="t in tags" :key="t.name" :label="t.name" :value="t.name" />
                     </el-select>
+                    <el-button
+                      type="primary"
+                      plain
+                      size="small"
+                      :loading="probingOnlineServers"
+                      :disabled="allOnlineServers.length === 0"
+                      @click="probeOnlineServers"
+                    >
+                      <el-icon><Refresh /></el-icon>
+                      探测在线服务器
+                    </el-button>
                   </div>
                 </div>
 
@@ -46,42 +59,53 @@
                   <el-button size="small" class="clear-tag-btn" @click="selectedTag = ''">清除标签筛选</el-button>
                 </template>
                 <template v-else>
-                  <div class="server-card-grid">
-                    <div
-                      v-for="server in filteredOnlineServers"
-                      :key="server.id"
-                      :class="['server-select-card', 'hpc-interactive-pulse', { 'is-active': selectedServerIds.includes(server.id), 'hpc-selected-pulse': selectedServerIds.includes(server.id) }]"
-                      @click="toggleServerCard(server.id)"
-                    >
-                      <div class="s-card-main">
-                        <div class="s-card-title-row">
-                          <div class="s-card-name-group">
-                            <span class="s-card-name">{{ server.name }}</span>
-                            <template v-if="server.tags && server.tags.length">
-                              <el-tag
-                                v-for="tag in server.tags.slice(0, 2)"
-                                :key="tag"
-                                size="small"
-                                class="s-card-tag"
-                              >{{ tag }}</el-tag>
-                              <el-tag v-if="server.tags.length > 2" size="small" type="info" class="s-card-tag">+{{ server.tags.length - 2 }}</el-tag>
-                            </template>
+                  <div class="server-group-list">
+                    <section v-for="group in groupedOnlineServers" :key="group.name" class="server-group">
+                      <div class="server-group-header">
+                        <el-tag :type="group.name === '未标记' ? 'info' : serverTagType(group.name)" effect="plain">{{ group.name }}</el-tag>
+                        <span>{{ group.servers.length }} 台服务器</span>
+                      </div>
+                      <div class="server-card-grid">
+                        <div
+                          v-for="server in group.servers"
+                          :key="server.id"
+                          :class="['server-select-card', 'hpc-interactive-pulse', { 'is-active': selectedServerIds.includes(server.id), 'hpc-selected-pulse': selectedServerIds.includes(server.id) }]"
+                          @click="toggleServerCard(server.id)"
+                        >
+                          <div class="s-card-main">
+                            <div class="s-card-title-row">
+                              <div class="s-card-name-group">
+                                <span class="s-card-name">{{ server.name }}</span>
+                                <template v-if="server.tags && server.tags.length">
+                                  <el-tag v-for="tag in server.tags.slice(0, 2)" :key="tag" size="small" :type="serverTagType(tag)" class="s-card-tag">{{ tag }}</el-tag>
+                                  <el-tag v-if="server.tags.length > 2" size="small" type="info" class="s-card-tag">+{{ server.tags.length - 2 }}</el-tag>
+                                </template>
+                              </div>
+                              <div class="s-card-state">
+                                <el-tag size="small" type="success" effect="plain">在线</el-tag>
+                                <span v-if="selectedServerIds.includes(server.id)" class="s-card-check">✓</span>
+                              </div>
+                            </div>
+                            <div class="s-card-meta-row">
+                              <span class="s-card-host">{{ server.host }}</span>
+                              <span class="s-card-sep">·</span>
+                              <span class="s-card-user">{{ server.username }}</span>
+                            </div>
+                            <div class="s-card-info-grid">
+                              <div v-if="server.os_info" class="s-card-info-item s-card-os-info">
+                                <span class="s-card-info-label">系统</span>
+                                <span class="s-card-info-value" :title="server.os_info">{{ compactOsName(server.os_info) }}</span>
+                              </div>
+                              <template v-if="hasDetectedNvidiaGpu(server)">
+                                <div class="s-card-info-item"><span class="s-card-info-label">GPU 驱动</span><span :class="['s-card-info-value', { 'is-ready': server.gpu_status === 'driver_ok' }]">{{ gpuDriverStatus(server) }}</span></div>
+                                <div class="s-card-info-item"><span class="s-card-info-label">CUDA</span><span :class="['s-card-info-value', { 'is-ready': cudaStatus(server) !== '未安装' }]">{{ cudaStatus(server) }}</span></div>
+                              </template>
+                              <div v-else-if="server.gpu_status === 'none'" class="s-card-info-item s-card-no-gpu"><span class="s-card-info-label">GPU</span><span class="s-card-info-value">无 NVIDIA GPU</span></div>
+                            </div>
                           </div>
-                          <div class="s-card-state">
-                            <el-tag size="small" type="success" effect="plain">在线</el-tag>
-                            <span v-if="selectedServerIds.includes(server.id)" class="s-card-check">✓</span>
-                          </div>
-                        </div>
-                        <div class="s-card-meta-row">
-                          <span class="s-card-host">{{ server.host }}</span>
-                          <span class="s-card-sep">·</span>
-                          <span class="s-card-user">{{ server.username }}</span>
-                        </div>
-                        <div v-if="server.os_info" class="s-card-badges">
-                          <el-tag :type="osTagType(server.os_info)" class="s-card-os-badge">{{ server.os_info }}</el-tag>
                         </div>
                       </div>
-                    </div>
+                    </section>
                   </div>
 
                   <div class="selection-meta">
@@ -129,17 +153,44 @@
 
                 <!-- Script type: card grid -->
                 <template v-if="selectedTaskType === 'script'">
-                  <div v-if="filteredFiles.length === 0" class="empty-servers-hint">暂无可选脚本。</div>
-                  <div v-else class="file-card-grid">
+                  <div class="file-card-grid">
+                    <div
+                      :class="['file-select-card', 'environment-card', 'hpc-interactive-pulse', { 'is-active': isGpuDriverSelected, 'hpc-selected-pulse': isGpuDriverSelected }]"
+                      @click="canSelectFile && (selectedFilePath = GPU_DRIVER_ROCKY9_ACTION)"
+                    >
+                      <div class="environment-card__top">
+                        <el-tag type="success" effect="plain">NVIDIA</el-tag>
+                        <span v-if="isGpuDriverSelected" class="environment-card__selected">已选择</span>
+                      </div>
+                      <div class="environment-card__title">NVIDIA GPU 驱动（自动识别系统）</div>
+                      <div class="environment-card__description">自动准备依赖、禁用 Nouveau，并安装脚本知识库中选择的 .run 驱动。</div>
+                      <div class="environment-card__target">支持：Rocky Linux 9 / Ubuntu 20.04、22.04、24.04 · 需免密 sudo</div>
+                    </div>
+                    <div
+                      :class="['file-select-card', 'environment-card', 'hpc-interactive-pulse', { 'is-active': isCudaToolkitSelected, 'hpc-selected-pulse': isCudaToolkitSelected }]"
+                      @click="canSelectFile && (selectedFilePath = CUDA_TOOLKIT_ACTION)"
+                    >
+                      <div class="environment-card__top">
+                        <el-tag type="warning" effect="plain">NVIDIA</el-tag>
+                        <span v-if="isCudaToolkitSelected" class="environment-card__selected">已选择</span>
+                      </div>
+                      <div class="environment-card__title">NVIDIA CUDA Toolkit（自动识别系统）</div>
+                      <div class="environment-card__description">安装指定 CUDA Toolkit，不安装或覆盖 NVIDIA 驱动。</div>
+                      <div class="environment-card__target">默认 CUDA 12.8 · 支持 Rocky Linux 9 / Ubuntu 22.04、24.04 · 需免密 sudo</div>
+                    </div>
                     <div
                       v-for="file in filteredFiles"
                       :key="file.path"
-                      :class="['file-select-card', 'hpc-interactive-pulse', { 'is-active': selectedFilePath === file.path, 'hpc-selected-pulse': selectedFilePath === file.path }]"
+                      :class="['file-select-card', 'environment-card', 'hpc-interactive-pulse', { 'is-active': selectedFilePath === file.path, 'hpc-selected-pulse': selectedFilePath === file.path }]"
                       @click="canSelectFile && (selectedFilePath = file.path)"
                     >
-                      <div class="f-card-name">{{ file.name }}</div>
-                      <div class="f-card-path">{{ file.relative_path }}</div>
-                      <div class="f-card-meta">{{ formatSize(file.size) }} · {{ formatScriptUpdatedAt(file.updated_at) }}</div>
+                      <div class="environment-card__top">
+                        <el-tag :type="environmentScriptInfo(file.name).tagType" effect="plain">{{ environmentScriptInfo(file.name).vendor }}</el-tag>
+                        <span v-if="selectedFilePath === file.path" class="environment-card__selected">已选择</span>
+                      </div>
+                      <div class="environment-card__title">{{ environmentScriptInfo(file.name).title }}</div>
+                      <div class="environment-card__description">{{ environmentScriptInfo(file.name).description }}</div>
+                      <div class="environment-card__target">适用：{{ environmentScriptInfo(file.name).target }}</div>
                     </div>
                   </div>
                 </template>
@@ -208,7 +259,66 @@
               <div class="card-title step-title">④ 配置参数并执行</div>
 
               <!-- 文件信息 (compact summary) - single mode -->
-              <template v-if="!stressSuiteMode">
+              <template v-if="isGpuDriverSelected">
+                <div class="card-title">Linux NVIDIA 驱动</div>
+                <el-alert :title="gpuDriverOsLabel" :type="isSupportedGpuDriverOs ? 'info' : 'error'" :closable="false" show-icon />
+                <el-alert title="仅在 Nouveau 已加载或 Rocky 更新了默认启动内核时自动重启；安装成功仅以 nvidia-smi 为准。" type="warning" :closable="false" show-icon />
+                <el-form label-position="top" class="gpu-driver-form">
+                  <el-form-item label="驱动类型">
+                    <el-radio-group v-model="gpuDriverType" :disabled="isFormDisabled">
+                      <el-radio value="geforce">GeForce（RTX 5090 / 4090 / 4080 SUPER / 3090）</el-radio>
+                      <el-radio value="datacenter">Data Center（H200 / H100 / A100 / L40S / RTX PRO 6000）</el-radio>
+                    </el-radio-group>
+                  </el-form-item>
+                  <el-form-item label="驱动来源">
+                    <el-radio-group v-model="gpuDriverSource" :disabled="isFormDisabled || uploadingGpuDriver">
+                      <el-radio value="library">从脚本知识库选择</el-radio>
+                      <el-radio value="upload">上传自定义 .run（保留 7 天）</el-radio>
+                    </el-radio-group>
+                  </el-form-item>
+                  <el-form-item label="安装策略">
+                    <div class="install-policy-row">
+                      <el-checkbox v-model="forceInstallIfDriverExists" :disabled="isFormDisabled">强制安装所选版本</el-checkbox>
+                      <span class="install-policy-hint">默认检测到 nvidia-smi 后跳过安装。</span>
+                    </div>
+                  </el-form-item>
+                  <el-form-item v-if="gpuDriverSource === 'library'" label="具体版本">
+                    <el-select v-model="gpuDriverId" placeholder="选择知识库中的驱动版本" :disabled="isFormDisabled || !gpuDriverType" class="runner-control">
+                      <el-option v-for="driver in filteredGpuDrivers" :key="driver.driver_id" :label="driver.filename" :value="driver.driver_id">
+                        <span>{{ driver.filename }}</span>
+                        <span class="gpu-driver-option-type">{{ driver.label }}</span>
+                      </el-option>
+                    </el-select>
+                    <div v-if="gpuDriverType && filteredGpuDrivers.length === 0" class="form-help">该类型暂无驱动，请到脚本知识库 → Linux NVIDIA 驱动上传。</div>
+                  </el-form-item>
+                  <el-form-item v-else label="自定义 NVIDIA .run 文件">
+                    <el-upload accept=".run" :show-file-list="false" :auto-upload="false" :disabled="isFormDisabled || uploadingGpuDriver" :on-change="onCustomGpuDriverFileChange">
+                      <el-button :loading="uploadingGpuDriver">上传自定义 .run</el-button>
+                    </el-upload>
+                    <div v-if="gpuDriverUploadId" class="upload-success-row">已上传：{{ gpuDriverUploadName }}</div>
+                    <div class="form-help">临时驱动默认保留 7 天；被执行中的任务引用时不会清理。</div>
+                  </el-form-item>
+                </el-form>
+              </template>
+              <template v-else-if="isCudaToolkitSelected">
+                <div class="card-title">NVIDIA CUDA Toolkit</div>
+                <el-alert :title="cudaToolkitOsLabel" :type="isSupportedCudaToolkitOs ? 'info' : 'error'" :closable="false" show-icon />
+                <el-alert title="仅安装 CUDA Toolkit，不安装或覆盖 NVIDIA 驱动；任务会先校验 nvidia-smi。" type="warning" :closable="false" show-icon />
+                <el-form label-position="top" class="gpu-driver-form">
+                  <el-form-item label="CUDA 版本">
+                    <el-select v-model="cudaToolkitVersion" :disabled="isFormDisabled" class="runner-control">
+                      <el-option v-for="version in cudaToolkitVersions" :key="version" :label="`CUDA ${version}${version === '12.8' ? '（默认）' : ''}`" :value="version" />
+                    </el-select>
+                  </el-form-item>
+                  <el-form-item label="安装策略">
+                    <div class="install-policy-row">
+                      <el-checkbox v-model="forceInstallCudaToolkit" :disabled="isFormDisabled">强制执行安装</el-checkbox>
+                      <span class="install-policy-hint">默认检测到目标版本 nvcc 后跳过。</span>
+                    </div>
+                  </el-form-item>
+                </el-form>
+              </template>
+              <template v-else-if="!stressSuiteMode">
                 <div class="card-title">文件信息</div>
                 <div class="file-info-compact">
                   <div class="file-info-row file-info-name" :title="selectedFile?.name ?? ''">{{ selectedFile?.name }}</div>
@@ -441,7 +551,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { listScriptFiles, type ScriptFileRecord } from '@/api/script'
-import { listServers, listTags, testAllServerSsh, type ServerRecord, type TagSummary } from '@/api/server'
+import { listServers, listTags, probeAllServers, testAllServerSsh, type ServerRecord, type TagSummary } from '@/api/server'
 import {
   batchRunTask,
   cancelTask,
@@ -454,11 +564,18 @@ import {
   type MonitorType,
   type StressSuiteResponse,
   runTask,
+  runRockyGpuDriverTask,
+  runGpuDriverBatchTask,
+  runCudaToolkitTask,
+  runCudaToolkitBatchTask,
+  listGpuDriverLibrary,
+  uploadGpuDriverFile,
   type RunTaskPayload,
   type TaskLogRecord,
   type TaskMonitorStructuredResponse,
   type TaskRecord,
-  type TaskType as ApiTaskType
+  type TaskType as ApiTaskType,
+  type CudaToolkitVersion
 } from '@/api/task'
 import { downloadTaskLogs } from '@/api/task'
 import { useTaskWebSocket } from '@/composables/useTaskWebSocket'
@@ -467,6 +584,7 @@ import { formatDateTime, formatScriptUpdatedAt } from '@/utils/time'
 import { getTaskTypeLabel, formatTaskDisplayName } from '@/utils/taskDisplay'
 import { getApiErrorMessage as readApiErrorMessage } from '@/utils/apiError'
 import { formatBytes } from '@/utils/format'
+import { serverTagType } from '@/constants/serverTags'
 import {
   calcDurationSeconds,
   calcEstimatedRemaining,
@@ -478,7 +596,7 @@ import {
 import LogViewer from '@/components/LogViewer.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import TaskDiagnosisDialog from '@/components/TaskDiagnosisDialog.vue'
-import { Loading } from '@element-plus/icons-vue'
+import { Loading, Refresh } from '@element-plus/icons-vue'
 import { useRoute, useRouter } from 'vue-router'
 
 type DurationParts = {
@@ -506,15 +624,59 @@ function taskTypeCardDesc(value: TaskType): string {
     script: '执行脚本知识库中的服务器环境、安装、运维配置脚本',
     stress: 'CPU/内存、磁盘、GPU 压测，支持参数化配置',
     apptainer: '仅上传分发 .sif 镜像，不执行容器',
+    gpu_driver: 'Rocky 9.4 NVIDIA 驱动安装专用任务',
+    cuda_toolkit: 'NVIDIA CUDA Toolkit 自动安装任务',
   }
   return descs[value] ?? ''
 }
 
-function osTagType(os: string): 'success' | 'primary' | 'info' {
-  const v = os.toLowerCase()
-  if (v.includes('windows') || v.includes('win')) return 'primary'
-  if (v.includes('linux') || v.includes('ubuntu') || v.includes('centos') || v.includes('debian') || v.includes('red hat') || v.includes('fedora') || v.includes('rocky') || v.includes('suse') || v.includes('alpine') || v.includes('amazon linux')) return 'success'
-  return 'info'
+function environmentScriptInfo(fileName: string): { vendor: string; tagType: 'primary' | 'danger' | 'info'; title: string; description: string; target: string } {
+  if (fileName.includes('oneapi')) {
+    return {
+      vendor: 'Intel',
+      tagType: 'primary',
+      title: 'Intel oneAPI 2022',
+      description: 'Intel 编译器、MPI 与数学库工具链安装。',
+      target: 'Intel Xeon / Intel CPU 平台',
+    }
+  }
+  if (fileName.includes('aocc') || fileName.includes('aocl')) {
+    return {
+      vendor: 'AMD',
+      tagType: 'danger',
+      title: 'AMD AOCC + AOCL + Open MPI 4.1.6',
+      description: 'AMD 编译器、数学库与 Open MPI 工具链安装。',
+      target: 'AMD EPYC / AMD CPU 平台',
+    }
+  }
+  return {
+    vendor: 'Linux',
+    tagType: 'info',
+    title: fileName,
+    description: '服务器环境脚本。',
+    target: '请查看脚本说明',
+  }
+}
+
+function gpuDriverStatus(server: ServerRecord): string {
+  if (server.gpu_status !== 'driver_ok') return '未安装'
+  return server.gpu_info?.match(/Driver\s+([0-9.]+)/i)?.[1] ?? '已安装'
+}
+
+function compactOsName(osInfo: string): string {
+  const rocky = osInfo.match(/rocky(?:\s+linux)?\s+([0-9]+(?:\.[0-9]+)?)/i)
+  if (rocky) return `Rocky ${rocky[1]}`
+  const ubuntu = osInfo.match(/ubuntu\s+([0-9]+\.[0-9]+)/i)
+  if (ubuntu) return `Ubuntu ${ubuntu[1]}`
+  return osInfo
+}
+
+function hasDetectedNvidiaGpu(server: ServerRecord): boolean {
+  return server.gpu_status === 'hardware_only' || server.gpu_status === 'driver_ok'
+}
+
+function cudaStatus(server: ServerRecord): string {
+  return server.gpu_info?.match(/CUDA\s+([0-9.]+)/i)?.[1] ?? '未安装'
 }
 
 function selectTaskType(value: TaskType) {
@@ -530,11 +692,25 @@ const mode = ref<PageMode>('config')
 const selectedServerIds = ref<number[]>([])
 const selectedTaskType = ref<TaskType | ''>('')
 const selectedFilePath = ref<string>('')
+const GPU_DRIVER_ROCKY9_ACTION = '__gpu_driver_rocky9__'
+const CUDA_TOOLKIT_ACTION = '__cuda_toolkit__'
+const gpuDriverType = ref<'geforce' | 'datacenter'>('geforce')
+const gpuDriverSource = ref<'library' | 'upload'>('library')
+const gpuDriverId = ref('')
+const gpuDriverUploadId = ref('')
+const gpuDriverUploadName = ref('')
+const forceInstallIfDriverExists = ref(false)
+const cudaToolkitVersions: CudaToolkitVersion[] = ['13.0', '12.9', '12.8', '12.6', '12.5', '12.4', '12.3', '12.2', '12.1', '12.0', '11.8']
+const cudaToolkitVersion = ref<CudaToolkitVersion>('12.8')
+const forceInstallCudaToolkit = ref(false)
+const gpuDriverLibrary = ref<Array<{ driver_id: string; driver_type: 'geforce' | 'datacenter'; label: string; filename: string }>>([])
+const uploadingGpuDriver = ref(false)
 const servers = ref<ServerRecord[]>([])
 const selectedTag = ref('')
 const tags = ref<TagSummary[]>([])
 const files = ref<TaskRunnerFile[]>([])
 const refreshingServerConnectivity = ref(false)
+const probingOnlineServers = ref(false)
 const validating = ref(false)
 const submitting = ref(false)
 const cancelSubmitting = ref(false)
@@ -595,6 +771,22 @@ const filteredOnlineServers = computed(() => {
     list = list.filter((s) => s.tags?.includes(selectedTag.value))
   }
   return list
+})
+
+const groupedOnlineServers = computed(() => {
+  if (selectedTag.value) {
+    return [{ name: selectedTag.value, servers: filteredOnlineServers.value }]
+  }
+  const groups = new Map<string, ServerRecord[]>()
+  for (const server of filteredOnlineServers.value) {
+    const groupName = server.tags?.[0] || '未标记'
+    const group = groups.get(groupName) ?? []
+    group.push(server)
+    groups.set(groupName, group)
+  }
+  return [...groups.entries()]
+    .sort(([a], [b]) => a.localeCompare(b, 'zh-CN'))
+    .map(([name, servers]) => ({ name, servers }))
 })
 
 function onTagFilterChange() {
@@ -692,8 +884,9 @@ function stressOrderForPath(path: string): number {
 const filteredFiles = computed(() => {
   if (!selectedTaskType.value) return []
   if (selectedTaskType.value === 'script') {
-    // "script" type covers all non-stress, non-apptainer scripts
-    return files.value.filter((file) => file.physical_category !== 'stress' && file.physical_category !== 'apptainer')
+    // Server environment tasks execute only the MPI/server-environment library.
+    // Windows files are copy/download-only and must never enter this selection.
+    return files.value.filter((file) => file.physical_category === 'mpi')
   }
   if (selectedTaskType.value === 'stress') {
     return files.value
@@ -719,6 +912,41 @@ const someStressScriptsSelected = computed(() => {
   const selectedCount = available.filter(path => selectedStressScripts.value.includes(path)).length
   return selectedCount > 0 && selectedCount < available.length
 })
+const isGpuDriverSelected = computed(() => selectedTaskType.value === 'script' && selectedFilePath.value === GPU_DRIVER_ROCKY9_ACTION)
+const isCudaToolkitSelected = computed(() => selectedTaskType.value === 'script' && selectedFilePath.value === CUDA_TOOLKIT_ACTION)
+const filteredGpuDrivers = computed(() => gpuDriverLibrary.value.filter((item) => item.driver_type === gpuDriverType.value))
+const isSupportedGpuDriverOs = computed(() => {
+  return selectedServers.value.length > 0 && selectedServers.value.every((server) => {
+    const os = server.os_info?.toLowerCase() ?? ''
+    return (/rocky.*\b9(?:\.|\b)/.test(os)) || (/ubuntu.*(20\.04|22\.04|24\.04)/.test(os))
+  })
+})
+const gpuDriverOsLabel = computed(() => {
+  if (selectedServers.value.length === 0) return '请选择服务器后自动识别系统。'
+  const details = selectedServers.value.map((server) => `${server.name}：${server.os_info || '未检测到系统信息'}`).join('；')
+  return isSupportedGpuDriverOs.value
+    ? `已自动匹配 ${selectedServers.value.length} 台服务器系统：${details}`
+    : `存在未探测或不受支持的系统：${details}。仅支持 Rocky Linux 9、Ubuntu 20.04/22.04/24.04。`
+})
+const isSupportedCudaToolkitOs = computed(() => {
+  return selectedServers.value.length > 0 && selectedServers.value.every((server) => {
+    const os = server.os_info?.toLowerCase() ?? ''
+    return (/rocky.*\b9(?:\.|\b)/.test(os)) || (/ubuntu.*(22\.04|24\.04)/.test(os))
+  })
+})
+const cudaToolkitOsLabel = computed(() => {
+  if (selectedServers.value.length === 0) return '请选择服务器后自动识别系统。'
+  const details = selectedServers.value.map((server) => `${server.name}：${server.os_info || '未检测到系统信息'}`).join('；')
+  return isSupportedCudaToolkitOs.value
+    ? `已自动匹配 ${selectedServers.value.length} 台服务器系统：${details}`
+    : `存在未探测或不受支持的系统：${details}。仅支持 Rocky Linux 9、Ubuntu 22.04/24.04。`
+})
+
+watch(gpuDriverType, () => {
+  gpuDriverId.value = ''
+  gpuDriverUploadId.value = ''
+  gpuDriverUploadName.value = ''
+})
 const canConfigureTask = computed(() => canSelectFile.value && isFileSelected.value)
 const selectedFile = computed(() => filteredFiles.value.find((file) => file.path === selectedFilePath.value) ?? null)
 const showDiskTestDir = computed(() => {
@@ -741,6 +969,7 @@ const isSingleServer = computed(() => selectedServerIds.value.length === 1)
 const isMultiServer = computed(() => selectedServerIds.value.length >= 2)
 
 const showParamCard = computed(() => {
+  if (isGpuDriverSelected.value || isCudaToolkitSelected.value) return true
   if (selectedTaskType.value !== 'stress') return !!selectedFile.value
   return selectedStressScripts.value.length > 0
 })
@@ -776,6 +1005,16 @@ const stressDurationSeconds = computed(() => {
 })
 
 const commandPreview = computed(() => {
+  if (isGpuDriverSelected.value) {
+    return 'Rocky 9.4：检查 GPU → 安装依赖 → yum update → 禁用 Nouveau → 自动重启 → 下载 .run → 安装驱动 → nvidia-smi / 模块验证'
+  }
+  if (isCudaToolkitSelected.value) {
+    const profiles = new Set(selectedServers.value.map((server) => cudaToolkitOsProfile(server.os_info)))
+    if (profiles.size !== 1 || profiles.has('')) {
+      return `按各服务器系统自动匹配 CUDA 软件源 → 安装 cuda-toolkit-${cudaToolkitVersion.value.replace('.', '-')} → 写入 /etc/profile.d/cuda-${cudaToolkitVersion.value}.sh → nvcc --version`
+    }
+    return cudaToolkitCommandPreview([...profiles][0], cudaToolkitVersion.value)
+  }
   // Stress suite: suite mode with 2+ scripts
   if (selectedTaskType.value === 'stress' && stressSuiteMode.value && selectedStressScripts.value.length >= 2) {
     const dur = stressDurationSeconds.value
@@ -810,6 +1049,37 @@ const commandPreview = computed(() => {
   }
   return `bash ./${selectedFile.value.name}`
 })
+
+function cudaToolkitOsProfile(osInfo: string | null): string {
+  const os = osInfo?.toLowerCase() ?? ''
+  if (/rocky.*\b9(?:\.|\b)/.test(os)) return 'rocky9'
+  if (os.includes('ubuntu') && os.includes('22.04')) return 'ubuntu2204'
+  if (os.includes('ubuntu') && os.includes('24.04')) return 'ubuntu2404'
+  return ''
+}
+
+function cudaToolkitCommandPreview(osProfile: string, version: CudaToolkitVersion): string {
+  const suffix = version.replace('.', '-')
+  const packageName = `cuda-toolkit-${suffix}`
+  if (osProfile === 'rocky9') {
+    return [
+      'sudo dnf -y install dnf-plugins-core ca-certificates curl',
+      'sudo dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel9/x86_64/cuda-rhel9.repo',
+      'sudo dnf clean all',
+      `sudo dnf -y install ${packageName}`,
+      `/usr/local/cuda-${version}/bin/nvcc --version`,
+    ].join('\n')
+  }
+  return [
+    'sudo apt-get update',
+    'sudo apt-get install -y ca-certificates curl',
+    `curl -fsSL -o /tmp/cuda-keyring.deb https://developer.download.nvidia.com/compute/cuda/repos/${osProfile}/x86_64/cuda-keyring_1.1-1_all.deb`,
+    'sudo dpkg -i /tmp/cuda-keyring.deb',
+    'sudo apt-get update',
+    `sudo apt-get -y install ${packageName}`,
+    `/usr/local/cuda-${version}/bin/nvcc --version`,
+  ].join('\n')
+}
 
 const showStressParamInfo = computed(() => {
   if (selectedTaskType.value !== 'stress') return false
@@ -874,12 +1144,12 @@ const isFormDisabled = computed(() => {
   if (!activeTaskId.value) return false
   const status = activeTask.value?.status
   if (!status) return false
-  return ['PENDING', 'CONNECTING', 'PREPARING', 'UPLOADING', 'RUNNING', 'CANCELING'].includes(status)
+  return ['PENDING', 'CONNECTING', 'PREPARING', 'UPLOADING', 'WAITING_REBOOT', 'RUNNING', 'CANCELING'].includes(status)
 })
 
 const showCancelTaskButton = computed(() => {
   const status = activeTask.value?.status?.toUpperCase() ?? ''
-  return ['PENDING', 'CONNECTING', 'PREPARING', 'UPLOADING', 'RUNNING'].includes(status)
+  return ['PENDING', 'CONNECTING', 'PREPARING', 'UPLOADING', 'WAITING_REBOOT', 'RUNNING'].includes(status)
 })
 
 const showCancelingTaskButton = computed(() => {
@@ -932,12 +1202,13 @@ function notifyTaskCreated() {
 }
 
 async function loadOptions() {
-  const [serverResp, fileResp] = await Promise.all([listServers(), listScriptFiles()])
+  const [serverResp, fileResp, gpuDriverResp] = await Promise.all([listServers(), listScriptFiles(), listGpuDriverLibrary()])
   servers.value = serverResp.data
   files.value = fileResp.data.map((file) => ({
     ...file,
     displayCategory: file.display_category
   }))
+  gpuDriverLibrary.value = gpuDriverResp.data
   const serverIds = serverResp.data
     .filter((server) => server.status === 'online')
     .map((server) => server.id)
@@ -956,6 +1227,25 @@ async function refreshServerConnectivity(serverIds: number[]) {
     console.warn('background server SSH refresh failed', error)
   } finally {
     refreshingServerConnectivity.value = false
+  }
+}
+
+async function probeOnlineServers() {
+  const serverIds = allOnlineServers.value.map((server) => server.id)
+  if (serverIds.length === 0) return
+
+  probingOnlineServers.value = true
+  try {
+    const result = (await probeAllServers(serverIds)).data
+    servers.value = (await listServers()).data
+    const onlineIds = new Set(servers.value.filter((server) => server.status === 'online').map((server) => server.id))
+    selectedServerIds.value = selectedServerIds.value.filter((id) => onlineIds.has(id))
+    void loadTags()
+    ElMessage.success(`探测完成：${result.online} 台在线，${result.offline} 台离线`)
+  } catch (error) {
+    ElMessage.error(getApiErrorMessage(error))
+  } finally {
+    probingOnlineServers.value = false
   }
 }
 
@@ -1001,6 +1291,30 @@ function buildStressParams(): Record<string, unknown> {
   return params
 }
 
+async function uploadGpuDriverSelection(file: { raw?: File }) {
+  const raw = file.raw
+  if (!raw) return
+  if (!raw.name.toLowerCase().endsWith('.run')) {
+    ElMessage.error('仅允许上传 NVIDIA .run 驱动文件')
+    return
+  }
+  uploadingGpuDriver.value = true
+  try {
+    const result = (await uploadGpuDriverFile(raw, gpuDriverType.value)).data
+    gpuDriverUploadId.value = result.upload_id
+    gpuDriverUploadName.value = result.filename
+    ElMessage.success(`自定义驱动已上传：${result.filename}`)
+  } catch (error: unknown) {
+    ElMessage.error(getApiErrorMessage(error))
+  } finally {
+    uploadingGpuDriver.value = false
+  }
+}
+
+function onCustomGpuDriverFileChange(file: { raw?: File }) {
+  void uploadGpuDriverSelection(file)
+}
+
 async function validateRunner() {
   validating.value = true
   try {
@@ -1010,6 +1324,32 @@ async function validateRunner() {
     }
     if (!selectedTaskType.value) {
       ElMessage.error('必须选择任务类型')
+      return
+    }
+
+    if (isGpuDriverSelected.value) {
+      if (!isSupportedGpuDriverOs.value) {
+        ElMessage.error('请先探测服务器系统；当前仅支持 Rocky Linux 9、Ubuntu 20.04/22.04/24.04')
+        return
+      }
+      if (gpuDriverSource.value === 'library' && !gpuDriverId.value) {
+        ElMessage.error('请选择驱动类型对应的具体版本')
+        return
+      }
+      if (gpuDriverSource.value === 'upload' && !gpuDriverUploadId.value) {
+        ElMessage.error('请先上传自定义 NVIDIA .run 文件')
+        return
+      }
+      ElMessage.success('参数校验通过。任务将自动重启一次，并在重连后继续安装 NVIDIA 驱动。')
+      return
+    }
+
+    if (isCudaToolkitSelected.value) {
+      if (!isSupportedCudaToolkitOs.value) {
+        ElMessage.error('请先探测服务器系统；当前仅支持 Rocky Linux 9、Ubuntu 22.04/24.04')
+        return
+      }
+      ElMessage.success(`参数校验通过。将安装 CUDA Toolkit ${cudaToolkitVersion.value}，不覆盖 NVIDIA 驱动。`)
       return
     }
 
@@ -1057,6 +1397,81 @@ async function createTask() {
   }
   if (!selectedTaskType.value) {
     ElMessage.error('必须选择任务类型')
+    return
+  }
+
+  if (isGpuDriverSelected.value) {
+    if (!isSupportedGpuDriverOs.value) {
+      ElMessage.error('请先探测服务器系统；当前仅支持 Rocky Linux 9、Ubuntu 20.04/22.04/24.04')
+      return
+    }
+    if (gpuDriverSource.value === 'library' && !gpuDriverId.value) {
+      ElMessage.error('请选择驱动类型对应的具体版本')
+      return
+    }
+    if (gpuDriverSource.value === 'upload' && !gpuDriverUploadId.value) {
+      ElMessage.error('请先上传自定义 NVIDIA .run 文件')
+      return
+    }
+    submitting.value = true
+    try {
+      const driverPayload = {
+        driver_type: gpuDriverType.value,
+        force_install_if_driver_exists: forceInstallIfDriverExists.value,
+        ...(gpuDriverSource.value === 'library' ? { driver_id: gpuDriverId.value } : { driver_upload_id: gpuDriverUploadId.value }),
+      }
+      if (selectedServerIds.value.length >= 2) {
+        const result = (await runGpuDriverBatchTask({ server_ids: selectedServerIds.value, ...driverPayload })).data
+        if (result.created > 0) notifyTaskCreated()
+        const parts = [`成功 ${result.created} 台`]
+        if (result.skipped > 0) parts.push(`跳过 ${result.skipped} 台`)
+        if (result.failed > 0) parts.push(`失败 ${result.failed} 台`)
+        ElMessage.success(`GPU 驱动批次已创建：${parts.join('，')}。`)
+        await router.push({ path: '/history', query: { view: 'batches', batch_id: result.batch_id } })
+        return
+      }
+      const result = (await runRockyGpuDriverTask({ server_id: selectedServerIds.value[0], ...driverPayload })).data
+      notifyTaskCreated()
+      ElMessage.success('GPU 驱动任务已创建，将自动重启一次并继续执行。')
+      await router.push({ path: '/history', query: { view: 'tasks', task_id: result.task_id } })
+    } catch (error: unknown) {
+      ElMessage.error(getApiErrorMessage(error))
+    } finally {
+      submitting.value = false
+    }
+    return
+  }
+
+  if (isCudaToolkitSelected.value) {
+    if (!isSupportedCudaToolkitOs.value) {
+      ElMessage.error('请先探测服务器系统；当前仅支持 Rocky Linux 9、Ubuntu 22.04/24.04')
+      return
+    }
+    submitting.value = true
+    try {
+      const cudaPayload = {
+        cuda_version: cudaToolkitVersion.value,
+        force_install: forceInstallCudaToolkit.value,
+      }
+      if (selectedServerIds.value.length >= 2) {
+        const result = (await runCudaToolkitBatchTask({ server_ids: selectedServerIds.value, ...cudaPayload })).data
+        if (result.created > 0) notifyTaskCreated()
+        const parts = [`成功 ${result.created} 台`]
+        if (result.skipped > 0) parts.push(`跳过 ${result.skipped} 台`)
+        if (result.failed > 0) parts.push(`失败 ${result.failed} 台`)
+        ElMessage.success(`CUDA Toolkit 批次已创建：${parts.join('，')}。`)
+        await router.push({ path: '/history', query: { view: 'batches', batch_id: result.batch_id } })
+        return
+      }
+      const result = (await runCudaToolkitTask({ server_id: selectedServerIds.value[0], ...cudaPayload })).data
+      notifyTaskCreated()
+      ElMessage.success(`CUDA Toolkit ${cudaToolkitVersion.value} 任务已创建。`)
+      await router.push({ path: '/history', query: { view: 'tasks', task_id: result.task_id } })
+    } catch (error: unknown) {
+      ElMessage.error(getApiErrorMessage(error))
+    } finally {
+      submitting.value = false
+    }
     return
   }
 
@@ -1570,6 +1985,7 @@ function statusLabel(status: string | null | undefined): string {
     CONNECTING: '连接中',
     PREPARING: '准备中',
     UPLOADING: '上传中',
+    WAITING_REBOOT: '等待重启完成',
     RUNNING: '运行中',
     CANCELING: '取消中',
     SUCCESS: '已完成',
@@ -1755,6 +2171,21 @@ onBeforeUnmount(() => {
 }
 
 /* ── Server selection cards ── */
+.server-group-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.server-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
 .server-card-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
@@ -1836,9 +2267,25 @@ onBeforeUnmount(() => {
 .s-card-meta-row {
   display: flex;
   align-items: center;
-  gap: 5px;
-  flex-wrap: nowrap;
+  gap: 6px;
   min-width: 0;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.s-card-host,
+.s-card-user {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-card-host {
+  max-width: 150px;
+}
+
+.s-card-user {
+  max-width: 100px;
 }
 
 .s-card-host {
@@ -1861,29 +2308,67 @@ onBeforeUnmount(() => {
   color: var(--el-text-color-placeholder);
 }
 
+.s-card-info-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.s-card-info-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--el-fill-color-light);
+  font-size: 12px;
+}
+
+.s-card-os-info {
+  grid-column: 1 / -1;
+  background: var(--el-color-primary-light-9);
+}
+
+.s-card-no-gpu {
+  grid-column: 1 / -1;
+}
+
+.s-card-no-gpu .s-card-info-value {
+  color: var(--el-text-color-secondary);
+  font-weight: 400;
+}
+
+.s-card-info-label {
+  flex-shrink: 0;
+  color: var(--el-text-color-secondary);
+}
+
+.s-card-os-info .s-card-info-label,
+.s-card-os-info .s-card-info-value {
+  color: var(--el-color-primary);
+}
+
+.s-card-info-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--el-text-color-primary);
+  font-weight: 600;
+}
+
+.s-card-info-value.is-ready {
+  color: var(--el-color-success);
+}
+
 .s-card-tag {
   max-width: 72px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   flex-shrink: 0;
-}
-
-.s-card-badges {
-  margin-top: 6px;
-  padding-top: 6px;
-  border-top: 1px solid var(--el-border-color-extra-light);
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-}
-.s-card-os-badge {
-  max-width: 180px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 500;
 }
 
 .s-card-state {
@@ -1922,6 +2407,42 @@ onBeforeUnmount(() => {
 .file-select-card.is-active {
   border-color: var(--el-color-primary);
   background: var(--el-color-primary-light-9);
+}
+
+.environment-card {
+  min-height: 148px;
+  padding: 16px;
+}
+
+.environment-card__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.environment-card__selected {
+  color: var(--el-color-primary);
+  font-size: 12px;
+}
+
+.environment-card__title {
+  margin-top: 14px;
+  color: var(--el-text-color-primary);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.environment-card__description,
+.environment-card__target {
+  margin-top: 8px;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.environment-card__target {
+  color: var(--el-text-color-placeholder);
 }
 
 .f-card-name {
@@ -2164,7 +2685,25 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   margin-bottom: 8px;
+}
+
+.selection-heading,
+.selection-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.selection-header-actions {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.selection-header-actions .el-button .el-icon {
+  margin-right: 4px;
 }
 
 .selection-label-row .selection-label {
@@ -2948,6 +3487,30 @@ onBeforeUnmount(() => {
   font-size: 12px;
   line-height: 1.5;
   color: #94a3b8;
+}
+
+.gpu-driver-form {
+  margin-top: 14px;
+}
+
+.install-policy-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  min-height: 32px;
+}
+
+.install-policy-hint {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.form-help {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #64748b;
 }
 
 .disk-test-dir-control {

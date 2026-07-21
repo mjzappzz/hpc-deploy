@@ -21,6 +21,52 @@ class TaskRunResponse(BaseModel):
     status: str
 
 
+class GpuDriverRunRequest(BaseModel):
+    """Rocky 9.4 NVIDIA .run installation request."""
+
+    server_id: int = Field(ge=1)
+    driver_type: Literal["geforce", "datacenter"]
+    driver_id: str | None = Field(default=None, min_length=24, max_length=24, pattern="^[a-f0-9]{24}$")
+    driver_upload_id: str | None = Field(default=None, min_length=24, max_length=24, pattern="^[a-f0-9]{24}$")
+    force_install_if_driver_exists: bool = False
+
+
+class GpuDriverUploadResponse(BaseModel):
+    upload_id: str
+    filename: str
+    size: int
+    driver_type: Literal["geforce", "datacenter"]
+
+
+class GpuDriverBatchRunRequest(BaseModel):
+    server_ids: list[int] = Field(min_length=2)
+    driver_type: Literal["geforce", "datacenter"]
+    driver_id: str | None = Field(default=None, min_length=24, max_length=24, pattern="^[a-f0-9]{24}$")
+    driver_upload_id: str | None = Field(default=None, min_length=24, max_length=24, pattern="^[a-f0-9]{24}$")
+    force_install_if_driver_exists: bool = False
+
+
+class CudaToolkitRunRequest(BaseModel):
+    server_id: int = Field(ge=1)
+    cuda_version: Literal["11.8", "12.0", "12.1", "12.2", "12.3", "12.4", "12.5", "12.6", "12.8", "12.9", "13.0"] = "12.8"
+    force_install: bool = False
+
+
+class CudaToolkitBatchRunRequest(BaseModel):
+    server_ids: list[int] = Field(min_length=2)
+    cuda_version: Literal["11.8", "12.0", "12.1", "12.2", "12.3", "12.4", "12.5", "12.6", "12.8", "12.9", "13.0"] = "12.8"
+    force_install: bool = False
+
+
+class GpuDriverLibraryItem(BaseModel):
+    driver_id: str
+    driver_type: Literal["geforce", "datacenter"]
+    label: str
+    filename: str
+    size: int
+    uploaded_at: datetime
+
+
 class TaskRetryResponse(BaseModel):
     original_task_id: str
     retry_task_id: str

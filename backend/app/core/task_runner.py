@@ -21,6 +21,7 @@ TASK_STATUSES = (
     "CONNECTING",
     "PREPARING",
     "UPLOADING",
+    "WAITING_REBOOT",
     "RUNNING",
     "CANCELING",
     "SUCCESS",
@@ -32,11 +33,12 @@ UNFINISHED_TASK_STATUSES = (
     "CONNECTING",
     "PREPARING",
     "UPLOADING",
+    "WAITING_REBOOT",
     "RUNNING",
     "CANCELING",
 )
 TERMINAL_TASK_STATUSES = ("SUCCESS", "FAILED", "CANCELED")
-CANCELABLE_TASK_STATUSES = ("PENDING", "CONNECTING", "PREPARING", "UPLOADING", "RUNNING")
+CANCELABLE_TASK_STATUSES = ("PENDING", "CONNECTING", "PREPARING", "UPLOADING", "WAITING_REBOOT", "RUNNING")
 APPTAINER_REMOTE_DIR_SUFFIX = "/hpcdeploy/apptainer"
 STDERR_WARN_PATTERNS = (
     "WARNING:",
@@ -227,9 +229,8 @@ def _resolve_task_library_file(file_path: str | None, task_type: str | None) -> 
     record = get_library_file_record(file_path)
     physical = record["physical_category"]
     if task_type == "script":
-        # "script" type accepts any non-stress, non-apptainer script
-        if physical in ("stress", "apptainer"):
-            raise TaskRunnerError("script task_type only allows non-stress, non-apptainer scripts")
+        if physical != "mpi":
+            raise TaskRunnerError("script task_type only allows server environment scripts")
     elif physical != task_type:
         raise TaskRunnerError("task_type does not match knowledge base file category")
     return record

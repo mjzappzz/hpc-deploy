@@ -35,38 +35,22 @@
         </el-tooltip>
       </template>
     </el-table-column>
-    <!-- 标签列：点击直接内联编辑，标签始终在 DOM 避免抖动 -->
-    <!-- 宽度 0 + flex 让标签列自适应剩余空间，保证操作列不被挤 -->
+    <!-- 固定单选标签：主表内直接选择，不允许自由输入 -->
     <el-table-column label="标签" class-name="server-tags-column">
       <template #default="{ row }">
-        <div class="inline-tag-cell" @click="!editingId && startEditing(row)">
-          <!-- 背景层：标签始终渲染 -->
-          <div class="inline-tag-backdrop">
-            <template v-if="row.tags && row.tags.length">
-              <el-tag
-                v-for="tag in row.tags.slice(0, 3)"
-                :key="tag"
-                size="small"
-                class="inline-tag-chip"
-                :class="{ 'inline-tag-chip--hidden': editingId === row.id }"
-              >{{ tag }}</el-tag>
-              <el-tag v-if="row.tags.length > 3" size="small" type="info" class="inline-tag-chip" :class="{ 'inline-tag-chip--hidden': editingId === row.id }">+{{ row.tags.length - 3 }}</el-tag>
-            </template>
-            <span v-else class="inline-tag-placeholder" :class="{ 'inline-tag-placeholder--hidden': editingId === row.id }">点击添加标签</span>
-          </div>
-          <!-- 前景层：编辑输入框 absolute 覆盖 -->
-          <el-input
-            v-if="editingId === row.id"
-            ref="editInputRef"
-            v-model="editText"
-            size="small"
-            placeholder="输入标签文字，用逗号或空格分隔"
-            class="inline-tag-input"
-            @blur="finishEditing(row)"
-            @keyup.enter="finishEditing(row)"
-            @keyup.escape="cancelEditing"
-          />
-        </div>
+        <el-select
+          :model-value="row.tags?.[0] || '待压测'"
+          size="small"
+          class="server-tag-select"
+          @change="updateInlineTag(row, $event)"
+        >
+          <template #label="{ label }">
+            <el-tag :type="serverTagType(label)" size="small">{{ label }}</el-tag>
+          </template>
+          <el-option v-for="option in SERVER_TAG_OPTIONS" :key="option.name" :label="option.name" :value="option.name">
+            <el-tag :type="option.type" size="small">{{ option.name }}</el-tag>
+          </el-option>
+        </el-select>
       </template>
     </el-table-column>
     <el-table-column label="OS" width="130">
@@ -74,7 +58,7 @@
         <el-tag
           v-if="row.os_info"
           size="small"
-          :type="osTagType(row.os_info)"
+          type="primary"
           class="table-os-tag"
         >{{ osSummary(row.os_info) }}</el-tag>
         <span v-else class="table-ellipsis">-</span>
@@ -129,8 +113,8 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, ref } from 'vue'
 import type { ServerRecord } from '@/api/server'
+import { SERVER_TAG_OPTIONS, serverTagType } from '@/constants/serverTags'
 import { formatDateTime } from '@/utils/time'
 import StatusTag from './StatusTag.vue'
 
@@ -153,11 +137,6 @@ const emit = defineEmits<{
   'update-tags': [serverId: number, tags: string[]]
 }>()
 
-/** Inline tag editing state */
-const editingId = ref<number | null>(null)
-const editText = ref('')
-const editInputRef = ref()
-
 function displayValue(value: string | null | undefined) {
   return value?.trim() || '-'
 }
@@ -179,13 +158,6 @@ function osSummary(value: string | null | undefined) {
   if (redHat) return `RHEL ${redHat[1]}`
 
   return text
-}
-
-function osTagType(os: string): 'success' | 'primary' | 'info' {
-  const v = os.toLowerCase()
-  if (v.includes('windows') || v.includes('win')) return 'primary'
-  if (v.includes('linux') || v.includes('ubuntu') || v.includes('centos') || v.includes('debian') || v.includes('red hat') || v.includes('fedora') || v.includes('rocky') || v.includes('suse') || v.includes('alpine') || v.includes('amazon linux')) return 'success'
-  return 'info'
 }
 
 function gpuSummary(value: string | null | undefined, status: string | null | undefined) {
@@ -220,32 +192,8 @@ function cpuSummary(value: string | null | undefined) {
   return `${model || 'CPU'} / ${cores}C`
 }
 
-// ── Inline tag editing ──
-
-function startEditing(row: ServerRecord) {
-  editingId.value = row.id
-  editText.value = (row.tags || []).join(', ')
-  nextTick(() => {
-    editInputRef.value?.focus?.()
-  })
-}
-
-function finishEditing(row: ServerRecord) {
-  if (editingId.value !== row.id) return
-  editingId.value = null
-  // Parse: split by comma/space, clean up
-  const tags = editText.value
-    .split(/[,，\s]+/)
-    .map(t => t.trim())
-    .filter(t => t.length > 0)
-    .slice(0, 10)
-  const unique = [...new Set(tags)]
-  emit('update-tags', row.id, unique)
-}
-
-function cancelEditing() {
-  editingId.value = null
-  editText.value = ''
+function updateInlineTag(row: ServerRecord, tag: string) {
+  emit('update-tags', row.id, [tag])
 }
 </script>
 
@@ -336,55 +284,21 @@ function cancelEditing() {
   color: var(--el-text-color-placeholder);
 }
 
-/* ── Inline tag cell ── */
-.inline-tag-cell {
-  position: relative;
-  min-height: 22px;
-  cursor: pointer;
-  padding: 0;
-  border-radius: 3px;
-  transition: background 0.12s;
-}
-.inline-tag-cell:hover {
-  background: var(--el-fill-color-light);
-}
-.inline-tag-backdrop {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 2px;
-  line-height: 22px;
-}
-.inline-tag-chip {
-  flex-shrink: 0;
-  margin: 0;
-}
-.inline-tag-chip--hidden,
-.inline-tag-placeholder--hidden {
-  visibility: hidden;
-}
-.inline-tag-placeholder {
-  font-size: 13px;
-  color: var(--el-text-color-placeholder);
-  font-style: italic;
-  line-height: 22px;
-}
-.inline-tag-input {
-  position: absolute;
-  top: 0;
-  left: 0;
+.server-tag-select {
   width: 100%;
 }
-.inline-tag-input :deep(.el-input__wrapper) {
-  height: 24px;
-  min-height: 24px;
-  box-shadow: 0 0 0 1px var(--el-color-primary) inset !important;
-  padding: 0 6px;
+
+.server-tag-select :deep(.el-select__wrapper) {
+  padding-right: 6px;
 }
-.inline-tag-input :deep(.el-input__inner) {
-  height: 22px;
-  line-height: 22px;
-  font-size: 13px;
+
+.server-tag-select :deep(.el-select__suffix) {
+  margin-left: -2px;
+}
+
+.server-tag-select :deep(.el-select__caret) {
+  width: 12px;
+  font-size: 12px;
 }
 
 /* ── OS tag column ── */

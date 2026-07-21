@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from app.core.artifact_collector import ARTIFACTS_DIR
+from app.core.gpu_driver_runner import GPU_DRIVER_UPLOAD_ROOT
 from app.core.audit import write_audit_log
 from app.core.task_runner import TASK_LEASE_SECONDS, _attempt_stress_recovery, _stress_recovery_monitor
 from app.core.time_utils import beijing_now
@@ -19,7 +20,8 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
-ACTIVE_TASK_STATUSES = frozenset({"PENDING", "CONNECTING", "PREPARING", "UPLOADING", "RUNNING"})
+ACTIVE_TASK_STATUSES = frozenset({"PENDING", "CONNECTING", "PREPARING", "UPLOADING", "WAITING_REBOOT", "RUNNING"})
+GPU_DRIVER_UPLOAD_RETENTION_DAYS = 7
 @dataclass
 class AutoCleanupConfig:
     enabled: bool
@@ -49,6 +51,7 @@ async def _auto_cleanup_loop() -> None:
             wait_seconds = _seconds_until_next_check()
             await asyncio.sleep(wait_seconds)
             await asyncio.to_thread(run_due_auto_cleanup)
+            await asyncio.to_thread(run_due_gpu_driver_upload_cleanup)
             await asyncio.to_thread(recover_stuck_stress_tasks)
         except asyncio.CancelledError:
             raise
@@ -97,6 +100,40 @@ def run_due_auto_cleanup() -> AutoCleanupResult | None:
                 lock_file.close()
             except OSError:
                 pass
+        db.close()
+
+
+def run_due_gpu_driver_upload_cleanup() -> int:
+    """Delete expired custom installers while preserving active task sources."""
+    now = beijing_now()
+    if now.strftime("%H:%M") != "03:10":
+        return 0
+    db = SessionLocal()
+    try:
+        today = now.date().isoformat()
+        if _get_setting(db, "gpu_driver_upload_cleanup_last_run_date", "") == today:
+            return 0
+        _set_setting(db, "gpu_driver_upload_cleanup_last_run_date", today)
+        cutoff = datetime.utcnow() - timedelta(days=GPU_DRIVER_UPLOAD_RETENTION_DAYS)
+        active_ids = {
+            str((task.params or {}).get("driver_upload_id"))
+            for task in db.query(Task).filter(Task.status.in_(ACTIVE_TASK_STATUSES)).all()
+            if (task.params or {}).get("driver_upload_id")
+        }
+        deleted = 0
+        if GPU_DRIVER_UPLOAD_ROOT.is_dir():
+            for path in GPU_DRIVER_UPLOAD_ROOT.glob("*.run"):
+                if path.stem in active_ids or datetime.utcfromtimestamp(path.stat().st_mtime) >= cutoff:
+                    continue
+                path.unlink()
+                deleted += 1
+        db.commit()
+        return deleted
+    except Exception:
+        db.rollback()
+        logger.warning("[gpu-driver-upload-cleanup] failed", exc_info=True)
+        return 0
+    finally:
         db.close()
 
 

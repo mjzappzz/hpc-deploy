@@ -1,6 +1,6 @@
 import { request } from './request'
 
-export type TaskType = 'script' | 'stress' | 'apptainer'
+export type TaskType = 'script' | 'stress' | 'apptainer' | 'gpu_driver' | 'cuda_toolkit'
 export type MonitorType = 'top' | 'iostat' | 'nvidia-smi' | 'free' | 'df' | 'ps' | 'cpu_mem' | 'disk' | 'gpu'
 
 export interface TaskRecord {
@@ -52,6 +52,52 @@ export interface RunTaskPayload {
 export interface RunTaskResult {
   task_id: string
   status: string
+}
+
+export interface RockyGpuDriverPayload {
+  server_id: number
+  driver_type: 'geforce' | 'datacenter'
+  driver_id?: string
+  driver_upload_id?: string
+  force_install_if_driver_exists: boolean
+}
+
+export interface GpuDriverBatchPayload {
+  server_ids: number[]
+  driver_type: 'geforce' | 'datacenter'
+  driver_id?: string
+  driver_upload_id?: string
+  force_install_if_driver_exists: boolean
+}
+
+export type CudaToolkitVersion = '11.8' | '12.0' | '12.1' | '12.2' | '12.3' | '12.4' | '12.5' | '12.6' | '12.8' | '12.9' | '13.0'
+
+export interface CudaToolkitPayload {
+  server_id: number
+  cuda_version: CudaToolkitVersion
+  force_install: boolean
+}
+
+export interface CudaToolkitBatchPayload {
+  server_ids: number[]
+  cuda_version: CudaToolkitVersion
+  force_install: boolean
+}
+
+export interface GpuDriverUploadResult {
+  upload_id: string
+  filename: string
+  size: number
+  driver_type: 'geforce' | 'datacenter'
+}
+
+export interface GpuDriverLibraryItem {
+  driver_id: string
+  driver_type: 'geforce' | 'datacenter'
+  label: string
+  filename: string
+  size: number
+  uploaded_at: string
 }
 
 export interface TaskMonitorPayload {
@@ -211,6 +257,42 @@ export interface ArtifactListResponse {
 
 export function runTask(data: RunTaskPayload) {
   return request.post<RunTaskResult>('/tasks/run', data)
+}
+
+export function runRockyGpuDriverTask(data: RockyGpuDriverPayload) {
+  return request.post<RunTaskResult>('/tasks/gpu-driver/rocky9', data)
+}
+
+export function runGpuDriverBatchTask(data: GpuDriverBatchPayload) {
+  return request.post<BatchTaskCreateResponse>('/tasks/gpu-driver/batch', data)
+}
+
+export function runCudaToolkitTask(data: CudaToolkitPayload) {
+  return request.post<RunTaskResult>('/tasks/cuda-toolkit', data)
+}
+
+export function runCudaToolkitBatchTask(data: CudaToolkitBatchPayload) {
+  return request.post<BatchTaskCreateResponse>('/tasks/cuda-toolkit/batch', data)
+}
+
+export function uploadGpuDriverFile(file: File, driverType: 'geforce' | 'datacenter') {
+  const data = new FormData()
+  data.append('file', file)
+  return request.post<GpuDriverUploadResult>('/tasks/gpu-driver/uploads', data, { params: { driver_type: driverType } })
+}
+
+export function uploadGpuDriverLibraryFile(file: File, driverType: 'geforce' | 'datacenter') {
+  const data = new FormData()
+  data.append('file', file)
+  return request.post<GpuDriverLibraryItem>('/tasks/gpu-driver/library', data, { params: { driver_type: driverType } })
+}
+
+export function listGpuDriverLibrary() {
+  return request.get<GpuDriverLibraryItem[]>('/tasks/gpu-driver/library')
+}
+
+export function deleteGpuDriverLibraryEntry(driverType: 'geforce' | 'datacenter', driverId: string) {
+  return request.delete(`/tasks/gpu-driver/library/${driverType}/${driverId}`)
 }
 
 export function listTasks(params?: TaskListQuery) {

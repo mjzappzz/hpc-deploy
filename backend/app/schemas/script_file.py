@@ -15,6 +15,11 @@ class ScriptFileRead(BaseModel):
     executable: bool
     is_text: bool
     previewable: bool
+    content_version: str | None = None
+    filename_version: str | None = None
+    version_consistent: bool | None = None
+    sha256: str | None = None
+    encoding: str | None = None
 
 
 class ScriptFilePreviewRead(ScriptFileRead):

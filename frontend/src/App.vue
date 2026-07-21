@@ -24,7 +24,11 @@
           <el-icon><Operation /></el-icon>
           <span>执行任务</span>
         </el-menu-item>
-        <el-menu-item index="/history" class="hpc-nav-pulse-item" :class="{ 'hpc-nav-pulse-active': isActiveMenu('/history') }">
+        <el-menu-item index="/windows-stress" class="hpc-nav-pulse-item" :class="{ 'hpc-nav-pulse-active': isActiveMenu('/windows-stress') }">
+          <el-icon><Monitor /></el-icon>
+          <span>Windows 压测</span>
+        </el-menu-item>
+        <el-menu-item index="/history" class="hpc-nav-pulse-item" :class="{ 'hpc-nav-pulse-active': isActiveMenu('/history') }" @click="goTaskHistory">
           <el-icon><Tickets /></el-icon>
           <span class="history-menu-label">
             <span>历史任务</span>
@@ -132,6 +136,10 @@ function goHome() {
 
 function goRunningTasks() {
   router.push({ path: '/history', query: { status: 'RUNNING', running_filter: String(Date.now()) } })
+}
+
+function goTaskHistory() {
+  void router.push({ path: '/history', query: { reset: String(Date.now()) } })
 }
 
 function isActiveMenu(index: string) {

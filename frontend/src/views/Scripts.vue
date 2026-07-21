@@ -9,7 +9,7 @@
           </div>
           <div class="knowledge-actions">
             <el-button type="primary" :disabled="activeCategory === 'all'" @click="triggerUpload">
-              上传到当前分类
+              {{ activeCategory === 'gpu_driver' ? '上传驱动' : '上传到当前分类' }}
             </el-button>
             <el-button @click="loadFiles">刷新</el-button>
             <input
@@ -35,16 +35,59 @@
         <el-tab-pane :label="`服务器环境 (${counts.mpi})`" name="mpi" />
         <el-tab-pane :label="`服务器压测 (${counts.stress})`" name="stress" />
         <el-tab-pane :label="`Apptainer 镜像 (${counts.apptainer})`" name="apptainer" />
+        <el-tab-pane :label="`Linux NVIDIA 驱动 (${gpuDriverLibrary.length})`" name="gpu_driver" />
       </el-tabs>
 
-      <ScriptTable
+      <ScriptTable v-if="activeCategory !== 'gpu_driver'"
         :files="filteredFiles"
         :loading="loading"
         @preview="openPreview"
         @download="downloadFile"
         @delete="removeFile"
       />
+
+      <div v-else class="gpu-driver-library">
+        <el-alert title="仅允许 NVIDIA-Linux-x86_64-xxx.run；上传时必须标注 GeForce 或 Data Center，已有版本不会被覆盖。" type="info" :closable="false" />
+        <el-table :data="gpuDriverLibrary" v-loading="loading" empty-text="暂未上传 Linux NVIDIA 驱动">
+          <el-table-column prop="filename" label="驱动文件" min-width="360" />
+          <el-table-column label="驱动类型" width="140">
+            <template #default="{ row }"><el-tag effect="plain">{{ row.label }}</el-tag></template>
+          </el-table-column>
+          <el-table-column label="常见适用显卡" min-width="260">
+            <template #default="{ row }">{{ commonGpuModels(row.driver_type) }}</template>
+          </el-table-column>
+          <el-table-column label="大小" width="120">
+            <template #default="{ row }">{{ formatSize(row.size) }}</template>
+          </el-table-column>
+          <el-table-column label="上传时间" width="180">
+            <template #default="{ row }">{{ formatDate(row.uploaded_at) }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="100" fixed="right">
+            <template #default="{ row }">
+              <el-button link type="danger" @click="removeGpuDriver(row)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
     </el-card>
+
+    <el-dialog v-model="gpuDriverUploadVisible" title="上传 Linux NVIDIA 驱动" width="480px" :close-on-click-modal="false">
+      <el-form label-position="top">
+        <el-form-item label="驱动类型" required>
+          <el-radio-group v-model="gpuDriverType">
+            <el-radio value="geforce">GeForce</el-radio>
+            <el-radio value="datacenter">Data Center</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="驱动文件" required>
+          <el-upload accept=".run" :show-file-list="false" :auto-upload="false" :disabled="!gpuDriverType || uploadingGpuDriver" :on-change="onGpuDriverSelected">
+            <el-button type="primary" :loading="uploadingGpuDriver" :disabled="!gpuDriverType">选择并上传 .run</el-button>
+          </el-upload>
+          <div class="gpu-driver-upload-hint">仅接受 NVIDIA-Linux-x86_64-xxx.run。</div>
+        </el-form-item>
+      </el-form>
+      <template #footer><el-button @click="gpuDriverUploadVisible = false">取消</el-button></template>
+    </el-dialog>
 
     <el-dialog v-model="previewVisible" width="820px" class="preview-dialog" :title="previewTitle" top="5vh">
       <div class="preview-dialog-body">
@@ -107,8 +150,14 @@ import {
   type ScriptFilePreviewRecord,
   type ScriptFileRecord
 } from '@/api/script'
+import {
+  deleteGpuDriverLibraryEntry,
+  listGpuDriverLibrary,
+  uploadGpuDriverLibraryFile,
+  type GpuDriverLibraryItem,
+} from '@/api/task'
 
-type KnowledgeCategory = 'all' | 'mpi' | 'stress' | 'apptainer'
+type KnowledgeCategory = 'all' | 'mpi' | 'stress' | 'apptainer' | 'gpu_driver'
 
 const loading = ref(false)
 const previewVisible = ref(false)
@@ -116,9 +165,14 @@ const activeCategory = ref<KnowledgeCategory>('all')
 const files = ref<ScriptFileRecord[]>([])
 const previewFile = ref<ScriptFilePreviewRecord | null>(null)
 const fileInputRef = ref<HTMLInputElement | null>(null)
+const gpuDriverLibrary = ref<GpuDriverLibraryItem[]>([])
+const gpuDriverUploadVisible = ref(false)
+const gpuDriverType = ref<'geforce' | 'datacenter'>()
+const uploadingGpuDriver = ref(false)
 
 const filteredFiles = computed(() => {
   if (activeCategory.value === 'all') return files.value
+  if (activeCategory.value === 'gpu_driver') return []
   return files.value.filter((file) => file.physical_category === activeCategory.value)
 })
 
@@ -131,17 +185,70 @@ const counts = computed(() => ({
 const previewTitle = computed(() => previewFile.value?.name ?? '文件预览')
 const previewContent = computed(() => previewFile.value?.content ?? null)
 
+function commonGpuModels(driverType: GpuDriverLibraryItem['driver_type']) {
+  return driverType === 'geforce'
+    ? 'RTX 5090 / 4090 / 4080 SUPER / 3090'
+    : 'H200 / H100 / A100 / L40S / RTX PRO 6000'
+}
+
 async function loadFiles() {
   loading.value = true
   try {
-    files.value = (await listScriptFiles()).data
+    const [filesResp, driverResp] = await Promise.all([listScriptFiles(), listGpuDriverLibrary()])
+    files.value = filesResp.data
+    gpuDriverLibrary.value = driverResp.data
   } finally {
     loading.value = false
   }
 }
 
 function triggerUpload() {
+  if (activeCategory.value === 'gpu_driver') {
+    gpuDriverType.value = undefined
+    gpuDriverUploadVisible.value = true
+    return
+  }
   fileInputRef.value?.click()
+}
+
+async function onGpuDriverSelected(file: { raw?: File }) {
+  const raw = file.raw
+  const driverType = gpuDriverType.value
+  if (!raw || !driverType) return
+  if (!/^NVIDIA-Linux-x86_64-.+\.run$/i.test(raw.name)) {
+    ElMessage.error('仅允许上传 NVIDIA-Linux-x86_64-xxx.run')
+    return
+  }
+  const ok = await requireAdminConfirm('上传 Linux NVIDIA 驱动')
+  if (!ok) return
+  uploadingGpuDriver.value = true
+  try {
+    await uploadGpuDriverLibraryFile(raw, driverType)
+    ElMessage.success('Linux NVIDIA 驱动已上传')
+    gpuDriverUploadVisible.value = false
+    await loadFiles()
+  } catch (error) {
+    ElMessage.error(getApiErrorMessage(error))
+  } finally {
+    uploadingGpuDriver.value = false
+  }
+}
+
+async function removeGpuDriver(driver: GpuDriverLibraryItem) {
+  if (!adminMode.value) {
+    ElMessage.warning('管理员模式才可删除驱动')
+    return
+  }
+  const ok = await requireAdminConfirm('删除 Linux NVIDIA 驱动')
+  if (!ok) return
+  await ElMessageBox.confirm(`确认删除驱动文件 ${driver.filename}？`, '删除确认', { type: 'warning' })
+  try {
+    await deleteGpuDriverLibraryEntry(driver.driver_type, driver.driver_id)
+    ElMessage.success('Linux NVIDIA 驱动已删除')
+    await loadFiles()
+  } catch (error) {
+    ElMessage.error(getApiErrorMessage(error))
+  }
 }
 
 async function onFileSelected(event: Event) {
@@ -321,6 +428,18 @@ onMounted(loadFiles)
 
 .hidden-file-input {
   display: none;
+}
+
+.gpu-driver-library {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.gpu-driver-upload-hint {
+  margin-top: 8px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
 }
 
 :deep(.preview-dialog .el-dialog) {

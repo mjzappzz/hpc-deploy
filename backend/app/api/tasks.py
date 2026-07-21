@@ -33,6 +33,30 @@ from app.core.task_runner import (
     resume_running_stress_tasks_after_startup,
     run_task_stage8b,
 )
+from app.core.gpu_driver_runner import (
+    GPU_DRIVER_FILE_NAME,
+    GPU_DRIVER_PHASE_INITIAL,
+    GPU_DRIVER_PHASE_KEY,
+    GPU_DRIVER_TASK_TYPE,
+    GpuDriverValidationError,
+    GPU_DRIVER_LIBRARY_ROOT,
+    GPU_DRIVER_LIBRARY_TYPES,
+    LEGACY_GPU_DRIVER_LIBRARY_REFS,
+    GPU_DRIVER_UPLOAD_ROOT,
+    list_library_drivers,
+    resolve_library_driver,
+    resolve_uploaded_driver,
+    resolve_gpu_driver_os_profile,
+    validate_library_driver_filename,
+    run_rocky9_gpu_driver_task,
+)
+from app.core.cuda_toolkit_runner import (
+    CUDA_TOOLKIT_FILE_NAME,
+    CUDA_TOOLKIT_TASK_TYPE,
+    CudaToolkitValidationError,
+    resolve_cuda_toolkit_os_profile,
+    run_cuda_toolkit_task,
+)
 from app.core.time_utils import format_beijing_time
 from app.core.artifact_collector import ARTIFACTS_DIR
 from app.core.audit import write_audit_log
@@ -67,6 +91,12 @@ from app.schemas.task import (
     TaskLocalArtifactsCleanupResponse,
     TaskDeleteResponse,
     TaskDiagnosisResponse,
+    GpuDriverRunRequest,
+    GpuDriverBatchRunRequest,
+    CudaToolkitRunRequest,
+    CudaToolkitBatchRunRequest,
+    GpuDriverLibraryItem,
+    GpuDriverUploadResponse,
     TaskListResponse,
     TaskMonitorRequest,
     TaskMonitorResponse,
@@ -76,7 +106,7 @@ from app.schemas.task import (
     TaskRunRequest,
     TaskRunResponse,
 )
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Session
@@ -100,6 +130,7 @@ for dirs in SCRIPT_TEMP_DIR_MAP.values():
         ALLOWED_TEMP_DIRS.add(d)
 
 APPTAINER_ALLOWED_PARAM_KEYS: set[str] = {"overwrite"}
+MAX_GPU_DRIVER_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 
 
 def _validate_apptainer_params(raw: dict[str, object] | None) -> dict[str, object]:
@@ -151,12 +182,12 @@ MONITOR_COMMANDS: dict[str, str] = {
 
 VALID_TASK_STATUSES: frozenset[str] = frozenset({
     "PENDING", "CONNECTING", "PREPARING", "UPLOADING",
-    "RUNNING", "CANCELING", "SUCCESS", "FAILED", "CANCELED",
+    "WAITING_REBOOT", "RUNNING", "CANCELING", "SUCCESS", "FAILED", "CANCELED",
 })
 EXECUTING_TASK_STATUSES: frozenset[str] = frozenset({
-    "CONNECTING", "PREPARING", "UPLOADING", "RUNNING", "CANCELING",
+    "CONNECTING", "PREPARING", "UPLOADING", "WAITING_REBOOT", "RUNNING", "CANCELING",
 })
-VALID_TASK_TYPES: frozenset[str] = frozenset({"script", "stress", "apptainer"})
+VALID_TASK_TYPES: frozenset[str] = frozenset({"script", "stress", "apptainer", GPU_DRIVER_TASK_TYPE, CUDA_TOOLKIT_TASK_TYPE})
 VALID_ORDER_VALUES: frozenset[str] = frozenset({"created_desc", "created_asc"})
 VALID_TASK_SCOPES: frozenset[str] = frozenset({"single", "batch"})
 
@@ -290,7 +321,6 @@ def run_task(
     db: Session = Depends(get_db),
 ) -> TaskRunResponse:
     server = _get_server_or_400(db, payload.server_id)
-
     running_task = (
         db.query(Task)
         .filter(Task.server_id == payload.server_id, Task.status.in_(UNFINISHED_TASK_STATUSES))
@@ -386,6 +416,408 @@ def run_task(
     )
     background_tasks.add_task(run_task_stage8b, task_id)
     return TaskRunResponse(task_id=task_id, status="PENDING")
+
+
+@router.post("/gpu-driver/library", response_model=GpuDriverLibraryItem, status_code=status.HTTP_201_CREATED)
+async def upload_gpu_driver_library(
+    file: UploadFile = File(...),
+    driver_type: str = Query(..., pattern="^(geforce|datacenter)$"),
+    db: Session = Depends(get_db),
+    _: str = Depends(require_admin_token),
+) -> GpuDriverLibraryItem:
+    """Add a versioned NVIDIA Linux installer without replacing an existing entry."""
+    try:
+        filename = validate_library_driver_filename(Path(file.filename or "").name)
+    except GpuDriverValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    driver_id = token_hex(12)
+    destination_root = GPU_DRIVER_LIBRARY_ROOT / driver_type
+    entry_root = destination_root / driver_id
+    destination = entry_root / filename
+    temp_destination = entry_root / ".uploading"
+    size = 0
+    try:
+        entry_root.mkdir(parents=True, exist_ok=False)
+        with temp_destination.open("wb") as output:
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_GPU_DRIVER_UPLOAD_BYTES:
+                    raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="driver file must not exceed 2 GiB")
+                output.write(chunk)
+        temp_destination.replace(destination)
+        uploaded_at = datetime.fromtimestamp(destination.stat().st_mtime)
+        write_audit_log(
+            db, action="gpu_driver.library_upload", target_type="gpu_driver", status="success",
+            actor="admin", target_id=driver_id, target_name=filename,
+            message=f"uploaded {GPU_DRIVER_LIBRARY_TYPES[driver_type]} NVIDIA driver {filename}",
+            detail={"size": size, "driver_type": driver_type},
+        )
+        return GpuDriverLibraryItem(
+            driver_id=driver_id, driver_type=driver_type, label=GPU_DRIVER_LIBRARY_TYPES[driver_type],
+            filename=filename, size=size, uploaded_at=uploaded_at,
+        )
+    except HTTPException:
+        temp_destination.unlink(missing_ok=True)
+        if entry_root.exists() and not any(entry_root.iterdir()):
+            entry_root.rmdir()
+        raise
+    except OSError as exc:
+        temp_destination.unlink(missing_ok=True)
+        if entry_root.exists() and not any(entry_root.iterdir()):
+            entry_root.rmdir()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="failed to store driver file") from exc
+    finally:
+        await file.close()
+
+
+@router.post("/gpu-driver/uploads", response_model=GpuDriverUploadResponse, status_code=status.HTTP_201_CREATED)
+async def upload_gpu_driver_for_task(
+    file: UploadFile = File(...),
+    driver_type: str = Query(..., pattern="^(geforce|datacenter)$"),
+    db: Session = Depends(get_db),
+    _: str = Depends(require_admin_token),
+) -> GpuDriverUploadResponse:
+    """Store a task-only NVIDIA installer for automatic seven-day cleanup."""
+    filename = Path(file.filename or "").name
+    if not filename.lower().endswith(".run"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="only .run NVIDIA driver files are allowed")
+    upload_id = token_hex(12)
+    GPU_DRIVER_UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+    destination = GPU_DRIVER_UPLOAD_ROOT / f"{upload_id}.run"
+    temporary = GPU_DRIVER_UPLOAD_ROOT / f".{upload_id}.uploading"
+    size = 0
+    try:
+        with temporary.open("wb") as output:
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_GPU_DRIVER_UPLOAD_BYTES:
+                    raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="driver file must not exceed 2 GiB")
+                output.write(chunk)
+        temporary.replace(destination)
+        write_audit_log(
+            db, action="task.gpu_driver_upload", target_type="gpu_driver", status="success",
+            actor="admin", target_id=upload_id, target_name=filename,
+            message=f"uploaded temporary NVIDIA driver {filename}", detail={"size": size, "driver_type": driver_type},
+        )
+        return GpuDriverUploadResponse(upload_id=upload_id, filename=filename, size=size, driver_type=driver_type)
+    except HTTPException:
+        temporary.unlink(missing_ok=True)
+        raise
+    except OSError as exc:
+        temporary.unlink(missing_ok=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="failed to store driver file") from exc
+    finally:
+        await file.close()
+
+
+@router.get("/gpu-driver/library", response_model=list[GpuDriverLibraryItem])
+def list_gpu_driver_library() -> list[GpuDriverLibraryItem]:
+    return [GpuDriverLibraryItem(**record) for record in list_library_drivers()]
+
+
+@router.delete("/gpu-driver/library/{driver_type}/{driver_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_gpu_driver_library_entry(
+    driver_type: str,
+    driver_id: str,
+    db: Session = Depends(get_db),
+    _: str = Depends(require_admin_token),
+) -> Response:
+    try:
+        path = resolve_library_driver(driver_type, driver_id)
+    except GpuDriverValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    filename = path.name
+    path.unlink()
+    path.parent.rmdir()
+    write_audit_log(
+        db, action="gpu_driver.library_delete", target_type="gpu_driver", status="success",
+        actor="admin", target_id=driver_id, target_name=filename,
+        message=f"deleted {GPU_DRIVER_LIBRARY_TYPES[driver_type]} NVIDIA driver {filename}",
+        detail={"driver_type": driver_type},
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/gpu-driver/rocky9", response_model=TaskRunResponse, status_code=status.HTTP_201_CREATED)
+def run_rocky9_gpu_driver(
+    payload: GpuDriverRunRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> TaskRunResponse:
+    """Create an OS-aware NVIDIA .run driver task.
+
+    Creating this task explicitly authorizes its one required server reboot.
+    The driver URL is validated and only used as a quoted curl download target.
+    """
+    server = _get_server_or_400(db, payload.server_id)
+    try:
+        os_profile = resolve_gpu_driver_os_profile(server.os_info)
+    except GpuDriverValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    if bool(payload.driver_id) == bool(payload.driver_upload_id):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="select one library driver or upload one custom driver")
+    try:
+        driver = resolve_library_driver(payload.driver_type, payload.driver_id) if payload.driver_id else resolve_uploaded_driver(str(payload.driver_upload_id))
+    except GpuDriverValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    running_task = db.query(Task).filter(
+        Task.server_id == server.id,
+        Task.status.in_(UNFINISHED_TASK_STATUSES),
+    ).first()
+    if running_task is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": "server already has a running task",
+                "running_task_id": running_task.task_id,
+                "running_status": running_task.status,
+            },
+        )
+
+    task_id = _generate_task_id()
+    task = Task(
+        task_id=task_id,
+        server_id=server.id,
+        task_type=GPU_DRIVER_TASK_TYPE,
+        file_path="gpu-driver/rocky9",
+        file_name=GPU_DRIVER_FILE_NAME,
+        display_category="GPU 驱动安装",
+        remote_work_dir=None,
+        command_preview=f"{server.os_info}：依赖准备 → 检测 Nouveau（必要时禁用并重启）→ 安装 {driver.name} → nvidia-smi 验证",
+        params={
+            "driver_type": payload.driver_type,
+            "driver_id": payload.driver_id,
+            "driver_upload_id": payload.driver_upload_id,
+            "force_install_if_driver_exists": payload.force_install_if_driver_exists,
+            "os_profile": os_profile,
+            GPU_DRIVER_PHASE_KEY: GPU_DRIVER_PHASE_INITIAL,
+        },
+        status="PENDING",
+    )
+    db.add(task)
+    db.flush()
+    db.add(TaskLog(task_id=task_id, level="SYSTEM", message=f"{server.os_info} NVIDIA GPU driver task created; automatic reboot is enabled when required"))
+    db.commit()
+    write_audit_log(
+        db, action="task.gpu_driver_create", target_type="task", status="success",
+        actor="visitor", target_id=task_id, target_name=f"{server.name} · Rocky 9.4 NVIDIA 驱动",
+        server_id=server.id, server_name=server.name, task_id=task_id,
+        message=f"created NVIDIA driver task on {server.name}",
+        detail={"task_type": GPU_DRIVER_TASK_TYPE, "driver_type": payload.driver_type, "driver_id": payload.driver_id},
+    )
+    background_tasks.add_task(run_rocky9_gpu_driver_task, task_id)
+    return TaskRunResponse(task_id=task_id, status="PENDING")
+
+
+@router.post("/gpu-driver/batch", response_model=BatchTaskCreateResponse)
+def run_gpu_driver_batch(
+    payload: GpuDriverBatchRunRequest,
+    db: Session = Depends(get_db),
+) -> BatchTaskCreateResponse:
+    if bool(payload.driver_id) == bool(payload.driver_upload_id):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="select one library driver or upload one custom driver")
+    try:
+        driver = resolve_library_driver(payload.driver_type, payload.driver_id) if payload.driver_id else resolve_uploaded_driver(str(payload.driver_upload_id))
+    except GpuDriverValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    server_ids = list(dict.fromkeys(payload.server_ids))
+    batch_id = f"batch-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{token_hex(3)}"
+    items: list[BatchTaskCreateItem] = []
+    task_ids: list[str] = []
+    created = skipped = failed = 0
+
+    for server_id in server_ids:
+        server = db.get(Server, server_id)
+        if server is None:
+            items.append(BatchTaskCreateItem(server_id=server_id, server_name="unknown", success=False, status="FAILED", reason="server not found"))
+            failed += 1
+            continue
+        if server.status != "online":
+            items.append(BatchTaskCreateItem(server_id=server_id, server_name=server.name, success=False, status="SKIPPED", reason="server is offline"))
+            skipped += 1
+            continue
+        try:
+            os_profile = resolve_gpu_driver_os_profile(server.os_info)
+        except GpuDriverValidationError as exc:
+            items.append(BatchTaskCreateItem(server_id=server_id, server_name=server.name, success=False, status="SKIPPED", reason=str(exc)))
+            skipped += 1
+            continue
+        if db.query(Task).filter(Task.server_id == server_id, Task.status.in_(UNFINISHED_TASK_STATUSES)).first() is not None:
+            items.append(BatchTaskCreateItem(server_id=server_id, server_name=server.name, success=False, status="SKIPPED", reason="server already has unfinished task"))
+            skipped += 1
+            continue
+
+        task_id = _generate_task_id()
+        task = Task(
+            task_id=task_id,
+            server_id=server_id,
+            task_type=GPU_DRIVER_TASK_TYPE,
+            file_path="gpu-driver/auto",
+            file_name=GPU_DRIVER_FILE_NAME,
+            display_category="GPU 驱动安装",
+            command_preview=f"{server.os_info}：依赖准备 → 检测 Nouveau（必要时禁用并重启）→ 安装 {driver.name} → nvidia-smi 验证",
+            params={
+                "driver_type": payload.driver_type,
+                "driver_id": payload.driver_id,
+                "driver_upload_id": payload.driver_upload_id,
+                "force_install_if_driver_exists": payload.force_install_if_driver_exists,
+                "os_profile": os_profile,
+            },
+            status="PENDING",
+            batch_id=batch_id,
+        )
+        db.add(task)
+        db.add(TaskLog(task_id=task_id, level="SYSTEM", message=f"{server.os_info} NVIDIA GPU driver batch task created"))
+        task_ids.append(task_id)
+        items.append(BatchTaskCreateItem(server_id=server_id, server_name=server.name, task_id=task_id, success=True, status="PENDING"))
+        created += 1
+
+    db.commit()
+    for task_id in task_ids:
+        threading.Thread(target=run_rocky9_gpu_driver_task, args=(task_id,), daemon=True).start()
+    write_audit_log(
+        db, action="task.gpu_driver_batch_create", target_type="task", status="success" if failed == 0 else "failed",
+        actor="visitor", target_id=batch_id, target_name=f"NVIDIA GPU Driver · {driver.name}", task_id=batch_id,
+        message=f"GPU driver batch created: {created} created, {skipped} skipped, {failed} failed",
+        detail={"batch_id": batch_id, "server_ids": server_ids, "driver_type": payload.driver_type, "driver_id": payload.driver_id, "created": created, "skipped": skipped, "failed": failed},
+    )
+    return BatchTaskCreateResponse(
+        batch_id=batch_id, script_name=f"NVIDIA GPU 驱动 · {driver.name}", total=len(server_ids),
+        created=created, skipped=skipped, failed=failed, items=items,
+    )
+
+
+def _create_cuda_toolkit_task(
+    *,
+    task_id: str,
+    server: Server,
+    cuda_version: str,
+    force_install: bool,
+    os_profile: str,
+    batch_id: str | None = None,
+) -> Task:
+    return Task(
+        task_id=task_id,
+        server_id=server.id,
+        task_type=CUDA_TOOLKIT_TASK_TYPE,
+        file_path="cuda-toolkit/auto",
+        file_name=CUDA_TOOLKIT_FILE_NAME,
+        display_category="CUDA 安装",
+        remote_work_dir=None,
+        command_preview=f"{server.os_info}：校验 NVIDIA 驱动 → 配置 CUDA 软件源 → 安装 CUDA Toolkit {cuda_version} → nvcc 验证",
+        params={
+            "cuda_version": cuda_version,
+            "force_install": force_install,
+            "os_profile": os_profile,
+        },
+        status="PENDING",
+        batch_id=batch_id,
+    )
+
+
+@router.post("/cuda-toolkit", response_model=TaskRunResponse, status_code=status.HTTP_201_CREATED)
+def run_cuda_toolkit(
+    payload: CudaToolkitRunRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> TaskRunResponse:
+    server = _get_server_or_400(db, payload.server_id)
+    try:
+        os_profile = resolve_cuda_toolkit_os_profile(server.os_info)
+    except CudaToolkitValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    running_task = db.query(Task).filter(
+        Task.server_id == server.id,
+        Task.status.in_(UNFINISHED_TASK_STATUSES),
+    ).first()
+    if running_task is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "message": "server already has a running task",
+            "running_task_id": running_task.task_id,
+            "running_status": running_task.status,
+        })
+    task_id = _generate_task_id()
+    task = _create_cuda_toolkit_task(
+        task_id=task_id,
+        server=server,
+        cuda_version=payload.cuda_version,
+        force_install=payload.force_install,
+        os_profile=os_profile,
+    )
+    db.add(task)
+    db.flush()
+    db.add(TaskLog(task_id=task_id, level="SYSTEM", message=f"{server.os_info} CUDA Toolkit {payload.cuda_version} task created"))
+    db.commit()
+    write_audit_log(
+        db, action="task.cuda_toolkit_create", target_type="task", status="success",
+        actor="visitor", target_id=task_id, target_name=f"{server.name} · CUDA Toolkit {payload.cuda_version}",
+        server_id=server.id, server_name=server.name, task_id=task_id,
+        message=f"created CUDA Toolkit {payload.cuda_version} task on {server.name}",
+        detail={"task_type": CUDA_TOOLKIT_TASK_TYPE, "cuda_version": payload.cuda_version},
+    )
+    background_tasks.add_task(run_cuda_toolkit_task, task_id)
+    return TaskRunResponse(task_id=task_id, status="PENDING")
+
+
+@router.post("/cuda-toolkit/batch", response_model=BatchTaskCreateResponse)
+def run_cuda_toolkit_batch(
+    payload: CudaToolkitBatchRunRequest,
+    db: Session = Depends(get_db),
+) -> BatchTaskCreateResponse:
+    server_ids = list(dict.fromkeys(payload.server_ids))
+    batch_id = f"batch-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{token_hex(3)}"
+    items: list[BatchTaskCreateItem] = []
+    task_ids: list[str] = []
+    created = skipped = failed = 0
+    for server_id in server_ids:
+        server = db.get(Server, server_id)
+        if server is None:
+            items.append(BatchTaskCreateItem(server_id=server_id, server_name="unknown", success=False, status="FAILED", reason="server not found"))
+            failed += 1
+            continue
+        if server.status != "online":
+            items.append(BatchTaskCreateItem(server_id=server_id, server_name=server.name, success=False, status="SKIPPED", reason="server is offline"))
+            skipped += 1
+            continue
+        try:
+            os_profile = resolve_cuda_toolkit_os_profile(server.os_info)
+        except CudaToolkitValidationError as exc:
+            items.append(BatchTaskCreateItem(server_id=server_id, server_name=server.name, success=False, status="SKIPPED", reason=str(exc)))
+            skipped += 1
+            continue
+        if db.query(Task).filter(Task.server_id == server_id, Task.status.in_(UNFINISHED_TASK_STATUSES)).first() is not None:
+            items.append(BatchTaskCreateItem(server_id=server_id, server_name=server.name, success=False, status="SKIPPED", reason="server already has unfinished task"))
+            skipped += 1
+            continue
+        task_id = _generate_task_id()
+        db.add(_create_cuda_toolkit_task(
+            task_id=task_id,
+            server=server,
+            cuda_version=payload.cuda_version,
+            force_install=payload.force_install,
+            os_profile=os_profile,
+            batch_id=batch_id,
+        ))
+        db.add(TaskLog(task_id=task_id, level="SYSTEM", message=f"{server.os_info} CUDA Toolkit {payload.cuda_version} batch task created"))
+        task_ids.append(task_id)
+        items.append(BatchTaskCreateItem(server_id=server_id, server_name=server.name, task_id=task_id, success=True, status="PENDING"))
+        created += 1
+    db.commit()
+    for task_id in task_ids:
+        threading.Thread(target=run_cuda_toolkit_task, args=(task_id,), daemon=True).start()
+    write_audit_log(
+        db, action="task.cuda_toolkit_batch_create", target_type="task", status="success" if failed == 0 else "failed",
+        actor="visitor", target_id=batch_id, target_name=f"CUDA Toolkit {payload.cuda_version}", task_id=batch_id,
+        message=f"CUDA Toolkit batch created: {created} created, {skipped} skipped, {failed} failed",
+        detail={"batch_id": batch_id, "server_ids": server_ids, "cuda_version": payload.cuda_version, "created": created, "skipped": skipped, "failed": failed},
+    )
+    return BatchTaskCreateResponse(
+        batch_id=batch_id, script_name=f"CUDA Toolkit {payload.cuda_version}", total=len(server_ids),
+        created=created, skipped=skipped, failed=failed, items=items,
+    )
 
 
 # ───── Batch task creation ─────
@@ -715,6 +1147,8 @@ def resume_pending_tasks_after_startup() -> int:
         )
         suite_groups: set[tuple[int, str]] = set()
         for task in pending_tasks:
+            if task.task_type in {GPU_DRIVER_TASK_TYPE, CUDA_TOOLKIT_TASK_TYPE}:
+                continue
             if task.task_type == "stress" and task.batch_id and task.sequence_index is not None:
                 suite_groups.add((task.server_id, task.batch_id))
                 continue
@@ -1042,6 +1476,53 @@ def retry_single_task(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="task has no retryable script")
 
     server = _get_server_or_400(db, original.server_id)
+    if original.task_type == GPU_DRIVER_TASK_TYPE:
+        retry_task_id = _generate_task_id()
+        original_params = original.params or {}
+        driver_type = str(original_params.get("driver_type", ""))
+        driver_id = str(original_params.get("driver_id", ""))
+        driver_upload_id = str(original_params.get("driver_upload_id", ""))
+        if driver_upload_id:
+            try:
+                resolve_uploaded_driver(driver_upload_id)
+            except GpuDriverValidationError as exc:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="original custom NVIDIA driver is no longer available") from exc
+        elif not driver_type or not driver_id:
+            legacy_ref = LEGACY_GPU_DRIVER_LIBRARY_REFS.get(str(original_params.get("driver_source", "")))
+            if legacy_ref is None:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="original GPU driver library entry is unavailable")
+            driver_type, driver_id = legacy_ref
+        retry_params = {
+            "driver_type": driver_type,
+            "driver_id": driver_id or None,
+            "driver_upload_id": driver_upload_id or None,
+            "force_install_if_driver_exists": bool(original_params.get("force_install_if_driver_exists", False)),
+            GPU_DRIVER_PHASE_KEY: GPU_DRIVER_PHASE_INITIAL,
+            "__retry_of_task_id": original.task_id,
+            "__retry_created_at": datetime.utcnow().isoformat(timespec="seconds"),
+        }
+        try:
+            if not driver_upload_id:
+                resolve_library_driver(driver_type, driver_id)
+        except GpuDriverValidationError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="original GPU driver library entry is unavailable") from exc
+        retry_task = Task(
+            task_id=retry_task_id,
+            server_id=server.id,
+            task_type=GPU_DRIVER_TASK_TYPE,
+            file_path="gpu-driver/rocky9",
+            file_name=GPU_DRIVER_FILE_NAME,
+            display_category="GPU 驱动安装",
+            command_preview=original.command_preview,
+            params=retry_params,
+            status="PENDING",
+        )
+        db.add(retry_task)
+        db.add(TaskLog(task_id=retry_task_id, level="SYSTEM", message=f"GPU driver retry task created from {original.task_id}"))
+        db.commit()
+        background_tasks.add_task(run_rocky9_gpu_driver_task, retry_task_id)
+        return TaskRetryResponse(original_task_id=original.task_id, retry_task_id=retry_task_id, status="PENDING")
+
     file_record = _get_library_file_or_400(original.file_path)
     retry_params = dict(original.params or {})
     retry_params["__retry_of_task_id"] = original.task_id

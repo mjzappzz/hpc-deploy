@@ -26,6 +26,7 @@ from app.schemas.server import (
     ServerCreate,
     ServerRead,
     ServerUpdate,
+    SERVER_TAG_OPTIONS,
     TagSummaryResponse,
     TagSummary,
 )
@@ -168,7 +169,10 @@ def list_servers(
 def list_server_tags(db: Session = Depends(get_db)) -> TagSummaryResponse:
     """Return tag summary: extract unique tags, count servers and online/offline per tag."""
     all_servers = db.query(Server.tags_json, Server.status).all()
-    tag_counter: dict[str, dict[str, int]] = {}
+    tag_counter: dict[str, dict[str, int]] = {
+        tag: {"server_count": 0, "online_count": 0, "offline_count": 0}
+        for tag in SERVER_TAG_OPTIONS
+    }
     for (tj, status) in all_servers:
         if not tj:
             continue
@@ -176,7 +180,9 @@ def list_server_tags(db: Session = Depends(get_db)) -> TagSummaryResponse:
             tags = json.loads(tj)
             if isinstance(tags, list):
                 for t in tags:
-                    entry = tag_counter.setdefault(t, {"server_count": 0, "online_count": 0, "offline_count": 0})
+                    if t not in SERVER_TAG_OPTIONS:
+                        continue
+                    entry = tag_counter[t]
                     entry["server_count"] += 1
                     if status == "online":
                         entry["online_count"] += 1

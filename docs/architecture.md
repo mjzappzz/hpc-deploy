@@ -30,6 +30,8 @@
 
 ```
 backend/data/artifacts/    # 结果文件回收目录
+backend/data/gpu_driver_library/ # Linux NVIDIA 驱动库（运行资产）
+backend/data/gpu_driver_uploads/ # 临时自定义 NVIDIA 驱动（运行资产）
 backend/apptainer/         # .sif 容器文件
 backend/scripts/           # 白名单脚本目录
   stress/                  # 压测脚本
@@ -51,11 +53,13 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - 单台公钥部署（`/{id}/deploy-public-key`）
 - 单台/批量 SSH 测试（`/{id}/test`、`/test-ssh-all`）
 - 探测全部（`/probe-all`），默认跳过离线服务器，支持显式指定 server_ids
-- 标签管理（`/tags` 统计、`tag` 参数筛选）
-- 标签基于 `tags_json TEXT` 列存储，包含在线/离线计数
+- 标签管理（`/tags` 统计、`tag` 参数筛选）；固定单选值为待压测、测试机、压测完成、故障待处理
+- 标签基于 `tags_json TEXT` 列存储，包含在线/离线计数；旧记录读取时兼容空标签并回退为待压测
 
 ### tasks API (`/api/tasks`)
 - 任务创建、批量创建（`/batch`）
+- GPU 驱动安装（`/gpu-driver/rocky9`、`/gpu-driver/batch`）：按目标服务器 OS 自动选择 Rocky 9 或 Ubuntu 安装脚本，支持 GeForce / Data Center 驱动库与临时 `.run` 上传
+- CUDA Toolkit 安装（`/cuda-toolkit`、`/cuda-toolkit/batch`）：支持 11.8、12.0–12.6、12.8、12.9、13.0，安装前校验 `nvidia-smi`，仅安装 Toolkit，不安装或覆盖驱动
 - 压测套件创建（`/stress-suite`），同服务器内按 GPU → CPU/内存 → 磁盘串行推进
 - 批次压测子任务重跑（`/{task_id}/retry-in-batch`）：仅支持白名单压测脚本中执行失败、取消、超时或报告 FAIL 的子任务；重跑任务追加到同批次、同服务器队列末尾，并阻止重复排队
 - 任务列表 `scope=single|batch`：按是否存在 `batch_id` 筛选单次任务或批次子任务，保持分页总数准确；`active_only=true` 统计 CONNECTING、PREPARING、UPLOADING、RUNNING、CANCELING 全部活动任务；`include_batch_context=true` 在状态筛选时保留命中批次的完整子任务
@@ -70,10 +74,13 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - 结果文件入口先展示 artifact/result 文件列表，再由用户选择具体文件下载
 - 批次报告下载：单服务器批次生成 `服务器名称_压测报告_日期.zip`，多服务器批次生成 `batch_id.zip` 并按服务器目录拆分
 - 任务历史查询默认过滤 `hidden_from_history=1` 的软隐藏记录；keyword 支持匹配任务 ID、批次 ID、脚本名、服务器名称与主机地址
+- 驱动与 CUDA 批量任务按服务器独立执行；混合 Rocky 9 / Ubuntu 目标允许并行，各任务记录实际识别到的 OS profile
 
 ### scripts API (`/api/scripts`)
 - 脚本知识库文件列表、上传、预览、下载、删除
-- 按类型筛选（mpi/stress/apptainer）
+- 按类型筛选（mpi/stress/windows/apptainer）
+- Windows 分类仅接受 `.ps1`、`.bat`、`.cmd`，单文件不超过 2 MiB；只供 Windows 压测页面预览、复制和下载，不可创建 Linux 任务
+- Linux NVIDIA 驱动库由 tasks API 独立管理，避免 `.run` 文件进入通用 Linux 脚本执行链路
 
 ### cleanup API (`/api/cleanup`)
 - 本地结果文件目录扫描与删除已整合到系统设置页面，旧清理中心页面和 `/cleanup` 前端路由已删除
@@ -108,6 +115,11 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - 单台分发：SFTP 上传 .sif 到 `$HOME/hpcdeploy/apptainer/`
 - 批量分发：多线程并发 SFTP
 - 只上传，不执行 `run` / `exec`
+
+### GPU 驱动与 CUDA runner
+- `gpu_driver_runner.py` 管理驱动库、临时上传驱动和安装任务。驱动文件名限制为 `NVIDIA-Linux-x86_64-*.run`，类型为 GeForce / Data Center；临时文件默认保留 7 天，引用中的文件不会清理。
+- 驱动安装根据探测 OS 选择 Rocky 9 或 Ubuntu 自动化脚本。若已存在可用 `nvidia-smi`，默认跳过；勾选强制安装时才覆盖执行。需要时自动完成 Nouveau 禁用、重启与恢复执行。
+- `cuda_toolkit_runner.py` 使用 NVIDIA 官方软件源安装指定 Toolkit；写入 `/etc/profile.d/cuda-<version>.sh` 并维护 `/usr/local/cuda` 软链接。成功后仅以 `nvcc --version` 验证，并在任务日志输出可复制的环境变量。
 
 ### task runner
 - 基于 `setsid --wait` 启动进程组
@@ -163,7 +175,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 | `key_path` | VARCHAR(255) | 本地私钥路径 |
 | `password` | VARCHAR(255) | 密码（仅 password 模式） |
 | `status` | VARCHAR(20) | online / offline / unknown |
-| `tags_json` | TEXT DEFAULT '[]' | 标签 JSON 数组 |
+| `tags_json` | TEXT DEFAULT '[]' | 单元素标签 JSON 数组；固定业务标签 |
 | `last_check_at` | DATETIME | 最后探测时间 |
 | `last_error` | TEXT | 最后错误 |
 
@@ -175,7 +187,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 |------|------|------|
 | `task_id` | VARCHAR(64) | 任务唯一 ID；本地 artifacts 一级目录名 |
 | `batch_id` | VARCHAR(64) | 批次 ID；同一批次下多个子任务共享 |
-| `task_type` | VARCHAR(50) | 任务类型：script / stress / apptainer |
+| `task_type` | VARCHAR(50) | 任务类型：script / stress / apptainer / gpu_driver / cuda_toolkit |
 | `file_name` | VARCHAR(255) | 执行脚本文件名 |
 | `status` | VARCHAR(30) | PENDING / RUNNING / SUCCESS / FAILED / CANCELED 等 |
 | `sequence_index` | INTEGER | 压测套件子任务顺序 |
@@ -208,6 +220,8 @@ $HOME/hpcdeploy/
 - 脚本必须命中 `backend/scripts/`（当前内置 `stress/`、`mpi/`）；Apptainer 文件必须位于 `backend/apptainer/`
 - 文件名通过 `_safe_basename()` 校验（禁止 `..`、禁止 `/`）
 - 路径通过 `resolve()` + `startswith()` 防逃逸
+- `backend/scripts/windows/` 仅为 Windows 压测资料库，任务执行器拒绝该分类，避免 PowerShell/批处理文件进入 Linux SSH 执行链路
+- 驱动库仅允许 `NVIDIA-Linux-x86_64-*.run`，并按 GeForce / Data Center 固定分类；驱动文件必须位于专用运行目录，不能作为通用脚本执行
 
 ### 参数白名单
 - stress 参数只允许数字
@@ -216,11 +230,12 @@ $HOME/hpcdeploy/
 ### 路径白名单
 - 远端清理只允许 `tasks` / `downloads` / `tmp`
 - 不清理 `$HOME/hpcdeploy/apptainer`
-- 删除任务时远端路径必须匹配 `hpcdeploy/tasks/{type}/{timestamp}` 格式
+- 删除任务时远端路径必须匹配 `hpcdeploy/tasks/{type}/{task_id}` 格式
 
 ### 禁止 raw command
 - 前端不传 `command`、`remote_path`
 - 所有命令由后端按任务类型固定生成
+- CUDA 安装源与 Toolkit 包名由后端按 Rocky 9 / Ubuntu 22.04 / Ubuntu 24.04 和版本白名单生成；前端不能传入下载地址或 shell 参数
 
 ### 公钥检测/部署安全
 - 前端只传 `private_key_path`，不传远端路径、不传原始 shell 命令

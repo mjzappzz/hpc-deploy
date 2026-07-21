@@ -31,6 +31,8 @@ BACKUPS_DIR = BACKEND_ROOT / "data" / "backups"
 APPTAINER_DIR = BACKEND_ROOT / "apptainer"
 MPI_SCRIPTS_DIR = BACKEND_ROOT / "scripts" / "mpi"
 STRESS_SCRIPTS_DIR = BACKEND_ROOT / "scripts" / "stress"
+GPU_DRIVER_LIBRARY_DIR = BACKEND_ROOT / "data" / "gpu_driver_library"
+GPU_DRIVER_UPLOADS_DIR = BACKEND_ROOT / "data" / "gpu_driver_uploads"
 
 
 def _path_size(path: Path) -> tuple[int | None, int | None]:
@@ -117,6 +119,22 @@ def _build_runtime_paths() -> list[dict[str, object]]:
             description="GPU、CPU/内存、磁盘服务器压测脚本，任务执行时按选择上传到远端。",
         ),
         _runtime_path(
+            key="gpu_driver_library",
+            label="Linux NVIDIA 驱动库",
+            path=GPU_DRIVER_LIBRARY_DIR,
+            kind="directory",
+            description="脚本知识库上传的 GeForce、Data Center NVIDIA .run 驱动文件。",
+            attention=True,
+        ),
+        _runtime_path(
+            key="gpu_driver_uploads",
+            label="临时自定义驱动",
+            path=GPU_DRIVER_UPLOADS_DIR,
+            kind="directory",
+            description="任务执行页临时上传的 NVIDIA .run 驱动；默认保留 7 天，任务执行中不会清理。",
+            attention=True,
+        ),
+        _runtime_path(
             key="artifacts",
             label="远端回收结果",
             path=ARTIFACTS_DIR,
@@ -143,9 +161,9 @@ def _build_runtime_paths() -> list[dict[str, object]]:
         _runtime_path(
             key="remote_tasks",
             label="远端任务工作目录",
-            path="$HOME/hpcdeploy/tasks/<task_type>/<脚本名_时间>/",
+            path="$HOME/hpcdeploy/tasks/<task_type>/<task_id>/",
             kind="remote",
-            description="每台目标服务器执行任务时生成，包含 task.log、.hpcdeploy.pid、报告和临时文件。",
+            description="每台目标服务器执行任务时生成，包含 task.log、.hpcdeploy.pid、报告和临时文件；覆盖 GPU 驱动与 CUDA 安装任务。",
             attention=True,
         ),
         _runtime_path(

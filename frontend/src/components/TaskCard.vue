@@ -32,7 +32,12 @@
         <span class="task-card__module-label">{{ taskModuleLabel }}</span>
         <span>文件：{{ task.file_name ?? '-' }}</span>
         <span>远程目录：{{ task.remote_work_dir ?? '-' }}</span>
-        <span>命令：{{ task.command_preview ?? '-' }}</span>
+        <el-tooltip placement="top" :show-after="250">
+          <template #content>
+            <pre class="command-tooltip-content">{{ task.command_preview ?? '-' }}</pre>
+          </template>
+          <span>命令：{{ task.command_preview ?? '-' }}</span>
+        </el-tooltip>
         <span v-if="plannedDuration" class="task-card__plan-duration">计划时长：{{ plannedDuration }}</span>
       </div>
       <div class="task-card__time-line">
@@ -94,6 +99,7 @@ import { formatBeijingDateKey, formatDateTime } from '@/utils/time'
 import { calcDurationSeconds, calcEstimatedEndTime, formatSeconds, statusLabel } from '@/composables/useTaskProgress'
 import StatusTag from './StatusTag.vue'
 import { formatTaskErrorMessage } from '@/utils/taskError'
+import { formatTaskDisplayName } from '@/utils/taskDisplay'
 
 defineEmits<{
   continueTask: [task: TaskRecord]
@@ -129,7 +135,7 @@ const serverLabel = computed(() => {
 
 const displayName = computed(() => {
   const prefix = props.task.batch_id ? '批次子任务' : '单次'
-  return [prefix, serverLabel.value, taskReadableType.value, compactTaskDate(props.task.created_at)].filter(Boolean).join(' · ')
+  return `${prefix} · ${formatTaskDisplayName(props.task)}`
 })
 
 const taskReadableType = computed(() => {
@@ -137,6 +143,8 @@ const taskReadableType = computed(() => {
   if (fileName.includes('gpu')) return 'GPU压测'
   if (fileName.includes('cpu') || fileName.includes('mem')) return 'CPU/内存压测'
   if (fileName.includes('disk')) return '磁盘压测'
+  if (props.task.task_type === 'gpu_driver') return 'GPU 驱动安装'
+  if (props.task.task_type === 'cuda_toolkit') return 'CUDA 安装'
   if (props.task.task_type === 'stress') return '服务器压测'
   if (props.task.task_type === 'apptainer') return 'Apptainer 分发'
   if (props.task.task_type === 'script') return '服务器环境'
@@ -167,12 +175,12 @@ const isStressCompleted = computed(() => {
 
 const showCommandCopyButtons = computed(() => {
   const status = props.task.status?.toUpperCase() ?? ''
-  return status === 'SUCCESS' && ['script', 'mpi', 'test'].includes(props.task.task_type || '')
+  return status === 'SUCCESS' && ['script', 'mpi', 'test', 'cuda_toolkit'].includes(props.task.task_type || '')
 })
 
 const showCancelButton = computed(() => {
   const status = props.task.status?.toUpperCase() ?? ''
-  return ['PENDING', 'CONNECTING', 'PREPARING', 'UPLOADING', 'RUNNING'].includes(status)
+  return ['PENDING', 'CONNECTING', 'PREPARING', 'UPLOADING', 'WAITING_REBOOT', 'RUNNING'].includes(status)
 })
 
 const showCancelingButton = computed(() => {

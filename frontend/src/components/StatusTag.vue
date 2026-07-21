@@ -20,6 +20,7 @@ const label = computed(() => {
   if (normalized.value === 'UNKNOWN') return '未探测'
   if (normalized.value === 'PARTIAL_FAILED') return 'PARTIAL FAILED'
   if (normalized.value === 'PARTIAL_CANCELED') return 'PARTIAL CANCELED'
+  if (normalized.value === 'WAITING_REBOOT') return '等待重启完成'
   return String(props.status ?? 'unknown')
 })
 
@@ -30,7 +31,7 @@ const tagVariant = computed(() => {
   // execution status values (final_status SUCCESS unified here too)
   if (['ONLINE', 'SUCCESS'].includes(normalized.value)) return 'success'
   if (['FAILED', 'PARTIAL_FAILED', 'OFFLINE', 'TIMEOUT'].includes(normalized.value)) return 'danger'
-  if (['RUNNING', 'CONNECTING', 'PREPARING', 'UPLOADING', 'CANCELING'].includes(normalized.value)) return 'progress'
+  if (['RUNNING', 'CONNECTING', 'PREPARING', 'UPLOADING', 'WAITING_REBOOT', 'CANCELING'].includes(normalized.value)) return 'progress'
   if (['PENDING', 'UNKNOWN'].includes(normalized.value)) return 'info'
   if (['CANCELLED', 'CANCELED', 'WARN', 'WARNING', 'PARTIAL_CANCELED'].includes(normalized.value)) return 'warning'
   return 'info'

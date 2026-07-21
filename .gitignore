@@ -29,6 +29,9 @@ backend/data/*.sqlite
 backend/data/*.sqlite3
 backend/data/artifacts/
 backend/data/tmp/
+backend/data/gpu_driver_library/
+backend/data/gpu_driver_uploads/
+backend/data/.auto_cleanup.lock
 backend/data/*.lock
 data/*.db
 data/*.sqlite

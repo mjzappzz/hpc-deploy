@@ -13,9 +13,10 @@ import type { TaskRecord } from '@/api/task'
 /** English → Chinese status mapping */
 export const STATUS_LABELS: Record<string, string> = {
   PENDING: '等待中',
-  CONNECTING: '运行中',
-  PREPARING: '运行中',
-  UPLOADING: '运行中',
+  CONNECTING: '连接中',
+  PREPARING: '准备中',
+  UPLOADING: '上传中',
+  WAITING_REBOOT: '等待重启完成',
   RUNNING: '运行中',
   CANCELING: '运行中',
   SUCCESS: '成功',

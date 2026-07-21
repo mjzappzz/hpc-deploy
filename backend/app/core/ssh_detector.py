@@ -53,6 +53,31 @@ if command -v nvidia-smi >/dev/null 2>&1; then
 else
   echo '__NVIDIA_SMI_NOT_FOUND__'
 fi
+echo '---CUDA-SPLIT---'
+nvcc_path="$(command -v nvcc 2>/dev/null || true)"
+if [ -z "$nvcc_path" ]; then
+  for candidate in /usr/local/cuda/bin/nvcc /usr/local/cuda-*/bin/nvcc; do
+    if [ -x "$candidate" ]; then
+      nvcc_path="$candidate"
+      break
+    fi
+  done
+fi
+if [ -n "$nvcc_path" ]; then
+  "$nvcc_path" --version 2>/dev/null || echo '__NVCC_FAILED__'
+else
+  echo '__NVCC_NOT_FOUND__'
+  # CUDA runtime installations may not include nvcc.  Keep the UI inventory
+  # useful by reading the installed Toolkit version metadata as a fallback.
+  for version_file in /usr/local/cuda/version.json /usr/local/cuda/version.txt /usr/local/cuda-*/version.json /usr/local/cuda-*/version.txt; do
+    [ -r "$version_file" ] || continue
+    cuda_version="$(grep -Eom1 '[0-9]+(\.[0-9]+){1,2}' "$version_file" 2>/dev/null || true)"
+    if [ -n "$cuda_version" ]; then
+      echo "__CUDA_VERSION__${cuda_version}"
+      break
+    fi
+  done
+fi
 echo '__HPROBE_SECT_E__'
 """
 
@@ -269,10 +294,13 @@ def _summarize_gpu_info(raw: str) -> tuple[str, str]:
     if not text:
         return "-", "unknown"
 
-    # Split into lspci (hardware) and nvidia-smi (driver) sections
+    # Split into lspci (hardware), nvidia-smi (driver), and nvcc (CUDA) sections.
     parts = text.split("---GPU-SPLIT---")
     lspci_text = parts[0].strip() if len(parts) >= 1 else ""
-    smi_text = parts[1].strip() if len(parts) >= 2 else ""
+    driver_and_cuda = parts[1] if len(parts) >= 2 else ""
+    driver_parts = driver_and_cuda.split("---CUDA-SPLIT---")
+    smi_text = driver_parts[0].strip()
+    cuda_text = driver_parts[1].strip() if len(driver_parts) >= 2 else ""
 
     # ── Determine driver availability ──
     smi_ok = bool(
@@ -284,13 +312,26 @@ def _summarize_gpu_info(raw: str) -> tuple[str, str]:
     if smi_ok:
         # Driver is working — parse GPU model names from nvidia-smi CSV
         counts: dict[str, int] = {}
+        driver_versions: set[str] = set()
         for line in smi_text.splitlines():
             row = [p.strip() for p in line.split(",")]
             if len(row) >= 2 and row[1]:
                 counts[row[1]] = counts.get(row[1], 0) + 1
+            if len(row) >= 3 and row[2]:
+                driver_versions.add(row[2])
+        details = []
         if counts:
-            return " / ".join(f"{name} x{c}" for name, c in counts.items()), "driver_ok"
-        return smi_text[:200], "driver_ok"
+            details.append(" / ".join(f"{name} x{c}" for name, c in counts.items()))
+        if driver_versions:
+            details.append(f"Driver {' / '.join(sorted(driver_versions))}")
+        cuda_match = re.search(
+            r"(?:release\s+|__CUDA_VERSION__)([0-9.]+)",
+            cuda_text,
+            re.IGNORECASE,
+        )
+        if cuda_match:
+            details.append(f"CUDA {cuda_match.group(1)}")
+        return " / ".join(details) if details else smi_text[:200], "driver_ok"
 
     # ── nvidia-smi unavailable — check lspci for hardware ──
     lspci_has_hardware = bool(
