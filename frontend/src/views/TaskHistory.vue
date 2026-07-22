@@ -3974,15 +3974,37 @@ onUnmounted(() => {
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
+  padding-right: 110px;
+}
+
+.batch-history-card {
+  position: relative;
 }
 
 .batch-history-card .task-card__actions .batch-card-delete-button {
-  margin-left: auto !important;
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
   color: transparent !important;
   background: transparent !important;
   border-color: transparent !important;
-  border-right-color: var(--el-color-danger) !important;
-  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
+  transform: scale(0.96);
+  transform-origin: right bottom;
+  box-shadow: none;
+  transition: transform 180ms ease, background-color 180ms ease, border-color 180ms ease, color 140ms ease, box-shadow 180ms ease;
+}
+
+.batch-history-card .task-card__actions .batch-card-delete-button::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 0;
+  height: 0;
+  border-left: 12px solid transparent;
+  border-bottom: 12px solid var(--el-color-danger);
+  transition: opacity 120ms ease;
 }
 
 .batch-history-card .task-card__actions .batch-card-delete-button:hover,
@@ -3990,6 +4012,13 @@ onUnmounted(() => {
   color: var(--el-color-danger) !important;
   background: var(--el-color-danger-light-9) !important;
   border-color: var(--el-color-danger-light-5) !important;
+  transform: scale(1);
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--el-color-danger) 18%, transparent);
+}
+
+.batch-history-card .task-card__actions .batch-card-delete-button:hover::after,
+.batch-history-card .task-card__actions .batch-card-delete-button:focus-visible::after {
+  opacity: 0;
 }
 
 .batch-task-info-row {
