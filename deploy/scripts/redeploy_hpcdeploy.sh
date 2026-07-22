@@ -2,6 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/common_runtime.sh"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 BACKEND_DIR="$PROJECT_ROOT/backend"
 FRONTEND_DIR="$PROJECT_ROOT/frontend"
@@ -12,9 +13,9 @@ WEB_ROOT="/var/www/hpcdeploy"
 
 run_as_service_user() {
   if [[ "$SERVICE_USER" == "root" ]]; then
-    "$@"
+    env "PATH=$NODE_BIN_DIR:$PATH" "$@"
   else
-    sudo -H -u "$SERVICE_USER" "$@"
+    sudo -H -u "$SERVICE_USER" env "PATH=$NODE_BIN_DIR:$PATH" "$@"
   fi
 }
 
@@ -29,6 +30,9 @@ if [[ $EUID -ne 0 ]]; then
   echo "  nginx -t && systemctl reload nginx"
   exit 0
 fi
+
+NODE_BIN_DIR="$(resolve_service_node_bin "$SERVICE_USER")"
+echo "使用 Node.js：$NODE_BIN_DIR/node ($("$NODE_BIN_DIR/node" --version))"
 
 if [[ ! -x "$BACKEND_DIR/.deps/bin/python" ]]; then
   run_as_service_user python3 -m venv "$BACKEND_DIR/.deps"

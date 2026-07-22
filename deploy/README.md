@@ -8,6 +8,7 @@
 
 - 部署机需为 Linux，执行安装脚本的用户需具备 `sudo` 权限。
 - 脚本自动识别 `apt-get`、`dnf` 或 `yum`，并在缺少时安装 `python3`、`python3-venv`、`python3-pip`、`nodejs`、`npm`、`nginx`。
+- 前端构建要求 Node.js 18 或更高版本。脚本优先选择部署用户 NVM 中可用的最高版本，再回退到系统 Node.js；没有受支持版本时会在安装或发布前停止，不会覆盖现有静态文件或重启服务。
 - 后端仅监听 `127.0.0.1:8000`；Nginx 监听 `0.0.0.0:10086`。如需跨主机访问，请按现场安全策略放行或限制 `10086/tcp`。
 - 生产使用前必须通过环境变量设置非默认的 `SECRET_KEY` 与 `HPCDEPLOY_ADMIN_PASSWORD`；详见根目录 [README.md](../README.md#环境变量)。
 

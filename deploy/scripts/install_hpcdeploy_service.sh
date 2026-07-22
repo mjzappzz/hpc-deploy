@@ -2,6 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/common_runtime.sh"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 BACKEND_SERVICE_DEST="/etc/systemd/system/hpcdeploy-backend.service"
 LEGACY_FRONTEND_SERVICE_DEST="/etc/systemd/system/hpcdeploy-frontend.service"
@@ -70,9 +71,9 @@ install_prerequisites() {
 
 run_as_service_user() {
   if [[ "$SERVICE_USER" == "root" ]]; then
-    "$@"
+    env "PATH=$NODE_BIN_DIR:$PATH" "$@"
   else
-    sudo -H -u "$SERVICE_USER" "$@"
+    sudo -H -u "$SERVICE_USER" env "PATH=$NODE_BIN_DIR:$PATH" "$@"
   fi
 }
 
@@ -89,6 +90,9 @@ require_cmd python3
 require_cmd npm
 require_cmd nginx
 require_cmd systemctl
+
+NODE_BIN_DIR="$(resolve_service_node_bin "$SERVICE_USER")"
+echo "使用 Node.js：$NODE_BIN_DIR/node ($("$NODE_BIN_DIR/node" --version))"
 
 install -d -m 755 -o "$SERVICE_USER" -g "$SERVICE_GROUP" \
   "$BACKEND_DIR/data" \

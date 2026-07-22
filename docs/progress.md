@@ -4,6 +4,10 @@
 
 ## 当前完成度
 
+### 2026-07-22 — 部署运行保障
+
+- 修复 `sudo` 发布脚本丢失部署用户 NVM PATH、误用系统 Node.js 12 导致 Vite 构建失败的问题；安装与更新脚本现在统一解析 Node.js ≥18 的可用路径，构建失败仍发生在静态文件覆盖和服务重启之前。
+
 ### 2026-07-22 — Nginx 生产静态托管
 
 - 前端由 Vite dev server 切换为 `npm run build` 后发布到 `/var/www/hpcdeploy`；为避开 Windows 宿主机现有 `80/tcp` 服务，生产 Nginx 统一监听 `10086/tcp`。
