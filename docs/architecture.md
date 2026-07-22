@@ -81,10 +81,14 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - 按类型筛选（mpi/stress/windows/apptainer）
 - Windows 分类仅接受 `.ps1`、`.bat`、`.cmd`，单文件不超过 2 MiB；只供 Windows 压测页面预览、复制和下载，不可创建 Linux 任务
 - Linux NVIDIA 驱动库由 tasks API 独立管理，避免 `.run` 文件进入通用 Linux 脚本执行链路
+- 前端“资产库管理”将 Linux NVIDIA 驱动库置于独立卡片，普通脚本知识库只展示 mpi/stress/apptainer；统一上传入口先选择目标模块，再应用对应扩展名约束。Windows 资料不进入该页面的“全部”列表
 
 ### cleanup API (`/api/cleanup`)
 - 本地结果文件目录扫描与删除已整合到系统设置页面，旧清理中心页面和 `/cleanup` 前端路由已删除
 - 本地结果文件按真实任务记录聚合：普通任务返回任务名称、任务 ID、任务类型；批次任务按 `batch_id` 聚合并返回所有子任务名称、task_id、目录、文件数和大小
+- 批次结果按“子任务 → 子任务文件”返回；数据库中属于该批次但没有 artifacts 目录的取消、未启动或未回收子任务也会进入 `child_tasks`，文件列表为空
+- 本地结果和数据库任务日志支持同一任务 ID 搜索：匹配单次任务 ID、批次 ID和批次子任务 ID；批次 ID会映射全部子任务日志
+- 数据库任务日志按任务汇总时关联任务、批次与服务器，返回单次/批次标识、批次 ID、子任务 ID及服务器名称；无法关联的历史记录显式标记为未关联
 - 本地结果删除后默认只软隐藏历史记录：设置 `tasks.hidden_from_history=1`、`hidden_reason`、`hidden_at`，保留数据库记录
 - 本地结果按任务完成时间（无结束时间时开始/创建时间）排序；未匹配数据库任务的遗留目录才使用文件 mtime
 - 本地报告自动清理状态查询（`GET /api/cleanup/auto-cleanup/status`），配置保存走 settings API

@@ -28,6 +28,7 @@ class LocalArtifactTaskItem(BaseModel):
     size_bytes: int = 0
     size_text: str = ""
     modified_at: datetime | None = None
+    files: list[LocalArtifactFile] = []
 
 
 class LocalArtifactDirectory(BaseModel):
@@ -98,6 +99,9 @@ class DatabaseTaskLogsScanResult(BaseModel):
 class DatabaseTaskLogSizeItem(BaseModel):
     """Aggregated SQLite task-log message size for one task."""
     task_id: str
+    is_batch_task: bool = False
+    batch_id: str | None = None
+    server_name: str = ""
     log_count: int = 0
     message_bytes: int = 0
     last_logged_at: datetime | None = None

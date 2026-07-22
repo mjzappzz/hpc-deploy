@@ -12,23 +12,23 @@
       </div>
 
       <el-menu router :default-active="$route.path" class="nav-menu nav-menu-main">
-        <el-menu-item index="/" class="hpc-nav-pulse-item" :class="{ 'hpc-nav-pulse-active': isActiveMenu('/') }">
+        <el-menu-item index="/">
           <el-icon><Monitor /></el-icon>
           <span>仪表盘</span>
         </el-menu-item>
-        <el-menu-item index="/servers" class="hpc-nav-pulse-item" :class="{ 'hpc-nav-pulse-active': isActiveMenu('/servers') }">
+        <el-menu-item index="/servers">
           <el-icon><Cpu /></el-icon>
           <span>服务器管理</span>
         </el-menu-item>
-        <el-menu-item index="/tasks" class="hpc-nav-pulse-item" :class="{ 'hpc-nav-pulse-active': isActiveMenu('/tasks') }">
+        <el-menu-item index="/tasks">
           <el-icon><Operation /></el-icon>
           <span>执行任务</span>
         </el-menu-item>
-        <el-menu-item index="/windows-stress" class="hpc-nav-pulse-item" :class="{ 'hpc-nav-pulse-active': isActiveMenu('/windows-stress') }">
+        <el-menu-item index="/windows-stress" class="windows-nav-static">
           <el-icon><Monitor /></el-icon>
-          <span>Windows 压测</span>
+          <span>Windows 压测（独立）</span>
         </el-menu-item>
-        <el-menu-item index="/history" class="hpc-nav-pulse-item" :class="{ 'hpc-nav-pulse-active': isActiveMenu('/history') }" @click="goTaskHistory">
+        <el-menu-item index="/history" @click="goTaskHistory">
           <el-icon><Tickets /></el-icon>
           <span class="history-menu-label">
             <span>历史任务</span>
@@ -47,15 +47,15 @@
       </el-menu>
 
       <el-menu router :default-active="$route.path" class="nav-menu nav-menu-admin">
-        <el-menu-item index="/scripts" class="hpc-nav-pulse-item" :class="{ 'hpc-nav-pulse-active': isActiveMenu('/scripts') }">
+        <el-menu-item index="/scripts">
           <el-icon><Document /></el-icon>
-          <span>脚本知识库</span>
+          <span>资产库管理</span>
         </el-menu-item>
-        <el-menu-item index="/audit-logs" class="hpc-nav-pulse-item" :class="{ 'hpc-nav-pulse-active': isActiveMenu('/audit-logs') }" @click.capture="handleAuditMenuClick">
+        <el-menu-item v-if="adminMode" index="/audit-logs" @click.capture="handleAuditMenuClick">
           <el-icon><List /></el-icon>
           <span class="menu-label-row"><span>审计日志</span><el-tag size="small" class="admin-badge">Admin</el-tag></span>
         </el-menu-item>
-        <el-menu-item index="/settings" class="hpc-nav-pulse-item" :class="{ 'hpc-nav-pulse-active': isActiveMenu('/settings') }">
+        <el-menu-item index="/settings">
           <el-icon><Setting /></el-icon>
           <span class="menu-label-row"><span>系统设置</span><el-tag size="small" class="admin-badge">Admin</el-tag></span>
         </el-menu-item>
@@ -91,7 +91,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
 import { Cpu, Document, List, Monitor, Operation, Setting, Tickets } from '@element-plus/icons-vue'
@@ -142,12 +142,13 @@ function goTaskHistory() {
   void router.push({ path: '/history', query: { reset: String(Date.now()) } })
 }
 
-function isActiveMenu(index: string) {
-  if (index === '/tasks') {
-    return route.path === '/tasks' || route.path === '/task-runner'
-  }
-  return route.path === index
-}
+watch(
+  [adminMode, () => route.path],
+  ([isAdmin, path]) => {
+    if (!isAdmin && path === '/audit-logs') void router.replace('/')
+  },
+  { immediate: true },
+)
 
 async function refreshRunningTaskCount() {
   if (document.hidden || runningTaskLoading.value) return
@@ -315,9 +316,9 @@ html, body, #app {
   font-size: 14px;
   transition:
     color 0.15s,
-    background-color 0.15s,
-    box-shadow 0.18s ease;
+    background-color 0.15s;
   overflow: visible;
+  isolation: isolate;
 }
 
 .nav-menu .el-menu-item:hover {
@@ -328,58 +329,16 @@ html, body, #app {
 .nav-menu .el-menu-item.is-active {
   background: linear-gradient(90deg, rgba(64, 158, 255, 0.26), rgba(64, 158, 255, 0.08)) !important;
   color: #1677ff;
-  font-weight: 600;
+  font-weight: 400;
   box-shadow: inset 3px 0 #409eff;
   position: relative;
 }
 
 .nav-menu .el-menu-item.is-active::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 8px;
-  bottom: 8px;
-  width: 3px;
-  border-radius: 0 3px 3px 0;
-  background: #409eff;
-}
-
-@keyframes hpc-nav-blue-glow {
-  0%,
-  100% {
-    box-shadow:
-      inset 3px 0 #409eff,
-      0 0 8px rgba(64, 158, 255, 0.14),
-      0 0 16px rgba(64, 158, 255, 0.08);
-  }
-  50% {
-    box-shadow:
-      inset 3px 0 #6aaeff,
-      0 0 14px rgba(64, 158, 255, 0.28),
-      0 0 26px rgba(64, 158, 255, 0.16);
-  }
-}
-
-.nav-menu .hpc-nav-pulse-item {
-  border-color: transparent;
-}
-
-.nav-menu .hpc-nav-pulse-item:hover,
-.nav-menu .hpc-nav-pulse-active {
-  border-color: transparent;
-  animation: hpc-nav-blue-glow 1.8s ease-in-out infinite;
+  display: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .nav-menu .hpc-nav-pulse-item:hover,
-  .nav-menu .hpc-nav-pulse-active {
-    border-color: transparent;
-    animation: none;
-    box-shadow:
-      0 0 8px rgba(64, 158, 255, 0.18),
-      0 0 16px rgba(64, 158, 255, 0.1);
-  }
-
   .history-running-dot {
     animation: none;
   }
@@ -389,11 +348,32 @@ html, body, #app {
   color: #1677ff;
 }
 
+.nav-menu .windows-nav-static,
+.nav-menu .windows-nav-static:hover,
+.nav-menu .windows-nav-static.is-active {
+  animation: none;
+  font-weight: 400;
+}
+
 .nav-menu .el-menu-item .el-icon {
+  display: inline-flex;
+  flex: 0 0 18px;
+  position: relative;
+  z-index: 1;
   font-size: 18px;
   margin-right: 8px;
   color: #6b7280;
-  transition: color 0.15s;
+  opacity: 1;
+  visibility: visible;
+  transition: none;
+}
+
+.nav-menu .el-menu-item .el-icon svg {
+  display: block;
+  width: 1em;
+  height: 1em;
+  fill: currentColor;
+  backface-visibility: hidden;
 }
 
 .nav-menu .el-menu-item.is-active .el-icon {
@@ -595,20 +575,6 @@ html, body, #app {
   color: #f2d48b;
 }
 
-.is-admin-mode .nav-menu .el-menu-item.is-active::before {
-  background: #d9b563;
-}
-
-.is-admin-mode .nav-menu .hpc-nav-pulse-item:hover,
-.is-admin-mode .nav-menu .hpc-nav-pulse-active {
-  animation: hpc-nav-gold-glow 1.8s ease-in-out infinite;
-}
-
-@keyframes hpc-nav-gold-glow {
-  0%, 100% { box-shadow: inset 3px 0 #d9b563, 0 0 10px rgba(216, 181, 99, 0.1); }
-  50% { box-shadow: inset 3px 0 #e9ca7a, 0 0 18px rgba(216, 181, 99, 0.2); }
-}
-
 .is-admin-mode .app-main-area {
   background:
     radial-gradient(118% 58% at -12% -15%, transparent 63%, rgba(207, 165, 75, 0.16) 63.5%, transparent 64.2%),
@@ -640,13 +606,6 @@ html, body, #app {
   background: linear-gradient(135deg, #fffdf8 0%, #fffaf0 100%);
   border-color: #e9ddc3;
   box-shadow: 0 6px 18px rgba(92, 67, 20, 0.045);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .is-admin-mode .nav-menu .hpc-nav-pulse-item:hover,
-  .is-admin-mode .nav-menu .hpc-nav-pulse-active {
-    animation: none;
-  }
 }
 
 /* === content === */

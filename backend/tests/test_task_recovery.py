@@ -9,6 +9,76 @@ from app.core.task_runner import _build_remote_execution_command
 
 
 class TaskRecoveryTests(unittest.TestCase):
+    def test_boot_id_change_is_an_unexpected_reboot_for_stress_tasks(self) -> None:
+        self.assertTrue(task_runner._has_unexpected_server_reboot("boot-before", "boot-after"))
+        self.assertFalse(task_runner._has_unexpected_server_reboot("boot-before", "boot-before"))
+        self.assertFalse(task_runner._has_unexpected_server_reboot("", "boot-after"))
+
+    @patch("app.core.task_runner._broadcast_done_safe")
+    @patch("app.core.task_runner.schedule_report_summary_generation")
+    @patch("app.core.task_runner._add_log")
+    def test_unexpected_reboot_cancels_unstarted_following_batch_tasks(
+        self,
+        add_log: Mock,
+        schedule_summary: Mock,
+        broadcast_done: Mock,
+    ) -> None:
+        class FakeQuery:
+            def __init__(self, rows) -> None:
+                self.rows = rows
+
+            def filter(self, *_args):
+                return self
+
+            def order_by(self, *_args):
+                return self
+
+            def all(self):
+                return self.rows
+
+        class FakeDb:
+            def __init__(self, rows) -> None:
+                self.rows = rows
+                self.commits = 0
+
+            def query(self, _model):
+                return FakeQuery(self.rows)
+
+            def commit(self) -> None:
+                self.commits += 1
+
+        current = SimpleNamespace(
+            id=10,
+            task_id="task-current",
+            batch_id="batch-1",
+            server_id=8,
+            sequence_index=2,
+        )
+        follower = SimpleNamespace(
+            task_id="task-follower",
+            status="PENDING",
+            end_time=None,
+            exit_code=None,
+            error_message=None,
+            worker_id="worker-1",
+            lease_expire_time=datetime.utcnow(),
+        )
+        db = FakeDb([follower])
+
+        task_runner._cancel_following_stress_batch_tasks(
+            db,
+            current,
+            "server rebooted unexpectedly during previous stress task",
+        )
+
+        self.assertEqual(follower.status, "CANCELED")
+        self.assertEqual(follower.exit_code, -15)
+        self.assertIn("server rebooted unexpectedly", follower.error_message)
+        self.assertEqual(db.commits, 1)
+        schedule_summary.assert_called_once_with("task-follower")
+        broadcast_done.assert_called_once_with("task-follower", "CANCELED")
+        self.assertTrue(add_log.called)
+
     def test_expired_lease_is_stale(self) -> None:
         now = datetime.utcnow()
         task = SimpleNamespace(

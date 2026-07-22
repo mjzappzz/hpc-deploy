@@ -163,7 +163,7 @@
                         <span v-if="isGpuDriverSelected" class="environment-card__selected">已选择</span>
                       </div>
                       <div class="environment-card__title">NVIDIA GPU 驱动（自动识别系统）</div>
-                      <div class="environment-card__description">自动准备依赖、禁用 Nouveau，并安装脚本知识库中选择的 .run 驱动。</div>
+                      <div class="environment-card__description">自动准备依赖、禁用 Nouveau，并安装 Linux NVIDIA 驱动库中选择的 .run 驱动。</div>
                       <div class="environment-card__target">支持：Rocky Linux 9 / Ubuntu 20.04、22.04、24.04 · 需免密 sudo</div>
                     </div>
                     <div
@@ -272,7 +272,7 @@
                   </el-form-item>
                   <el-form-item label="驱动来源">
                     <el-radio-group v-model="gpuDriverSource" :disabled="isFormDisabled || uploadingGpuDriver">
-                      <el-radio value="library">从脚本知识库选择</el-radio>
+                      <el-radio value="library">从 Linux NVIDIA 驱动库选择</el-radio>
                       <el-radio value="upload">上传自定义 .run（保留 7 天）</el-radio>
                     </el-radio-group>
                   </el-form-item>
@@ -289,7 +289,7 @@
                         <span class="gpu-driver-option-type">{{ driver.label }}</span>
                       </el-option>
                     </el-select>
-                    <div v-if="gpuDriverType && filteredGpuDrivers.length === 0" class="form-help">该类型暂无驱动，请到脚本知识库 → Linux NVIDIA 驱动上传。</div>
+                    <div v-if="gpuDriverType && filteredGpuDrivers.length === 0" class="form-help">该类型暂无驱动，请到脚本知识库下方的“Linux NVIDIA 驱动库”上传。</div>
                   </el-form-item>
                   <el-form-item v-else label="自定义 NVIDIA .run 文件">
                     <el-upload accept=".run" :show-file-list="false" :auto-upload="false" :disabled="isFormDisabled || uploadingGpuDriver" :on-change="onCustomGpuDriverFileChange">

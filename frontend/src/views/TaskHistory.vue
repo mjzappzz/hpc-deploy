@@ -278,7 +278,7 @@
                       </el-table-column>
                       <el-table-column label="错误" min-width="180" show-overflow-tooltip>
                         <template #default="{ row: t }">
-                          <span v-if="t.error_summary" class="batch-error-text">{{ t.error_summary }}</span>
+                          <span v-if="t.error_summary" class="batch-error-text">{{ formatTaskErrorMessage(t.error_summary) }}</span>
                           <span v-else>-</span>
                         </template>
                       </el-table-column>
@@ -604,7 +604,7 @@
               :loaded="drawerLogsLoaded"
               :loading="drawerLogsLoading"
               :manual-load="drawerShowManualLogLoad"
-              max-height="460px"
+              max-height="42vh"
               @load="loadDrawerLogs"
               @clear="drawerLogs = []"
               @download="downloadDrawerLogs"
@@ -677,9 +677,6 @@
         </div>
       </template>
       <el-empty v-else description="请选择任务" />
-      <template #footer>
-        <el-button @click="taskDetailDrawerVisible = false">关闭</el-button>
-      </template>
     </el-dialog>
 
     <!-- ─── Batch detail dialog (inline detail panel) ─── -->
@@ -902,6 +899,7 @@
                         :loaded="detailLogsLoaded"
                         :loading="detailLogsLoading"
                         :manual-load="detailShowManualLogLoad"
+                        max-height="280px"
                         @load="detailLoadLogs"
                         @clear="detailLogs = []"
                         @download="detailDownloadLogs"
@@ -994,9 +992,6 @@
           </div>
         </template>
       </div>
-      <template #footer>
-        <el-button @click="batchDetailVisible = false">关闭</el-button>
-      </template>
     </el-dialog>
 
     <!-- 取消任务确认弹窗 -->
@@ -1390,11 +1385,12 @@ function batchDetailReportTagType(task: BatchTaskDetailItem): 'success' | 'dange
 function batchDetailFailureReason(task: BatchTaskDetailItem): string {
   const reportStatus = (task.report_status || '').toUpperCase()
   const status = (task.status || '').toUpperCase()
-  const hasExplicitError = Boolean(task.failure_reason || task.error_summary)
+  const rawError = task.failure_reason || task.error_summary || ''
+  const hasExplicitError = Boolean(rawError)
   if (reportStatus === 'PASS') return ''
-  if (status === 'CANCELED') return formatTaskErrorMessage(task.error_summary || task.failure_reason) || '任务已被取消'
-  if (reportStatus === 'FAIL') return formatTaskErrorMessage(task.failure_reason || task.error_summary) || '报告结果为 FAIL，请查看结果文件确认失败指标。'
-  if (hasExplicitError) return formatTaskErrorMessage(task.failure_reason || task.error_summary)
+  if (status === 'CANCELED') return rawError || '任务已被取消'
+  if (reportStatus === 'FAIL') return rawError || '报告结果为 FAIL，请查看结果文件确认失败指标。'
+  if (hasExplicitError) return rawError
   if (!isBatchTaskTerminal(status)) return ''
   if (status === 'SUCCESS') {
     return task.has_artifacts ? '已有结果文件，但摘要缓存未解析出 PASS/FAIL；请打开结果文件查看。' : ''
@@ -1723,7 +1719,7 @@ const drawerReportTagType = computed<'' | 'success' | 'danger' | 'info'>(() => {
 
 const drawerFailureReason = computed(() => {
   const task = drawerTask.value
-  return formatTaskErrorMessage(task?.failure_reason || task?.error_message) || '-'
+  return task?.failure_reason || task?.error_message || '-'
 })
 
 const drawerShowCancelButton = computed(() => {
@@ -4007,9 +4003,15 @@ onUnmounted(() => {
 }
 
 .batch-detail-dialog :deep(.el-dialog__body) {
-  overflow: visible;
+  max-height: calc(92vh - 116px);
+  overflow-y: auto;
   padding-top: 8px;
   padding-bottom: 8px;
+}
+
+.batch-detail-dialog :deep(.el-dialog) {
+  max-height: 92vh;
+  margin-bottom: 0;
 }
 
 .batch-detail-dialog :deep(.bd-label) {

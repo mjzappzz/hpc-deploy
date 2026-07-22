@@ -49,6 +49,7 @@ STDERR_WARN_PATTERNS = (
 PID_FILE_NAME = ".hpcdeploy.pid"
 EXIT_CODE_FILE_NAME = ".hpcdeploy.exit_code"
 CANCELED_EXIT_CODE = -15
+STRESS_BOOT_ID_PARAM_KEY = "stress_boot_id"
 TASK_LEASE_SECONDS = 600
 STRESS_STARTUP_TIMEOUT_SECONDS = 300
 STRESS_RECOVERY_SSH_CONNECT_RETRIES = 3
@@ -569,6 +570,61 @@ def _is_remote_pid_alive(executor: SSHExecutor, pid_file: str) -> bool | None:
     return None
 
 
+def _has_unexpected_server_reboot(expected_boot_id: str, current_boot_id: str) -> bool:
+    return bool(expected_boot_id and current_boot_id and expected_boot_id != current_boot_id)
+
+
+def _read_remote_boot_id(executor: SSHExecutor) -> str:
+    boot_id = executor.exec_simple("cat /proc/sys/kernel/random/boot_id").strip()
+    if not boot_id:
+        raise SSHExecutorError("remote boot ID is empty")
+    return boot_id
+
+
+def _record_stress_boot_id(db, task: Task, executor: SSHExecutor) -> str:
+    boot_id = _read_remote_boot_id(executor)
+    params = dict(task.params or {})
+    params[STRESS_BOOT_ID_PARAM_KEY] = boot_id
+    task.params = params
+    db.commit()
+    return boot_id
+
+
+def _cancel_following_stress_batch_tasks(db, task: Task, reason: str) -> None:
+    if not task.batch_id or task.sequence_index is None:
+        return
+
+    followers = (
+        db.query(Task)
+        .filter(
+            Task.batch_id == task.batch_id,
+            Task.server_id == task.server_id,
+            Task.id != task.id,
+            Task.sequence_index.isnot(None),
+            Task.sequence_index > task.sequence_index,
+            Task.status.in_(UNFINISHED_TASK_STATUSES),
+        )
+        .order_by(Task.sequence_index.asc(), Task.id.asc())
+        .all()
+    )
+    if not followers:
+        return
+
+    now = datetime.utcnow()
+    for follower in followers:
+        follower.status = "CANCELED"
+        follower.exit_code = CANCELED_EXIT_CODE
+        follower.end_time = now
+        follower.error_message = reason[:500]
+        _clear_task_lease(follower)
+    db.commit()
+
+    for follower in followers:
+        _add_log(db, follower.task_id, "SYSTEM", f"batch canceled: {reason}")
+        schedule_report_summary_generation(follower.task_id)
+        _broadcast_done_safe(follower.task_id, "CANCELED")
+
+
 def _terminate_remote_pid_group(executor: SSHExecutor, pid_file: str) -> None:
     command = (
         f"pid=$(cat {shell_quote(pid_file)} 2>/dev/null || true); "
@@ -585,7 +641,14 @@ def _terminate_remote_pid_group(executor: SSHExecutor, pid_file: str) -> None:
     _exec_with_reconnect(executor, command)
 
 
-def _fail_running_stress_task(db, task: Task, task_id: str, message: str) -> None:
+def _fail_running_stress_task(
+    db,
+    task: Task,
+    task_id: str,
+    message: str,
+    *,
+    cancel_following_batch_tasks: bool = False,
+) -> None:
     db.refresh(task)
     if task.status in ("CANCELED", "CANCELING", "SUCCESS"):
         return
@@ -596,6 +659,8 @@ def _fail_running_stress_task(db, task: Task, task_id: str, message: str) -> Non
     db.commit()
     _add_log(db, task_id, "ERROR", message[:1000])
     _broadcast_done_safe(task_id, "FAILED")
+    if cancel_following_batch_tasks:
+        _cancel_following_stress_batch_tasks(db, task, message)
 
 
 def _execute_stress_async(db, executor: SSHExecutor, task: Task, task_id: str, command: str) -> None:
@@ -621,6 +686,7 @@ def _execute_stress_async(db, executor: SSHExecutor, task: Task, task_id: str, c
     task.start_time = datetime.utcnow()
     db.commit()
     _ensure_task_not_canceled(db, task)
+    _record_stress_boot_id(db, task, executor)
     _set_status(db, task, "RUNNING")
 
     pid_file = _build_remote_pid_file_path(task.remote_work_dir)
@@ -687,6 +753,7 @@ def _stress_poll_loop(
     _full_log = full_log_text
     _last_pos = last_log_pos
     _ssh_fail_count = 0          # 连续 SSH 失败计数，触发新鲜连接
+    expected_boot_id = str((task.params or {}).get(STRESS_BOOT_ID_PARAM_KEY, ""))
 
     while elapsed < deadline:
         _poll_sleep(poll_interval)
@@ -710,9 +777,25 @@ def _stress_poll_loop(
 
             # 1. 检查是否被取消
             db.refresh(task)
-            if task.status in ("CANCELED", "CANCELING"):
-                _add_log(db, task_id, "SYSTEM", "stress async: task canceled, stopping poll")
+            if task.status in TERMINAL_TASK_STATUSES or task.status == "CANCELING":
+                _add_log(db, task_id, "SYSTEM", "stress async: task is terminal, stopping poll")
                 return
+
+            if _health is not None and expected_boot_id:
+                current_boot_id = _read_remote_boot_id(executor)
+                if _has_unexpected_server_reboot(expected_boot_id, current_boot_id):
+                    reboot_reason = (
+                        "detected unexpected server reboot during stress task: "
+                        f"boot ID changed from {expected_boot_id} to {current_boot_id}"
+                    )
+                    _fail_running_stress_task(
+                        db,
+                        task,
+                        task_id,
+                        reboot_reason,
+                        cancel_following_batch_tasks=True,
+                    )
+                    return
 
             # A stress workload can stay quiet for hours.  Lease ownership must
             # reflect a healthy polling loop, not whether the remote script has
@@ -820,6 +903,9 @@ def _stress_poll_loop(
             # 先尝试 SSH 重连
             try:
                 executor.reconnect()
+                if executor.exec_simple("echo ok").strip() != "ok":
+                    raise SSHExecutorError("SSH reconnect health check failed")
+                _ssh_fail_count = 0
                 try:
                     _add_log(db, task_id, "SYSTEM",
                              f"stress async: reconnected after crash at {_elapsed_s}s, resuming poll")

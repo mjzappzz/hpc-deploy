@@ -1,52 +1,36 @@
 <template>
   <section class="page-section">
-    <el-card shadow="never" class="knowledge-card">
+    <el-card shadow="never" class="library-overview-card">
+      <div class="library-overview">
+        <div class="library-overview__content">
+          <div class="library-overview__title">资产库管理</div>
+          <div class="library-overview__description">
+            NVIDIA 驱动作为安装资产独立管理；Linux 脚本与 Apptainer 镜像归入脚本知识库；Windows 脚本仅在“Windows 压测”页面管理。
+          </div>
+          <div class="library-overview__stats">
+            <el-tag effect="plain">NVIDIA 驱动 {{ gpuDriverLibrary.length }}</el-tag>
+            <el-tag effect="plain" type="success">Linux 脚本 {{ counts.mpi + counts.stress }}</el-tag>
+            <el-tag effect="plain" type="warning">Apptainer 镜像 {{ counts.apptainer }}</el-tag>
+          </div>
+        </div>
+        <div class="library-overview__actions">
+          <el-button type="primary" @click="openAssetUpload">上传资产</el-button>
+          <el-button :loading="loading" @click="loadFiles">刷新全部</el-button>
+        </div>
+      </div>
+    </el-card>
+
+    <el-card shadow="never" class="knowledge-card gpu-driver-card">
       <template #header>
         <div class="knowledge-header">
           <div>
-            <div class="knowledge-title">脚本知识库</div>
-            <div class="knowledge-subtitle">按分类管理脚本与容器文件，不显示复杂 JSON 参数定义。</div>
-          </div>
-          <div class="knowledge-actions">
-            <el-button type="primary" :disabled="activeCategory === 'all'" @click="triggerUpload">
-              {{ activeCategory === 'gpu_driver' ? '上传驱动' : '上传到当前分类' }}
-            </el-button>
-            <el-button @click="loadFiles">刷新</el-button>
-            <input
-              ref="fileInputRef"
-              type="file"
-              class="hidden-file-input"
-              @change="onFileSelected"
-            />
+            <div class="knowledge-title">Linux NVIDIA 驱动库</div>
+            <div class="knowledge-subtitle">独立管理驱动安装资产，不作为普通脚本参与“全部”筛选或白名单脚本执行。</div>
           </div>
         </div>
       </template>
 
-      <el-alert
-        v-if="activeCategory === 'all'"
-        title="上传前请先切换到具体分类。"
-        type="info"
-        :closable="false"
-        class="knowledge-alert"
-      />
-
-      <el-tabs v-model="activeCategory" class="knowledge-tabs">
-        <el-tab-pane label="全部" name="all" />
-        <el-tab-pane :label="`服务器环境 (${counts.mpi})`" name="mpi" />
-        <el-tab-pane :label="`服务器压测 (${counts.stress})`" name="stress" />
-        <el-tab-pane :label="`Apptainer 镜像 (${counts.apptainer})`" name="apptainer" />
-        <el-tab-pane :label="`Linux NVIDIA 驱动 (${gpuDriverLibrary.length})`" name="gpu_driver" />
-      </el-tabs>
-
-      <ScriptTable v-if="activeCategory !== 'gpu_driver'"
-        :files="filteredFiles"
-        :loading="loading"
-        @preview="openPreview"
-        @download="downloadFile"
-        @delete="removeFile"
-      />
-
-      <div v-else class="gpu-driver-library">
+      <div class="gpu-driver-library">
         <el-alert title="仅允许 NVIDIA-Linux-x86_64-xxx.run；上传时必须标注 GeForce 或 Data Center，已有版本不会被覆盖。" type="info" :closable="false" />
         <el-table :data="gpuDriverLibrary" v-loading="loading" empty-text="暂未上传 Linux NVIDIA 驱动">
           <el-table-column prop="filename" label="驱动文件" min-width="360" />
@@ -70,6 +54,86 @@
         </el-table>
       </div>
     </el-card>
+
+    <el-card shadow="never" class="knowledge-card script-library-card">
+      <template #header>
+        <div class="knowledge-header">
+          <div>
+            <div class="knowledge-title">脚本知识库</div>
+            <div class="knowledge-subtitle">管理 Linux 可执行脚本与 Apptainer 镜像；Windows 压测脚本请在“Windows 压测”页面管理。</div>
+          </div>
+        </div>
+      </template>
+
+      <el-tabs v-model="activeCategory" class="knowledge-tabs">
+        <el-tab-pane label="全部" name="all" />
+        <el-tab-pane :label="`服务器环境 (${counts.mpi})`" name="mpi" />
+        <el-tab-pane :label="`服务器压测 (${counts.stress})`" name="stress" />
+        <el-tab-pane :label="`Apptainer 镜像 (${counts.apptainer})`" name="apptainer" />
+      </el-tabs>
+
+      <ScriptTable
+        :files="filteredFiles"
+        :loading="loading"
+        @preview="openPreview"
+        @download="downloadFile"
+        @delete="removeFile"
+      />
+    </el-card>
+
+    <el-dialog v-model="assetUploadVisible" title="选择上传模块" width="520px" :close-on-click-modal="false">
+      <el-radio-group v-model="assetUploadTarget" class="asset-upload-options">
+        <el-radio value="gpu_driver" border>
+          <span class="asset-upload-option__title">Linux NVIDIA 驱动库</span>
+          <span class="asset-upload-option__hint">NVIDIA-Linux-x86_64-*.run</span>
+        </el-radio>
+        <el-radio value="mpi" border>
+          <span class="asset-upload-option__title">服务器环境</span>
+          <span class="asset-upload-option__hint">.sh / .py / .txt / .md</span>
+        </el-radio>
+        <el-radio value="stress" border>
+          <span class="asset-upload-option__title">服务器压测</span>
+          <span class="asset-upload-option__hint">.sh / .py / .txt / .md</span>
+        </el-radio>
+        <el-radio value="apptainer" border>
+          <span class="asset-upload-option__title">Apptainer 镜像</span>
+          <span class="asset-upload-option__hint">.sif</span>
+        </el-radio>
+      </el-radio-group>
+      <template #footer>
+        <el-button @click="assetUploadVisible = false">取消</el-button>
+        <el-button type="primary" @click="continueAssetUpload">下一步</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="scriptUploadVisible" title="上传脚本或镜像" width="480px" :close-on-click-modal="false">
+      <el-form label-position="top">
+        <el-form-item label="上传类型" required>
+          <el-select v-model="uploadCategory" class="upload-category-select" @change="clearSelectedUploadFile">
+            <el-option label="服务器环境" value="mpi" />
+            <el-option label="服务器压测" value="stress" />
+            <el-option label="Apptainer 镜像" value="apptainer" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="文件" required>
+          <el-upload
+            :accept="uploadAccept"
+            :show-file-list="false"
+            :auto-upload="false"
+            :on-change="onScriptUploadSelected"
+          >
+            <el-button>选择文件</el-button>
+          </el-upload>
+          <div class="upload-file-summary">
+            {{ selectedUploadFile?.name || uploadFileHint }}
+          </div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="scriptUploadVisible = false">取消</el-button>
+        <el-button type="primary" :loading="uploadingScript" :disabled="!selectedUploadFile" @click="submitScriptUpload">上传</el-button>
+      </template>
+    </el-dialog>
 
     <el-dialog v-model="gpuDriverUploadVisible" title="上传 Linux NVIDIA 驱动" width="480px" :close-on-click-modal="false">
       <el-form label-position="top">
@@ -157,22 +221,29 @@ import {
   type GpuDriverLibraryItem,
 } from '@/api/task'
 
-type KnowledgeCategory = 'all' | 'mpi' | 'stress' | 'apptainer' | 'gpu_driver'
+type KnowledgeCategory = 'all' | 'mpi' | 'stress' | 'apptainer'
+type AssetUploadTarget = Exclude<KnowledgeCategory, 'all'> | 'gpu_driver'
 
 const loading = ref(false)
 const previewVisible = ref(false)
 const activeCategory = ref<KnowledgeCategory>('all')
 const files = ref<ScriptFileRecord[]>([])
 const previewFile = ref<ScriptFilePreviewRecord | null>(null)
-const fileInputRef = ref<HTMLInputElement | null>(null)
+const assetUploadVisible = ref(false)
+const assetUploadTarget = ref<AssetUploadTarget>('gpu_driver')
+const scriptUploadVisible = ref(false)
+const uploadCategory = ref<Exclude<KnowledgeCategory, 'all'>>('mpi')
+const selectedUploadFile = ref<File | null>(null)
+const uploadingScript = ref(false)
 const gpuDriverLibrary = ref<GpuDriverLibraryItem[]>([])
 const gpuDriverUploadVisible = ref(false)
 const gpuDriverType = ref<'geforce' | 'datacenter'>()
 const uploadingGpuDriver = ref(false)
 
 const filteredFiles = computed(() => {
-  if (activeCategory.value === 'all') return files.value
-  if (activeCategory.value === 'gpu_driver') return []
+  if (activeCategory.value === 'all') {
+    return files.value.filter((file) => file.physical_category !== 'windows')
+  }
   return files.value.filter((file) => file.physical_category === activeCategory.value)
 })
 
@@ -184,6 +255,10 @@ const counts = computed(() => ({
 
 const previewTitle = computed(() => previewFile.value?.name ?? '文件预览')
 const previewContent = computed(() => previewFile.value?.content ?? null)
+const uploadAccept = computed(() => uploadCategory.value === 'apptainer' ? '.sif' : '.sh,.py,.txt,.md')
+const uploadFileHint = computed(() => uploadCategory.value === 'apptainer'
+  ? '仅允许 .sif 文件'
+  : '允许 .sh、.py、.txt、.md 文件')
 
 function commonGpuModels(driverType: GpuDriverLibraryItem['driver_type']) {
   return driverType === 'geforce'
@@ -202,13 +277,67 @@ async function loadFiles() {
   }
 }
 
-function triggerUpload() {
-  if (activeCategory.value === 'gpu_driver') {
-    gpuDriverType.value = undefined
-    gpuDriverUploadVisible.value = true
+function openAssetUpload() {
+  assetUploadTarget.value = activeCategory.value === 'all' ? 'gpu_driver' : activeCategory.value
+  assetUploadVisible.value = true
+}
+
+function continueAssetUpload() {
+  const target = assetUploadTarget.value
+  assetUploadVisible.value = false
+  if (target === 'gpu_driver') {
+    openGpuDriverUpload()
     return
   }
-  fileInputRef.value?.click()
+  openScriptUpload(target)
+}
+
+function openScriptUpload(category: Exclude<KnowledgeCategory, 'all'>) {
+  uploadCategory.value = category
+  selectedUploadFile.value = null
+  scriptUploadVisible.value = true
+}
+
+function clearSelectedUploadFile() {
+  selectedUploadFile.value = null
+}
+
+function onScriptUploadSelected(file: { raw?: File }) {
+  const raw = file.raw
+  if (!raw) return
+  const suffix = raw.name.includes('.') ? `.${raw.name.split('.').pop()?.toLowerCase()}` : ''
+  const allowed = uploadCategory.value === 'apptainer'
+    ? ['.sif']
+    : ['.sh', '.py', '.txt', '.md']
+  if (!allowed.includes(suffix)) {
+    selectedUploadFile.value = null
+    ElMessage.error(`${categoryLabel(uploadCategory.value)}仅允许 ${allowed.join('、')} 文件`)
+    return
+  }
+  selectedUploadFile.value = raw
+}
+
+async function submitScriptUpload() {
+  const file = selectedUploadFile.value
+  if (!file) return
+  const ok = await requireAdminConfirm(`上传到${categoryLabel(uploadCategory.value)}`)
+  if (!ok) return
+  uploadingScript.value = true
+  try {
+    await uploadScriptFile(uploadCategory.value, file)
+    ElMessage.success(`文件已上传到 ${categoryLabel(uploadCategory.value)}`)
+    scriptUploadVisible.value = false
+    await loadFiles()
+  } catch (error) {
+    ElMessage.error(getApiErrorMessage(error))
+  } finally {
+    uploadingScript.value = false
+  }
+}
+
+function openGpuDriverUpload() {
+  gpuDriverType.value = undefined
+  gpuDriverUploadVisible.value = true
 }
 
 async function onGpuDriverSelected(file: { raw?: File }) {
@@ -248,29 +377,6 @@ async function removeGpuDriver(driver: GpuDriverLibraryItem) {
     await loadFiles()
   } catch (error) {
     ElMessage.error(getApiErrorMessage(error))
-  }
-}
-
-async function onFileSelected(event: Event) {
-  const ok = await requireAdminConfirm('上传脚本')
-  if (!ok) return
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  if (!file) return
-  if (activeCategory.value === 'all') {
-    ElMessage.warning('请先切换到具体分类后再上传')
-    input.value = ''
-    return
-  }
-
-  try {
-    await uploadScriptFile(activeCategory.value, file)
-    ElMessage.success(`文件已上传到 ${categoryLabel(activeCategory.value)}`)
-    await loadFiles()
-  } catch (error) {
-    ElMessage.error(getApiErrorMessage(error))
-  } finally {
-    input.value = ''
   }
 }
 
@@ -341,8 +447,90 @@ onMounted(loadFiles)
 </script>
 
 <style scoped>
+.library-overview-card,
 .knowledge-card {
   border-radius: 20px;
+}
+
+.library-overview-card {
+  margin-bottom: 16px;
+}
+
+.library-overview {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.library-overview__content {
+  min-width: 0;
+}
+
+.library-overview__title {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.library-overview__description {
+  margin-top: 6px;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.library-overview__stats,
+.library-overview__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.asset-upload-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  width: 100%;
+}
+
+.asset-upload-options :deep(.el-radio) {
+  width: 100%;
+  height: auto;
+  min-height: 72px;
+  margin: 0;
+  padding: 12px 16px;
+  align-items: flex-start;
+}
+
+.asset-upload-options :deep(.el-radio__label) {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  white-space: normal;
+}
+
+.asset-upload-option__title {
+  color: var(--el-text-color-primary);
+  font-weight: 600;
+}
+
+.asset-upload-option__hint {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.library-overview__stats {
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.library-overview__actions {
+  flex: 0 0 auto;
+}
+
+.script-library-card {
+  margin-top: 16px;
 }
 
 .knowledge-header {
@@ -426,8 +614,15 @@ onMounted(loadFiles)
   margin: 0;
 }
 
-.hidden-file-input {
-  display: none;
+.upload-category-select {
+  width: 100%;
+}
+
+.upload-file-summary {
+  margin-left: 12px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .gpu-driver-library {
@@ -440,6 +635,24 @@ onMounted(loadFiles)
   margin-top: 8px;
   color: var(--el-text-color-secondary);
   font-size: 12px;
+}
+
+@media (max-width: 900px) {
+  .library-overview {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .library-overview__actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 560px) {
+  .asset-upload-options {
+    grid-template-columns: 1fr;
+  }
 }
 
 :deep(.preview-dialog .el-dialog) {

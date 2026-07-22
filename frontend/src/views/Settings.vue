@@ -59,6 +59,15 @@
               </div>
             </div>
             <div class="card-actions">
+              <el-input
+                v-model="artifactTaskIdKeyword"
+                class="artifact-task-id-search"
+                size="small"
+                clearable
+                placeholder="搜索任务 ID / 批次 ID"
+                aria-label="搜索单次任务 ID、批次 ID 或批次子任务 ID"
+              />
+              <el-button size="small" :disabled="!artifactTaskIdKeyword" @click="resetArtifactTaskSearch">重置</el-button>
               <el-button size="small" @click="openAutoCleanupDialog">自动清理设置（共用）</el-button>
               <el-button
                 size="small"
@@ -75,6 +84,7 @@
           v-else
           ref="tableRef"
           :data="pagedArtifactDirectories"
+          :empty-text="artifactSearchEmptyText"
           size="small"
           border
           :class="['artifact-table', { 'is-dragging': isDragSelecting }]"
@@ -90,39 +100,47 @@
             <template #default="{ row }">
               <div v-if="row.type === 'batch' && row.child_tasks?.length" class="artifact-task-list">
                 <div class="artifact-expand-title">批次子任务</div>
-                <el-table :data="row.child_tasks" size="small" border>
-                  <el-table-column label="任务名称" min-width="320" show-overflow-tooltip>
-                    <template #default="{ row: t }">{{ t.display_title || t.task_display_name || '-' }}</template>
-                  </el-table-column>
-                  <el-table-column label="任务 ID" min-width="240" show-overflow-tooltip>
-                    <template #default="{ row: t }">
+                <div v-for="task in row.child_tasks" :key="task.task_id" class="artifact-child-task">
+                  <div class="artifact-child-task__header">
+                    <div>
+                      <div class="artifact-child-task__title">{{ task.display_title || task.task_display_name || task.task_id }}</div>
                       <span class="id-copy-control">
-                        <code class="artifact-task-id">{{ t.task_id }}</code>
-                        <el-tooltip content="复制任务 ID" placement="top"><el-button circle size="small" :icon="DocumentCopy" class="copy-id-button" aria-label="复制任务 ID" @click.stop="copyTaskId(t.task_id)" /></el-tooltip>
+                        <code class="artifact-task-id">{{ task.task_id }}</code>
+                        <el-tooltip content="复制任务 ID" placement="top"><el-button circle size="small" :icon="DocumentCopy" class="copy-id-button" aria-label="复制任务 ID" @click.stop="copyTaskId(task.task_id)" /></el-tooltip>
                       </span>
-                    </template>
+                    </div>
+                    <div class="artifact-child-task__summary">
+                      <el-tag size="small" :type="task.status === 'SUCCESS' ? 'success' : (task.status === 'CANCELED' ? 'info' : (task.status === 'FAILED' ? 'danger' : 'warning'))" effect="plain">{{ task.status || 'UNKNOWN' }}</el-tag>
+                      <el-tag size="small" effect="plain">{{ task.task_type_label || '子任务' }}</el-tag>
+                      <span>{{ task.file_count }} 个文件</span>
+                      <span>{{ task.size_text }}</span>
+                    </div>
+                  </div>
+                  <div v-if="!task.files?.length" class="section-placeholder">该子任务没有本机结果文件</div>
+                  <el-table v-else :data="task.files || []" size="small" border>
+                    <el-table-column prop="name" label="文件名" min-width="300" show-overflow-tooltip />
+                    <el-table-column prop="relative_path" label="相对路径" min-width="300" show-overflow-tooltip />
+                    <el-table-column label="大小" width="110" align="right">
+                      <template #default="{ row: f }">{{ f.size_text }}</template>
+                    </el-table-column>
+                    <el-table-column label="更新时间" width="170">
+                      <template #default="{ row: f }">{{ f.modified_at ? formatDate(f.modified_at) : '-' }}</template>
+                    </el-table-column>
+                  </el-table>
+                </div>
+              </div>
+              <template v-else>
+                <div v-if="row.files.length === 0" class="section-placeholder">无文件</div>
+                <el-table v-else :data="row.files" size="small" border>
+                  <el-table-column prop="name" label="文件名" min-width="260" show-overflow-tooltip />
+                  <el-table-column label="大小" width="110" align="right">
+                    <template #default="{ row: f }">{{ f.size_text }}</template>
                   </el-table-column>
-                  <el-table-column label="目录" min-width="220" show-overflow-tooltip>
-                    <template #default="{ row: t }">{{ t.relative_path }}</template>
-                  </el-table-column>
-                  <el-table-column label="文件数" width="80" align="right">
-                    <template #default="{ row: t }">{{ t.file_count }}</template>
-                  </el-table-column>
-                  <el-table-column label="大小" width="100" align="right">
-                    <template #default="{ row: t }">{{ t.size_text }}</template>
+                  <el-table-column label="更新时间" width="170">
+                    <template #default="{ row: f }">{{ f.modified_at ? formatDate(f.modified_at) : '-' }}</template>
                   </el-table-column>
                 </el-table>
-              </div>
-              <div v-if="row.files.length === 0" class="section-placeholder">无文件</div>
-              <el-table v-else :data="row.files" size="small" border>
-                <el-table-column prop="name" label="文件名" min-width="260" show-overflow-tooltip />
-                <el-table-column label="大小" width="110" align="right">
-                  <template #default="{ row: f }">{{ f.size_text }}</template>
-                </el-table-column>
-                <el-table-column label="更新时间" width="170">
-                  <template #default="{ row: f }">{{ f.modified_at ? formatDate(f.modified_at) : '-' }}</template>
-                </el-table-column>
-              </el-table>
+              </template>
             </template>
           </el-table-column>
           <el-table-column label="任务名称" min-width="320" show-overflow-tooltip>
@@ -185,14 +203,14 @@
           </el-table-column>
         </el-table>
         <el-pagination
-          v-if="artifactDirectories.length > artifactPageSize"
+          v-if="filteredArtifactDirectories.length > artifactPageSize"
           v-model:current-page="artifactPage"
           v-model:page-size="artifactPageSize"
           class="table-pagination"
           background
           layout="total, sizes, prev, pager, next"
           :page-sizes="[10, 20, 50, 100]"
-          :total="artifactDirectories.length"
+          :total="filteredArtifactDirectories.length"
         />
       </el-card>
 
@@ -205,6 +223,7 @@
                 共 {{ localLogsTotal }} 个任务，日志内容 {{ formatBytes(localLogsTotalBytes) }}；默认按最后记录时间从新到旧排列
               </div>
             </div>
+            <el-button size="small" :loading="scanLogsLoading" @click="doScanLocalLogs">刷新日志</el-button>
           </div>
         </template>
         <div v-if="!logsScanned" class="section-placeholder">正在按任务汇总 SQLite <code>task_logs</code> 中的日志大小。</div>
@@ -212,11 +231,34 @@
         <el-table
           v-else
           :data="pagedLocalLogs"
+          empty-text="未找到匹配任务的数据库日志"
           size="small"
           border
+          class="database-log-table"
           @sort-change="onLocalLogsSortChange"
         >
-          <el-table-column label="任务 ID" min-width="240" show-overflow-tooltip>
+          <el-table-column label="任务类型" width="110" align="center">
+            <template #default="{ row }">
+              <el-tag size="small" :type="row.is_batch_task ? 'warning' : 'primary'" effect="plain">
+                {{ row.is_batch_task ? '批次任务' : '单次任务' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="服务器名称" width="120" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span :class="{ 'noop-text': !row.server_name }">{{ row.server_name || '未关联' }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="批次 ID" min-width="250" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span v-if="row.batch_id" class="id-copy-control">
+                <code class="artifact-task-id">{{ row.batch_id }}</code>
+                <el-tooltip content="复制批次 ID" placement="top"><el-button circle size="small" :icon="DocumentCopy" class="copy-id-button" aria-label="复制批次 ID" @click.stop="copyTaskId(row.batch_id, '批次 ID')" /></el-tooltip>
+              </span>
+              <span v-else class="noop-text">-</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="任务 ID" min-width="250" show-overflow-tooltip>
             <template #default="{ row }">
               <span class="id-copy-control">
                 <code class="artifact-task-id">{{ row.task_id }}</code>
@@ -224,25 +266,25 @@
               </span>
             </template>
           </el-table-column>
-          <el-table-column label="日志记录" width="110" align="right">
+          <el-table-column label="日志记录" width="100" align="right">
             <template #default="{ row }">{{ formatCount(row.log_count) }}</template>
           </el-table-column>
-          <el-table-column label="日志内容总大小" width="150" align="right" sortable="custom" prop="message_bytes">
+          <el-table-column label="日志内容总大小" width="140" align="right" sortable="custom" prop="message_bytes">
             <template #default="{ row }">{{ formatBytes(row.message_bytes) }}</template>
           </el-table-column>
-          <el-table-column label="最后记录时间" width="170" sortable="custom" prop="last_logged_at">
+          <el-table-column label="最后记录时间" width="180" sortable="custom" prop="last_logged_at">
             <template #default="{ row }">{{ row.last_logged_at ? formatDate(row.last_logged_at) : '-' }}</template>
           </el-table-column>
         </el-table>
         <el-pagination
-          v-if="localLogs.length > logPageSize"
+          v-if="filteredLocalLogs.length > logPageSize"
           v-model:current-page="logPage"
           v-model:page-size="logPageSize"
           class="table-pagination"
           background
           layout="total, sizes, prev, pager, next"
           :page-sizes="[10, 20, 50, 100]"
-          :total="localLogs.length"
+          :total="filteredLocalLogs.length"
         />
         <div v-if="logsScanned" class="form-help logs-size-note">
           内容总大小按同一任务下所有日志消息的 UTF-8 字节数汇总，不等同于 SQLite 页、索引与空闲空间的物理占用。
@@ -299,7 +341,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { DocumentCopy } from '@element-plus/icons-vue'
 import { changePassword, getSettings, updateSettings, type RuntimePathInfo } from '@/api/settings'
@@ -589,10 +631,11 @@ const artifactsTotalDirs = ref(0)
 const artifactsTotalFiles = ref(0)
 const artifactsTotalSize = ref(0)
 const artifactDirectories = ref<LocalArtifactDirectory[]>([])
+const artifactTaskIdKeyword = ref('')
 const artifactSortBy = ref<string>('modified_at')
 const artifactSortOrder = ref<'ascending' | 'descending'>('descending')
 const artifactPage = ref(1)
-const artifactPageSize = ref(20)
+const artifactPageSize = ref(10)
 const selectedArtifactDirPaths = ref<string[]>([])
 const deletingArtifactDir = ref('')
 const scanLogsLoading = ref(false)
@@ -603,10 +646,24 @@ const localLogs = ref<DatabaseTaskLogSizeItem[]>([])
 const localLogsSortBy = ref<'last_logged_at' | 'message_bytes'>('last_logged_at')
 const localLogsSortOrder = ref<'ascending' | 'descending'>('descending')
 const logPage = ref(1)
-const logPageSize = ref(20)
+const logPageSize = ref(10)
+
+const filteredArtifactDirectories = computed(() => {
+  const keyword = artifactTaskIdKeyword.value.trim().toLowerCase()
+  if (!keyword) return artifactDirectories.value
+  return artifactDirectories.value.filter((item) => {
+    const ids = [
+      item.task_id,
+      item.batch_id,
+      item.type === 'batch' ? item.name : null,
+      ...(item.child_tasks || []).map((task) => task.task_id),
+    ]
+    return ids.some((id) => String(id || '').toLowerCase().includes(keyword))
+  })
+})
 
 const sortedArtifactDirectories = computed(() => {
-  const data = [...artifactDirectories.value]
+  const data = [...filteredArtifactDirectories.value]
   if (!artifactSortBy.value) return data
   const order = artifactSortOrder.value === 'descending' ? -1 : 1
   data.sort((a, b) => {
@@ -627,9 +684,48 @@ const sortedArtifactDirectories = computed(() => {
   return data
 })
 
+const artifactLogTaskIdsForKeyword = computed(() => {
+  const keyword = artifactTaskIdKeyword.value.trim().toLowerCase()
+  const taskIds = new Set<string>()
+  if (!keyword) return taskIds
+
+  for (const item of artifactDirectories.value) {
+    const batchIdMatched = item.type === 'batch' && [item.batch_id, item.name]
+      .some((id) => String(id || '').toLowerCase().includes(keyword))
+    if (batchIdMatched) {
+      for (const child of item.child_tasks || []) taskIds.add(child.task_id)
+      continue
+    }
+    if (item.task_id && item.task_id.toLowerCase().includes(keyword)) taskIds.add(item.task_id)
+    for (const child of item.child_tasks || []) {
+      if (child.task_id.toLowerCase().includes(keyword)) taskIds.add(child.task_id)
+    }
+  }
+  return taskIds
+})
+
+const filteredLocalLogs = computed(() => {
+  const keyword = artifactTaskIdKeyword.value.trim().toLowerCase()
+  if (!keyword) return localLogs.value
+  const matchedTaskIds = artifactLogTaskIdsForKeyword.value
+  return localLogs.value.filter((item) => (
+    item.task_id.toLowerCase().includes(keyword)
+    || String(item.batch_id || '').toLowerCase().includes(keyword)
+    || matchedTaskIds.has(item.task_id)
+  ))
+})
+
+const artifactSearchEmptyText = computed(() => {
+  if (!artifactTaskIdKeyword.value.trim()) return '没有本机结果文件'
+  if (filteredLocalLogs.value.length > 0) {
+    return '该任务有数据库日志，但没有本机结果文件；可能仍在运行、未生成或未回收结果，或者结果已被清理。'
+  }
+  return '未找到匹配的任务 ID'
+})
+
 const sortedLocalLogs = computed(() => {
   const order = localLogsSortOrder.value === 'descending' ? -1 : 1
-  return [...localLogs.value].sort((a, b) => {
+  return [...filteredLocalLogs.value].sort((a, b) => {
     if (localLogsSortBy.value === 'message_bytes') {
       return (a.message_bytes - b.message_bytes) * order
     }
@@ -650,6 +746,34 @@ const pagedLocalLogs = computed(() => {
 // ── Drag-to-select ──
 const tableRef = ref<any>(null)
 const isDragSelecting = ref(false)
+
+watch(artifactTaskIdKeyword, () => {
+  artifactPage.value = 1
+  logPage.value = 1
+  selectedArtifactDirPaths.value = []
+  tableRef.value?.clearSelection()
+})
+
+function resetArtifactTaskSearch() {
+  artifactTaskIdKeyword.value = ''
+  artifactPage.value = 1
+  logPage.value = 1
+}
+
+watch(
+  [artifactTaskIdKeyword, artifactPage, artifactPageSize, pagedArtifactDirectories],
+  async ([keyword]) => {
+    await nextTick()
+    for (const item of artifactDirectories.value) {
+      tableRef.value?.toggleRowExpansion(item, false)
+    }
+    if (!String(keyword || '').trim()) return
+    for (const item of pagedArtifactDirectories.value) {
+      tableRef.value?.toggleRowExpansion(item, true)
+    }
+  },
+  { flush: 'post' },
+)
 
 function onTableDragStart(event: MouseEvent) {
   const target = event.target as HTMLElement
@@ -911,6 +1035,10 @@ onMounted(async () => {
   flex-wrap: wrap;
 }
 
+.artifact-task-id-search {
+  width: 280px;
+}
+
 .section-summary-text {
   margin-top: 4px;
   font-size: 12px;
@@ -931,6 +1059,10 @@ onMounted(async () => {
 }
 
 .artifact-table {
+  width: 100%;
+}
+
+.database-log-table {
   width: 100%;
 }
 
@@ -974,6 +1106,37 @@ onMounted(async () => {
 
 .artifact-task-list {
   margin-bottom: 10px;
+}
+
+.artifact-child-task + .artifact-child-task {
+  margin-top: 14px;
+}
+
+.artifact-child-task__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  background: var(--el-fill-color-light);
+  border-radius: 6px;
+}
+
+.artifact-child-task__title {
+  margin-bottom: 4px;
+  color: var(--el-text-color-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.artifact-child-task__summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
 }
 
 .artifact-expand-title {
@@ -1050,5 +1213,11 @@ onMounted(async () => {
 
 .database-log-message {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+@media (max-width: 860px) {
+  .artifact-task-id-search {
+    width: 100%;
+  }
 }
 </style>

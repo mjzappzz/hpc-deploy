@@ -352,10 +352,14 @@ def _local_artifact_task_item(item: LocalArtifactDirectory) -> LocalArtifactTask
         size_bytes=item.size_bytes,
         size_text=item.size_text,
         modified_at=item.modified_at,
+        files=item.files,
     )
 
 
-def _group_local_artifact_batches(directories: list[LocalArtifactDirectory]) -> list[LocalArtifactDirectory]:
+def _group_local_artifact_batches(
+    directories: list[LocalArtifactDirectory],
+    db: Session | None = None,
+) -> list[LocalArtifactDirectory]:
     grouped: dict[str, list[LocalArtifactDirectory]] = {}
     passthrough: list[LocalArtifactDirectory] = []
 
@@ -368,6 +372,19 @@ def _group_local_artifact_batches(directories: list[LocalArtifactDirectory]) -> 
                 item.child_tasks = [task_item]
                 item.child_relative_paths = [item.relative_path]
             passthrough.append(item)
+
+    database_tasks: dict[str, list[tuple[Task, str]]] = {}
+    if db is not None and grouped:
+        rows = (
+            db.query(Task, Server.name)
+            .outerjoin(Server, Server.id == Task.server_id)
+            .filter(Task.batch_id.in_(list(grouped)))
+            .order_by(Task.batch_id.asc(), Task.sequence_index.asc(), Task.id.asc())
+            .all()
+        )
+        for task, server_name in rows:
+            if task.batch_id:
+                database_tasks.setdefault(task.batch_id, []).append((task, server_name or ""))
 
     for batch_id, items in grouped.items():
         items.sort(key=lambda item: (item.sequence_index if item.sequence_index is not None else 999, item.date_label, item.script_label, item.task_id or item.name))
@@ -397,6 +414,42 @@ def _group_local_artifact_batches(directories: list[LocalArtifactDirectory]) -> 
             task_item = _local_artifact_task_item(item)
             if task_item:
                 child_tasks.append(task_item)
+
+        if db is not None:
+            existing_task_ids = {item.task_id for item in child_tasks}
+            for task, server_name in database_tasks.get(batch_id, []):
+                if task.task_id in existing_task_ids:
+                    continue
+                script_label = _strip_script_ext(task.file_name)
+                task_type_label = _task_type_label_from_task(task)
+                date_label = task.created_at.strftime("%Y%m%d") if task.created_at else _infer_date_label(task.task_id, task.task_id)
+                display_title = _build_display_title([
+                    server_name,
+                    _long_task_type_label(task_type_label),
+                    script_label,
+                    date_label,
+                ])
+                child_tasks.append(LocalArtifactTaskItem(
+                    task_id=task.task_id,
+                    task_display_name=display_title,
+                    display_title=display_title,
+                    server_name=server_name,
+                    task_type_label=task_type_label,
+                    script_label=script_label,
+                    date_label=date_label,
+                    status=task.status or "",
+                    sequence_index=task.sequence_index,
+                    relative_path="",
+                    file_count=0,
+                    size_bytes=0,
+                    size_text=_format_size_text(0),
+                    modified_at=task.end_time or task.start_time or task.created_at,
+                    files=[],
+                ))
+            child_tasks.sort(key=lambda item: (
+                item.sequence_index if item.sequence_index is not None else 999,
+                item.task_id,
+            ))
 
         passthrough.append(LocalArtifactDirectory(
             name=batch_id,
@@ -585,7 +638,7 @@ def scan_local_artifacts(db: Session = Depends(get_db)) -> LocalArtifactsScanRes
         ))
 
     _apply_inferred_batch_flags(directories)
-    directories = _group_local_artifact_batches(directories)
+    directories = _group_local_artifact_batches(directories, db=db)
 
     # Sort local task result directories by modified time desc; keep root-level files last.
     directories.sort(
@@ -649,17 +702,24 @@ def scan_database_task_log_sizes(
     rows = (
         db.query(
             TaskLog.task_id.label("task_id"),
+            Task.batch_id.label("batch_id"),
+            Server.name.label("server_name"),
             func.count(TaskLog.id).label("log_count"),
             message_bytes.label("message_bytes"),
             func.max(TaskLog.created_at).label("last_logged_at"),
         )
-        .group_by(TaskLog.task_id)
+        .outerjoin(Task, Task.task_id == TaskLog.task_id)
+        .outerjoin(Server, Server.id == Task.server_id)
+        .group_by(TaskLog.task_id, Task.batch_id, Server.name)
         .order_by(message_bytes.desc(), TaskLog.task_id.asc())
         .all()
     )
     items = [
         DatabaseTaskLogSizeItem(
             task_id=row.task_id,
+            is_batch_task=bool(row.batch_id or row.task_id.startswith("batch-")),
+            batch_id=row.batch_id or (row.task_id if row.task_id.startswith("batch-") else None),
+            server_name=row.server_name or "",
             log_count=int(row.log_count or 0),
             message_bytes=int(row.message_bytes or 0),
             last_logged_at=row.last_logged_at,

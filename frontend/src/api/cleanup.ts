@@ -25,6 +25,7 @@ export interface LocalArtifactTaskItem {
   size_bytes: number
   size_text: string
   modified_at: string | null
+  files?: LocalArtifactFile[]
 }
 
 export interface LocalArtifactDirectory {
@@ -123,6 +124,9 @@ export function scanLocalLogs(limit = 1000) {
 
 export interface DatabaseTaskLogSizeItem {
   task_id: string
+  is_batch_task: boolean
+  batch_id: string | null
+  server_name: string
   log_count: number
   message_bytes: number
   last_logged_at: string | null

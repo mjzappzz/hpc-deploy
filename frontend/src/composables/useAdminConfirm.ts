@@ -131,6 +131,15 @@ export async function requireAdminConfirm(actionName: string): Promise<boolean> 
           placeholder: '请输入管理员密码',
           autocomplete: 'current-password',
           'onUpdate:modelValue': (value: string) => { password.value = value },
+          onKeydown: (event: Event | KeyboardEvent) => {
+            if (!(event instanceof KeyboardEvent)) return
+            if (event.key !== 'Enter' || event.isComposing) return
+            event.preventDefault()
+            const confirmButton = document.querySelector<HTMLButtonElement>(
+              '.admin-confirm-dialog .el-message-box__btns .el-button--primary',
+            )
+            if (confirmButton && !confirmButton.disabled) confirmButton.click()
+          },
         }),
         h('div', { class: 'admin-confirm-duration-label' }, '管理员模式时长'),
         h(ElSelect, {
@@ -151,6 +160,7 @@ export async function requireAdminConfirm(actionName: string): Promise<boolean> 
       confirmButtonText: '进入管理员模式',
       cancelButtonText: '取消',
       closeOnClickModal: false,
+      customClass: 'admin-confirm-dialog',
       roundButton: true,
       beforeClose: (action, _instance, done) => {
         if (action === 'confirm' && !password.value.trim()) {
