@@ -50,6 +50,10 @@ class GpuDriverValidationError(ValueError):
     pass
 
 
+def _optional_param_text(value: object) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
 def validate_library_driver_filename(filename: str) -> str:
     """Return a safe NVIDIA Linux installer filename or raise a validation error."""
     name = Path(filename).name
@@ -392,9 +396,9 @@ def run_rocky9_gpu_driver_task(task_id: str) -> None:
         if server is None:
             raise RuntimeError("server not found")
         params = task.params or {}
-        driver_type = str(params.get("driver_type", ""))
-        driver_id = str(params.get("driver_id", ""))
-        upload_id = str(params.get("driver_upload_id", ""))
+        driver_type = _optional_param_text(params.get("driver_type"))
+        driver_id = _optional_param_text(params.get("driver_id"))
+        upload_id = _optional_param_text(params.get("driver_upload_id"))
         force_install = bool(params.get("force_install_if_driver_exists", False))
         os_profile = str(params.get("os_profile", "")) or resolve_gpu_driver_os_profile(server.os_info)
         install_script = build_rocky9_install_script() if os_profile == "rocky9" else build_ubuntu_install_script()

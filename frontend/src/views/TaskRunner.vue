@@ -133,7 +133,7 @@
                   <div
                     v-for="tt in taskTypes"
                     :key="tt.value"
-                    :class="['task-type-card', 'hpc-interactive-pulse', { 'is-active': selectedTaskType === tt.value, 'hpc-selected-pulse': selectedTaskType === tt.value }]"
+                    :class="['task-type-card', 'hpc-interactive-pulse', { 'is-active': selectedTaskCategory === tt.value, 'hpc-selected-pulse': selectedTaskCategory === tt.value }]"
                     @click="hasSelectedServer && selectTaskType(tt.value)"
                   >
                     <div class="task-type-card-title">{{ tt.label }}</div>
@@ -141,7 +141,7 @@
                   </div>
                 </div>
                 <div class="selection-meta">
-                  <span>{{ selectedTaskType ? taskTypeLabel(selectedTaskType) : '请选择任务类型' }}</span>
+                  <span>{{ selectedTaskCategory ? runnerTaskCategoryLabel(selectedTaskCategory) : '请选择任务类型' }}</span>
                 </div>
               </div>
 
@@ -155,8 +155,9 @@
                 <template v-if="selectedTaskType === 'script'">
                   <div class="file-card-grid">
                     <div
+                      v-if="selectedTaskCategory === 'gpu_software'"
                       :class="['file-select-card', 'environment-card', 'hpc-interactive-pulse', { 'is-active': isGpuDriverSelected, 'hpc-selected-pulse': isGpuDriverSelected }]"
-                      @click="canSelectFile && (selectedFilePath = GPU_DRIVER_ROCKY9_ACTION)"
+                      @click="canSelectFile && toggleManagedAction('gpu_driver', GPU_DRIVER_ROCKY9_ACTION)"
                     >
                       <div class="environment-card__top">
                         <el-tag type="success" effect="plain">NVIDIA</el-tag>
@@ -167,8 +168,9 @@
                       <div class="environment-card__target">支持：Rocky Linux 9 / Ubuntu 20.04、22.04、24.04 · 需免密 sudo</div>
                     </div>
                     <div
+                      v-if="selectedTaskCategory === 'gpu_software'"
                       :class="['file-select-card', 'environment-card', 'hpc-interactive-pulse', { 'is-active': isCudaToolkitSelected, 'hpc-selected-pulse': isCudaToolkitSelected }]"
-                      @click="canSelectFile && (selectedFilePath = CUDA_TOOLKIT_ACTION)"
+                      @click="canSelectFile && toggleManagedAction('cuda_toolkit', CUDA_TOOLKIT_ACTION)"
                     >
                       <div class="environment-card__top">
                         <el-tag type="warning" effect="plain">NVIDIA</el-tag>
@@ -179,14 +181,15 @@
                       <div class="environment-card__target">默认 CUDA 12.8 · 支持 Rocky Linux 9 / Ubuntu 22.04、24.04 · 需免密 sudo</div>
                     </div>
                     <div
+                      v-if="selectedTaskCategory !== 'gpu_software'"
                       v-for="file in filteredFiles"
                       :key="file.path"
-                      :class="['file-select-card', 'environment-card', 'hpc-interactive-pulse', { 'is-active': selectedFilePath === file.path, 'hpc-selected-pulse': selectedFilePath === file.path }]"
-                      @click="canSelectFile && (selectedFilePath = file.path)"
+                      :class="['file-select-card', 'environment-card', 'hpc-interactive-pulse', { 'is-active': isEnvironmentFileSelected(file), 'hpc-selected-pulse': isEnvironmentFileSelected(file) }]"
+                      @click="canSelectFile && selectEnvironmentFile(file)"
                     >
                       <div class="environment-card__top">
                         <el-tag :type="environmentScriptInfo(file.name).tagType" effect="plain">{{ environmentScriptInfo(file.name).vendor }}</el-tag>
-                        <span v-if="selectedFilePath === file.path" class="environment-card__selected">已选择</span>
+                        <span v-if="isEnvironmentFileSelected(file)" class="environment-card__selected">已选择</span>
                       </div>
                       <div class="environment-card__title">{{ environmentScriptInfo(file.name).title }}</div>
                       <div class="environment-card__description">{{ environmentScriptInfo(file.name).description }}</div>
@@ -300,7 +303,7 @@
                   </el-form-item>
                 </el-form>
               </template>
-              <template v-else-if="isCudaToolkitSelected">
+              <template v-if="isCudaToolkitSelected">
                 <div class="card-title">NVIDIA CUDA Toolkit</div>
                 <el-alert :title="cudaToolkitOsLabel" :type="isSupportedCudaToolkitOs ? 'info' : 'error'" :closable="false" show-icon />
                 <el-alert title="仅安装 CUDA Toolkit，不安装或覆盖 NVIDIA 驱动；任务会先校验 nvidia-smi。" type="warning" :closable="false" show-icon />
@@ -318,7 +321,7 @@
                   </el-form-item>
                 </el-form>
               </template>
-              <template v-else-if="!stressSuiteMode">
+              <template v-if="!isGpuDriverSelected && !isCudaToolkitSelected && !stressSuiteMode && selectedManagedActions.length <= 1">
                 <div class="card-title">文件信息</div>
                 <div class="file-info-compact">
                   <div class="file-info-row file-info-name" :title="selectedFile?.name ?? ''">{{ selectedFile?.name }}</div>
@@ -327,8 +330,12 @@
                   <div class="file-info-row file-info-time">更新时间：{{ formatScriptUpdatedAt(selectedFile?.updated_at) }}</div>
                 </div>
               </template>
+              <template v-if="selectedTaskCategory === 'base_system' && selectedManagedActions.length === 2">
+                <div class="card-title">套件执行计划</div>
+                <el-alert title="同一服务器按 关闭锁屏与休眠 → 锁定系统版本 严格串行；前序失败时不启动后序任务。" type="info" :closable="false" show-icon />
+              </template>
               <!-- 套件执行计划 - suite mode -->
-              <template v-else>
+              <template v-if="stressSuiteMode">
                 <div class="card-title">套件执行计划</div>
                 <div class="suite-plan">
                   <div class="suite-plan-desc">
@@ -556,6 +563,7 @@ import {
   batchRunTask,
   cancelTask,
   createStressSuite,
+  createManagedSuite,
   getTask,
   getTaskLogs,
   getTaskMonitor,
@@ -585,6 +593,7 @@ import { getTaskTypeLabel, formatTaskDisplayName } from '@/utils/taskDisplay'
 import { getApiErrorMessage as readApiErrorMessage } from '@/utils/apiError'
 import { formatBytes } from '@/utils/format'
 import { serverTagType } from '@/constants/serverTags'
+import { environmentBusinessCategory } from '@/utils/environmentCategory'
 import {
   calcDurationSeconds,
   calcEstimatedRemaining,
@@ -613,24 +622,49 @@ type TaskRunnerFile = ScriptFileRecord & {
 type MonitorPanel = 'logs' | 'cpu_mem' | 'disk' | 'gpu'
 
 type PageMode = 'config' | 'summary' | 'config-readonly'
-const taskTypes: Array<{ label: string; value: TaskType }> = [
-  { label: '服务器环境', value: 'script' },
-  { label: '服务器压测', value: 'stress' },
+type RunnerTaskCategory = 'base_system' | 'gpu_software' | 'compiler_mpi' | 'stress' | 'apptainer'
+const taskTypes: Array<{ label: string; value: RunnerTaskCategory }> = [
+  { label: '基础环境配置', value: 'base_system' },
+  { label: 'GPU 驱动安装', value: 'gpu_software' },
+  { label: 'MPI 编译环境配置', value: 'compiler_mpi' },
+  { label: 'Linux 服务器压测', value: 'stress' },
   { label: 'Apptainer 镜像', value: 'apptainer' },
 ]
 
-function taskTypeCardDesc(value: TaskType): string {
-  const descs: Record<TaskType, string> = {
-    script: '执行脚本知识库中的服务器环境、安装、运维配置脚本',
+function runnerTaskCategoryLabel(value: RunnerTaskCategory): string {
+  return taskTypes.find((item) => item.value === value)?.label ?? value
+}
+
+function taskTypeCardDesc(value: RunnerTaskCategory): string {
+  const descs: Record<RunnerTaskCategory, string> = {
+    base_system: '系统版本、锁屏、休眠等新机基础策略',
+    gpu_software: 'NVIDIA 驱动与 CUDA Toolkit 部署',
+    compiler_mpi: 'Intel/AMD 编译器、数学库与 MPI 工具链',
     stress: 'CPU/内存、磁盘、GPU 压测，支持参数化配置',
     apptainer: '仅上传分发 .sif 镜像，不执行容器',
-    gpu_driver: 'Rocky 9.4 NVIDIA 驱动安装专用任务',
-    cuda_toolkit: 'NVIDIA CUDA Toolkit 自动安装任务',
   }
   return descs[value] ?? ''
 }
 
 function environmentScriptInfo(fileName: string): { vendor: string; tagType: 'primary' | 'danger' | 'info'; title: string; description: string; target: string } {
+  if (fileName === 'lock_linux_release.sh') {
+    return {
+      vendor: 'Linux',
+      tagType: 'danger',
+      title: 'Linux 系统版本锁定',
+      description: 'Rocky 9.4 锁定软件源，其他 Rocky 版本直接跳过；Ubuntu 22.04/24.04 禁止跨版本升级。',
+      target: 'Rocky Linux / Ubuntu 22.04、24.04 · 需 root',
+    }
+  }
+  if (fileName === 'disable_linux_lock_sleep.sh') {
+    return {
+      vendor: 'Linux',
+      tagType: 'info',
+      title: 'Linux 关闭锁屏与休眠',
+      description: '禁用 systemd 睡眠、桌面自动锁屏、屏幕空白和 DPMS；不会立即重启 logind。',
+      target: 'Rocky / RHEL / AlmaLinux / Ubuntu 桌面工作站 · 需 root',
+    }
+  }
   if (fileName.includes('oneapi')) {
     return {
       vendor: 'Intel',
@@ -679,10 +713,12 @@ function cudaStatus(server: ServerRecord): string {
   return server.gpu_info?.match(/CUDA\s+([0-9.]+)/i)?.[1] ?? '未安装'
 }
 
-function selectTaskType(value: TaskType) {
-  selectedTaskType.value = value
+function selectTaskType(value: RunnerTaskCategory) {
+  selectedTaskCategory.value = value
+  selectedTaskType.value = value === 'stress' || value === 'apptainer' ? value : 'script'
   selectedFilePath.value = ''
   selectedStressScripts.value = []
+  selectedManagedActions.value = []
   stressSuiteMode.value = false
   resetParamsForFile()
 }
@@ -690,8 +726,10 @@ function selectTaskType(value: TaskType) {
 const mode = ref<PageMode>('config')
 
 const selectedServerIds = ref<number[]>([])
+const selectedTaskCategory = ref<RunnerTaskCategory | ''>('')
 const selectedTaskType = ref<TaskType | ''>('')
 const selectedFilePath = ref<string>('')
+const selectedManagedActions = ref<string[]>([])
 const GPU_DRIVER_ROCKY9_ACTION = '__gpu_driver_rocky9__'
 const CUDA_TOOLKIT_ACTION = '__cuda_toolkit__'
 const gpuDriverType = ref<'geforce' | 'datacenter'>('geforce')
@@ -784,8 +822,19 @@ const groupedOnlineServers = computed(() => {
     group.push(server)
     groups.set(groupName, group)
   }
+  const groupOrder = new Map([
+    ['压测完成', 0],
+    ['故障待处理', 1],
+    ['测试机', 2],
+    ['未标记', 3],
+    ['待压测', 4],
+  ])
   return [...groups.entries()]
-    .sort(([a], [b]) => a.localeCompare(b, 'zh-CN'))
+    .sort(([a], [b]) => {
+      const orderDiff = (groupOrder.get(a) ?? 3) - (groupOrder.get(b) ?? 3)
+      if (orderDiff !== 0) return orderDiff
+      return a.localeCompare(b, 'zh-CN')
+    })
     .map(([name, servers]) => ({ name, servers }))
 })
 
@@ -845,6 +894,44 @@ function clearStressScripts() {
   stressSuiteMode.value = false
 }
 
+const MANAGED_ACTION_ORDER = ['disable_lock_sleep', 'lock_release', 'gpu_driver', 'cuda_toolkit']
+
+function managedActionForFile(file: TaskRunnerFile): string {
+  return file.name === 'disable_linux_lock_sleep.sh' ? 'disable_lock_sleep' : 'lock_release'
+}
+
+function toggleManagedAction(action: string, path: string) {
+  const index = selectedManagedActions.value.indexOf(action)
+  if (index >= 0) selectedManagedActions.value.splice(index, 1)
+  else selectedManagedActions.value.push(action)
+  selectedManagedActions.value.sort((a, b) => MANAGED_ACTION_ORDER.indexOf(a) - MANAGED_ACTION_ORDER.indexOf(b))
+  if (selectedManagedActions.value.length !== 1) {
+    selectedFilePath.value = ''
+    return
+  }
+  const remaining = selectedManagedActions.value[0]
+  if (remaining === 'gpu_driver') selectedFilePath.value = GPU_DRIVER_ROCKY9_ACTION
+  else if (remaining === 'cuda_toolkit') selectedFilePath.value = CUDA_TOOLKIT_ACTION
+  else selectedFilePath.value = filteredFiles.value.find((file) => managedActionForFile(file) === remaining)?.path ?? path
+}
+
+function toggleManagedFile(file: TaskRunnerFile) {
+  toggleManagedAction(managedActionForFile(file), file.path)
+}
+
+function selectEnvironmentFile(file: TaskRunnerFile) {
+  if (selectedTaskCategory.value === 'base_system') {
+    toggleManagedFile(file)
+    return
+  }
+  selectedFilePath.value = file.path
+}
+
+function isEnvironmentFileSelected(file: TaskRunnerFile): boolean {
+  if (selectedTaskCategory.value !== 'base_system') return selectedFilePath.value === file.path
+  return selectedManagedActions.value.includes(managedActionForFile(file))
+}
+
 function setDurationPreset(hours: number, minutes: number) {
   Object.assign(durationParts, { hours, minutes })
 }
@@ -886,7 +973,16 @@ const filteredFiles = computed(() => {
   if (selectedTaskType.value === 'script') {
     // Server environment tasks execute only the MPI/server-environment library.
     // Windows files are copy/download-only and must never enter this selection.
-    return files.value.filter((file) => file.physical_category === 'mpi')
+    return files.value.filter((file) => {
+      if (file.physical_category !== 'mpi') return false
+      if (selectedTaskCategory.value === 'base_system') {
+        return environmentBusinessCategory(file.name) === 'base_system'
+      }
+      if (selectedTaskCategory.value === 'compiler_mpi') {
+        return environmentBusinessCategory(file.name) === 'compiler_mpi'
+      }
+      return false
+    })
   }
   if (selectedTaskType.value === 'stress') {
     return files.value
@@ -912,8 +1008,8 @@ const someStressScriptsSelected = computed(() => {
   const selectedCount = available.filter(path => selectedStressScripts.value.includes(path)).length
   return selectedCount > 0 && selectedCount < available.length
 })
-const isGpuDriverSelected = computed(() => selectedTaskType.value === 'script' && selectedFilePath.value === GPU_DRIVER_ROCKY9_ACTION)
-const isCudaToolkitSelected = computed(() => selectedTaskType.value === 'script' && selectedFilePath.value === CUDA_TOOLKIT_ACTION)
+const isGpuDriverSelected = computed(() => selectedTaskCategory.value === 'gpu_software' && selectedManagedActions.value.includes('gpu_driver'))
+const isCudaToolkitSelected = computed(() => selectedTaskCategory.value === 'gpu_software' && selectedManagedActions.value.includes('cuda_toolkit'))
 const filteredGpuDrivers = computed(() => gpuDriverLibrary.value.filter((item) => item.driver_type === gpuDriverType.value))
 const isSupportedGpuDriverOs = computed(() => {
   return selectedServers.value.length > 0 && selectedServers.value.every((server) => {
@@ -969,6 +1065,7 @@ const isSingleServer = computed(() => selectedServerIds.value.length === 1)
 const isMultiServer = computed(() => selectedServerIds.value.length >= 2)
 
 const showParamCard = computed(() => {
+  if ((selectedTaskCategory.value === 'base_system' || selectedTaskCategory.value === 'gpu_software') && selectedManagedActions.value.length > 0) return true
   if (isGpuDriverSelected.value || isCudaToolkitSelected.value) return true
   if (selectedTaskType.value !== 'stress') return !!selectedFile.value
   return selectedStressScripts.value.length > 0
@@ -1005,6 +1102,12 @@ const stressDurationSeconds = computed(() => {
 })
 
 const commandPreview = computed(() => {
+  if (selectedTaskCategory.value === 'base_system' && selectedManagedActions.value.length === 2) {
+    return '基础环境配置套件串行执行：\n\n1. 关闭 Linux 锁屏与休眠\n2. 锁定 Linux 系统版本'
+  }
+  if (selectedTaskCategory.value === 'gpu_software' && selectedManagedActions.value.length === 2) {
+    return `GPU 驱动安装套件串行执行：\n\n1. 安装 NVIDIA 驱动并完成 nvidia-smi 验证\n2. 安装 CUDA Toolkit ${cudaToolkitVersion.value} 并完成 nvcc 验证`
+  }
   if (isGpuDriverSelected.value) {
     return 'Rocky 9.4：检查 GPU → 安装依赖 → yum update → 禁用 Nouveau → 自动重启 → 下载 .run → 安装驱动 → nvidia-smi / 模块验证'
   }
@@ -1095,6 +1198,9 @@ const showDiskTestDirInPreview = computed(() => {
 
 const isFileSelected = computed(() => {
   if (!selectedTaskType.value) return false
+  if (selectedTaskCategory.value === 'base_system' || selectedTaskCategory.value === 'gpu_software') {
+    return selectedManagedActions.value.length > 0
+  }
   if (selectedTaskType.value === 'stress' && stressSuiteMode.value) {
     return selectedStressScripts.value.length >= 2
   }
@@ -1327,6 +1433,28 @@ async function validateRunner() {
       return
     }
 
+    if (selectedTaskCategory.value === 'base_system' && selectedManagedActions.value.length === 2) {
+      ElMessage.success('参数校验通过。将按关闭锁屏与休眠 → 锁定系统版本串行执行。')
+      return
+    }
+
+    if (selectedTaskCategory.value === 'gpu_software' && selectedManagedActions.value.length === 2) {
+      if (!isSupportedGpuDriverOs.value || !isSupportedCudaToolkitOs.value) {
+        ElMessage.error('当前服务器系统不同时满足 NVIDIA 驱动与 CUDA 安装要求')
+        return
+      }
+      if (gpuDriverSource.value === 'library' && !gpuDriverId.value) {
+        ElMessage.error('请选择驱动类型对应的具体版本')
+        return
+      }
+      if (gpuDriverSource.value === 'upload' && !gpuDriverUploadId.value) {
+        ElMessage.error('请先上传自定义 NVIDIA .run 文件')
+        return
+      }
+      ElMessage.success(`参数校验通过。将按 NVIDIA 驱动 → CUDA Toolkit ${cudaToolkitVersion.value} 串行执行。`)
+      return
+    }
+
     if (isGpuDriverSelected.value) {
       if (!isSupportedGpuDriverOs.value) {
         ElMessage.error('请先探测服务器系统；当前仅支持 Rocky Linux 9、Ubuntu 20.04/22.04/24.04')
@@ -1397,6 +1525,12 @@ async function createTask() {
   }
   if (!selectedTaskType.value) {
     ElMessage.error('必须选择任务类型')
+    return
+  }
+
+  if ((selectedTaskCategory.value === 'base_system' || selectedTaskCategory.value === 'gpu_software')
+      && selectedManagedActions.value.length === 2) {
+    await createManagedSuiteTask()
     return
   }
 
@@ -1599,6 +1733,46 @@ async function createStressSuiteTask() {
         batch_id: result.batch_id,
       },
     })
+  } catch (error: unknown) {
+    ElMessage.error(getApiErrorMessage(error))
+  } finally {
+    submitting.value = false
+  }
+}
+
+async function createManagedSuiteTask() {
+  if (selectedTaskCategory.value !== 'base_system' && selectedTaskCategory.value !== 'gpu_software') return
+  if (selectedTaskCategory.value === 'gpu_software') {
+    if (!isSupportedGpuDriverOs.value || !isSupportedCudaToolkitOs.value) {
+      ElMessage.error('当前服务器系统不同时满足 NVIDIA 驱动与 CUDA 安装要求')
+      return
+    }
+    if (gpuDriverSource.value === 'library' && !gpuDriverId.value) {
+      ElMessage.error('请选择驱动类型对应的具体版本')
+      return
+    }
+    if (gpuDriverSource.value === 'upload' && !gpuDriverUploadId.value) {
+      ElMessage.error('请先上传自定义 NVIDIA .run 文件')
+      return
+    }
+  }
+  submitting.value = true
+  try {
+    const result = (await createManagedSuite({
+      suite_type: selectedTaskCategory.value,
+      server_ids: selectedServerIds.value,
+      actions: selectedManagedActions.value as Array<'disable_lock_sleep' | 'lock_release' | 'gpu_driver' | 'cuda_toolkit'>,
+      ...(selectedTaskCategory.value === 'gpu_software' ? {
+        driver_type: gpuDriverType.value,
+        ...(gpuDriverSource.value === 'library' ? { driver_id: gpuDriverId.value } : { driver_upload_id: gpuDriverUploadId.value }),
+        force_install_if_driver_exists: forceInstallIfDriverExists.value,
+        cuda_version: cudaToolkitVersion.value,
+        force_install_cuda: forceInstallCudaToolkit.value,
+      } : {}),
+    })).data
+    notifyTaskCreated()
+    ElMessage.success('串行安装套件已创建，正在跳转历史任务。')
+    await router.push({ path: '/history', query: { view: 'batches', batch_id: result.batch_id } })
   } catch (error: unknown) {
     ElMessage.error(getApiErrorMessage(error))
   } finally {

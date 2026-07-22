@@ -33,7 +33,7 @@
         >
           <el-option label="全部类型" value="" />
           <el-option label="服务器环境" value="script" />
-          <el-option label="服务器压测" value="stress" />
+          <el-option label="Linux 服务器压测" value="stress" />
           <el-option label="Apptainer 镜像" value="apptainer" />
         </el-select>
 
@@ -85,6 +85,9 @@
                 <div class="batch-history-card__badges">
                   <el-tag size="small" type="warning" effect="plain">批次</el-tag>
                   <el-tag v-for="tag in batchGroupTypeTags(item.tasks)" :key="tag" size="small" effect="plain">{{ tag }}</el-tag>
+                  <el-tag v-if="batchGroupStressDuration(item.tasks)" size="small" type="primary" effect="plain">
+                    压测时间 {{ batchGroupStressDuration(item.tasks) }}
+                  </el-tag>
                 </div>
               </div>
               <div class="batch-history-card__status-block">
@@ -97,11 +100,16 @@
               <div class="batch-task-info-list">
                 <div v-for="task in item.tasks" :key="task.task_id" class="batch-task-info-row">
                   <div class="task-card__info-grid task-card__info-grid--aligned batch-task-info-row__grid">
-                    <span class="task-card__module-label">{{ batchStepLabel(task) }}</span>
-                    <span :title="task.file_name ?? '-'">文件：{{ task.file_name ?? '-' }}</span>
-                    <span :title="task.remote_work_dir ?? '-'">远程目录：{{ task.remote_work_dir ?? '-' }}</span>
-                    <span :title="task.command_preview ?? '-'">命令：{{ task.command_preview ?? '-' }}</span>
-                    <span class="task-card__plan-duration">计划时长：{{ formatStressDuration(task.params) }}</span>
+                    <span class="task-card__module-label">子任务名称：<span class="task-card__field-value">{{ batchStepLabel(task) }}</span></span>
+                    <span class="task-card__script-field" :title="task.file_name ?? '-'">脚本文件：<span class="task-card__value-text">{{ task.file_name ?? '-' }}</span></span>
+                    <span class="batch-task-status-field">任务状态：<el-tag size="small" :type="batchStatusTagType(taskDisplayStatus(task))" effect="plain" class="batch-task-status-tag">
+                        {{ taskDisplayStatus(task).toUpperCase() }}
+                      </el-tag></span>
+                    <span
+                      class="batch-task-inline-reason"
+                      :class="batchTaskInlineReasonClass(task)"
+                      :title="batchTaskInlineReason(task)"
+                    >详情说明：{{ batchTaskInlineReason(task) || '-' }}</span>
                   </div>
                 </div>
               </div>
@@ -112,12 +120,7 @@
               </div>
             </div>
 
-            <div v-if="batchFailureReasons(item.tasks).length > 0" class="task-card__error batch-history-failure">
-              <div v-for="reason in batchFailureReasons(item.tasks)" :key="reason.title + reason.message" class="batch-history-failure__item">
-                <b>{{ reason.title }}：</b>
-                <span>{{ reason.message }}</span>
-              </div>
-            </div>
+
             <div v-if="batchRetryNotices(item.tasks).length > 0" class="batch-history-retry">
               <div v-for="notice in batchRetryNotices(item.tasks)" :key="notice.title + notice.message" class="batch-history-retry__item" :class="notice.className">
                 <b>{{ notice.title }}：</b>
@@ -134,6 +137,7 @@
                   @click="openBatchDetail(batchSummaryFromTasks(item.batchId, item.tasks))"
                 >查看批次详情</el-button>
                 <el-button
+                  v-if="item.tasks.some(task => task.task_type === 'stress')"
                   size="small"
                   type="primary"
                   :icon="FolderOpened"
@@ -142,14 +146,38 @@
                   :loading="artLoading"
                   @click="openBatchArtifacts(item.batchId, item.tasks)"
                 >结果文件</el-button>
-                <el-button
-                  v-if="item.tasks.every(task => isBatchTaskTerminal(task.status))"
-                  size="small"
-                  type="danger"
-                  plain
-                  class="hpc-interactive-pulse"
-                  @click="cleanupBatchLocalArtifactsFor(item.batchId, item.tasks.length)"
-                >删除批次任务</el-button>
+                <el-tooltip
+                  v-if="batchCudaCommandTask(item.tasks)"
+                  placement="top"
+                  :show-after="250"
+                >
+                  <template #content>
+                    <pre class="command-tooltip-content">{{ getEnvTooltip(batchCudaCommandTask(item.tasks)!.task_id) }}</pre>
+                  </template>
+                  <el-button
+                    size="small"
+                    plain
+                    class="hpc-interactive-pulse"
+                    @mouseenter="prefetchEnvCommands(batchCudaCommandTask(item.tasks)!)"
+                    @click="copyEnvCommands(batchCudaCommandTask(item.tasks)!)"
+                  >复制环境变量</el-button>
+                </el-tooltip>
+                <el-tooltip
+                  v-if="batchCudaCommandTask(item.tasks)"
+                  placement="top"
+                  :show-after="250"
+                >
+                  <template #content>
+                    <pre class="command-tooltip-content">{{ getVerifyTooltip(batchCudaCommandTask(item.tasks)!.task_id) }}</pre>
+                  </template>
+                  <el-button
+                    size="small"
+                    plain
+                    class="hpc-interactive-pulse"
+                    @mouseenter="prefetchVerifyCommands(batchCudaCommandTask(item.tasks)!)"
+                    @click="copyVerifyCommands(batchCudaCommandTask(item.tasks)!)"
+                  >复制验证命令</el-button>
+                </el-tooltip>
                 <el-button
                   v-if="canCancelBatch(batchSummaryFromTasks(item.batchId, item.tasks))"
                   size="small"
@@ -159,6 +187,14 @@
                   :loading="batchCancelSubmitting[item.batchId]"
                   @click="confirmCancelBatch(batchSummaryFromTasks(item.batchId, item.tasks))"
                 >取消批次任务</el-button>
+                <el-button
+                  v-if="item.tasks.every(task => isBatchTaskTerminal(task.status))"
+                  size="small"
+                  type="danger"
+                  plain
+                  class="batch-card-delete-button"
+                  @click="cleanupBatchLocalArtifactsFor(item.batchId, item.tasks.length)"
+                >删除批次任务</el-button>
             </div>
           </el-card>
         </template>
@@ -266,6 +302,7 @@
                           <div class="batch-task-actions">
                             <el-button size="small" link type="primary" class="task-action-button batch-view-button" @click.stop="continueBatchTask(t)">查看任务详情</el-button>
                             <el-button
+                              v-if="isBatchDetailStressTask(t)"
                               size="small"
                               type="primary"
                               :icon="FolderOpened"
@@ -354,6 +391,7 @@
                   @click.stop="confirmCancelBatch(row)"
                 >取消批次</el-button>
                 <el-button
+                  v-if="row.task_type === 'stress'"
                   size="small"
                   type="primary"
                   :icon="FolderOpened"
@@ -366,7 +404,7 @@
                   v-if="isBatchTaskTerminal(row.status)"
                   size="small"
                   link
-                  type="danger"
+                  type="info"
                   class="task-action-button"
                   @click.stop="cleanupBatchLocalArtifactsFor(row.batch_id, row.total)"
                 >删除批次任务</el-button>
@@ -424,16 +462,22 @@
               <template v-if="group.files.length === 0">
                 <div class="art-empty-inline">暂无结果文件</div>
               </template>
-              <div v-for="f in group.files" :key="`${group.taskId}:${f.name}`" class="art-item">
+              <div
+                v-for="f in group.files"
+                :key="`${group.taskId}:${f.name}`"
+                class="art-item"
+                :class="{ 'art-item-report': isXlsxArtifact(f) }"
+              >
                 <div class="art-item-info">
                   <span class="art-name" :title="f.name">{{ f.name }}</span>
                   <div class="art-meta-row">
                     <span class="art-size">{{ formatFileSize(f.size) }}</span>
-                    <el-tag size="small">{{ f.type }}</el-tag>
+                    <el-tag size="small" :type="isXlsxArtifact(f) ? 'primary' : 'info'">{{ f.type }}</el-tag>
+                    <el-tag v-if="isXlsxArtifact(f)" size="small" type="success" effect="dark">最终报告</el-tag>
                     <span class="art-local-path" :title="f.local_relative_path">{{ f.local_relative_path }}</span>
                   </div>
                 </div>
-                <el-button size="small" @click="downloadArtifact(f.name, group.taskId)">下载</el-button>
+                <el-button size="small" :type="isXlsxArtifact(f) ? 'primary' : 'default'" @click="downloadArtifact(f.name, group.taskId)">下载</el-button>
               </div>
             </div>
           </div>
@@ -521,7 +565,7 @@
             <span><b>服务器</b>{{ drawerServerLabel }}</span>
             <span><b>任务</b>{{ taskDisplayModuleName(drawerTask) }}</span>
             <span><b>报告状态</b><el-tag size="small" :type="drawerReportTagType" effect="plain">{{ drawerReportLabel }}</el-tag></span>
-            <span><b>远端目录</b><code>{{ drawerTask.remote_work_dir || '-' }}</code></span>
+            <span><b>远端目录</b><code class="task-detail-value-text">{{ drawerTask.remote_work_dir || '-' }}</code></span>
             <span><b>开始</b>{{ formatDate(drawerTask.start_time) }}</span>
             <span><b>{{ drawerEndTimeLabel }}</b>{{ formatDate(drawerEndTime) }}</span>
             <span><b>已运行</b>{{ drawerRunningDuration !== null ? formatSeconds(drawerRunningDuration) : '-' }}</span>
@@ -584,7 +628,7 @@
                 <span>创建时间</span>
                 <strong>{{ formatDate(drawerTask.created_at) }}</strong>
               </div>
-              <div class="task-drawer-overview__row">
+              <div v-if="drawerTask.task_type === 'stress'" class="task-drawer-overview__row">
                 <span>计划时长</span>
                 <strong>{{ formatStressDuration(drawerTask.params) }}</strong>
               </div>
@@ -826,7 +870,11 @@
                       <span class="detail-grid__label">远端目录</span>
                       <code class="detail-grid__code">{{ selectedTaskData.remote_work_dir || '-' }}</code>
                     </div>
-                    <div class="detail-grid__item">
+                    <div class="detail-grid__item detail-grid__item--full">
+                      <span class="detail-grid__label">执行命令</span>
+                      <code class="detail-grid__code">{{ selectedTaskData.command_preview || '-' }}</code>
+                    </div>
+                    <div v-if="hasStressDuration(selectedTaskData.params)" class="detail-grid__item">
                       <span class="detail-grid__label">计划时长</span>
                       <span>{{ formatStressDuration(selectedTaskData.params) || '-' }}</span>
                     </div>
@@ -1069,6 +1117,10 @@ const artifactGroups = computed(() => {
   }
   return { reports, rawFiles }
 })
+
+function isXlsxArtifact(file: ArtifactFileDetail): boolean {
+  return file.name.toLowerCase().endsWith('.xlsx')
+}
 const taskLogCache = reactive<Record<string, TaskLogRecord[]>>({})
 
 type DrawerMonitorPanel = 'summary' | 'logs' | 'cpu_mem' | 'disk' | 'gpu'
@@ -1306,7 +1358,14 @@ function batchGroupUsernameMetaLabel(tasks: TaskRecord[]): string {
 
 function batchGroupDisplayName(tasks: TaskRecord[]): string {
   const serverLabel = batchGroupServerLabel(tasks)
-  const typeLabel = tasks.some(task => task.task_type === 'stress') ? '服务器压测' : getTaskTypeLabel(tasks[0]?.task_type, '任务')
+  const suiteKind = batchManagedSuiteKind(tasks)
+  const typeLabel = suiteKind === 'base_system'
+    ? '基础环境配置'
+    : suiteKind === 'gpu_software'
+      ? 'GPU 驱动安装'
+      : tasks.some(task => task.task_type === 'stress')
+        ? 'Linux 服务器压测'
+        : getTaskTypeLabel(tasks[0]?.task_type, '任务')
   const dateLabel = compactTaskDate(batchGroupCreatedAt(tasks))
   return ['批次', serverLabel, typeLabel, dateLabel].filter(Boolean).join(' · ')
 }
@@ -1316,10 +1375,12 @@ function compactTaskDate(value?: string | null): string {
 }
 
 function batchStepLabel(task: TaskRecord): string {
+  const managedLabel = managedSuiteTaskLabel(task.params, task.file_name || task.file_path || '', task.task_type)
+  if (managedLabel) return managedLabel
   const seq = task.sequence_index
-  if (seq === 1) return 'GPU'
-  if (seq === 2) return 'CPU与内存'
-  if (seq === 3) return '磁盘'
+  if (task.task_type === 'stress' && seq === 1) return 'GPU'
+  if (task.task_type === 'stress' && seq === 2) return 'CPU与内存'
+  if (task.task_type === 'stress' && seq === 3) return '磁盘'
   return taskDisplayModuleName(task).replace('压测', '') || `子任务 ${task.task_id}`
 }
 
@@ -1345,10 +1406,12 @@ function batchGroupDuration(tasks: TaskRecord[]): number | null {
 }
 
 function taskDisplayModuleName(task: TaskRecord): string {
+  const managedLabel = managedSuiteTaskLabel(task.params, task.file_name || task.file_path || '', task.task_type)
+  if (managedLabel) return managedLabel
   const seq = task.sequence_index
-  if (seq === 1) return 'GPU压测'
-  if (seq === 2) return 'CPU与内存压测'
-  if (seq === 3) return '磁盘压测'
+  if (task.task_type === 'stress' && seq === 1) return 'GPU压测'
+  if (task.task_type === 'stress' && seq === 2) return 'CPU与内存压测'
+  if (task.task_type === 'stress' && seq === 3) return '磁盘压测'
   const fileName = (task.file_name || task.file_path || '').toLowerCase()
   if (fileName.includes('gpu')) return 'GPU压测'
   if (fileName.includes('cpu') || fileName.includes('mem')) return 'CPU与内存压测'
@@ -1357,15 +1420,35 @@ function taskDisplayModuleName(task: TaskRecord): string {
 }
 
 function batchDetailTaskLabel(task: BatchTaskDetailItem): string {
+  const managedLabel = managedSuiteTaskLabel(task.params, task.task_name, '')
+  if (managedLabel) return managedLabel
   const seq = task.sequence_index
-  if (seq === 1) return 'GPU压测'
-  if (seq === 2) return 'CPU与内存压测'
-  if (seq === 3) return '磁盘压测'
   const name = (task.task_name || '').toLowerCase()
   if (name.includes('gpu')) return 'GPU压测'
   if (name.includes('cpu') || name.includes('mem')) return 'CPU与内存压测'
   if (name.includes('disk')) return '磁盘压测'
   return task.task_name || `子任务 ${task.task_id}`
+}
+
+function managedSuiteTaskLabel(params: Record<string, unknown> | null | undefined, name: string, taskType: string | null | undefined): string {
+  const kind = params?.__managed_suite_kind
+  const normalized = name.toLowerCase()
+  if (kind === 'base_system') {
+    if (normalized.includes('disable_linux_lock_sleep')) return '关闭锁屏与休眠'
+    if (normalized.includes('lock_linux_release')) return '锁定系统版本'
+    return '基础环境配置'
+  }
+  if (kind === 'gpu_software') {
+    if (taskType === 'gpu_driver' || normalized.includes('gpu_driver')) return 'NVIDIA 驱动安装'
+    if (taskType === 'cuda_toolkit' || normalized.includes('cuda')) return 'CUDA Toolkit 安装'
+    return 'GPU 驱动安装'
+  }
+  return ''
+}
+
+function batchManagedSuiteKind(tasks: TaskRecord[]): string {
+  const kind = tasks.find(task => typeof task.params?.__managed_suite_kind === 'string')?.params?.__managed_suite_kind
+  return typeof kind === 'string' ? kind : ''
 }
 
 function batchDetailReportLabel(task: BatchTaskDetailItem): string {
@@ -1428,7 +1511,8 @@ function batchDetailUserSummary(tasks: BatchTaskDetailItem[]): string {
 function batchDetailPlanSummary(tasks: BatchTaskDetailItem[]): string {
   const plans = new Set<string>()
   for (const task of tasks) {
-    plans.add(`${batchDetailTaskLabel(task)} ${formatStressDuration(task.params)}`)
+    const duration = formatStressDuration(task.params)
+    plans.add(duration === '-' ? batchDetailTaskLabel(task) : `${batchDetailTaskLabel(task)} ${duration}`)
   }
   return Array.from(plans).join('、') || '-'
 }
@@ -1462,6 +1546,9 @@ function taskTypeTags(task: TaskRecord): string[] {
 }
 
 function batchGroupTypeTags(tasks: TaskRecord[]): string[] {
+  const suiteKind = batchManagedSuiteKind(tasks)
+  if (suiteKind === 'base_system') return ['基础环境配置']
+  if (suiteKind === 'gpu_software') return ['GPU 驱动安装']
   const ordered = ['GPU', 'CPU/内存', '磁盘']
   const seen = new Set<string>()
   for (const task of tasks) {
@@ -1470,25 +1557,35 @@ function batchGroupTypeTags(tasks: TaskRecord[]): string[] {
   return ordered.filter(tag => seen.has(tag)).concat(Array.from(seen).filter(tag => !ordered.includes(tag)))
 }
 
-function batchFailureReasons(tasks: TaskRecord[]) {
-  return batchEffectiveTasks(tasks)
-    .filter(task => {
-      const status = taskDisplayStatus(task).toUpperCase()
-      return status === 'FAILED' || status === 'CANCELED' || (task.report_status || '').toUpperCase() === 'FAIL'
-    })
-    .map(task => {
-      const status = taskDisplayStatus(task).toUpperCase()
-      if (status === 'CANCELED') {
-        return {
-          title: `${batchStepLabel(task)}已取消`,
-          message: formatTaskErrorMessage(task.error_message || task.failure_reason) || '任务已被取消',
-        }
-      }
-      return {
-        title: `${batchStepLabel(task)}压测失败`,
-          message: formatTaskErrorMessage(task.failure_reason || task.error_message) || '报告检测到压测结果为 FAIL，请查看结果文件。',
-      }
-    })
+function batchGroupStressDuration(tasks: TaskRecord[]): string {
+  const stressTask = tasks.find(task => task.task_type === 'stress' && hasStressDuration(task.params))
+  return stressTask ? formatStressDuration(stressTask.params) : ''
+}
+
+function hasStressDuration(params: Record<string, unknown> | null | undefined): boolean {
+  const value = params?.duration_seconds
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+}
+
+function batchTaskInlineReason(task: TaskRecord): string {
+  if (task.outcome_message) return formatTaskErrorMessage(task.outcome_message)
+  const status = taskDisplayStatus(task).toUpperCase()
+  if (status === 'FAILED' || status === 'FAIL' || status === 'TIMEOUT') {
+    return formatTaskErrorMessage(task.failure_reason || task.error_message) || (task.task_type === 'stress'
+      ? '报告检测到压测结果为 FAIL，请查看结果文件。'
+      : '任务执行失败，请查看执行日志。')
+  }
+  if (status === 'CANCELED') {
+    return formatTaskErrorMessage(task.error_message || task.failure_reason) || '任务已被取消'
+  }
+  return ''
+}
+
+function batchTaskInlineReasonClass(task: TaskRecord): string {
+  const status = taskDisplayStatus(task).toUpperCase()
+  if (status === 'SUCCESS' || status === 'PASS') return 'is-skip'
+  if (status === 'CANCELED') return 'is-canceled'
+  return 'is-failed'
 }
 
 function batchRetryNotices(tasks: TaskRecord[]) {
@@ -1559,7 +1656,7 @@ const filters = reactive<TaskListQuery>({
   task_type: undefined,
   server_id: undefined,
   keyword: undefined,
-  limit: 50,
+  limit: 20,
   offset: 0,
 })
 const total = ref(0)
@@ -1915,7 +2012,13 @@ function batchDetailTaskOrder(task: BatchTaskDetailItem): number {
 }
 
 function batchDetailShowArtifactsButton(task: BatchTaskDetailItem): boolean {
-  return ['SUCCESS', 'FAILED', 'CANCELED'].includes(task.status?.toUpperCase() ?? '')
+  return isBatchDetailStressTask(task)
+    && ['SUCCESS', 'FAILED', 'CANCELED'].includes(task.status?.toUpperCase() ?? '')
+}
+
+function isBatchDetailStressTask(task: BatchTaskDetailItem): boolean {
+  return task.task_name.includes('· stress ·')
+    || (typeof task.params?.duration_seconds === 'number' && task.params.duration_seconds > 0)
 }
 
 function batchDetailCanRetryTask(task: BatchTaskDetailItem): boolean {
@@ -3296,6 +3399,10 @@ function getVerifyTooltip(taskId: string) {
   return extractVerifyCommands(entries) || '未识别到验证命令'
 }
 
+function batchCudaCommandTask(tasks: TaskRecord[]): TaskRecord | undefined {
+  return tasks.find(task => task.task_type === 'cuda_toolkit' && task.status?.toUpperCase() === 'SUCCESS')
+}
+
 async function copyText(text: string, emptyMessage: string, successMessage: string) {
   if (!text.trim()) {
     ElMessage.warning(emptyMessage)
@@ -3788,7 +3895,7 @@ onUnmounted(() => {
 
 .task-history-page .task-card__info-grid--aligned {
   display: grid;
-  grid-template-columns: 72px 250px 520px 320px max-content;
+  grid-template-columns: 220px 340px;
   align-items: center;
   justify-content: start;
 }
@@ -3798,16 +3905,33 @@ onUnmounted(() => {
   max-width: 100%;
 }
 
-.task-history-page .task-card__info-grid--aligned span:nth-child(2),
-.task-history-page .task-card__info-grid--aligned span:nth-child(3),
-.task-history-page .task-card__info-grid--aligned span:nth-child(4) {
+.task-history-page .task-card__info-grid--aligned span:nth-child(2) {
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+.task-history-page .task-card__value-text {
+  font-family: inherit;
+  font-weight: 400;
+  color: var(--el-text-color-regular);
+}
+
 .task-history-page .task-card__module-label {
-  color: var(--el-text-color-secondary);
+  color: var(--el-text-color-regular);
+  font-family: var(--el-font-family, "Helvetica Neue", Arial, sans-serif);
   font-weight: 600;
+}
+
+.task-history-page .task-card__script-field {
+  color: var(--el-text-color-regular);
+  font-family: var(--el-font-family, "Helvetica Neue", Arial, sans-serif);
+  font-weight: 400;
+}
+
+.task-history-page .task-card__field-value {
+  color: var(--el-text-color-regular);
+  font-family: var(--el-font-family, "Helvetica Neue", Arial, sans-serif);
+  font-weight: 400;
 }
 
 .task-history-page .task-card__info-grid .task-card__plan-duration {
@@ -3845,6 +3969,29 @@ onUnmounted(() => {
   gap: 4px;
 }
 
+.batch-history-card .task-card__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.batch-history-card .task-card__actions .batch-card-delete-button {
+  margin-left: auto !important;
+  color: transparent !important;
+  background: transparent !important;
+  border-color: transparent !important;
+  border-right-color: var(--el-color-danger) !important;
+  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+
+.batch-history-card .task-card__actions .batch-card-delete-button:hover,
+.batch-history-card .task-card__actions .batch-card-delete-button:focus-visible {
+  color: var(--el-color-danger) !important;
+  background: var(--el-color-danger-light-9) !important;
+  border-color: var(--el-color-danger-light-5) !important;
+}
+
 .batch-task-info-row {
   padding: 5px 0;
   border-bottom: 1px solid var(--el-border-color-lighter);
@@ -3854,8 +4001,41 @@ onUnmounted(() => {
   border-bottom: 0;
 }
 
-.batch-task-info-row__grid {
+.task-history-page .batch-task-info-row__grid {
   min-width: 0;
+  grid-template-columns: minmax(190px, 220px) minmax(260px, 340px) 180px minmax(180px, 1fr);
+  width: 100%;
+}
+
+.batch-task-status-tag {
+  font-family: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  font-weight: 600;
+}
+
+.batch-task-status-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.batch-task-inline-reason {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.batch-task-inline-reason.is-skip {
+  color: var(--el-color-warning-dark-2);
+}
+
+.batch-task-inline-reason.is-failed {
+  color: var(--el-color-danger);
+}
+
+.batch-task-inline-reason.is-canceled {
+  color: var(--el-text-color-secondary);
 }
 
 @media (max-width: 1200px) {
@@ -3863,10 +4043,8 @@ onUnmounted(() => {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .batch-task-info-row {
-    flex-direction: column;
-    gap: 4px;
-    align-items: start;
+  .task-history-page .batch-task-info-row__grid {
+    grid-template-columns: minmax(190px, 220px) minmax(260px, 340px) 180px minmax(180px, 1fr);
   }
 }
 
@@ -4455,6 +4633,10 @@ onUnmounted(() => {
 }
 
 .detail-grid__code {
+  font-family: inherit;
+  font-weight: 400;
+  color: var(--el-text-color-regular);
+  background: transparent;
   font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4903,6 +5085,13 @@ onUnmounted(() => {
   text-overflow: ellipsis;
 }
 
+.task-drawer-grid code.task-detail-value-text {
+  color: var(--el-text-color-regular);
+  font-family: inherit;
+  font-weight: 400;
+  background: transparent;
+}
+
 .task-drawer-actions {
   display: flex;
   align-items: center;
@@ -4946,8 +5135,10 @@ onUnmounted(() => {
 }
 
 .task-drawer-overview__row code {
-  color: var(--el-color-primary);
-  font-family: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  color: var(--el-text-color-regular);
+  font-family: inherit;
+  font-weight: 400;
+  background: transparent;
 }
 
 .task-drawer-overview__row--error strong {

@@ -16,10 +16,11 @@
             <el-tag size="small" type="warning" effect="plain">批次子任务</el-tag>
             <el-tag size="small" type="default" effect="plain" class="tag-mono">Batch: {{ task.batch_id }}</el-tag>
             <el-tag v-if="task.sequence_index" size="small" type="default" effect="plain">
-              步骤 {{ task.sequence_index }}/3 {{ batchStepLabel(task.sequence_index) }}
+              步骤 {{ task.sequence_index }} {{ batchStepLabel }}
             </el-tag>
           </template>
           <el-tag v-for="tag in taskTypeTags" :key="tag" size="small" effect="plain">{{ tag }}</el-tag>
+          <el-tag v-if="plannedDuration" size="small" type="primary" effect="plain">压测时间 {{ plannedDuration }}</el-tag>
         </div>
       </div>
       <div class="task-card__status-block">
@@ -29,16 +30,16 @@
     </div>
     <div class="task-card__body">
       <div class="task-card__info-grid task-card__info-grid--aligned">
-        <span class="task-card__module-label">{{ taskModuleLabel }}</span>
-        <span>文件：{{ task.file_name ?? '-' }}</span>
-        <span>远程目录：{{ task.remote_work_dir ?? '-' }}</span>
-        <el-tooltip placement="top" :show-after="250">
-          <template #content>
-            <pre class="command-tooltip-content">{{ task.command_preview ?? '-' }}</pre>
-          </template>
-          <span>命令：{{ task.command_preview ?? '-' }}</span>
-        </el-tooltip>
-        <span v-if="plannedDuration" class="task-card__plan-duration">计划时长：{{ plannedDuration }}</span>
+        <span class="task-card__module-label">任务名称：<span class="task-card__field-value">{{ taskModuleLabel }}</span></span>
+        <span class="task-card__script-field">脚本文件：<span class="task-card__value-text">{{ task.file_name ?? '-' }}</span></span>
+        <span class="task-card__status-field">任务状态：<el-tag size="small" :type="statusTagType" effect="plain" class="task-card__inline-status">
+            {{ displayStatus.toUpperCase() }}
+          </el-tag></span>
+        <span
+          class="task-card__inline-reason"
+          :class="inlineOutcomeClass"
+          :title="inlineOutcomeMessage"
+        >详情说明：{{ inlineOutcomeMessage || '-' }}</span>
       </div>
       <div class="task-card__time-line">
         <template v-if="task.start_time">开始 {{ formatTime(task.start_time) }}</template>
@@ -47,10 +48,9 @@
         <template v-if="runtime"> | 耗时 {{ formatSeconds(runtime) }}</template>
       </div>
     </div>
-    <div v-if="displayErrorMessage" class="task-card__error">{{ displayErrorMessage }}</div>
     <div class="task-card__actions">
       <el-button size="small" type="primary" plain class="hpc-interactive-pulse" @click="$emit('continueTask', task)">查看任务详情</el-button>
-      <el-button size="small" type="primary" :icon="FolderOpened" class="task-card__result-button hpc-interactive-pulse" :disabled="!isStressCompleted" @click="$emit('downloadReport', task)">结果文件</el-button>
+      <el-button v-if="task.task_type === 'stress'" size="small" type="primary" :icon="FolderOpened" class="task-card__result-button hpc-interactive-pulse" :disabled="!isStressCompleted" @click="$emit('downloadReport', task)">结果文件</el-button>
       <el-tooltip
         v-if="showCommandCopyButtons"
         placement="top"
@@ -84,9 +84,9 @@
         >复制验证命令</el-button>
       </el-tooltip>
       <el-button v-if="showCancelingButton" size="small" type="warning" plain disabled>正在取消</el-button>
-      <el-button v-if="showLocalArtifactsCleanup" size="small" type="danger" plain class="hpc-interactive-pulse" @click="$emit('cleanupLocalArtifacts', task)">删除任务</el-button>
       <el-button v-if="showCancelButton" size="small" type="danger" plain class="hpc-interactive-pulse" @click="$emit('cancelTask', task)">取消任务</el-button>
       <el-button v-if="task.batch_id" size="small" type="default" plain class="hpc-interactive-pulse" @click="$emit('viewBatch', task)">查看批次</el-button>
+      <el-button v-if="showLocalArtifactsCleanup" size="small" type="danger" plain class="task-card__delete-button" @click="$emit('cleanupLocalArtifacts', task)">删除任务</el-button>
     </div>
   </el-card>
 </template>
@@ -97,9 +97,9 @@ import { DocumentCopy, FolderOpened } from '@element-plus/icons-vue'
 import type { TaskRecord } from '@/api/task'
 import { formatBeijingDateKey, formatDateTime } from '@/utils/time'
 import { calcDurationSeconds, calcEstimatedEndTime, formatSeconds, statusLabel } from '@/composables/useTaskProgress'
-import StatusTag from './StatusTag.vue'
 import { formatTaskErrorMessage } from '@/utils/taskError'
 import { formatTaskDisplayName } from '@/utils/taskDisplay'
+import StatusTag from './StatusTag.vue'
 
 defineEmits<{
   continueTask: [task: TaskRecord]
@@ -145,7 +145,7 @@ const taskReadableType = computed(() => {
   if (fileName.includes('disk')) return '磁盘压测'
   if (props.task.task_type === 'gpu_driver') return 'GPU 驱动安装'
   if (props.task.task_type === 'cuda_toolkit') return 'CUDA 安装'
-  if (props.task.task_type === 'stress') return '服务器压测'
+  if (props.task.task_type === 'stress') return 'Linux 服务器压测'
   if (props.task.task_type === 'apptainer') return 'Apptainer 分发'
   if (props.task.task_type === 'script') return '服务器环境'
   return '任务'
@@ -163,7 +163,7 @@ const taskModuleLabel = computed(() => {
   return taskTypeTags.value[0] || taskReadableType.value
 })
 
-const displayErrorMessage = computed(() => formatTaskErrorMessage(props.task.error_message))
+const displayErrorMessage = computed(() => formatTaskErrorMessage(props.task.failure_reason || props.task.error_message))
 
 const isStressCompleted = computed(() => {
   // Use final_status for stress tasks, fall back to execution status
@@ -208,11 +208,35 @@ const displayStatus = computed(() => {
   return props.task.status
 })
 
-const chineseStatus = computed(() => {
-  return statusLabel(displayStatus.value)
+const chineseStatus = computed(() => statusLabel(displayStatus.value))
+
+const statusTagType = computed(() => {
+  const status = displayStatus.value.toUpperCase()
+  if (status === 'SUCCESS' || status === 'PASS') return 'success'
+  if (status === 'FAILED' || status === 'FAIL' || status === 'TIMEOUT') return 'danger'
+  if (status === 'RUNNING' || status === 'CONNECTING' || status === 'PREPARING' || status === 'UPLOADING') return 'warning'
+  return 'info'
+})
+
+const inlineOutcomeMessage = computed(() => {
+  if (props.task.outcome_message) return formatTaskErrorMessage(props.task.outcome_message)
+  const status = displayStatus.value.toUpperCase()
+  if (status === 'FAILED' || status === 'FAIL' || status === 'TIMEOUT') {
+    return displayErrorMessage.value || '任务执行失败，请查看执行日志。'
+  }
+  if (status === 'CANCELED') return displayErrorMessage.value || '任务已被取消'
+  return ''
+})
+
+const inlineOutcomeClass = computed(() => {
+  const status = displayStatus.value.toUpperCase()
+  if (status === 'SUCCESS' || status === 'PASS') return 'is-skip'
+  if (status === 'CANCELED') return 'is-canceled'
+  return 'is-failed'
 })
 
 const plannedDuration = computed(() => {
+  if (props.task.task_type !== 'stress') return ''
   const raw = props.task.params?.duration_seconds ?? props.task.duration_seconds
   const seconds = typeof raw === 'number' ? raw : Number(raw)
   if (!Number.isFinite(seconds) || seconds <= 0) return ''
@@ -220,6 +244,7 @@ const plannedDuration = computed(() => {
 })
 
 const plannedDurationSeconds = computed(() => {
+  if (props.task.task_type !== 'stress') return null
   const raw = props.task.params?.duration_seconds ?? props.task.duration_seconds
   const seconds = typeof raw === 'number' ? raw : Number(raw)
   return Number.isFinite(seconds) && seconds > 0 ? seconds : null
@@ -231,15 +256,26 @@ const estimatedEndTime = computed(() => {
   return calcEstimatedEndTime(props.task.start_time, plannedDurationSeconds.value)
 })
 
-const BATCH_STEP_LABELS: Record<number, string> = {
+const STRESS_BATCH_STEP_LABELS: Record<number, string> = {
   1: 'GPU',
   2: 'CPU/内存',
   3: '磁盘',
 }
 
-function batchStepLabel(seq: number): string {
-  return BATCH_STEP_LABELS[seq] ?? `步骤${seq}`
-}
+const batchStepLabel = computed(() => {
+  const kind = props.task.params?.__managed_suite_kind
+  const name = (props.task.file_name || props.task.file_path || '').toLowerCase()
+  if (kind === 'base_system') {
+    if (name.includes('disable_linux_lock_sleep')) return '关闭锁屏与休眠'
+    if (name.includes('lock_linux_release')) return '锁定系统版本'
+    return '基础环境配置'
+  }
+  if (kind === 'gpu_software') {
+    if (props.task.task_type === 'gpu_driver') return 'NVIDIA 驱动安装'
+    if (props.task.task_type === 'cuda_toolkit') return 'CUDA Toolkit 安装'
+  }
+  return STRESS_BATCH_STEP_LABELS[props.task.sequence_index ?? 0] ?? ''
+})
 
 function compactTaskDate(value?: string | null): string {
   return formatBeijingDateKey(value)
@@ -273,6 +309,22 @@ const formatTime = formatDateTime
 
 .task-card__result-button {
   font-weight: 600;
+}
+
+.task-card__actions .task-card__delete-button {
+  margin-left: auto !important;
+  color: transparent !important;
+  background: transparent !important;
+  border-color: transparent !important;
+  border-right-color: var(--el-color-danger) !important;
+  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+
+.task-card__actions .task-card__delete-button:hover,
+.task-card__actions .task-card__delete-button:focus-visible {
+  color: var(--el-color-danger) !important;
+  background: var(--el-color-danger-light-9) !important;
+  border-color: var(--el-color-danger-light-5) !important;
 }
 
 .command-tooltip-content {
@@ -374,9 +426,9 @@ const formatTime = formatDateTime
 
 .task-card__info-grid--aligned {
   display: grid;
-  grid-template-columns: 72px 250px 520px 320px max-content;
+  grid-template-columns: minmax(190px, 220px) minmax(260px, 340px) 180px minmax(180px, 1fr);
   align-items: center;
-  justify-content: start;
+  width: 100%;
 }
 
 .task-card__info-grid span {
@@ -384,16 +436,64 @@ const formatTime = formatDateTime
   max-width: 100%;
 }
 
-.task-card__info-grid--aligned span:nth-child(2),
-.task-card__info-grid--aligned span:nth-child(3),
-.task-card__info-grid--aligned span:nth-child(4) {
+.task-card__info-grid--aligned span:nth-child(2) {
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.task-card__module-label {
-  color: var(--el-text-color-secondary);
+.task-card__value-text {
+  font-family: inherit;
+  font-weight: 400;
+  color: var(--el-text-color-regular);
+}
+
+.task-card__inline-status {
+  font-family: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
   font-weight: 600;
+}
+
+.task-card__status-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.task-card__inline-reason {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.task-card__inline-reason.is-skip {
+  color: var(--el-color-warning-dark-2);
+}
+
+.task-card__inline-reason.is-failed {
+  color: var(--el-color-danger);
+}
+
+.task-card__inline-reason.is-canceled {
+  color: var(--el-text-color-secondary);
+}
+
+.task-card__module-label {
+  color: var(--el-text-color-regular);
+  font-family: var(--el-font-family, "Helvetica Neue", Arial, sans-serif);
+  font-weight: 600;
+}
+
+.task-card__script-field {
+  color: var(--el-text-color-regular);
+  font-family: var(--el-font-family, "Helvetica Neue", Arial, sans-serif);
+  font-weight: 400;
+}
+
+.task-card__field-value {
+  color: var(--el-text-color-regular);
+  font-family: var(--el-font-family, "Helvetica Neue", Arial, sans-serif);
+  font-weight: 400;
 }
 
 .task-card__info-grid .task-card__plan-duration {
@@ -416,7 +516,7 @@ const formatTime = formatDateTime
 
 @media (max-width: 1200px) {
   .task-card__info-grid--aligned {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: minmax(190px, 220px) minmax(260px, 340px) 180px minmax(180px, 1fr);
   }
 }
 </style>

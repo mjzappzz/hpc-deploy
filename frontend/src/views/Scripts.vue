@@ -5,7 +5,7 @@
         <div class="library-overview__content">
           <div class="library-overview__title">资产库管理</div>
           <div class="library-overview__description">
-            NVIDIA 驱动作为安装资产独立管理；Linux 脚本与 Apptainer 镜像归入脚本知识库；Windows 脚本仅在“Windows 压测”页面管理。
+            NVIDIA 驱动独立管理；Linux 脚本按基础环境配置、MPI 编译环境配置、Linux 服务器压测分类；Windows 脚本仅在“Windows 压测”页面管理。
           </div>
           <div class="library-overview__stats">
             <el-tag effect="plain">NVIDIA 驱动 {{ gpuDriverLibrary.length }}</el-tag>
@@ -67,8 +67,9 @@
 
       <el-tabs v-model="activeCategory" class="knowledge-tabs">
         <el-tab-pane label="全部" name="all" />
-        <el-tab-pane :label="`服务器环境 (${counts.mpi})`" name="mpi" />
-        <el-tab-pane :label="`服务器压测 (${counts.stress})`" name="stress" />
+        <el-tab-pane :label="`基础环境配置 (${counts.base_system})`" name="base_system" />
+        <el-tab-pane :label="`MPI 编译环境配置 (${counts.compiler_mpi})`" name="compiler_mpi" />
+        <el-tab-pane :label="`Linux 服务器压测 (${counts.stress})`" name="stress" />
         <el-tab-pane :label="`Apptainer 镜像 (${counts.apptainer})`" name="apptainer" />
       </el-tabs>
 
@@ -88,11 +89,11 @@
           <span class="asset-upload-option__hint">NVIDIA-Linux-x86_64-*.run</span>
         </el-radio>
         <el-radio value="mpi" border>
-          <span class="asset-upload-option__title">服务器环境</span>
+          <span class="asset-upload-option__title">Linux 环境脚本</span>
           <span class="asset-upload-option__hint">.sh / .py / .txt / .md</span>
         </el-radio>
         <el-radio value="stress" border>
-          <span class="asset-upload-option__title">服务器压测</span>
+          <span class="asset-upload-option__title">Linux 服务器压测</span>
           <span class="asset-upload-option__hint">.sh / .py / .txt / .md</span>
         </el-radio>
         <el-radio value="apptainer" border>
@@ -110,8 +111,8 @@
       <el-form label-position="top">
         <el-form-item label="上传类型" required>
           <el-select v-model="uploadCategory" class="upload-category-select" @change="clearSelectedUploadFile">
-            <el-option label="服务器环境" value="mpi" />
-            <el-option label="服务器压测" value="stress" />
+            <el-option label="Linux 环境脚本（基础环境 / MPI 编译环境）" value="mpi" />
+            <el-option label="Linux 服务器压测" value="stress" />
             <el-option label="Apptainer 镜像" value="apptainer" />
           </el-select>
         </el-form-item>
@@ -220,9 +221,11 @@ import {
   uploadGpuDriverLibraryFile,
   type GpuDriverLibraryItem,
 } from '@/api/task'
+import { environmentBusinessCategory } from '@/utils/environmentCategory'
 
-type KnowledgeCategory = 'all' | 'mpi' | 'stress' | 'apptainer'
-type AssetUploadTarget = Exclude<KnowledgeCategory, 'all'> | 'gpu_driver'
+type KnowledgeCategory = 'all' | 'base_system' | 'compiler_mpi' | 'stress' | 'apptainer'
+type ScriptUploadCategory = 'mpi' | 'stress' | 'apptainer'
+type AssetUploadTarget = ScriptUploadCategory | 'gpu_driver'
 
 const loading = ref(false)
 const previewVisible = ref(false)
@@ -232,7 +235,7 @@ const previewFile = ref<ScriptFilePreviewRecord | null>(null)
 const assetUploadVisible = ref(false)
 const assetUploadTarget = ref<AssetUploadTarget>('gpu_driver')
 const scriptUploadVisible = ref(false)
-const uploadCategory = ref<Exclude<KnowledgeCategory, 'all'>>('mpi')
+const uploadCategory = ref<ScriptUploadCategory>('mpi')
 const selectedUploadFile = ref<File | null>(null)
 const uploadingScript = ref(false)
 const gpuDriverLibrary = ref<GpuDriverLibraryItem[]>([])
@@ -244,11 +247,19 @@ const filteredFiles = computed(() => {
   if (activeCategory.value === 'all') {
     return files.value.filter((file) => file.physical_category !== 'windows')
   }
+  if (activeCategory.value === 'base_system' || activeCategory.value === 'compiler_mpi') {
+    return files.value.filter((file) => (
+      file.physical_category === 'mpi'
+      && environmentBusinessCategory(file.name) === activeCategory.value
+    ))
+  }
   return files.value.filter((file) => file.physical_category === activeCategory.value)
 })
 
 const counts = computed(() => ({
   mpi: files.value.filter((file) => file.physical_category === 'mpi').length,
+  base_system: files.value.filter((file) => file.physical_category === 'mpi' && environmentBusinessCategory(file.name) === 'base_system').length,
+  compiler_mpi: files.value.filter((file) => file.physical_category === 'mpi' && environmentBusinessCategory(file.name) === 'compiler_mpi').length,
   stress: files.value.filter((file) => file.physical_category === 'stress').length,
   apptainer: files.value.filter((file) => file.physical_category === 'apptainer').length,
 }))
@@ -278,7 +289,11 @@ async function loadFiles() {
 }
 
 function openAssetUpload() {
-  assetUploadTarget.value = activeCategory.value === 'all' ? 'gpu_driver' : activeCategory.value
+  assetUploadTarget.value = activeCategory.value === 'stress' || activeCategory.value === 'apptainer'
+    ? activeCategory.value
+    : activeCategory.value === 'base_system' || activeCategory.value === 'compiler_mpi'
+      ? 'mpi'
+      : 'gpu_driver'
   assetUploadVisible.value = true
 }
 
@@ -292,7 +307,7 @@ function continueAssetUpload() {
   openScriptUpload(target)
 }
 
-function openScriptUpload(category: Exclude<KnowledgeCategory, 'all'>) {
+function openScriptUpload(category: ScriptUploadCategory) {
   uploadCategory.value = category
   selectedUploadFile.value = null
   scriptUploadVisible.value = true
@@ -428,6 +443,9 @@ async function removeFile(file: ScriptFileRecord) {
 }
 
 function categoryLabel(category: KnowledgeCategory | ScriptFileRecord['physical_category']) {
+  if (category === 'base_system') return '基础环境配置'
+  if (category === 'compiler_mpi') return 'MPI 编译环境配置'
+  if (category === 'mpi') return 'Linux 环境脚本'
   return getTaskTypeLabel(category === 'all' ? 'mpi' : category, '服务器环境')
 }
 

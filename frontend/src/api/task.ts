@@ -31,6 +31,7 @@ export interface TaskRecord {
   final_status?: string | null
   report_status?: string | null
   failure_reason?: string | null
+  outcome_message?: string | null
 }
 
 export interface TaskLogRecord {
@@ -400,6 +401,22 @@ export function createStressSuite(data: StressSuitePayload) {
   return request.post<StressSuiteResponse>('/tasks/stress-suite', data)
 }
 
+export interface ManagedSuitePayload {
+  suite_type: 'base_system' | 'gpu_software'
+  server_ids: number[]
+  actions: Array<'disable_lock_sleep' | 'lock_release' | 'gpu_driver' | 'cuda_toolkit'>
+  driver_type?: 'geforce' | 'datacenter'
+  driver_id?: string
+  driver_upload_id?: string
+  force_install_if_driver_exists?: boolean
+  cuda_version?: CudaToolkitVersion
+  force_install_cuda?: boolean
+}
+
+export function createManagedSuite(data: ManagedSuitePayload) {
+  return request.post<StressSuiteResponse>('/tasks/managed-suite', data)
+}
+
 export function downloadTaskLogs(taskId: string) {
   const a = document.createElement('a')
   a.href = `/api/tasks/${taskId}/logs/download`
@@ -455,6 +472,7 @@ export interface BatchTaskDetailItem {
   ended_at: string | null
   duration_seconds: number | null
   remote_work_dir: string | null
+  command_preview: string | null
   has_artifacts: boolean
   error_summary: string | null
   failure_reason: string | null

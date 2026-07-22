@@ -6,6 +6,45 @@ from app.core.report_summary import get_cached_report_summary
 from app.core.task_state_resolver import resolve_final_status
 from app.models.server import Server
 from app.models.task import Task
+from app.models.task_log import TaskLog
+
+
+def normalize_success_skip_message(message: str) -> str | None:
+    text = re.sub(r"^\[[A-Z]+\]\s*", "", message.strip())
+    if "无需锁定系统版本" in text:
+        return text
+    if text == "nvidia-smi is available; skipping NVIDIA driver installation":
+        return "检测到 nvidia-smi 可用，已跳过 NVIDIA 驱动安装"
+    match = re.fullmatch(r"CUDA Toolkit ([0-9.]+) is already installed; skipping", text)
+    if match:
+        return f"CUDA Toolkit {match.group(1)} 已安装，已跳过安装"
+    return None
+
+
+def get_task_outcome_message(task: Task, db: Session, failure_reason: str | None) -> str | None:
+    status = (task.status or "").upper()
+    if status in {"FAILED", "CANCELED", "TIMEOUT"} or failure_reason:
+        return failure_reason or task.error_message
+    if status != "SUCCESS":
+        return None
+    logs = (
+        db.query(TaskLog)
+        .filter(
+            TaskLog.task_id == task.task_id,
+            (
+                TaskLog.message.contains("无需锁定系统版本")
+                | TaskLog.message.contains("skipping NVIDIA driver installation")
+                | TaskLog.message.contains("is already installed; skipping")
+            ),
+        )
+        .order_by(TaskLog.id.desc())
+        .all()
+    )
+    for log in logs:
+        normalized = normalize_success_skip_message(log.message)
+        if normalized:
+            return normalized
+    return None
 
 
 def parse_task_duration_seconds(task: Task) -> int | None:
@@ -75,4 +114,5 @@ def serialize_task_record(task: Task, db: Session) -> dict[str, object]:
         "final_status": final_status,
         "report_status": report_status,
         "failure_reason": failure_reason,
+        "outcome_message": get_task_outcome_message(task, db, failure_reason),
     }

@@ -49,6 +49,7 @@ from app.core.gpu_driver_runner import (
     resolve_gpu_driver_os_profile,
     validate_library_driver_filename,
     run_rocky9_gpu_driver_task,
+    _optional_param_text,
 )
 from app.core.cuda_toolkit_runner import (
     CUDA_TOOLKIT_FILE_NAME,
@@ -95,6 +96,7 @@ from app.schemas.task import (
     GpuDriverBatchRunRequest,
     CudaToolkitRunRequest,
     CudaToolkitBatchRunRequest,
+    ManagedSuiteCreateRequest,
     GpuDriverLibraryItem,
     GpuDriverUploadResponse,
     TaskListResponse,
@@ -820,6 +822,135 @@ def run_cuda_toolkit_batch(
     )
 
 
+MANAGED_SUITE_ACTIONS = {
+    "base_system": (
+        ("disable_lock_sleep", "scripts/mpi/disable_linux_lock_sleep.sh"),
+        ("lock_release", "scripts/mpi/lock_linux_release.sh"),
+    ),
+    "gpu_software": (
+        ("gpu_driver", "gpu-driver/auto"),
+        ("cuda_toolkit", "cuda-toolkit/auto"),
+    ),
+}
+MANAGED_SUITE_PARAM_KEY = "__managed_suite_kind"
+
+
+def _run_managed_suite_for_server(server_id: int, batch_id: str) -> None:
+    lock = _get_stress_suite_server_lock(server_id)
+    lock.acquire()
+    db = SessionLocal()
+    try:
+        tasks = (
+            db.query(Task)
+            .filter(Task.server_id == server_id, Task.batch_id == batch_id)
+            .order_by(Task.sequence_index)
+            .all()
+        )
+        previous_succeeded = True
+        for task in tasks:
+            db.refresh(task)
+            if task.status in TERMINAL_TASK_STATUSES:
+                previous_succeeded = task.status == "SUCCESS"
+                continue
+            if not previous_succeeded:
+                _mark_suite_task_failed(db, task, "previous managed suite task failed; subsequent task was not started")
+                continue
+            if task.status in UNFINISHED_TASK_STATUSES and task.status != "PENDING":
+                _wait_for_active_suite_task(db, task)
+            elif task.task_type == GPU_DRIVER_TASK_TYPE:
+                run_rocky9_gpu_driver_task(task.task_id)
+            elif task.task_type == CUDA_TOOLKIT_TASK_TYPE:
+                run_cuda_toolkit_task(task.task_id)
+            else:
+                run_task_stage8b(task.task_id)
+            db.refresh(task)
+            previous_succeeded = task.status == "SUCCESS"
+    finally:
+        db.close()
+        lock.release()
+
+
+@router.post("/managed-suite", response_model=StressSuiteCreateResponse, status_code=status.HTTP_201_CREATED)
+def create_managed_suite(payload: ManagedSuiteCreateRequest, db: Session = Depends(get_db)) -> StressSuiteCreateResponse:
+    expected_actions = [action for action, _path in MANAGED_SUITE_ACTIONS[payload.suite_type]]
+    if payload.actions != expected_actions:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"actions must use fixed order: {expected_actions}")
+
+    driver = None
+    if payload.suite_type == "gpu_software":
+        if payload.driver_type is None or bool(payload.driver_id) == bool(payload.driver_upload_id):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="select one library driver or upload one custom driver")
+        try:
+            driver = resolve_library_driver(payload.driver_type, payload.driver_id) if payload.driver_id else resolve_uploaded_driver(str(payload.driver_upload_id))
+        except GpuDriverValidationError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    batch_id = f"batch-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{token_hex(3)}"
+    items: list[StressSuiteCreateItem] = []
+    runnable_servers: list[int] = []
+    for server_id in dict.fromkeys(payload.server_ids):
+        server = db.get(Server, server_id)
+        if server is None or server.status != "online":
+            continue
+        if db.query(Task).filter(Task.server_id == server_id, Task.status.in_(UNFINISHED_TASK_STATUSES)).first() is not None:
+            continue
+        try:
+            gpu_profile = resolve_gpu_driver_os_profile(server.os_info) if payload.suite_type == "gpu_software" else None
+            cuda_profile = resolve_cuda_toolkit_os_profile(server.os_info) if payload.suite_type == "gpu_software" else None
+        except (GpuDriverValidationError, CudaToolkitValidationError):
+            continue
+
+        previous_id: str | None = None
+        for sequence, (action, path) in enumerate(MANAGED_SUITE_ACTIONS[payload.suite_type], start=1):
+            task_id = _generate_task_id()
+            if action in {"disable_lock_sleep", "lock_release"}:
+                file_record = get_library_file_record(path)
+                task = Task(
+                    task_id=task_id, server_id=server_id, task_type="script",
+                    file_path=str(file_record["path"]), file_name=str(file_record["name"]),
+                    display_category="基础环境配置", command_preview=f"执行 {file_record['name']}",
+                    params={MANAGED_SUITE_PARAM_KEY: payload.suite_type}, status="PENDING",
+                    batch_id=batch_id, sequence_index=sequence, depends_on_task_id=previous_id,
+                )
+            elif action == "gpu_driver":
+                task = Task(
+                    task_id=task_id, server_id=server_id, task_type=GPU_DRIVER_TASK_TYPE,
+                    file_path=path, file_name=GPU_DRIVER_FILE_NAME, display_category="GPU 驱动安装",
+                    command_preview=f"{server.os_info}：安装 {driver.name if driver else 'NVIDIA 驱动'} → nvidia-smi 验证",
+                    params={"driver_type": payload.driver_type, "driver_id": payload.driver_id,
+                            "driver_upload_id": payload.driver_upload_id,
+                            "force_install_if_driver_exists": payload.force_install_if_driver_exists,
+                            "os_profile": gpu_profile, GPU_DRIVER_PHASE_KEY: GPU_DRIVER_PHASE_INITIAL,
+                            MANAGED_SUITE_PARAM_KEY: payload.suite_type},
+                    status="PENDING", batch_id=batch_id, sequence_index=sequence, depends_on_task_id=previous_id,
+                )
+            else:
+                task = _create_cuda_toolkit_task(
+                    task_id=task_id, server=server, cuda_version=payload.cuda_version,
+                    force_install=payload.force_install_cuda, os_profile=str(cuda_profile), batch_id=batch_id,
+                )
+                task.sequence_index = sequence
+                task.depends_on_task_id = previous_id
+                task.params = {**(task.params or {}), MANAGED_SUITE_PARAM_KEY: payload.suite_type}
+            db.add(task)
+            db.add(TaskLog(task_id=task_id, level="SYSTEM", message=f"managed suite task created: {action}"))
+            items.append(StressSuiteCreateItem(server_id=server_id, server_name=server.name, task_id=task_id, script_path=path, task_name=action, status="PENDING"))
+            previous_id = task_id
+        runnable_servers.append(server_id)
+    if not runnable_servers:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="no eligible online server for managed suite")
+    db.commit()
+    for server_id in runnable_servers:
+        threading.Thread(target=_run_managed_suite_for_server, args=(server_id, batch_id), daemon=True).start()
+    write_audit_log(
+        db, action="task.managed_suite_create", target_type="task", status="success", actor="visitor",
+        target_id=batch_id, target_name=payload.suite_type, task_id=batch_id,
+        message=f"managed suite created on {len(runnable_servers)} servers",
+        detail={"suite_type": payload.suite_type, "actions": payload.actions, "server_ids": runnable_servers},
+    )
+    return StressSuiteCreateResponse(batch_id=batch_id, total=len(items), items=items)
+
+
 # ───── Batch task creation ─────
 
 FORBIDDEN_PARAM_KEYS: frozenset[str] = frozenset({
@@ -1146,7 +1277,11 @@ def resume_pending_tasks_after_startup() -> int:
             .all()
         )
         suite_groups: set[tuple[int, str]] = set()
+        managed_suite_groups: set[tuple[int, str]] = set()
         for task in pending_tasks:
+            if task.batch_id and task.sequence_index is not None and (task.params or {}).get(MANAGED_SUITE_PARAM_KEY):
+                managed_suite_groups.add((task.server_id, task.batch_id))
+                continue
             if task.task_type in {GPU_DRIVER_TASK_TYPE, CUDA_TOOLKIT_TASK_TYPE}:
                 continue
             if task.task_type == "stress" and task.batch_id and task.sequence_index is not None:
@@ -1166,6 +1301,11 @@ def resume_pending_tasks_after_startup() -> int:
                 daemon=True,
             )
             thread.start()
+            started += 1
+
+        for server_id, batch_id in sorted(managed_suite_groups):
+            db.add(TaskLog(task_id=batch_id, level="SYSTEM", message=f"startup recovery: managed suite worker resumed for server {server_id}"))
+            threading.Thread(target=_run_managed_suite_for_server, args=(server_id, batch_id), daemon=True).start()
             started += 1
 
         if started:
@@ -1479,9 +1619,9 @@ def retry_single_task(
     if original.task_type == GPU_DRIVER_TASK_TYPE:
         retry_task_id = _generate_task_id()
         original_params = original.params or {}
-        driver_type = str(original_params.get("driver_type", ""))
-        driver_id = str(original_params.get("driver_id", ""))
-        driver_upload_id = str(original_params.get("driver_upload_id", ""))
+        driver_type = _optional_param_text(original_params.get("driver_type"))
+        driver_id = _optional_param_text(original_params.get("driver_id"))
+        driver_upload_id = _optional_param_text(original_params.get("driver_upload_id"))
         if driver_upload_id:
             try:
                 resolve_uploaded_driver(driver_upload_id)
@@ -2198,6 +2338,7 @@ def get_batch_detail(
             ended_at=t.end_time,
             duration_seconds=_dur,
             remote_work_dir=t.remote_work_dir,
+            command_preview=t.command_preview,
             has_artifacts=has_artifacts,
             error_summary=t.error_message,
             failure_reason=report_summary.failure_reason if report_summary else None,

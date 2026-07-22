@@ -58,6 +58,18 @@ class CudaToolkitBatchRunRequest(BaseModel):
     force_install: bool = False
 
 
+class ManagedSuiteCreateRequest(BaseModel):
+    suite_type: Literal["base_system", "gpu_software"]
+    server_ids: list[int] = Field(min_length=1)
+    actions: list[Literal["disable_lock_sleep", "lock_release", "gpu_driver", "cuda_toolkit"]] = Field(min_length=2, max_length=2)
+    driver_type: Literal["geforce", "datacenter"] | None = None
+    driver_id: str | None = Field(default=None, min_length=24, max_length=24, pattern="^[a-f0-9]{24}$")
+    driver_upload_id: str | None = Field(default=None, min_length=24, max_length=24, pattern="^[a-f0-9]{24}$")
+    force_install_if_driver_exists: bool = False
+    cuda_version: Literal["11.8", "12.0", "12.1", "12.2", "12.3", "12.4", "12.5", "12.6", "12.8", "12.9", "13.0"] = "12.8"
+    force_install_cuda: bool = False
+
+
 class GpuDriverLibraryItem(BaseModel):
     driver_id: str
     driver_type: Literal["geforce", "datacenter"]
@@ -154,6 +166,7 @@ class TaskRead(BaseModel):
     final_status: str | None = None
     report_status: str | None = None
     failure_reason: str | None = None
+    outcome_message: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -303,6 +316,7 @@ class BatchTaskDetailItem(BaseModel):
     ended_at: datetime | None = None
     duration_seconds: int | None = None
     remote_work_dir: str | None = None
+    command_preview: str | None = None
     has_artifacts: bool = False
     error_summary: str | None = None
     failure_reason: str | None = None

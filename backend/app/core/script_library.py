@@ -25,7 +25,7 @@ ALLOWED_SUFFIXES_BY_CATEGORY = {
 }
 DISPLAY_CATEGORY_LABELS = {
     "mpi": "服务器环境",
-    "stress": "服务器压测",
+    "stress": "Linux 服务器压测",
     "windows": "Windows 压测",
     "apptainer": "Apptainer 容器",
 }

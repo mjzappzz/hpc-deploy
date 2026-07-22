@@ -5,6 +5,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
 from app.core.gpu_driver_runner import (
+    _optional_param_text,
     _start_remote_install,
     build_rocky9_install_script,
     build_rocky9_pre_reboot_script,
@@ -21,6 +22,10 @@ from app.core.gpu_driver_runner import (
 
 
 class GpuDriverRunnerTests(unittest.TestCase):
+    def test_optional_driver_parameter_treats_json_null_as_empty(self) -> None:
+        self.assertEqual(_optional_param_text(None), "")
+        self.assertEqual(_optional_param_text("  abc123  "), "abc123")
+
     def test_install_script_preserves_required_rocky_flow(self) -> None:
         script = build_rocky9_install_script()
         self.assertIn('kernel-devel-$(uname -r)', script)

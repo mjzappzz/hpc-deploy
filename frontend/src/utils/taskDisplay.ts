@@ -10,7 +10,7 @@ type TaskLike = {
 
 const TASK_TYPE_LABELS: Record<string, string> = {
   script: '服务器环境',
-  stress: '服务器压测',
+  stress: 'Linux 服务器压测',
   apptainer: 'Apptainer 镜像',
   gpu_driver: 'GPU 驱动安装',
   cuda_toolkit: 'CUDA 安装',

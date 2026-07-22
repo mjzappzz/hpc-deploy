@@ -76,6 +76,43 @@ STRESS_FATAL_LOG_RULES: tuple[tuple[re.Pattern, str], ...] = (
 )
 
 
+def _select_command_failure_message(
+    messages: list[tuple[str, str]],
+    exit_code: int | None,
+) -> str:
+    for _level, message in reversed(messages):
+        if re.match(r"^\s*(?:\[ERROR\]|ERROR:?)\s*", message, re.IGNORECASE):
+            detail = re.sub(
+                r"^\s*(?:\[ERROR\]|ERROR:?)\s*",
+                "",
+                message,
+                count=1,
+                flags=re.IGNORECASE,
+            ).strip()
+            if detail:
+                return detail[:500]
+    for level, message in reversed(messages):
+        if level == "ERROR" and not message.startswith("command failed with exit code"):
+            detail = message.strip()
+            if detail:
+                return detail[:500]
+    if exit_code is None:
+        return "remote command ended without a readable exit code"
+    return f"command exited with code {exit_code}"
+
+
+def _command_failure_message(db, task_id: str, exit_code: int | None) -> str:
+    recent_logs = (
+        db.query(TaskLog.level, TaskLog.message)
+        .filter(TaskLog.task_id == task_id)
+        .order_by(TaskLog.id.desc())
+        .limit(100)
+        .all()
+    )
+    messages = [(str(level), str(message)) for level, message in reversed(recent_logs)]
+    return _select_command_failure_message(messages, exit_code)
+
+
 def run_task_stage8b(task_id: str) -> None:
     db = SessionLocal()
     executor = SSHExecutor()
@@ -414,7 +451,7 @@ def _execute_command_task(db, executor: SSHExecutor, task: Task, task_id: str, c
         task.error_message = None
     else:
         task.status = "FAILED"
-        task.error_message = f"command exited with code {exit_code}"
+        task.error_message = _command_failure_message(db, task_id, exit_code)
         _add_log(db, task_id, "ERROR", f"command failed with exit code {exit_code}")
     db.commit()
     _broadcast_done_safe(task_id, task.status)
@@ -1178,7 +1215,7 @@ def _command_recovery_monitor(task_id: str) -> None:
             else:
                 task.status = "FAILED"
                 task.exit_code = exit_code
-                task.error_message = "startup recovery: remote command ended without a readable exit code" if exit_code is None else f"command exited with code {exit_code}"
+                task.error_message = _command_failure_message(db, task_id, exit_code)
             db.commit()
             _broadcast_done_safe(task_id, task.status)
             return

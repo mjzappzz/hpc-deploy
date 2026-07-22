@@ -400,10 +400,10 @@ const fallbackRuntimePaths: RuntimePathInfo[] = [
   },
   {
     key: 'stress_scripts',
-    label: '服务器压测脚本库',
+    label: 'Linux 服务器压测脚本库',
     path: 'backend/scripts/stress/',
     kind: 'directory',
-    description: 'GPU、CPU/内存、磁盘服务器压测脚本，执行任务时按选择上传到远端。',
+    description: 'GPU、CPU/内存、磁盘 Linux 服务器压测脚本，执行任务时按选择上传到远端。',
     exists: false,
     size_bytes: null,
     file_count: null,

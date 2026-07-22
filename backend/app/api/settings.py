@@ -113,10 +113,10 @@ def _build_runtime_paths() -> list[dict[str, object]]:
         ),
         _runtime_path(
             key="stress_scripts",
-            label="服务器压测脚本库",
+            label="Linux 服务器压测脚本库",
             path=STRESS_SCRIPTS_DIR,
             kind="directory",
-            description="GPU、CPU/内存、磁盘服务器压测脚本，任务执行时按选择上传到远端。",
+            description="GPU、CPU/内存、磁盘 Linux 服务器压测脚本，任务执行时按选择上传到远端。",
         ),
         _runtime_path(
             key="gpu_driver_library",
