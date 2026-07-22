@@ -58,7 +58,6 @@ mkdir -p "$(dirname "$DB_PATH")" "$SAFETY_BACKUP_DIR"
 timestamp="$(date +%Y%m%d-%H%M%S)"
 safety_backup="$SAFETY_BACKUP_DIR/pre_restore_$timestamp.db"
 
-stop_service_if_available hpcdeploy-frontend.service
 stop_service_if_available hpcdeploy-backend.service
 
 if [[ -f "$DB_PATH" ]]; then
@@ -71,6 +70,5 @@ cp -a "$BACKUP_PATH" "$DB_PATH"
 chmod 600 "$DB_PATH" 2>/dev/null || true
 
 start_service_if_available hpcdeploy-backend.service
-start_service_if_available hpcdeploy-frontend.service
 
 echo "SQLite 恢复完成：$DB_PATH"

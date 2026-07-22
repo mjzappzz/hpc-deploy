@@ -2,20 +2,21 @@
 
 本文档用于**运行数据运维与部署演进决策**：SQLite 适用边界、备份恢复、Docker / MySQL 路线。首次安装、日常更新和 systemd 排障请阅读 [../deploy/README.md](../deploy/README.md)。
 
-## 当前模式：systemd 开发部署
+## 当前模式：Nginx + systemd
 
 本节只说明当前形态及其适用范围；安装命令以 [部署与运维手册](../deploy/README.md) 为准。
 
-当前默认部署用于复刻本机开发环境：
+当前默认部署结构：
 
 ```text
 hpcdeploy-backend.service
   -> uvicorn
   -> 127.0.0.1:8000
 
-hpcdeploy-frontend.service
-  -> npm run dev -- --host 0.0.0.0 --port 5173
-  -> Vite dev server
+nginx.service
+  -> /var/www/hpcdeploy
+  -> /api/ 代理到 127.0.0.1:8000
+  -> 0.0.0.0:10086
 ```
 
 首次部署：
@@ -35,8 +36,10 @@ sudo deploy/scripts/redeploy_hpcdeploy.sh
 访问地址：
 
 ```text
-http://<server-ip>:5173
+http://<server-ip>:10086/
 ```
+
+WSL NAT 部署需要由 Windows 宿主机将 `0.0.0.0:10086` 转发到当前 WSL IP 的 `10086/tcp`，并放行 Windows 入站防火墙；具体命令见 [部署与运维手册](../deploy/README.md#wsl-部署的-windows-网络入口)。WSL IP变化后需更新该转发规则。直接部署在 Linux 物理机或 Linux 虚拟机时不存在 Windows 转发层，不执行该步骤，只需放行 Linux 主机及上游网络的 `10086/tcp`。
 
 ## 当前数据库：SQLite
 
@@ -106,6 +109,8 @@ backend/data/backups/pre_restore_<timestamp>.db
 建议分两步走。
 
 ### 阶段 1：Docker + SQLite volume
+
+以下为后续容器化路线，不代表当前 systemd + Nginx 服务名称：
 
 容器：
 

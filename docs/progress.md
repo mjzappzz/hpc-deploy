@@ -4,6 +4,13 @@
 
 ## 当前完成度
 
+### 2026-07-22 — Nginx 生产静态托管
+
+- 前端由 Vite dev server 切换为 `npm run build` 后发布到 `/var/www/hpcdeploy`；为避开 Windows 宿主机现有 `80/tcp` 服务，生产 Nginx 统一监听 `10086/tcp`。
+- Nginx 支持 Vue Router history fallback、`/api/` 反向代理、任务日志 WebSocket Upgrade、大文件上传和静态资源缓存。
+- 旧 `hpcdeploy-frontend.service` 已移除；安装和更新脚本会清理遗留 unit。Vite 只保留本地开发命令，生产更新统一重新构建前端并重载 Nginx。
+- 当前现场为 WSL NAT 环境，Windows 宿主机通过 `portproxy` 将 `10086/tcp` 同端口转发到 WSL，并配置入站防火墙规则；WSL IP变化后需更新转发目标。Linux 物理机/虚拟机直接部署时不需要该 Windows 转发步骤。
+
 ### 2026-07-22 — 新机 Linux 基础策略脚本
 
 - 任务执行的业务类型拆分为基础环境配置、GPU 驱动安装、MPI 编译环境配置、Linux 服务器压测和 Apptainer 镜像；后端仍保持 `script/stress/apptainer` 任务契约与 GPU/CUDA 专用接口。

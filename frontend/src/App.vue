@@ -76,7 +76,6 @@
             @change="handleAdminModeChange"
           />
           <span v-if="adminMode" class="admin-countdown">{{ adminSessionUnlimited ? '本标签页持续' : `剩余 ${adminCountdown}` }}</span>
-          <el-tag type="success" effect="plain" size="small">DEV</el-tag>
         </div>
       </header>
 

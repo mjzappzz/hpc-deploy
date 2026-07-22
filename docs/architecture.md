@@ -24,7 +24,7 @@
 | 数据库 | SQLite |
 | 远端执行 | Paramiko SSH / SFTP |
 | 实时日志 | WebSocket + HTTP 轮询双通道 |
-| 部署 | systemd 服务 |
+| 部署 | Nginx 静态前端 + systemd 后端服务 |
 
 ### 文件目录
 
@@ -412,7 +412,7 @@ PYTHONPATH=.deps:. .deps/bin/uvicorn main:app --reload --host 0.0.0.0 --port 800
 cd ~/projects/hpc-deploy/frontend
 npm run dev
 
-# 生产模式（systemd）
+# 生产模式
 # hpcdeploy-backend.service → uvicorn
-# hpcdeploy-frontend.service → npm run dev
+# nginx.service → frontend/dist 静态文件 + /api/ 反向代理
 ```

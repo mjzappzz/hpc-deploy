@@ -4,7 +4,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 BACKEND_SERVICE_DEST="/etc/systemd/system/hpcdeploy-backend.service"
-FRONTEND_SERVICE_DEST="/etc/systemd/system/hpcdeploy-frontend.service"
+LEGACY_FRONTEND_SERVICE_DEST="/etc/systemd/system/hpcdeploy-frontend.service"
+NGINX_SITE_DEST="/etc/nginx/conf.d/hpcdeploy.conf"
+NGINX_DEFAULT_SITE="/etc/nginx/sites-enabled/default"
+WEB_ROOT="/var/www/hpcdeploy"
 SERVICE_USER="${SUDO_USER:-$(id -un)}"
 SERVICE_GROUP="$(id -gn "$SERVICE_USER")"
 BACKEND_DIR="$PROJECT_ROOT/backend"
@@ -18,7 +21,7 @@ fi
 install_prerequisites() {
   local missing=()
   local cmd
-  for cmd in python3 npm systemctl; do
+  for cmd in python3 npm systemctl nginx; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
       missing+=("$cmd")
     fi
@@ -42,22 +45,25 @@ install_prerequisites() {
       python3-venv \
       python3-pip \
       nodejs \
-      npm
+      npm \
+      nginx
   elif command -v dnf >/dev/null 2>&1; then
     dnf install -y \
       python3 \
       python3-pip \
       nodejs \
-      npm
+      npm \
+      nginx
   elif command -v yum >/dev/null 2>&1; then
     yum install -y \
       python3 \
       python3-pip \
       nodejs \
-      npm
+      npm \
+      nginx
   else
     echo "未检测到 apt-get/dnf/yum，无法自动安装依赖。"
-    echo "请手动安装：python3 python3-venv python3-pip nodejs npm systemd"
+    echo "请手动安装：python3 python3-venv python3-pip nodejs npm nginx systemd"
     exit 1
   fi
 }
@@ -81,6 +87,7 @@ install_prerequisites
 
 require_cmd python3
 require_cmd npm
+require_cmd nginx
 require_cmd systemctl
 
 install -d -m 755 -o "$SERVICE_USER" -g "$SERVICE_GROUP" \
@@ -100,6 +107,18 @@ if [[ -f package-lock.json ]]; then
 else
   run_as_service_user npm install
 fi
+run_as_service_user npm run build
+
+install -d -m 755 "$WEB_ROOT"
+cp -a "$FRONTEND_DIR/dist/." "$WEB_ROOT/"
+find "$WEB_ROOT" -type d -exec chmod 755 {} +
+find "$WEB_ROOT" -type f -exec chmod 644 {} +
+
+install -D -m 644 "$PROJECT_ROOT/deploy/nginx/hpcdeploy.conf" "$NGINX_SITE_DEST"
+if [[ -L "$NGINX_DEFAULT_SITE" ]]; then
+  unlink "$NGINX_DEFAULT_SITE"
+fi
+nginx -t
 
 cat > "$BACKEND_SERVICE_DEST" <<EOF
 [Unit]
@@ -120,33 +139,23 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
 
-cat > "$FRONTEND_SERVICE_DEST" <<EOF
-[Unit]
-Description=HPCDeploy Vue Frontend (Vite Dev Server)
-After=network.target hpcdeploy-backend.service
-
-[Service]
-Type=simple
-User=$SERVICE_USER
-Group=$SERVICE_GROUP
-WorkingDirectory=$FRONTEND_DIR
-ExecStart=/usr/bin/npm run dev -- --host 0.0.0.0 --port 5173
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
 systemctl daemon-reload
 systemctl enable hpcdeploy-backend
-systemctl enable hpcdeploy-frontend
+systemctl enable nginx
 systemctl restart hpcdeploy-backend
-systemctl restart hpcdeploy-frontend
+systemctl restart nginx
+
+if systemctl list-unit-files hpcdeploy-frontend.service >/dev/null 2>&1; then
+  systemctl disable --now hpcdeploy-frontend.service || true
+fi
+if [[ -f "$LEGACY_FRONTEND_SERVICE_DEST" ]]; then
+  rm -f "$LEGACY_FRONTEND_SERVICE_DEST"
+  systemctl daemon-reload
+fi
 
 echo "HPCDeploy 服务安装完成"
 echo "项目目录：$PROJECT_ROOT"
 echo "服务用户：$SERVICE_USER:$SERVICE_GROUP"
 echo "后端服务：systemctl status hpcdeploy-backend"
-echo "前端服务：systemctl status hpcdeploy-frontend"
-echo "访问地址：http://<server-ip>:5173"
+echo "Web 服务：systemctl status nginx"
+echo "访问地址：http://<server-ip>:10086/"

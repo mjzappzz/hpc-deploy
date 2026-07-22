@@ -52,7 +52,7 @@ export function useTaskWebSocket() {
 
   function buildWsUrl(taskId: string): string {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const host = window.location.host  // incl. port in dev (5173)
+    const host = window.location.host  // 保留当前访问端口；生产 Nginx 与开发 Vite 均可代理 WebSocket
     return `${protocol}//${host}/api/tasks/${taskId}/logs/ws`
   }
 
