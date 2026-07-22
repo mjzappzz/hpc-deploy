@@ -25,3 +25,16 @@ resolve_service_node_bin() {
   fi
   printf '%s\n' "$best_bin"
 }
+
+wait_for_backend_health() {
+  local health_url="${1:-http://127.0.0.1:8000/api/health}"
+  local attempt
+  for attempt in {1..15}; do
+    if curl --noproxy '*' --fail --silent --show-error "$health_url" >/dev/null; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "后端健康检查失败：$health_url" >&2
+  return 1
+}

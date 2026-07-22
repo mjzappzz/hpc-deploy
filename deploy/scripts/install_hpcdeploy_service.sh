@@ -147,6 +147,7 @@ systemctl daemon-reload
 systemctl enable hpcdeploy-backend
 systemctl enable nginx
 systemctl restart hpcdeploy-backend
+wait_for_backend_health
 systemctl restart nginx
 
 if systemctl list-unit-files hpcdeploy-frontend.service >/dev/null 2>&1; then

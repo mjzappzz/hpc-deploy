@@ -63,6 +63,7 @@ if [[ -f "$LEGACY_FRONTEND_SERVICE_DEST" ]]; then
 fi
 
 systemctl restart hpcdeploy-backend
+wait_for_backend_health
 systemctl reload nginx
 
 echo "HPCDeploy 已更新并重启完成"
