@@ -9,12 +9,13 @@
 ## 1. 总体架构
 
 ```
-浏览器 ── HTTP/WS ──→ FastAPI ──→ SQLite
-                         │
-                    Paramiko SSH/SFTP
-                         │
-                    ┌────┴────┐
-                    目标服务器
+浏览器 ── HTTP/WS ──→ Nginx :10086 ──→ 前端静态文件
+                           │
+                           └── /api/、WebSocket ──→ FastAPI :127.0.0.1:8000 ──→ SQLite
+                                                         │
+                                                    Paramiko SSH/SFTP
+                                                         │
+                                                    目标服务器
 ```
 
 | 组件 | 选型 |
@@ -52,7 +53,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - 批量公钥部署（`/public-key/deploy`）— 仅允许首次探测成功且状态为 online 的服务器；按每台服务器自身认证方式登录，创建 `$HOME/.ssh` + `authorized_keys`，公钥已存在不重复追加。单台失败不影响其他
 - 单台公钥部署（`/{id}/deploy-public-key`）
 - 单台/批量 SSH 测试（`/{id}/test`、`/test-ssh-all`）
-- 探测全部（`/probe-all`），默认跳过离线服务器，支持显式指定 server_ids
+- 探测全部（`/probe-all`），接口未指定 `server_ids` 时默认跳过离线服务器；执行任务页会显式提交当前全部服务器 ID，因此已知离线服务器也会重新探测
 - 标签管理（`/tags` 统计、`tag` 参数筛选）；固定单选值为待压测、测试机、压测完成、故障待处理
 - 标签基于 `tags_json TEXT` 列存储，包含在线/离线计数；旧记录读取时兼容空标签并回退为待压测
 
@@ -297,7 +298,7 @@ $HOME/hpcdeploy/
 |------|------|
 | 新增/编辑服务器 | `POST/PUT /api/servers` |
 | SSH 测试、探测 | `POST /api/servers/{id}/test`、`POST /api/servers/{id}/probe` |
-| 执行任务/压测套件 | `POST /api/tasks` |
+| 执行任务/批量任务/压测套件/受控环境套件 | `POST /api/tasks/run`、`POST /api/tasks/batch`、`POST /api/tasks/stress-suite`、`POST /api/tasks/managed-suite` |
 | 查看任务历史/日志/报告 | `GET /api/tasks/**` |
 | 查看脚本知识库 | `GET /api/scripts/**` |
 
@@ -368,7 +369,7 @@ PENDING → CONNECTING → PREPARING → UPLOADING → RUNNING → SUCCESS
 
 ## 8. WebSocket 实时日志（Phase 23A）
 
-- 端点：`/ws/tasks/{task_id}`
+- 端点：`/api/tasks/{task_id}/logs/ws`
 - 心跳间隔 30s，超时 60s 清理
 - 消息格式：`{ "type": "log|status|done", "data": {...} }`
 - 前端 `useTaskWebSocket` composable 管理生命周期

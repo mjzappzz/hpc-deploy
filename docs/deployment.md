@@ -33,6 +33,8 @@ sudo deploy/scripts/install_hpcdeploy_service.sh
 sudo deploy/scripts/redeploy_hpcdeploy.sh
 ```
 
+前端构建要求 Node.js 18 或更高版本；安装和更新脚本优先使用部署用户 NVM 中可用的最高版本。脚本重启后端后会等待 `127.0.0.1:8000/api/health` 检查通过，再启动或重载 Nginx 并报告成功。
+
 访问地址：
 
 ```text

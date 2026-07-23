@@ -65,6 +65,8 @@ chmod +x deploy/scripts/redeploy_hpcdeploy.sh
 sudo deploy/scripts/redeploy_hpcdeploy.sh
 ```
 
+更新脚本会解析受支持的 Node.js、更新后端依赖、构建并发布前端、检查 Nginx 配置、重启后端，然后等待 `http://127.0.0.1:8000/api/health` 返回成功；健康检查未通过时脚本失败退出，不会继续重载 Nginx 或报告发布成功。
+
 ## 常用命令
 
 ```bash
@@ -80,5 +82,5 @@ nginx -t
 1. 服务未启动：先执行 `systemctl status hpcdeploy-backend nginx --no-pager -l`。
 2. 页面无法访问：确认 Nginx 为 active，确认监听 `10086/tcp`，再检查主机防火墙和网络访问策略。
 3. API 或任务异常：查看后端日志 `journalctl -u hpcdeploy-backend -n 200 --no-pager`。
-4. 更新后异常：重新执行 `sudo deploy/scripts/redeploy_hpcdeploy.sh`；该脚本会更新依赖、重新构建前端、重启后端并重载 Nginx。
+4. 更新后异常：重新执行 `sudo deploy/scripts/redeploy_hpcdeploy.sh`；若后端健康检查失败，查看脚本末尾错误及 `journalctl -u hpcdeploy-backend -n 200 --no-pager`，修复后再发布。
 5. WSL 内访问正常但 Windows/LAN 地址超时：检查 `netsh interface portproxy show v4tov4`、Windows 防火墙规则及当前 WSL IP。
