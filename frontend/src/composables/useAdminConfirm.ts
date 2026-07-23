@@ -1,4 +1,4 @@
-import { h, ref } from 'vue'
+import { h, nextTick, ref } from 'vue'
 import { ElInput, ElMessageBox, ElMessage, ElOption, ElSelect } from 'element-plus'
 import { request } from '@/api/request'
 import { adminVerify, type AdminSessionDuration } from '@/api/auth'
@@ -119,17 +119,25 @@ export async function requireAdminConfirm(actionName: string): Promise<boolean> 
 
   try {
     const password = ref('')
+    const passwordInput = ref<{ focus: () => void } | null>(null)
     const durationMinutes = ref<AdminSessionDuration>(5)
     await ElMessageBox({
       title: '管理员确认',
       message: () => h('div', { class: 'admin-confirm-form' }, [
         h('p', { class: 'admin-confirm-description' }, `执行“${actionName}”需要管理员密码`),
         h(ElInput, {
+          ref: passwordInput,
           modelValue: password.value,
           type: 'password',
           showPassword: true,
           placeholder: '请输入管理员密码',
           autocomplete: 'current-password',
+          autofocus: true,
+          onVnodeMounted: () => {
+            void nextTick(() => {
+              window.requestAnimationFrame(() => passwordInput.value?.focus())
+            })
+          },
           'onUpdate:modelValue': (value: string) => { password.value = value },
           onKeydown: (event: Event | KeyboardEvent) => {
             if (!(event instanceof KeyboardEvent)) return
@@ -160,6 +168,7 @@ export async function requireAdminConfirm(actionName: string): Promise<boolean> 
       confirmButtonText: '进入管理员模式',
       cancelButtonText: '取消',
       closeOnClickModal: false,
+      autofocus: false,
       customClass: 'admin-confirm-dialog',
       roundButton: true,
       beforeClose: (action, _instance, done) => {

@@ -34,20 +34,20 @@
                     <el-tag v-if="selectedServerIds.length > 0" type="success" size="small" effect="dark" class="step-complete-tag">已完成</el-tag>
                   </div>
                   <div class="selection-header-actions">
-                    <el-select v-model="selectedTag" placeholder="全部标签" clearable size="small" style="width:140px" @change="onTagFilterChange">
-                      <el-option v-for="t in tags" :key="t.name" :label="t.name" :value="t.name" />
-                    </el-select>
                     <el-button
                       type="primary"
                       plain
                       size="small"
-                      :loading="probingOnlineServers"
-                      :disabled="allOnlineServers.length === 0"
-                      @click="probeOnlineServers"
+                      :loading="probingAllServers"
+                      :disabled="servers.length === 0"
+                      @click="probeAllManagedServers"
                     >
-                      <el-icon><Refresh /></el-icon>
-                      探测在线服务器
+                      <el-icon v-if="!probingAllServers"><Refresh /></el-icon>
+                      探测全部服务器
                     </el-button>
+                    <el-select v-model="selectedTag" placeholder="全部标签" clearable size="small" style="width:140px" @change="onTagFilterChange">
+                      <el-option v-for="t in tags" :key="t.name" :label="t.name" :value="t.name" />
+                    </el-select>
                   </div>
                 </div>
 
@@ -748,7 +748,7 @@ const selectedTag = ref('')
 const tags = ref<TagSummary[]>([])
 const files = ref<TaskRunnerFile[]>([])
 const refreshingServerConnectivity = ref(false)
-const probingOnlineServers = ref(false)
+const probingAllServers = ref(false)
 const validating = ref(false)
 const submitting = ref(false)
 const cancelSubmitting = ref(false)
@@ -1336,11 +1336,11 @@ async function refreshServerConnectivity(serverIds: number[]) {
   }
 }
 
-async function probeOnlineServers() {
-  const serverIds = allOnlineServers.value.map((server) => server.id)
+async function probeAllManagedServers() {
+  const serverIds = servers.value.map((server) => server.id)
   if (serverIds.length === 0) return
 
-  probingOnlineServers.value = true
+  probingAllServers.value = true
   try {
     const result = (await probeAllServers(serverIds)).data
     servers.value = (await listServers()).data
@@ -1351,7 +1351,7 @@ async function probeOnlineServers() {
   } catch (error) {
     ElMessage.error(getApiErrorMessage(error))
   } finally {
-    probingOnlineServers.value = false
+    probingAllServers.value = false
   }
 }
 

@@ -16,7 +16,7 @@ const router = createRouter({
     { path: '/servers', component: Servers, meta: { title: '服务器管理' } },
     { path: '/task-runner', component: TaskRunner, meta: { title: '执行任务' }, alias: '/tasks' },
     { path: '/history', component: TaskHistory, meta: { title: '历史任务' } },
-    { path: '/windows-stress', component: WindowsStress, meta: { title: 'Windows 压测' } },
+    { path: '/windows-stress', component: WindowsStress, meta: { title: 'Windows 压测（试验）' } },
     { path: '/audit-logs', component: AuditLog, meta: { title: '审计日志' } },
     { path: '/scripts', component: Scripts, meta: { title: '资产库管理' } },
     { path: '/settings', component: Settings, meta: { title: '系统设置' } },

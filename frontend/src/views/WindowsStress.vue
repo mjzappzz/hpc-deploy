@@ -4,7 +4,7 @@
       <template #header>
         <div class="windows-header">
           <div>
-            <div class="windows-title">Windows 压测</div>
+            <div class="windows-title">Windows 压测（试验）</div>
             <div class="windows-subtitle">脚本存入资料库后可下载、预览；命令使用资料库中唯一脚本的文件名。本页面不执行远程任务。</div>
           </div>
           <div class="windows-actions">

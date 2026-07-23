@@ -24,10 +24,6 @@
           <el-icon><Operation /></el-icon>
           <span>执行任务</span>
         </el-menu-item>
-        <el-menu-item index="/windows-stress" class="windows-nav-static">
-          <el-icon><Monitor /></el-icon>
-          <span>Windows 压测（独立）</span>
-        </el-menu-item>
         <el-menu-item index="/history" @click="goTaskHistory">
           <el-icon><Tickets /></el-icon>
           <span class="history-menu-label">
@@ -47,6 +43,10 @@
       </el-menu>
 
       <el-menu router :default-active="$route.path" class="nav-menu nav-menu-admin">
+        <el-menu-item index="/windows-stress">
+          <el-icon><Monitor /></el-icon>
+          <span>Windows 压测（试验）</span>
+        </el-menu-item>
         <el-menu-item index="/scripts">
           <el-icon><Document /></el-icon>
           <span>资产库管理</span>
@@ -345,13 +345,6 @@ html, body, #app {
 
 .nav-menu .el-menu-item.is-active .el-icon {
   color: #1677ff;
-}
-
-.nav-menu .windows-nav-static,
-.nav-menu .windows-nav-static:hover,
-.nav-menu .windows-nav-static.is-active {
-  animation: none;
-  font-weight: 400;
 }
 
 .nav-menu .el-menu-item .el-icon {

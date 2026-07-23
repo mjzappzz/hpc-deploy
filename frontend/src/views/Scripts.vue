@@ -5,7 +5,7 @@
         <div class="library-overview__content">
           <div class="library-overview__title">资产库管理</div>
           <div class="library-overview__description">
-            NVIDIA 驱动独立管理；Linux 脚本按基础环境配置、MPI 编译环境配置、Linux 服务器压测分类；Windows 脚本仅在“Windows 压测”页面管理。
+            NVIDIA 驱动独立管理；Linux 脚本按基础环境配置、MPI 编译环境配置、Linux 服务器压测分类；Windows 脚本在“Windows 压测（试验）”页面管理。
           </div>
           <div class="library-overview__stats">
             <el-tag effect="plain">NVIDIA 驱动 {{ gpuDriverLibrary.length }}</el-tag>
@@ -60,7 +60,7 @@
         <div class="knowledge-header">
           <div>
             <div class="knowledge-title">脚本知识库</div>
-            <div class="knowledge-subtitle">管理 Linux 可执行脚本与 Apptainer 镜像；Windows 压测脚本请在“Windows 压测”页面管理。</div>
+            <div class="knowledge-subtitle">管理 Linux 可执行脚本与 Apptainer 镜像；Windows 压测脚本请在“Windows 压测（试验）”页面管理。</div>
           </div>
         </div>
       </template>
