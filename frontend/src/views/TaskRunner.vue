@@ -25,7 +25,7 @@
             <div class="selection-grid">
               <!-- ─── STEP 1: TARGET SERVER CARDS ─── -->
               <div class="selection-card">
-                <div class="selection-label-row">
+                <div class="selection-label-row step-header-band">
                   <div class="selection-heading">
                     <span class="selection-label step-label">① 选择目标服务器</span>
                     <el-tooltip v-if="refreshingServerConnectivity" content="正在刷新在线服务器 SSH 状态" placement="top">
@@ -125,20 +125,31 @@
               </div>
 
               <div :class="['selection-card', { 'is-step-disabled': !hasSelectedServer }]">
-                <div class="selection-label-row">
+                <div class="selection-label-row step-header-band">
                   <span class="selection-label step-label">② 选择任务类型</span>
                   <el-tag v-if="selectedTaskType" type="success" size="small" effect="dark" class="step-complete-tag">已完成</el-tag>
                 </div>
-                <div class="task-type-cards">
-                  <div
-                    v-for="tt in taskTypes"
-                    :key="tt.value"
-                    :class="['task-type-card', 'hpc-interactive-pulse', { 'is-active': selectedTaskCategory === tt.value, 'hpc-selected-pulse': selectedTaskCategory === tt.value }]"
-                    @click="hasSelectedServer && selectTaskType(tt.value)"
-                  >
-                    <div class="task-type-card-title">{{ tt.label }}</div>
-                    <div class="task-type-card-desc">{{ taskTypeCardDesc(tt.value) }}</div>
-                  </div>
+                <div class="task-type-groups">
+                  <section v-for="group in taskTypeGroups" :key="group.label" class="task-type-group">
+                    <div class="task-type-group-heading">
+                      <span class="task-type-group-title">{{ group.label }}</span>
+                      <span class="task-type-group-desc">{{ group.description }}</span>
+                    </div>
+                    <div class="task-type-cards">
+                      <button
+                        v-for="tt in group.items"
+                        :key="tt.value"
+                        type="button"
+                        :disabled="!hasSelectedServer"
+                        :aria-pressed="selectedTaskCategory === tt.value"
+                        :class="['task-type-card', 'hpc-interactive-pulse', { 'is-active': selectedTaskCategory === tt.value, 'hpc-selected-pulse': selectedTaskCategory === tt.value }]"
+                        @click="selectTaskType(tt.value)"
+                      >
+                        <span class="task-type-card-title">{{ tt.label }}</span>
+                        <span class="task-type-card-desc">{{ taskTypeCardDesc(tt.value) }}</span>
+                      </button>
+                    </div>
+                  </section>
                 </div>
                 <div class="selection-meta">
                   <span>{{ selectedTaskCategory ? runnerTaskCategoryLabel(selectedTaskCategory) : '请选择任务类型' }}</span>
@@ -146,7 +157,7 @@
               </div>
 
               <div :class="['selection-card', { 'is-step-disabled': !hasSelectedServer || !selectedTaskType }]">
-                <div class="selection-label-row">
+                <div class="selection-label-row step-header-band">
                   <span class="selection-label step-label">③ 选择脚本/镜像</span>
                   <el-tag v-if="isFileSelected" type="success" size="small" effect="dark" class="step-complete-tag">已完成</el-tag>
                 </div>
@@ -259,7 +270,7 @@
             </div>
 
             <el-card v-if="showParamCard" :class="['info-card', 'action-card', { 'is-step-disabled': !canConfigureTask }]" shadow="never">
-              <div class="card-title step-title">④ 配置参数并执行</div>
+              <div class="card-title step-title step-header-band">④ 配置参数并执行</div>
 
               <!-- 文件信息 (compact summary) - single mode -->
               <template v-if="isGpuDriverSelected">
@@ -287,10 +298,12 @@
                   </el-form-item>
                   <el-form-item v-if="gpuDriverSource === 'library'" label="具体版本">
                     <el-select v-model="gpuDriverId" placeholder="选择知识库中的驱动版本" :disabled="isFormDisabled || !gpuDriverType" class="runner-control">
-                      <el-option v-for="driver in filteredGpuDrivers" :key="driver.driver_id" :label="driver.filename" :value="driver.driver_id">
-                        <span>{{ driver.filename }}</span>
-                        <span class="gpu-driver-option-type">{{ driver.label }}</span>
-                      </el-option>
+                      <el-option
+                        v-for="driver in filteredGpuDrivers"
+                        :key="driver.driver_id"
+                        :label="gpuDriverOptionLabel(driver)"
+                        :value="driver.driver_id"
+                      />
                     </el-select>
                     <div v-if="gpuDriverType && filteredGpuDrivers.length === 0" class="form-help">该类型暂无驱动，请到脚本知识库下方的“Linux NVIDIA 驱动库”上传。</div>
                   </el-form-item>
@@ -447,7 +460,7 @@
             </el-card>
             <!-- Placeholder when prereqs for step 4 are not met -->
             <el-card v-else shadow="never" class="info-card action-card disabled-step-card">
-              <div class="card-title step-title">④ 配置参数并执行</div>
+              <div class="card-title step-title step-header-band">④ 配置参数并执行</div>
               <div class="step-placeholder">
                 <span>请先完成前面的步骤。</span>
               </div>
@@ -630,6 +643,15 @@ const taskTypes: Array<{ label: string; value: RunnerTaskCategory }> = [
   { label: 'Linux 服务器压测', value: 'stress' },
   { label: 'Apptainer 镜像', value: 'apptainer' },
 ]
+const taskTypeGroups: Array<{
+  label: string
+  description: string
+  items: Array<{ label: string; value: RunnerTaskCategory }>
+}> = [
+  { label: '环境部署', description: '初始化系统与软件栈', items: taskTypes.slice(0, 3) },
+  { label: '稳定性验证', description: '验证服务器负载稳定性', items: taskTypes.slice(3, 4) },
+  { label: '资产分发', description: '下发容器镜像资产', items: taskTypes.slice(4, 5) },
+]
 
 function runnerTaskCategoryLabel(value: RunnerTaskCategory): string {
   return taskTypes.find((item) => item.value === value)?.label ?? value
@@ -742,6 +764,11 @@ const cudaToolkitVersions: CudaToolkitVersion[] = ['13.0', '12.9', '12.8', '12.6
 const cudaToolkitVersion = ref<CudaToolkitVersion>('12.8')
 const forceInstallCudaToolkit = ref(false)
 const gpuDriverLibrary = ref<Array<{ driver_id: string; driver_type: 'geforce' | 'datacenter'; label: string; filename: string }>>([])
+type GpuDriverLibraryItem = (typeof gpuDriverLibrary.value)[number]
+const defaultGpuDriverVersions: Record<'geforce' | 'datacenter', string> = {
+  geforce: '580.159.04',
+  datacenter: '580.173.02',
+}
 const uploadingGpuDriver = ref(false)
 const servers = ref<ServerRecord[]>([])
 const selectedTag = ref('')
@@ -1011,6 +1038,23 @@ const someStressScriptsSelected = computed(() => {
 const isGpuDriverSelected = computed(() => selectedTaskCategory.value === 'gpu_software' && selectedManagedActions.value.includes('gpu_driver'))
 const isCudaToolkitSelected = computed(() => selectedTaskCategory.value === 'gpu_software' && selectedManagedActions.value.includes('cuda_toolkit'))
 const filteredGpuDrivers = computed(() => gpuDriverLibrary.value.filter((item) => item.driver_type === gpuDriverType.value))
+
+function gpuDriverVersion(filename: string): string {
+  return filename.match(/^NVIDIA-Linux-x86_64-(.+)\.run$/)?.[1] ?? filename
+}
+
+function gpuDriverOptionLabel(driver: GpuDriverLibraryItem): string {
+  const isDefault = gpuDriverVersion(driver.filename) === defaultGpuDriverVersions[driver.driver_type]
+  return `${driver.label}：${driver.filename}${isDefault ? '（默认）' : ''}`
+}
+
+function selectDefaultGpuDriver(): void {
+  if (gpuDriverSource.value !== 'library') return
+  const currentIsValid = filteredGpuDrivers.value.some((driver) => driver.driver_id === gpuDriverId.value)
+  if (currentIsValid) return
+  const preferredVersion = defaultGpuDriverVersions[gpuDriverType.value]
+  gpuDriverId.value = filteredGpuDrivers.value.find((driver) => gpuDriverVersion(driver.filename) === preferredVersion)?.driver_id ?? ''
+}
 const isSupportedGpuDriverOs = computed(() => {
   return selectedServers.value.length > 0 && selectedServers.value.every((server) => {
     const os = server.os_info?.toLowerCase() ?? ''
@@ -1042,6 +1086,11 @@ watch(gpuDriverType, () => {
   gpuDriverId.value = ''
   gpuDriverUploadId.value = ''
   gpuDriverUploadName.value = ''
+  selectDefaultGpuDriver()
+})
+
+watch(gpuDriverSource, (source) => {
+  if (source === 'library') selectDefaultGpuDriver()
 })
 const canConfigureTask = computed(() => canSelectFile.value && isFileSelected.value)
 const selectedFile = computed(() => filteredFiles.value.find((file) => file.path === selectedFilePath.value) ?? null)
@@ -1315,6 +1364,7 @@ async function loadOptions() {
     displayCategory: file.display_category
   }))
   gpuDriverLibrary.value = gpuDriverResp.data
+  selectDefaultGpuDriver()
   const serverIds = serverResp.data
     .filter((server) => server.status === 'online')
     .map((server) => server.id)
@@ -2782,9 +2832,36 @@ onBeforeUnmount(() => {
 }
 
 /* ── Task type cards ── */
+.task-type-groups {
+  display: grid;
+  gap: 14px;
+}
+
+.task-type-group {
+  min-width: 0;
+}
+
+.task-type-group-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.task-type-group-title {
+  color: var(--el-text-color-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.task-type-group-desc {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
 .task-type-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 260px));
+  grid-template-columns: repeat(3, minmax(180px, 260px));
   gap: 10px;
   justify-content: start;
 }
@@ -2797,6 +2874,9 @@ onBeforeUnmount(() => {
   transition: border-color 0.2s, background-color 0.2s;
   background: var(--el-fill-color-blank);
   min-height: 92px;
+  color: inherit;
+  font: inherit;
+  text-align: left;
 }
 
 .task-type-card:hover {
@@ -2809,6 +2889,7 @@ onBeforeUnmount(() => {
 }
 
 .task-type-card-title {
+  display: block;
   font-size: 15px;
   font-weight: 600;
   color: var(--el-text-color-primary);
@@ -2816,14 +2897,21 @@ onBeforeUnmount(() => {
 }
 
 .task-type-card-desc {
+  display: block;
   font-size: 13px;
   color: var(--el-text-color-secondary);
   line-height: 1.5;
 }
 
-@media (max-width: 640px) {
+@media (max-width: 720px) {
   .task-type-cards {
     grid-template-columns: 1fr;
+  }
+
+  .task-type-group-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 2px;
   }
 }
 
@@ -3797,6 +3885,19 @@ onBeforeUnmount(() => {
 }
 
 /* ── Step UI ── */
+.step-header-band {
+  background: var(--el-color-primary-light-9);
+  border-bottom: 1px solid var(--el-color-primary-light-7);
+  border-left: 4px solid var(--el-color-primary);
+  min-height: 44px;
+}
+
+.selection-label-row.step-header-band {
+  margin: -14px -14px 14px;
+  padding: 10px 14px 10px 10px;
+  border-radius: 13px 13px 0 0;
+}
+
 .step-label {
   font-size: 16px;
   font-weight: 600;
@@ -3808,12 +3909,14 @@ onBeforeUnmount(() => {
 }
 
 .step-title.step-title {
+  display: flex;
+  align-items: center;
   font-size: 16px;
   font-weight: 600;
   color: var(--el-text-color-primary);
-  padding-bottom: 12px;
-  margin-bottom: 4px;
-  border-bottom: 1px solid var(--el-border-color-lighter);
+  margin: -20px -20px 16px;
+  padding: 10px 14px 10px 10px;
+  border-radius: 3px 3px 0 0;
 }
 
 .step-placeholder {
