@@ -608,7 +608,15 @@ def _is_remote_pid_alive(executor: SSHExecutor, pid_file: str) -> bool | None:
 
 
 def _has_unexpected_server_reboot(expected_boot_id: str, current_boot_id: str) -> bool:
-    return bool(expected_boot_id and current_boot_id and expected_boot_id != current_boot_id)
+    boot_id_pattern = re.compile(
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+        r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+    )
+    expected_match = boot_id_pattern.findall(expected_boot_id)
+    current_match = boot_id_pattern.findall(current_boot_id)
+    normalized_expected = expected_match[-1].lower() if expected_match else expected_boot_id.strip()
+    normalized_current = current_match[-1].lower() if current_match else current_boot_id.strip()
+    return bool(normalized_expected and normalized_current and normalized_expected != normalized_current)
 
 
 def _read_remote_boot_id(executor: SSHExecutor) -> str:

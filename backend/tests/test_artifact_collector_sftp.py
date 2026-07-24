@@ -44,6 +44,26 @@ class ArtifactCollectorSftpTests(unittest.TestCase):
             )
         executor.client.open_sftp.assert_called_once_with()
 
+    def test_collection_falls_back_when_sftp_is_unavailable(self) -> None:
+        executor = MagicMock()
+        executor.get_sftp.side_effect = RuntimeError("Garbage packet received")
+        executor.list_remote_files.return_value = ["report.txt"]
+        executor.download_file.side_effect = lambda _remote, local: Path(local).write_text(
+            "PASS", encoding="utf-8"
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch(
+            "app.core.artifact_collector.ARTIFACTS_DIR",
+            Path(temp_dir),
+        ):
+            downloaded = collect_artifacts(
+                _FakeSession(), "task-fallback", "/remote/work", executor
+            )
+
+            self.assertEqual(downloaded, ["report.txt"])
+            executor.list_remote_files.assert_called_once_with("/remote/work")
+            executor.download_file.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1066,7 +1066,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
 import { cancelBatch, cancelTask, cleanupBatchLocalArtifacts, cleanupTaskLocalArtifacts, downloadBatchReportZip, downloadTaskLogs, getTask, getTaskLogs, getTaskMonitor, listArtifacts, listBatches, getBatchDetail, listTasks, retryBatchTask, retryTask, type ArtifactFileDetail, type BatchDetailResponse, type BatchQuery, type BatchSummaryItem, type BatchTaskDetailItem, type MonitorType, type TaskLogRecord, type TaskListQuery, type TaskMonitorStructuredResponse, type TaskRecord } from '@/api/task'
 import { formatBeijingDateKey, formatDateTime } from '@/utils/time'
-import { getApiErrorMessage as readApiErrorMessage } from '@/utils/apiError'
+import { getApiErrorMessage as readApiErrorMessage, isApiRequestTimeout } from '@/utils/apiError'
 import { formatTaskErrorMessage } from '@/utils/taskError'
 import { useTaskWebSocket } from '@/composables/useTaskWebSocket'
 import { calcDurationSeconds, calcEstimatedEndTime, calcEstimatedRemaining, calcProgress, formatSeconds, getTaskDuration, statusLabel } from '@/composables/useTaskProgress'
@@ -3194,7 +3194,11 @@ async function confirmCancelTask() {
     }
   } catch (error) {
     console.error(error)
-    ElMessage.error('取消任务失败')
+    if (isApiRequestTimeout(error)) {
+      ElMessage.warning('取消请求处理时间较长，后台可能仍在取消，请稍后刷新任务状态')
+    } else {
+      ElMessage.error(getApiErrorMessage(error) || '取消任务失败')
+    }
   } finally {
     cancelSubmitting.value = false
     cancelTargetTask = null

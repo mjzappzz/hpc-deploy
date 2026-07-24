@@ -603,7 +603,7 @@ import { useTaskWebSocket } from '@/composables/useTaskWebSocket'
 import { formatDateTime, formatScriptUpdatedAt } from '@/utils/time'
 
 import { getTaskTypeLabel, formatTaskDisplayName } from '@/utils/taskDisplay'
-import { getApiErrorMessage as readApiErrorMessage } from '@/utils/apiError'
+import { getApiErrorMessage as readApiErrorMessage, isApiRequestTimeout } from '@/utils/apiError'
 import { formatBytes } from '@/utils/format'
 import { serverTagType } from '@/constants/serverTags'
 import { environmentBusinessCategory } from '@/utils/environmentCategory'
@@ -1877,7 +1877,11 @@ async function confirmCancelCurrentTask() {
     }
     await fetchTaskRuntime(activeTaskId.value)
   } catch (error) {
-    ElMessage.error(getApiErrorMessage(error))
+    if (isApiRequestTimeout(error)) {
+      ElMessage.warning('取消请求处理时间较长，后台可能仍在取消，请稍后刷新任务状态')
+    } else {
+      ElMessage.error(getApiErrorMessage(error))
+    }
   } finally {
     cancelSubmitting.value = false
   }
@@ -2834,18 +2838,26 @@ onBeforeUnmount(() => {
 /* ── Task type cards ── */
 .task-type-groups {
   display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
+  align-items: stretch;
 }
 
 .task-type-group {
   min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 12px;
+  background: var(--el-fill-color-light);
 }
 
 .task-type-group-heading {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
-  margin-bottom: 8px;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 3px;
+  min-height: 46px;
+  margin-bottom: 10px;
 }
 
 .task-type-group-title {
@@ -2861,9 +2873,8 @@ onBeforeUnmount(() => {
 
 .task-type-cards {
   display: grid;
-  grid-template-columns: repeat(3, minmax(180px, 260px));
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
-  justify-content: start;
 }
 
 .task-type-card {
@@ -2903,15 +2914,19 @@ onBeforeUnmount(() => {
   line-height: 1.5;
 }
 
-@media (max-width: 720px) {
-  .task-type-cards {
+@media (max-width: 980px) {
+  .task-type-groups {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .task-type-groups {
     grid-template-columns: 1fr;
   }
 
   .task-type-group-heading {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 2px;
+    min-height: 0;
   }
 }
 

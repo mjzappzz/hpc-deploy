@@ -13,6 +13,12 @@ class TaskRecoveryTests(unittest.TestCase):
         self.assertTrue(task_runner._has_unexpected_server_reboot("boot-before", "boot-after"))
         self.assertFalse(task_runner._has_unexpected_server_reboot("boot-before", "boot-before"))
         self.assertFalse(task_runner._has_unexpected_server_reboot("", "boot-after"))
+        self.assertFalse(
+            task_runner._has_unexpected_server_reboot(
+                ":: oneAPI environment initialized :: b3bf3dee-bdd8-4fe8-9845-96117d4016be",
+                "b3bf3dee-bdd8-4fe8-9845-96117d4016be",
+            )
+        )
 
     @patch("app.core.task_runner._broadcast_done_safe")
     @patch("app.core.task_runner.schedule_report_summary_generation")

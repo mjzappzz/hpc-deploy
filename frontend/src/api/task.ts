@@ -309,7 +309,11 @@ export function getTaskLogs(taskId: string) {
 }
 
 export function cancelTask(taskId: string, deleteRemoteFiles = false) {
-  return request.post<TaskCancelResponse>(`/tasks/${taskId}/cancel`, { delete_remote_files: deleteRemoteFiles })
+  return request.post<TaskCancelResponse>(
+    `/tasks/${taskId}/cancel`,
+    { delete_remote_files: deleteRemoteFiles },
+    { timeout: 120000 },
+  )
 }
 
 export function cancelBatch(batchId: string) {

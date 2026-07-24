@@ -1,3 +1,9 @@
+import axios from 'axios'
+
+export function isApiRequestTimeout(error: unknown): boolean {
+  return axios.isAxiosError(error) && error.code === 'ECONNABORTED'
+}
+
 export function getApiErrorMessage(error: unknown, fallback = '请求失败'): string {
   if (
     typeof error === 'object' &&

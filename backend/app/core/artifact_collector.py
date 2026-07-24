@@ -43,16 +43,19 @@ def collect_artifacts(
     try:
         sftp = executor.get_sftp()
         remote_entries = sftp.listdir_attr(remote_work_dir)
+        candidates = []
+        for attr in remote_entries:
+            # skip dirs and symlinks
+            if stat.S_ISDIR(attr.st_mode) or stat.S_ISLNK(attr.st_mode):
+                continue
+            candidates.append(attr.filename)
     except Exception as exc:
-        _add_log(db, task_id, "ERROR", f"failed to list remote directory: {exc}")
-        return []
-
-    candidates = []
-    for attr in remote_entries:
-        # skip dirs and symlinks
-        if stat.S_ISDIR(attr.st_mode) or stat.S_ISLNK(attr.st_mode):
-            continue
-        candidates.append(attr.filename)
+        _add_log(db, task_id, "SYSTEM", f"SFTP unavailable, using SSH artifact fallback: {exc}")
+        try:
+            candidates = executor.list_remote_files(remote_work_dir)
+        except Exception as fallback_exc:
+            _add_log(db, task_id, "ERROR", f"failed to list remote directory: {fallback_exc}")
+            return []
 
     allowed = [f for f in candidates if _is_allowed_artifact(f)]
 
@@ -75,7 +78,7 @@ def collect_artifacts(
         temp_path = local_dir / f".{safe}.part"
 
         try:
-            sftp.get(remote_path, str(temp_path))
+            executor.download_file(remote_path, str(temp_path))
             if local_path.suffix.lower() == ".xlsx":
                 _validate_xlsx(temp_path)
             os.replace(temp_path, local_path)

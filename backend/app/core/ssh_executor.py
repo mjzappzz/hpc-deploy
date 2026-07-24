@@ -1,9 +1,31 @@
+import base64
 from pathlib import Path
 from socket import timeout as SocketTimeout
 from time import monotonic, sleep
 from typing import Callable
 
 import paramiko
+
+
+REMOTE_HOME_MARKER = "__HPCDEPLOY_HOME__="
+COMMAND_OUTPUT_BEGIN = "__HPCDEPLOY_OUTPUT_BEGIN__"
+COMMAND_OUTPUT_END = "__HPCDEPLOY_OUTPUT_END__"
+
+
+def _wrap_command(command: str) -> str:
+    return (
+        f"printf '%s\\n' '{COMMAND_OUTPUT_BEGIN}'; "
+        f"( {command} ); hpcdeploy_rc=$?; "
+        f"printf '\\n%s\\n' '{COMMAND_OUTPUT_END}'; exit $hpcdeploy_rc"
+    )
+
+
+def _extract_command_output(output: str) -> str:
+    begin = output.find(COMMAND_OUTPUT_BEGIN)
+    end = output.rfind(COMMAND_OUTPUT_END)
+    if begin < 0 or end < begin:
+        return output.strip()
+    return output[begin + len(COMMAND_OUTPUT_BEGIN):end].strip()
 
 
 class SSHExecutorError(Exception):
@@ -93,17 +115,66 @@ class SSHExecutor:
         self.exec_simple(f"mkdir -p {shell_quote(remote_dir)}")
 
     def get_remote_home(self) -> str:
-        output = self.exec_simple("printf '%s' \"$HOME\"")
-        if not output.startswith("/"):
+        output = self.exec_simple(f"printf '\\n{REMOTE_HOME_MARKER}%s\\n' \"$HOME\"")
+        marked_lines = [line for line in output.splitlines() if line.startswith(REMOTE_HOME_MARKER)]
+        remote_home = marked_lines[-1][len(REMOTE_HOME_MARKER):].strip() if marked_lines else ""
+        if not remote_home.startswith("/") or any(char in remote_home for char in ("\x00", "\r", "\n")):
             raise SSHExecutorError("remote HOME is invalid")
-        return output
+        return remote_home
 
     def upload_file(self, local_path: str, remote_path: str) -> None:
-        sftp = self.get_sftp()
         try:
+            sftp = self.get_sftp()
             sftp.put(local_path, remote_path)
-        except (EOFError, OSError, paramiko.SSHException) as exc:
-            raise SSHExecutorError(f"upload failed: {exc}") from exc
+            return
+        except (EOFError, OSError, paramiko.SFTPError, paramiko.SSHException, SSHExecutorError):
+            self._upload_file_via_ssh(local_path, remote_path)
+
+    def _upload_file_via_ssh(self, local_path: str, remote_path: str) -> None:
+        """Upload through an exec channel when the SFTP protocol is unavailable."""
+        if self.client is None:
+            raise SSHExecutorError("SSH client is not connected")
+        command = f"cat > {shell_quote(remote_path)}"
+        try:
+            stdin, stdout, stderr = self.client.exec_command(command, timeout=self.timeout)
+            with Path(local_path).open("rb") as source:
+                while chunk := source.read(1024 * 1024):
+                    stdin.write(chunk)
+            stdin.channel.shutdown_write()
+            exit_code = stdout.channel.recv_exit_status()
+            error = stderr.read().decode("utf-8", errors="replace").strip()
+        except (EOFError, OSError, SocketTimeout, TimeoutError, paramiko.SSHException) as exc:
+            raise SSHExecutorError(f"upload failed via SSH stream: {exc}") from exc
+        if exit_code != 0:
+            raise SSHExecutorError(f"upload failed via SSH stream: {error or command}")
+
+    def list_remote_files(self, remote_dir: str) -> list[str]:
+        command = (
+            f"test -d {shell_quote(remote_dir)} || exit 3; "
+            f"find {shell_quote(remote_dir)} -maxdepth 1 -type f "
+            "-printf '%f\\n' 2>/dev/null || true"
+        )
+        exit_code, output, error = self.exec_capture(command, timeout_seconds=self.timeout)
+        if exit_code != 0:
+            raise SSHExecutorError(f"failed to list remote directory: {error or output}")
+        return [line for line in output.splitlines() if line]
+
+    def download_file(self, remote_path: str, local_path: str) -> None:
+        try:
+            self.get_sftp().get(remote_path, local_path)
+            return
+        except (EOFError, OSError, paramiko.SFTPError, paramiko.SSHException, SSHExecutorError):
+            pass
+        exit_code, output, error = self.exec_capture(
+            f"base64 -w 0 -- {shell_quote(remote_path)}",
+            timeout_seconds=max(self.timeout, 60),
+        )
+        if exit_code != 0:
+            raise SSHExecutorError(f"download failed via SSH stream: {error or output}")
+        try:
+            Path(local_path).write_bytes(base64.b64decode(output, validate=True))
+        except (OSError, ValueError) as exc:
+            raise SSHExecutorError(f"download failed via SSH stream: {exc}") from exc
 
     def get_sftp(self) -> paramiko.SFTPClient:
         if self.client is None:
@@ -111,7 +182,7 @@ class SSHExecutor:
         if self.sftp is None:
             try:
                 self.sftp = self.client.open_sftp()
-            except (EOFError, OSError, paramiko.SSHException) as exc:
+            except (EOFError, OSError, paramiko.SFTPError, paramiko.SSHException) as exc:
                 raise SSHExecutorError(f"SFTP session failed: {exc}") from exc
         return self.sftp
 
@@ -203,7 +274,7 @@ class SSHExecutor:
         if self.client is None:
             raise SSHExecutorError("SSH client is not connected")
         try:
-            _stdin, stdout, stderr = self.client.exec_command(command, timeout=self.timeout)
+            _stdin, stdout, stderr = self.client.exec_command(_wrap_command(command), timeout=self.timeout)
             exit_code = stdout.channel.recv_exit_status()
             output = stdout.read().decode("utf-8", errors="replace").strip()
             error = stderr.read().decode("utf-8", errors="replace").strip()
@@ -214,13 +285,13 @@ class SSHExecutor:
 
         if exit_code != 0:
             raise SSHExecutorError(f"command failed: {error or output or command}")
-        return output
+        return _extract_command_output(output)
 
     def exec_capture(self, command: str, *, timeout_seconds: int) -> tuple[int, str, str]:
         if self.client is None:
             raise SSHExecutorError("SSH client is not connected")
         try:
-            _stdin, stdout, stderr = self.client.exec_command(command, timeout=timeout_seconds)
+            _stdin, stdout, stderr = self.client.exec_command(_wrap_command(command), timeout=timeout_seconds)
             exit_code = stdout.channel.recv_exit_status()
             output = stdout.read().decode("utf-8", errors="replace").strip()
             error = stderr.read().decode("utf-8", errors="replace").strip()
@@ -228,7 +299,7 @@ class SSHExecutor:
             raise SSHCommandTimeoutError(command, timeout_seconds) from exc
         except paramiko.SSHException as exc:
             raise SSHExecutorError(f"remote command failed to start: {exc}") from exc
-        return exit_code, output, error
+        return exit_code, _extract_command_output(output), error
 
     def close(self) -> None:
         if self.sftp is not None:
