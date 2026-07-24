@@ -71,6 +71,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - 失败诊断（`/{task_id}/diagnosis`）
 - 结构化监控（`/{task_id}/monitor` — CPU/内存/磁盘/GPU 5s 轮询）
 - 历史任务统一展示：普通任务按单次任务卡展示；同一 `batch_id` 在前端聚合为批次卡，首页展示批次概览，批次详情弹窗展示完整子任务信息
+- 仪表盘最近任务使用独立任务 ID 列，并与历史任务共用任务类型标签规则；拖选表格文本不触发行跳转
 - 历史任务卡片统一展示模块、文件、远程目录、命令、计划时长、开始/结束/耗时、报告状态和失败原因
 - 重跑链以最新一次尝试计算批次当前状态；旧尝试仅作为历史审计记录保留
 - 结果文件入口先展示 artifact/result 文件列表，再由用户选择具体文件下载
@@ -130,7 +131,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 ### task runner
 - 基于 `setsid --wait` 启动进程组
 - PID 写入 `.hpcdeploy.pid` 文件；脚本任务结束时写入 `.hpcdeploy.exit_code`
-- SSH executor 封装 Paramiko 连接、重试、超时
+- SSH executor 封装 Paramiko 连接、重试、超时；`connect()` 只建立 SSH 会话，文件上传和结果回收通过 `get_sftp()` 按需创建并复用 SFTP 会话
 - stress 后台执行使用完全 detach 的 `setsid bash -lc ... < /dev/null`，远端启动成功只代表任务进入 `RUNNING`
 - stress-suite 调度按 `server_id` 加锁，只有前序子任务进入终态后才启动下一子任务
 - 后端重启后，RUNNING 脚本任务通过远端 PID 与退出码文件恢复监控，不重新下发远端命令；stress 恢复 SSH 连接临时失败时，先重试 3 次，仍失败则保留 `RUNNING` 并在 60 秒后继续恢复，不将控制面连接错误误判为远端任务失败；已恢复的活动压测子任务结束后，套件调度继续后续任务

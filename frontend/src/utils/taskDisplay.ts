@@ -28,6 +28,15 @@ export function getTaskTypeLabel(taskType?: string | null, fallback = '-'): stri
   return TASK_TYPE_LABELS[taskType] ?? taskType
 }
 
+export function getTaskTypeTags(task: TaskLike): string[] {
+  const fileName = (task.file_name || task.file_path || '').toLowerCase()
+  if (fileName.includes('gpu')) return ['GPU']
+  if (fileName.includes('cpu') || fileName.includes('mem')) return ['CPU/内存']
+  if (fileName.includes('disk')) return ['磁盘']
+  if (task.task_type === 'stress') return ['压测']
+  return [getTaskTypeLabel(task.task_type, '任务')]
+}
+
 export function formatTaskDisplayName(task: TaskLike): string {
   const serverLabel = normalizeServerLabel(task.server_name) || normalizeServerLabel(task.server_host)
   const scriptLabel = extractScriptBaseName(task.file_name) || extractScriptBaseName(task.file_path) || 'unknown-script'

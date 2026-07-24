@@ -97,14 +97,21 @@
         :row-style="{ cursor: 'pointer' }"
         @row-click="goToTask"
       >
+        <el-table-column prop="task_id" label="任务 ID" width="260" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span class="recent-task-column-id">{{ row.task_id }}</span>
+          </template>
+        </el-table-column>
         <el-table-column label="任务名称" min-width="360" show-overflow-tooltip>
           <template #default="{ row }">
             <div class="recent-task-name" :title="formatTaskDisplayName(row)">
               <span>{{ formatTaskDisplayName(row) }}</span>
-              <el-tag v-if="row.batch_id" size="small" type="warning" effect="plain">批次 {{ formatBatchStep(row) }}</el-tag>
+              <el-tag size="small" :type="row.batch_id ? 'warning' : 'info'" effect="plain">
+                {{ row.batch_id ? '批次' : '单次' }}
+              </el-tag>
+              <el-tag v-for="tag in getTaskTypeTags(row)" :key="tag" size="small" effect="plain">{{ tag }}</el-tag>
             </div>
-            <div class="recent-task-id">
-              <span>{{ row.task_id }}</span>
+            <div v-if="row.batch_id" class="recent-task-id">
               <span v-if="row.batch_id" class="recent-task-batch-id">{{ row.batch_id }}</span>
             </div>
           </template>
@@ -138,7 +145,7 @@ import {
   type DashboardSummary,
 } from '@/api/dashboard'
 import StatusTag from '@/components/StatusTag.vue'
-import { formatTaskDisplayName, getTaskModuleLabel } from '@/utils/taskDisplay'
+import { formatTaskDisplayName, getTaskModuleLabel, getTaskTypeTags } from '@/utils/taskDisplay'
 import { formatDateTime } from '@/utils/time'
 
 const router = useRouter()
@@ -154,18 +161,12 @@ const summary = reactive<DashboardSummary>({
 })
 
 function goToTask(row: { task_id: string; batch_id?: string | null }) {
+  if (window.getSelection()?.toString().trim()) return
   if (row.batch_id) {
     router.push({ path: '/history', query: { batch_id: row.batch_id } })
     return
   }
   router.push({ path: '/history', query: { task_id: row.task_id } })
-}
-
-function formatBatchStep(row: { sequence_index?: number | null }) {
-  if (row.sequence_index === 1) return 'GPU'
-  if (row.sequence_index === 2) return 'CPU/内存'
-  if (row.sequence_index === 3) return '磁盘'
-  return '子任务'
 }
 
 async function loadDashboard() {
@@ -199,6 +200,17 @@ onMounted(loadDashboard)
   gap: 8px;
   font-weight: 600;
   color: #1f2937;
+}
+
+.recent-task-column-id {
+  display: block;
+  overflow: hidden;
+  color: #374151;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .recent-task-id {

@@ -1,0 +1,1284 @@
+<template>
+  <section class="settings-content">
+    <div>
+      <div class="settings-topbar">
+        <el-button type="warning" plain @click="passwordDialogVisible = true">修改管理员密码</el-button>
+        <span v-if="form.admin_password_configured" class="password-hint">密码已通过系统设置配置</span>
+        <span v-else class="password-hint">当前使用环境变量默认密码</span>
+      </div>
+
+      <!-- ═══ 运行数据与路径 ═══ -->
+      <el-card shadow="never" class="settings-card">
+        <template #header>
+          <div class="card-header">
+            <span class="card-title">运行数据与路径</span>
+          </div>
+        </template>
+        <div v-if="runtimePathsLoading" class="runtime-path-loading" role="status" aria-live="polite">
+          正在加载运行数据与路径…
+        </div>
+        <div v-else class="runtime-path-table-wrap">
+          <table class="runtime-path-table">
+            <thead>
+              <tr>
+                <th>对象</th>
+                <th>路径</th>
+                <th>大小</th>
+                <th>文件数</th>
+                <th>状态</th>
+                <th>说明</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="row in runtimePaths" :key="row.key">
+                <td>
+              <div class="runtime-path-name">
+                <span>{{ row.label }}</span>
+                <el-tag v-if="row.attention" size="small" type="warning" effect="plain">关注</el-tag>
+              </div>
+                </td>
+                <td><code class="runtime-path-code">{{ row.path }}</code></td>
+                <td>{{ formatBytes(row.size_bytes) }}</td>
+                <td>{{ formatCount(row.file_count) }}</td>
+                <td>
+                  <el-tag v-if="row.kind === 'remote'" size="small" type="info" effect="plain">远端</el-tag>
+                  <el-tag v-else-if="row.exists" size="small" type="success" effect="plain">存在</el-tag>
+                  <el-tag v-else size="small" type="danger" effect="plain">缺失</el-tag>
+                </td>
+                <td>{{ row.description }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="form-note runtime-path-note">
+          这些是用户操作会产生或需要维护的关键位置。数据库、keys、artifacts、backups、Apptainer 镜像不进入 Git；迁移或备份环境时需要单独处理。
+        </div>
+      </el-card>
+
+      <!-- ═══ 本机结果文件清理 ═══ -->
+      <el-card v-loading="scanArtifactsLoading" shadow="never" class="settings-card">
+        <template #header>
+          <div class="card-header">
+            <div>
+              <span class="card-title">本机结果文件</span>
+              <div v-if="artifactsScanned" class="section-summary-text">
+                共 {{ artifactsTotalDirs }} 个目录，{{ artifactsTotalFiles }} 个文件，{{ formatBytes(artifactsTotalSize) }}
+              </div>
+            </div>
+            <div class="card-actions">
+              <el-input
+                v-model="artifactTaskIdKeyword"
+                class="artifact-task-id-search"
+                size="small"
+                clearable
+                placeholder="搜索任务 ID / 批次 ID"
+                aria-label="搜索单次任务 ID、批次 ID 或批次子任务 ID"
+              />
+              <el-button size="small" :disabled="!artifactTaskIdKeyword" @click="resetArtifactTaskSearch">重置</el-button>
+              <el-button size="small" @click="openAutoCleanupDialog">自动清理设置（共用）</el-button>
+              <el-button
+                size="small"
+                type="danger"
+                :disabled="selectedArtifactDirPaths.length === 0"
+                @click="doDeleteSelectedArtifacts"
+              >删除选中</el-button>
+            </div>
+          </div>
+        </template>
+        <div v-if="!artifactsScanned" class="section-placeholder">正在加载 <code>backend/data/artifacts</code> 下的本机结果文件。</div>
+        <div v-else-if="artifactDirectories.length === 0" class="section-placeholder">没有本机结果文件</div>
+        <el-table
+          v-else
+          ref="tableRef"
+          :data="pagedArtifactDirectories"
+          :empty-text="artifactSearchEmptyText"
+          size="small"
+          border
+          :class="['artifact-table', { 'is-dragging': isDragSelecting }]"
+          @selection-change="onArtifactDirSelection"
+          @sort-change="onArtifactSortChange"
+          @cell-mouse-enter="onCellDragEnter"
+          @mousedown="onTableDragStart"
+          @mouseleave="onTableDragEnd"
+          @mouseup="onTableDragEnd"
+        >
+          <el-table-column type="selection" width="40" :selectable="isArtifactDirSelectable" />
+          <el-table-column type="expand" width="44">
+            <template #default="{ row }">
+              <div v-if="row.type === 'batch' && row.child_tasks?.length" class="artifact-task-list">
+                <div class="artifact-expand-title">批次子任务</div>
+                <div v-for="task in row.child_tasks" :key="task.task_id" class="artifact-child-task">
+                  <div class="artifact-child-task__header">
+                    <div>
+                      <div class="artifact-child-task__title">{{ task.display_title || task.task_display_name || task.task_id }}</div>
+                      <span class="id-copy-control">
+                        <code class="artifact-task-id">{{ task.task_id }}</code>
+                        <el-tooltip content="复制任务 ID" placement="top"><el-button circle size="small" :icon="DocumentCopy" class="copy-id-button" aria-label="复制任务 ID" @click.stop="copyTaskId(task.task_id)" /></el-tooltip>
+                      </span>
+                    </div>
+                    <div class="artifact-child-task__summary">
+                      <el-tag size="small" :type="task.status === 'SUCCESS' ? 'success' : (task.status === 'CANCELED' ? 'info' : (task.status === 'FAILED' ? 'danger' : 'warning'))" effect="plain">{{ task.status || 'UNKNOWN' }}</el-tag>
+                      <el-tag size="small" effect="plain">{{ task.task_type_label || '子任务' }}</el-tag>
+                      <span>{{ task.file_count }} 个文件</span>
+                      <span>{{ task.size_text }}</span>
+                    </div>
+                  </div>
+                  <div v-if="!task.files?.length" class="section-placeholder">该子任务没有本机结果文件</div>
+                  <el-table v-else :data="task.files || []" size="small" border>
+                    <el-table-column prop="name" label="文件名" min-width="300" show-overflow-tooltip />
+                    <el-table-column prop="relative_path" label="相对路径" min-width="300" show-overflow-tooltip />
+                    <el-table-column label="大小" width="110" align="right">
+                      <template #default="{ row: f }">{{ f.size_text }}</template>
+                    </el-table-column>
+                    <el-table-column label="更新时间" width="170">
+                      <template #default="{ row: f }">{{ f.modified_at ? formatDate(f.modified_at) : '-' }}</template>
+                    </el-table-column>
+                  </el-table>
+                </div>
+              </div>
+              <template v-else>
+                <div v-if="row.files.length === 0" class="section-placeholder">无文件</div>
+                <el-table v-else :data="row.files" size="small" border>
+                  <el-table-column prop="name" label="文件名" min-width="260" show-overflow-tooltip />
+                  <el-table-column label="大小" width="110" align="right">
+                    <template #default="{ row: f }">{{ f.size_text }}</template>
+                  </el-table-column>
+                  <el-table-column label="更新时间" width="170">
+                    <template #default="{ row: f }">{{ f.modified_at ? formatDate(f.modified_at) : '-' }}</template>
+                  </el-table-column>
+                </el-table>
+              </template>
+            </template>
+          </el-table-column>
+          <el-table-column label="任务名称" min-width="320" show-overflow-tooltip>
+            <template #default="{ row }">
+              <div class="artifact-task-cell">
+                <div class="artifact-task-title">
+                  <span class="artifact-task-kind">{{ row.type === 'batch' ? '[批次任务]' : (row.found_in_db ? '[单次任务]' : '[遗留]') }}</span>
+                  {{ row.display_title || row.task_display_name || row.name }}
+                </div>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column label="任务 ID" min-width="240" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span v-if="row.type === 'batch'" class="id-copy-control">
+                <code class="artifact-task-id">{{ row.batch_id || row.name }}</code>
+                <el-tooltip content="复制批次 ID" placement="top"><el-button circle size="small" :icon="DocumentCopy" class="copy-id-button" aria-label="复制批次 ID" @click.stop="copyTaskId(row.batch_id || row.name, '批次 ID')" /></el-tooltip>
+              </span>
+              <span v-else-if="row.task_id" class="id-copy-control">
+                <code class="artifact-task-id">{{ row.task_id }}</code>
+                <el-tooltip content="复制任务 ID" placement="top"><el-button circle size="small" :icon="DocumentCopy" class="copy-id-button" aria-label="复制任务 ID" @click.stop="copyTaskId(row.task_id)" /></el-tooltip>
+              </span>
+              <span v-else class="noop-text">{{ row.name }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="任务类型" width="100" align="center">
+            <template #default="{ row }">
+              <el-tag size="small" :type="row.type === 'batch' ? 'warning' : (row.found_in_db ? 'primary' : 'info')" effect="plain">
+                {{ row.type === 'batch' ? '批次任务' : (row.found_in_db ? '单次任务' : '遗留') }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="子任务" width="90" align="right">
+            <template #default="{ row }">
+              <span v-if="row.type === 'batch'">{{ row.child_tasks?.length || 0 }}</span>
+              <span v-else>-</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="文件数" width="90" align="right">
+            <template #default="{ row }">{{ row.file_count }}</template>
+          </el-table-column>
+          <el-table-column label="大小" width="110" align="right" sortable="custom" prop="size_bytes">
+            <template #default="{ row }">{{ row.size_text }}</template>
+          </el-table-column>
+          <el-table-column label="任务完成时间" width="170" sortable="custom" prop="modified_at">
+            <template #default="{ row }">{{ row.modified_at ? formatDate(row.modified_at) : '-' }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="90" align="right">
+            <template #default="{ row }">
+              <el-button
+                v-if="isArtifactDirSelectable(row)"
+                size="small"
+                type="danger"
+                link
+                :loading="deletingArtifactDir === row.relative_path"
+                @click="doDeleteArtifactDir(row)"
+              >删除</el-button>
+              <span v-else class="noop-text">-</span>
+            </template>
+          </el-table-column>
+        </el-table>
+        <el-pagination
+          v-if="filteredArtifactDirectories.length > artifactPageSize"
+          v-model:current-page="artifactPage"
+          v-model:page-size="artifactPageSize"
+          class="table-pagination"
+          background
+          layout="total, sizes, prev, pager, next"
+          :page-sizes="[10, 20, 50, 100]"
+          :total="filteredArtifactDirectories.length"
+        />
+      </el-card>
+
+      <el-card v-loading="scanLogsLoading" shadow="never" class="settings-card">
+        <template #header>
+          <div class="card-header">
+            <div>
+              <span class="card-title">数据库任务日志（按任务汇总）</span>
+              <div v-if="logsScanned" class="section-summary-text">
+                共 {{ localLogsTotal }} 个任务，日志内容 {{ formatBytes(localLogsTotalBytes) }}；默认按最后记录时间从新到旧排列
+              </div>
+            </div>
+            <el-button size="small" :loading="scanLogsLoading" @click="doScanLocalLogs">刷新日志</el-button>
+          </div>
+        </template>
+        <div v-if="!logsScanned" class="section-placeholder">正在按任务汇总 SQLite <code>task_logs</code> 中的日志大小。</div>
+        <div v-else-if="localLogs.length === 0" class="section-placeholder">没有数据库任务日志</div>
+        <el-table
+          v-else
+          :data="pagedLocalLogs"
+          empty-text="未找到匹配任务的数据库日志"
+          size="small"
+          border
+          class="database-log-table"
+          @sort-change="onLocalLogsSortChange"
+        >
+          <el-table-column label="任务类型" width="110" align="center">
+            <template #default="{ row }">
+              <el-tag size="small" :type="row.is_batch_task ? 'warning' : 'primary'" effect="plain">
+                {{ row.is_batch_task ? '批次任务' : '单次任务' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="服务器名称" width="120" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span :class="{ 'noop-text': !row.server_name }">{{ row.server_name || '未关联' }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="批次 ID" min-width="250" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span v-if="row.batch_id" class="id-copy-control">
+                <code class="artifact-task-id">{{ row.batch_id }}</code>
+                <el-tooltip content="复制批次 ID" placement="top"><el-button circle size="small" :icon="DocumentCopy" class="copy-id-button" aria-label="复制批次 ID" @click.stop="copyTaskId(row.batch_id, '批次 ID')" /></el-tooltip>
+              </span>
+              <span v-else class="noop-text">-</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="任务 ID" min-width="250" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span class="id-copy-control">
+                <code class="artifact-task-id">{{ row.task_id }}</code>
+                <el-tooltip content="复制任务 ID" placement="top"><el-button circle size="small" :icon="DocumentCopy" class="copy-id-button" aria-label="复制任务 ID" @click.stop="copyTaskId(row.task_id)" /></el-tooltip>
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column label="日志记录" width="100" align="right">
+            <template #default="{ row }">{{ formatCount(row.log_count) }}</template>
+          </el-table-column>
+          <el-table-column label="日志内容总大小" width="140" align="right" sortable="custom" prop="message_bytes">
+            <template #default="{ row }">{{ formatBytes(row.message_bytes) }}</template>
+          </el-table-column>
+          <el-table-column label="最后记录时间" width="180" sortable="custom" prop="last_logged_at">
+            <template #default="{ row }">{{ row.last_logged_at ? formatDate(row.last_logged_at) : '-' }}</template>
+          </el-table-column>
+        </el-table>
+        <el-pagination
+          v-if="filteredLocalLogs.length > logPageSize"
+          v-model:current-page="logPage"
+          v-model:page-size="logPageSize"
+          class="table-pagination"
+          background
+          layout="total, sizes, prev, pager, next"
+          :page-sizes="[10, 20, 50, 100]"
+          :total="filteredLocalLogs.length"
+        />
+        <div v-if="logsScanned" class="form-help logs-size-note">
+          内容总大小按同一任务下所有日志消息的 UTF-8 字节数汇总，不等同于 SQLite 页、索引与空闲空间的物理占用。
+        </div>
+      </el-card>
+
+      <el-dialog v-model="passwordDialogVisible" title="修改管理员密码" width="520px">
+        <el-form label-width="110px">
+          <el-form-item label="当前密码">
+            <el-input v-model="passwordForm.current_password" type="password" show-password placeholder="输入当前管理员密码" />
+          </el-form-item>
+          <el-form-item label="新密码">
+            <el-input v-model="passwordForm.new_password" type="password" show-password placeholder="至少 6 位字符" />
+          </el-form-item>
+          <el-form-item label="确认新密码">
+            <el-input v-model="passwordForm.confirm_password" type="password" show-password placeholder="再次输入新密码" />
+          </el-form-item>
+        </el-form>
+        <template #footer>
+          <el-button @click="passwordDialogVisible = false">取消</el-button>
+          <el-button type="warning" :loading="passwordSaving" @click="handleChangePassword">保存</el-button>
+        </template>
+      </el-dialog>
+
+      <el-dialog v-model="autoCleanupDialogVisible" title="自动清理设置（结果文件与数据库日志共用）" width="560px">
+        <el-form label-width="130px">
+          <el-form-item label="启用自动清理">
+            <el-switch v-model="autoCleanupForm.enabled" :disabled="!adminMode" active-text="开启" inactive-text="关闭" />
+          </el-form-item>
+          <el-form-item label="共用保留天数">
+            <el-input-number v-model="autoCleanupForm.retention_days" :disabled="!adminMode" :min="1" :max="3650" controls-position="right" />
+          </el-form-item>
+          <el-form-item label="每日执行时间">
+            <el-time-picker v-model="autoCleanupForm.cleanup_time" :disabled="!adminMode" format="HH:mm" value-format="HH:mm" placeholder="03:00" />
+          </el-form-item>
+          <el-form-item label="最近一次执行">
+            <div class="auto-cleanup-status">
+              <span v-if="autoCleanupStatus.last_run_at">
+                {{ formatDate(autoCleanupStatus.last_run_at) }} · 删除 {{ autoCleanupStatus.last_deleted_dirs }} 个目录 · 释放 {{ formatBytes(autoCleanupStatus.last_freed_bytes) }} · 失败 {{ autoCleanupStatus.last_failed_count }} 个
+              </span>
+              <span v-else class="noop-text">尚未执行</span>
+              <div v-if="autoCleanupStatus.last_message" class="form-help">{{ autoCleanupStatus.last_message }}</div>
+            </div>
+          </el-form-item>
+        </el-form>
+        <div class="form-help">自动清理按任务结束时间（无结束时间时按创建时间）处理：删除本机 <code>backend/data/artifacts</code> 结果目录，并同步删除同一批过期任务的数据库日志；不会删除任务记录、keys、脚本、Apptainer 镜像或远端服务器目录。</div>
+        <template #footer>
+          <el-button @click="autoCleanupDialogVisible = false">取消</el-button>
+          <el-button type="primary" :loading="autoCleanupSaving" @click="saveAutoCleanupSettings">保存设置</el-button>
+        </template>
+      </el-dialog>
+    </div>
+  </section>
+</template>
+
+<script setup lang="ts">
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { DocumentCopy } from '@element-plus/icons-vue'
+import { changePassword, getSettings, updateSettings, type RuntimePathInfo } from '@/api/settings'
+import {
+  deleteLocalArtifacts,
+  getAutoCleanupStatus,
+  scanLocalArtifacts,
+  scanDatabaseTaskLogSizes,
+  type AutoCleanupStatus,
+  type LocalArtifactDirectory,
+  type DatabaseTaskLogSizeItem,
+} from '@/api/cleanup'
+import { adminMode, requireAdminConfirm } from '@/composables/useAdminConfirm'
+import { useSettingsStore } from '@/stores/settings'
+import { formatDateTime, parseBackendDate } from '@/utils/time'
+import { formatBytes } from '@/utils/format'
+
+const settingsStore = useSettingsStore()
+const passwordDialogVisible = ref(false)
+
+const fallbackRuntimePaths: RuntimePathInfo[] = [
+  {
+    key: 'database',
+    label: 'SQLite 主数据库',
+    path: 'backend/data/hpc_control_panel.db',
+    kind: 'file',
+    description: '服务器、任务、日志、系统设置、审计和报告摘要缓存都在这里。',
+    exists: false,
+    size_bytes: null,
+    file_count: null,
+    attention: true,
+  },
+  {
+    key: 'ssh_keys',
+    label: 'SSH 密钥目录',
+    path: 'backend/keys/',
+    kind: 'directory',
+    description: '用户放置或系统生成的 SSH 私钥/公钥。密钥不进入 Git。',
+    exists: false,
+    size_bytes: null,
+    file_count: null,
+    attention: true,
+  },
+  {
+    key: 'mpi_scripts',
+    label: '服务器环境脚本库',
+    path: 'backend/scripts/mpi/',
+    kind: 'directory',
+    description: '服务器环境、安装、运维配置脚本，执行任务时按选择上传到远端。',
+    exists: false,
+    size_bytes: null,
+    file_count: null,
+    attention: false,
+  },
+  {
+    key: 'stress_scripts',
+    label: 'Linux 服务器压测脚本库',
+    path: 'backend/scripts/stress/',
+    kind: 'directory',
+    description: 'GPU、CPU/内存、磁盘 Linux 服务器压测脚本，执行任务时按选择上传到远端。',
+    exists: false,
+    size_bytes: null,
+    file_count: null,
+    attention: false,
+  },
+  {
+    key: 'artifacts',
+    label: '远端回收结果',
+    path: 'backend/data/artifacts/',
+    kind: 'directory',
+    description: '远端拉回来的报告、日志、CSV、XLSX、JSON 等任务结果。',
+    exists: false,
+    size_bytes: null,
+    file_count: null,
+    attention: true,
+  },
+  {
+    key: 'sqlite_backups',
+    label: '数据库备份目录',
+    path: 'backend/data/backups/',
+    kind: 'directory',
+    description: 'scripts/backup_sqlite.sh 生成的 SQLite 备份文件。',
+    exists: false,
+    size_bytes: null,
+    file_count: null,
+    attention: true,
+  },
+  {
+    key: 'apptainer',
+    label: 'Apptainer 镜像目录',
+    path: 'backend/apptainer/',
+    kind: 'directory',
+    description: '.sif 镜像存放目录，镜像不进入 Git。',
+    exists: false,
+    size_bytes: null,
+    file_count: null,
+    attention: true,
+  },
+  {
+    key: 'remote_tasks',
+    label: '远端任务工作目录',
+    path: '$HOME/hpcdeploy/tasks/<task_type>/<脚本名_时间>/',
+    kind: 'remote',
+    description: '每台目标服务器执行任务时生成，包含 task.log、.hpcdeploy.pid、报告和临时文件。',
+    exists: false,
+    size_bytes: null,
+    file_count: null,
+    attention: true,
+  },
+  {
+    key: 'remote_apptainer',
+    label: '远端 Apptainer 目录',
+    path: '$HOME/hpcdeploy/apptainer/',
+    kind: 'remote',
+    description: '每台目标服务器上的 .sif 镜像分发目录。',
+    exists: false,
+    size_bytes: null,
+    file_count: null,
+    attention: true,
+  },
+]
+const runtimePaths = ref<RuntimePathInfo[]>([])
+const runtimePathsLoading = ref(true)
+
+interface SettingsForm {
+  default_ssh_key_name: string
+  ssh_key_dir: string
+  ssh_key_dir_absolute: string
+  admin_password_configured: boolean
+}
+
+interface PasswordForm {
+  current_password: string
+  new_password: string
+  confirm_password: string
+}
+
+const form = reactive<SettingsForm>({
+  default_ssh_key_name: '',
+  ssh_key_dir: 'backend/keys',
+  ssh_key_dir_absolute: '',
+  admin_password_configured: false,
+})
+
+const passwordForm = reactive<PasswordForm>({
+  current_password: '',
+  new_password: '',
+  confirm_password: '',
+})
+const passwordSaving = ref(false)
+const formatDate = formatDateTime
+
+async function loadSettings() {
+  try {
+    const res = await getSettings()
+    form.default_ssh_key_name = res.data.default_ssh_key_name
+    form.ssh_key_dir = res.data.ssh_key_dir
+    form.ssh_key_dir_absolute = res.data.ssh_key_dir_absolute
+    form.admin_password_configured = res.data.admin_password_configured
+    runtimePaths.value = res.data.runtime_paths?.length ? res.data.runtime_paths : fallbackRuntimePaths
+    settingsStore.$patch({ default_ssh_key_name: res.data.default_ssh_key_name })
+  } catch {
+    runtimePaths.value = fallbackRuntimePaths
+    ElMessage.warning('加载设置失败，使用默认值')
+  } finally {
+    runtimePathsLoading.value = false
+  }
+}
+
+function formatCount(value: number | null | undefined) {
+  if (value === null || value === undefined) return '-'
+  return String(value)
+}
+
+function requireSettingsAdmin(action: string): boolean {
+  if (adminMode.value) return true
+  ElMessage.warning(`${action}先放一放，管理员模式才有这把扳手～`)
+  return false
+}
+
+async function handleChangePassword() {
+  if (!passwordForm.current_password) {
+    ElMessage.warning('请输入当前密码')
+    return
+  }
+  if (!passwordForm.new_password) {
+    ElMessage.warning('请输入新密码')
+    return
+  }
+  if (passwordForm.new_password.length < 6) {
+    ElMessage.warning('新密码至少 6 位字符')
+    return
+  }
+  if (passwordForm.new_password !== passwordForm.confirm_password) {
+    ElMessage.warning('两次输入的新密码不一致')
+    return
+  }
+
+  const ok = await requireAdminConfirm('修改管理员密码')
+  if (!ok) return
+
+  passwordSaving.value = true
+  try {
+    const res = await changePassword({
+      current_password: passwordForm.current_password,
+      new_password: passwordForm.new_password,
+    })
+    ElMessage.success(res.data.message)
+    passwordForm.current_password = ''
+    passwordForm.new_password = ''
+    passwordForm.confirm_password = ''
+    form.admin_password_configured = true
+    passwordDialogVisible.value = false
+  } catch (err: any) {
+    const msg = err?.response?.data?.detail || '修改密码失败'
+    ElMessage.error(msg)
+  } finally {
+    passwordSaving.value = false
+  }
+}
+
+const autoCleanupSaving = ref(false)
+const autoCleanupDialogVisible = ref(false)
+const autoCleanupForm = reactive({
+  enabled: false,
+  retention_days: 30,
+  cleanup_time: '03:00',
+})
+const autoCleanupStatus = reactive<AutoCleanupStatus>({
+  enabled: false,
+  retention_days: 30,
+  cleanup_time: '03:00',
+  last_run_at: '',
+  last_deleted_dirs: 0,
+  last_freed_bytes: 0,
+  last_failed_count: 0,
+  last_status: '',
+  last_message: '',
+})
+
+function applyAutoCleanupStatus(status: AutoCleanupStatus) {
+  autoCleanupForm.enabled = status.enabled
+  autoCleanupForm.retention_days = status.retention_days || 30
+  autoCleanupForm.cleanup_time = status.cleanup_time || '03:00'
+  Object.assign(autoCleanupStatus, status)
+}
+
+async function loadAutoCleanupSettings() {
+  try {
+    applyAutoCleanupStatus((await getAutoCleanupStatus()).data)
+  } catch {
+    ElMessage.error('加载自动清理设置失败')
+  }
+}
+
+async function openAutoCleanupDialog() {
+  if (!requireSettingsAdmin('自动清理设置')) return
+  await loadAutoCleanupSettings()
+  autoCleanupDialogVisible.value = true
+}
+
+async function saveAutoCleanupSettings() {
+  if (!requireSettingsAdmin('保存自动清理设置')) return
+  const ok = await requireAdminConfirm('保存自动清理设置')
+  if (!ok) return
+  autoCleanupSaving.value = true
+  try {
+    await updateSettings({
+      auto_cleanup_enabled: autoCleanupForm.enabled,
+      local_artifact_retention_days: autoCleanupForm.retention_days,
+      auto_cleanup_time: autoCleanupForm.cleanup_time || '03:00',
+    })
+    await loadAutoCleanupSettings()
+    autoCleanupDialogVisible.value = false
+    ElMessage.success('自动清理设置已保存')
+  } catch (err: any) {
+    const msg = err?.response?.data?.detail || '保存自动清理设置失败'
+    ElMessage.error(msg)
+  } finally {
+    autoCleanupSaving.value = false
+  }
+}
+
+const scanArtifactsLoading = ref(false)
+const artifactsScanned = ref(false)
+const artifactsTotalDirs = ref(0)
+const artifactsTotalFiles = ref(0)
+const artifactsTotalSize = ref(0)
+const artifactDirectories = ref<LocalArtifactDirectory[]>([])
+const artifactTaskIdKeyword = ref('')
+const artifactSortBy = ref<string>('modified_at')
+const artifactSortOrder = ref<'ascending' | 'descending'>('descending')
+const artifactPage = ref(1)
+const artifactPageSize = ref(10)
+const selectedArtifactDirPaths = ref<string[]>([])
+const deletingArtifactDir = ref('')
+const scanLogsLoading = ref(false)
+const logsScanned = ref(false)
+const localLogsTotal = ref(0)
+const localLogsTotalBytes = ref(0)
+const localLogs = ref<DatabaseTaskLogSizeItem[]>([])
+const localLogsSortBy = ref<'last_logged_at' | 'message_bytes'>('last_logged_at')
+const localLogsSortOrder = ref<'ascending' | 'descending'>('descending')
+const logPage = ref(1)
+const logPageSize = ref(10)
+
+const filteredArtifactDirectories = computed(() => {
+  const keyword = artifactTaskIdKeyword.value.trim().toLowerCase()
+  if (!keyword) return artifactDirectories.value
+  return artifactDirectories.value.filter((item) => {
+    const ids = [
+      item.task_id,
+      item.batch_id,
+      item.type === 'batch' ? item.name : null,
+      ...(item.child_tasks || []).map((task) => task.task_id),
+    ]
+    return ids.some((id) => String(id || '').toLowerCase().includes(keyword))
+  })
+})
+
+const sortedArtifactDirectories = computed(() => {
+  const data = [...filteredArtifactDirectories.value]
+  if (!artifactSortBy.value) return data
+  const order = artifactSortOrder.value === 'descending' ? -1 : 1
+  data.sort((a, b) => {
+    let va: number, vb: number
+    if (artifactSortBy.value === 'size_bytes') {
+      va = a.size_bytes ?? 0
+      vb = b.size_bytes ?? 0
+    } else {
+      va = sortableTime(a.modified_at, a.name)
+      vb = sortableTime(b.modified_at, b.name)
+    }
+    if (artifactSortBy.value === 'modified_at' && a.type !== b.type) {
+      if (a.type === 'batch') return -1
+      if (b.type === 'batch') return 1
+    }
+    return (va - vb) * order
+  })
+  return data
+})
+
+const artifactLogTaskIdsForKeyword = computed(() => {
+  const keyword = artifactTaskIdKeyword.value.trim().toLowerCase()
+  const taskIds = new Set<string>()
+  if (!keyword) return taskIds
+
+  for (const item of artifactDirectories.value) {
+    const batchIdMatched = item.type === 'batch' && [item.batch_id, item.name]
+      .some((id) => String(id || '').toLowerCase().includes(keyword))
+    if (batchIdMatched) {
+      for (const child of item.child_tasks || []) taskIds.add(child.task_id)
+      continue
+    }
+    if (item.task_id && item.task_id.toLowerCase().includes(keyword)) taskIds.add(item.task_id)
+    for (const child of item.child_tasks || []) {
+      if (child.task_id.toLowerCase().includes(keyword)) taskIds.add(child.task_id)
+    }
+  }
+  return taskIds
+})
+
+const filteredLocalLogs = computed(() => {
+  const keyword = artifactTaskIdKeyword.value.trim().toLowerCase()
+  if (!keyword) return localLogs.value
+  const matchedTaskIds = artifactLogTaskIdsForKeyword.value
+  return localLogs.value.filter((item) => (
+    item.task_id.toLowerCase().includes(keyword)
+    || String(item.batch_id || '').toLowerCase().includes(keyword)
+    || matchedTaskIds.has(item.task_id)
+  ))
+})
+
+const artifactSearchEmptyText = computed(() => {
+  if (!artifactTaskIdKeyword.value.trim()) return '没有本机结果文件'
+  if (filteredLocalLogs.value.length > 0) {
+    return '该任务有数据库日志，但没有本机结果文件；可能仍在运行、未生成或未回收结果，或者结果已被清理。'
+  }
+  return '未找到匹配的任务 ID'
+})
+
+const sortedLocalLogs = computed(() => {
+  const order = localLogsSortOrder.value === 'descending' ? -1 : 1
+  return [...filteredLocalLogs.value].sort((a, b) => {
+    if (localLogsSortBy.value === 'message_bytes') {
+      return (a.message_bytes - b.message_bytes) * order
+    }
+    return (sortableTime(a.last_logged_at) - sortableTime(b.last_logged_at)) * order
+  })
+})
+
+const pagedArtifactDirectories = computed(() => {
+  const start = (artifactPage.value - 1) * artifactPageSize.value
+  return sortedArtifactDirectories.value.slice(start, start + artifactPageSize.value)
+})
+
+const pagedLocalLogs = computed(() => {
+  const start = (logPage.value - 1) * logPageSize.value
+  return sortedLocalLogs.value.slice(start, start + logPageSize.value)
+})
+
+// ── Drag-to-select ──
+const tableRef = ref<any>(null)
+const isDragSelecting = ref(false)
+
+watch(artifactTaskIdKeyword, () => {
+  artifactPage.value = 1
+  logPage.value = 1
+  selectedArtifactDirPaths.value = []
+  tableRef.value?.clearSelection()
+})
+
+function resetArtifactTaskSearch() {
+  artifactTaskIdKeyword.value = ''
+  artifactPage.value = 1
+  logPage.value = 1
+}
+
+watch(
+  [artifactTaskIdKeyword, artifactPage, artifactPageSize, pagedArtifactDirectories],
+  async ([keyword]) => {
+    await nextTick()
+    for (const item of artifactDirectories.value) {
+      tableRef.value?.toggleRowExpansion(item, false)
+    }
+    if (!String(keyword || '').trim()) return
+    for (const item of pagedArtifactDirectories.value) {
+      tableRef.value?.toggleRowExpansion(item, true)
+    }
+  },
+  { flush: 'post' },
+)
+
+function onTableDragStart(event: MouseEvent) {
+  const target = event.target as HTMLElement
+  // 不对表头、复选框、按钮启动拖拽
+  if (target.closest('.el-table__header-wrapper') || target.closest('.el-checkbox') || target.closest('.el-button')) return
+  isDragSelecting.value = true
+}
+
+function onTableDragEnd() {
+  isDragSelecting.value = false
+}
+
+function onCellDragEnter(row: LocalArtifactDirectory) {
+  if (!isDragSelecting.value) return
+  if (!isArtifactDirSelectable(row)) return
+  tableRef.value?.toggleRowSelection(row, true)
+}
+
+function onArtifactSortChange({ prop, order }: { prop?: string; order?: 'ascending' | 'descending' | null }) {
+  if (prop && order) {
+    artifactSortBy.value = prop
+    artifactSortOrder.value = order
+  } else {
+    // Reset to default: sort by modified_at desc
+    artifactSortBy.value = 'modified_at'
+    artifactSortOrder.value = 'descending'
+  }
+  artifactPage.value = 1
+}
+
+function onLocalLogsSortChange({ prop, order }: { prop?: string; order?: 'ascending' | 'descending' | null }) {
+  if (prop === 'message_bytes' || prop === 'last_logged_at') {
+    localLogsSortBy.value = prop
+    localLogsSortOrder.value = order || 'descending'
+  }
+  logPage.value = 1
+}
+
+function sortableTime(value?: string | null, fallbackName = '') {
+  const date = parseBackendDate(value)
+  if (date) return date.getTime()
+  const match = fallbackName.match(/(20\d{6})[-_]?(\d{6})?/)
+  if (!match) return 0
+  const dateLabel = match[1]
+  const time = match[2] || '000000'
+  const parsed = Date.parse(`${dateLabel.slice(0, 4)}-${dateLabel.slice(4, 6)}-${dateLabel.slice(6, 8)}T${time.slice(0, 2)}:${time.slice(2, 4)}:${time.slice(4, 6)}`)
+  return Number.isNaN(parsed) ? 0 : parsed
+}
+
+function isArtifactDirSelectable(dir: LocalArtifactDirectory) {
+  return dir.relative_path !== '.' && dir.name !== '未归档文件'
+}
+
+function artifactDeletePaths(dir: LocalArtifactDirectory): string[] {
+  if (dir.type === 'batch' && dir.child_relative_paths?.length) {
+    return dir.child_relative_paths
+  }
+  return [dir.relative_path]
+}
+
+async function copyTaskId(value: string, label = '任务 ID') {
+  try {
+    if (navigator.clipboard?.writeText && window.isSecureContext) {
+      await navigator.clipboard.writeText(value)
+    } else {
+      const input = document.createElement('textarea')
+      input.value = value
+      input.style.position = 'fixed'
+      input.style.opacity = '0'
+      document.body.appendChild(input)
+      input.select()
+      const copied = document.execCommand('copy')
+      input.remove()
+      if (!copied) throw new Error('clipboard unavailable')
+    }
+    ElMessage.success(`${label} 已复制`)
+  } catch {
+    ElMessage.error(`${label} 复制失败`)
+  }
+}
+
+async function doScanArtifacts() {
+  scanArtifactsLoading.value = true
+  try {
+    const res = (await scanLocalArtifacts()).data
+    artifactsTotalDirs.value = res.total_dirs
+    artifactsTotalFiles.value = res.total_files
+    artifactsTotalSize.value = res.total_size_bytes
+    artifactDirectories.value = [...res.items]
+    // 重置排序为默认：更新时间降序
+    artifactSortBy.value = 'modified_at'
+    artifactSortOrder.value = 'descending'
+    artifactPage.value = 1
+    artifactsScanned.value = true
+    selectedArtifactDirPaths.value = []
+  } catch {
+    ElMessage.error('扫描本机结果文件失败')
+  } finally {
+    scanArtifactsLoading.value = false
+  }
+}
+
+async function doScanLocalLogs() {
+  scanLogsLoading.value = true
+  try {
+    const res = (await scanDatabaseTaskLogSizes()).data
+    localLogsTotal.value = res.total_tasks
+    localLogsTotalBytes.value = res.total_message_bytes
+    localLogs.value = res.items
+    localLogsSortBy.value = 'last_logged_at'
+    localLogsSortOrder.value = 'descending'
+    logPage.value = 1
+    logsScanned.value = true
+  } catch {
+    ElMessage.error('扫描数据库任务日志失败')
+  } finally {
+    scanLogsLoading.value = false
+  }
+}
+
+function onArtifactDirSelection(selection: LocalArtifactDirectory[]) {
+  selectedArtifactDirPaths.value = Array.from(new Set(selection.flatMap((item) => artifactDeletePaths(item))))
+}
+
+async function doDeleteArtifactDir(dir: LocalArtifactDirectory) {
+  if (!requireSettingsAdmin('删除本机结果')) return
+  const ok = await requireAdminConfirm('删除任务结果')
+  if (!ok) return
+  deletingArtifactDir.value = dir.relative_path
+  try {
+    await ElMessageBox.confirm(
+      `将删除该任务结果目录及其中所有文件。历史任务记录不会删除，但相关结果文件将不可下载。此操作不可恢复。\n\n目录：${artifactDeletePaths(dir).join(', ')}`,
+      '确认删除',
+      { confirmButtonText: '确认删除', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    deletingArtifactDir.value = ''
+    return
+  }
+  try {
+    const res = (await deleteLocalArtifacts(artifactDeletePaths(dir), true)).data
+    if (res.deleted.length > 0) ElMessage.success(`已删除: ${dir.name}`)
+    if (res.failed.length > 0) ElMessage.warning(res.failed[0].error || '删除失败')
+    await doScanArtifacts()
+  } catch {
+    ElMessage.error('删除失败')
+  } finally {
+    deletingArtifactDir.value = ''
+  }
+}
+
+async function doDeleteSelectedArtifacts() {
+  if (!requireSettingsAdmin('批量删除本机结果')) return
+  const ok = await requireAdminConfirm('批量删除任务结果')
+  if (!ok) return
+  if (selectedArtifactDirPaths.value.length === 0) return
+  try {
+    await ElMessageBox.confirm(
+      `将删除选中的 ${selectedArtifactDirPaths.value.length} 个目录及其所有文件。历史任务记录不会删除，但相关结果文件将不可下载。此操作不可恢复。`,
+      '确认批量删除',
+      { confirmButtonText: '确认删除', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  try {
+    const res = (await deleteLocalArtifacts(selectedArtifactDirPaths.value, true)).data
+    if (res.deleted.length > 0) ElMessage.success(`已删除 ${res.deleted.length} 个目录`)
+    if (res.failed.length > 0) ElMessage.warning(`${res.failed.length} 个目录删除失败`)
+    await doScanArtifacts()
+  } catch {
+    ElMessage.error('批量删除失败')
+  }
+}
+
+onMounted(async () => {
+  await Promise.all([loadSettings(), loadAutoCleanupSettings(), doScanArtifacts(), doScanLocalLogs()])
+})
+</script>
+
+<style scoped>
+.settings-card {
+  margin-bottom: 16px;
+  border-radius: 14px;
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.card-title {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.inline-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.key-dir-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.key-dir-path {
+  font-size: 14px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: var(--el-color-primary);
+}
+
+.key-dir-absolute {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.key-dir-absolute code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: var(--el-text-color-secondary);
+}
+
+.form-help {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.4;
+}
+
+.form-help code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  background: var(--el-fill-color-light);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 12px;
+}
+
+.password-hint {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  margin-left: 8px;
+}
+
+.settings-topbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.artifact-task-id-search {
+  width: 280px;
+}
+
+.section-summary-text {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.section-placeholder {
+  padding: 18px 12px;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+  text-align: center;
+  background: var(--el-fill-color-lighter);
+  border-radius: 8px;
+}
+
+.section-placeholder code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.artifact-table {
+  width: 100%;
+}
+
+.database-log-table {
+  width: 100%;
+}
+
+.table-pagination {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+.artifact-table.is-dragging :deep(.el-table__body-wrapper) {
+  user-select: none;
+  cursor: pointer;
+}
+
+.artifact-task-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.artifact-task-title {
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artifact-task-kind {
+  color: var(--el-color-primary);
+  margin-right: 4px;
+}
+
+.artifact-task-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.artifact-task-list {
+  margin-bottom: 10px;
+}
+
+.artifact-child-task + .artifact-child-task {
+  margin-top: 14px;
+}
+
+.artifact-child-task__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  background: var(--el-fill-color-light);
+  border-radius: 6px;
+}
+
+.artifact-child-task__title {
+  margin-bottom: 4px;
+  color: var(--el-text-color-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.artifact-child-task__summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.artifact-expand-title {
+  margin: 2px 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+.artifact-task-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  color: var(--el-color-primary);
+}
+
+.id-copy-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+}
+
+.copy-id-button {
+  flex: 0 0 auto;
+}
+
+.noop-text {
+  color: var(--el-text-color-placeholder);
+}
+
+.form-note {
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.5;
+  padding: 8px 12px;
+  background: var(--el-fill-color-lighter);
+  border-radius: 8px;
+  width: 100%;
+}
+
+.runtime-path-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 4px;
+}
+
+.runtime-path-loading {
+  display: flex;
+  min-height: 390px;
+  align-items: center;
+  justify-content: center;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+  background: var(--el-fill-color-lighter);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 4px;
+}
+
+.runtime-path-table {
+  width: 100%;
+  min-width: 1060px;
+  border-collapse: collapse;
+  table-layout: fixed;
+  color: var(--el-text-color-regular);
+  font-size: 13px;
+}
+
+.runtime-path-table th,
+.runtime-path-table td {
+  padding: 9px 12px;
+  border-right: 1px solid var(--el-border-color-lighter);
+  border-bottom: 1px solid var(--el-border-color-lighter);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.runtime-path-table th {
+  background: var(--el-fill-color-light);
+  color: var(--el-text-color-secondary);
+  font-weight: 600;
+}
+
+.runtime-path-table th:nth-child(1) { width: 150px; }
+.runtime-path-table th:nth-child(2) { width: 340px; }
+.runtime-path-table th:nth-child(3) { width: 120px; }
+.runtime-path-table th:nth-child(4) { width: 100px; }
+.runtime-path-table th:nth-child(5) { width: 92px; }
+
+.runtime-path-table th:last-child,
+.runtime-path-table td:last-child {
+  border-right: 0;
+}
+
+.runtime-path-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.runtime-path-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.runtime-path-code {
+  display: inline-block;
+  max-width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  color: var(--el-text-color-primary);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.runtime-path-note {
+  margin-top: 12px;
+}
+
+.settings-actions {
+  display: flex;
+  gap: 12px;
+  padding-top: 8px;
+}
+
+.logs-size-note {
+  margin-top: 10px;
+}
+
+.database-log-message {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+@media (max-width: 860px) {
+  .artifact-task-id-search {
+    width: 100%;
+  }
+}
+</style>

@@ -26,7 +26,7 @@ def collect_artifacts(
         db: SQLAlchemy database session.
         task_id: The task identifier (e.g. "task-20260617-123504-fa211d").
         remote_work_dir: Remote directory path on the target server.
-        executor: SSHExecutor instance with an active SFTP session.
+        executor: Connected SSHExecutor instance. SFTP is opened lazily.
 
     Returns:
         List of downloaded filenames (local basenames).
@@ -41,7 +41,8 @@ def collect_artifacts(
 
     # --- list remote files ---
     try:
-        remote_entries = executor.sftp.listdir_attr(remote_work_dir)
+        sftp = executor.get_sftp()
+        remote_entries = sftp.listdir_attr(remote_work_dir)
     except Exception as exc:
         _add_log(db, task_id, "ERROR", f"failed to list remote directory: {exc}")
         return []
@@ -74,7 +75,7 @@ def collect_artifacts(
         temp_path = local_dir / f".{safe}.part"
 
         try:
-            executor.sftp.get(remote_path, str(temp_path))
+            sftp.get(remote_path, str(temp_path))
             if local_path.suffix.lower() == ".xlsx":
                 _validate_xlsx(temp_path)
             os.replace(temp_path, local_path)

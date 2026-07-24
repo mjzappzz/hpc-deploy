@@ -42,7 +42,7 @@
         </el-menu-item>
       </el-menu>
 
-      <el-menu router :default-active="$route.path" class="nav-menu nav-menu-admin">
+      <el-menu :default-active="$route.path" class="nav-menu nav-menu-admin" @select="handleAdminMenuSelect">
         <el-menu-item index="/windows-stress">
           <el-icon><Monitor /></el-icon>
           <span>Windows 压测（试验）</span>
@@ -55,8 +55,8 @@
           <el-icon><List /></el-icon>
           <span class="menu-label-row"><span>审计日志</span><el-tag size="small" class="admin-badge">Admin</el-tag></span>
         </el-menu-item>
-        <el-menu-item index="/settings">
-          <el-icon><Setting /></el-icon>
+        <el-menu-item index="/settings" class="settings-menu-item">
+          <span class="settings-gear-slot" aria-hidden="true">⚒︎</span>
           <span class="menu-label-row"><span>系统设置</span><el-tag size="small" class="admin-badge">Admin</el-tag></span>
         </el-menu-item>
       </el-menu>
@@ -93,7 +93,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
-import { Cpu, Document, List, Monitor, Operation, Setting, Tickets } from '@element-plus/icons-vue'
+import { Cpu, Document, List, Monitor, Operation, Tickets } from '@element-plus/icons-vue'
 import AppCritters from '@/components/AppCritters.vue'
 import { listTasks } from '@/api/task'
 import { adminMode, adminRemainingSeconds, adminSessionUnlimited, enterAdminMode, exitAdminMode, restoreAdminMode } from '@/composables/useAdminConfirm'
@@ -127,6 +127,11 @@ function handleAuditMenuClick(event: MouseEvent) {
     return
   }
   void router.push('/audit-logs')
+}
+
+function handleAdminMenuSelect(index: string) {
+  if (index === '/audit-logs') return
+  void router.push(index)
 }
 
 function goHome() {
@@ -323,6 +328,33 @@ html, body, #app {
 .nav-menu .el-menu-item:hover {
   background: #f1f5f9 !important;
   color: #1f2937;
+}
+
+.nav-menu .settings-menu-item,
+.nav-menu .settings-menu-item .el-icon,
+.nav-menu .settings-menu-item .el-icon svg,
+.nav-menu .settings-menu-item .admin-badge {
+  transition: none !important;
+}
+
+.nav-menu .settings-menu-item:hover {
+  box-shadow: none;
+}
+
+.settings-gear-slot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+  margin-right: 8px;
+  color: #6b7280;
+  font-family: "Segoe UI Symbol", "Noto Sans Symbols 2", "Noto Sans Symbols", sans-serif;
+  font-size: 19px;
+  font-style: normal;
+  font-weight: 400;
+  line-height: 18px;
 }
 
 .nav-menu .el-menu-item.is-active {

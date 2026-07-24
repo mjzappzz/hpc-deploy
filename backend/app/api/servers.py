@@ -865,7 +865,16 @@ def deploy_public_key_all(
                 )
                 return DeployPublicKeyAllItem(server_id=server.id, server_name=server.name, success=False, message=str(exc))
             except Exception as exc:
-                return DeployPublicKeyAllItem(server_id=server.id, server_name=server.name, success=False, message=f"部署异常：{exc}")
+                thread_db.rollback()
+                message = f"部署异常：{exc}"
+                write_audit_log(
+                    thread_db, action="server.deploy_public_key", target_type="server", status="failed",
+                    target_id=str(server.id), target_name=server.name,
+                    server_id=server.id, server_name=server.name,
+                    message=f"deploy public key failed: {exc}",
+                    detail={"host": server.host, "error": str(exc)},
+                )
+                return DeployPublicKeyAllItem(server_id=server.id, server_name=server.name, success=False, message=message)
         finally:
             thread_db.close()
 

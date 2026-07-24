@@ -59,7 +59,6 @@ class SSHExecutor:
                 **connect_kwargs,
             )
             self.client = client
-            self.sftp = client.open_sftp()
             self._connect_params = {
                 "host": host,
                 "port": port,
@@ -100,12 +99,21 @@ class SSHExecutor:
         return output
 
     def upload_file(self, local_path: str, remote_path: str) -> None:
-        if self.sftp is None:
-            raise SSHExecutorError("SFTP session is not connected")
+        sftp = self.get_sftp()
         try:
-            self.sftp.put(local_path, remote_path)
-        except OSError as exc:
+            sftp.put(local_path, remote_path)
+        except (EOFError, OSError, paramiko.SSHException) as exc:
             raise SSHExecutorError(f"upload failed: {exc}") from exc
+
+    def get_sftp(self) -> paramiko.SFTPClient:
+        if self.client is None:
+            raise SSHExecutorError("SFTP session is not connected")
+        if self.sftp is None:
+            try:
+                self.sftp = self.client.open_sftp()
+            except (EOFError, OSError, paramiko.SSHException) as exc:
+                raise SSHExecutorError(f"SFTP session failed: {exc}") from exc
+        return self.sftp
 
     def chmod(self, remote_path: str, mode: int) -> None:
         octal_mode = format(mode, "o")

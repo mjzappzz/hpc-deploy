@@ -1070,7 +1070,7 @@ import { getApiErrorMessage as readApiErrorMessage } from '@/utils/apiError'
 import { formatTaskErrorMessage } from '@/utils/taskError'
 import { useTaskWebSocket } from '@/composables/useTaskWebSocket'
 import { calcDurationSeconds, calcEstimatedEndTime, calcEstimatedRemaining, calcProgress, formatSeconds, getTaskDuration, statusLabel } from '@/composables/useTaskProgress'
-import { formatTaskDisplayName, getTaskTypeLabel } from '@/utils/taskDisplay'
+import { formatTaskDisplayName, getTaskTypeLabel, getTaskTypeTags } from '@/utils/taskDisplay'
 import { adminMode, requireAdminConfirm } from '@/composables/useAdminConfirm'
 import StatusTag from '@/components/StatusTag.vue'
 import TaskCard from '@/components/TaskCard.vue'
@@ -1536,15 +1536,6 @@ function batchSummaryScriptLabels(scriptNames: string[]): string[] {
   return ordered.filter(label => labels.has(label)).concat(Array.from(labels).filter(label => !ordered.includes(label)))
 }
 
-function taskTypeTags(task: TaskRecord): string[] {
-  const fileName = (task.file_name || task.file_path || '').toLowerCase()
-  if (fileName.includes('gpu')) return ['GPU']
-  if (fileName.includes('cpu') || fileName.includes('mem')) return ['CPU/内存']
-  if (fileName.includes('disk')) return ['磁盘']
-  if (task.task_type === 'stress') return ['压测']
-  return [getTaskTypeLabel(task.task_type, '任务')]
-}
-
 function batchGroupTypeTags(tasks: TaskRecord[]): string[] {
   const suiteKind = batchManagedSuiteKind(tasks)
   if (suiteKind === 'base_system') return ['基础环境配置']
@@ -1552,7 +1543,7 @@ function batchGroupTypeTags(tasks: TaskRecord[]): string[] {
   const ordered = ['GPU', 'CPU/内存', '磁盘']
   const seen = new Set<string>()
   for (const task of tasks) {
-    for (const tag of taskTypeTags(task)) seen.add(tag)
+    for (const tag of getTaskTypeTags(task)) seen.add(tag)
   }
   return ordered.filter(tag => seen.has(tag)).concat(Array.from(seen).filter(tag => !ordered.includes(tag)))
 }
