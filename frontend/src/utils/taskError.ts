@@ -12,6 +12,9 @@ export function formatTaskErrorMessage(message?: string | null): string {
   if (value.includes('stress script exited before report generation')) {
     return '压测脚本在报告生成前异常退出。'
   }
+  if (value.includes('root user is required')) {
+    return '压测启动失败：当前 SSH 登录用户不是 root；该压测脚本要求使用 root 用户执行。请修改服务器登录用户后重试。'
+  }
   if (value.includes('detected unexpected server reboot during stress task')) {
     return '压测期间检测到服务器非计划重启，压测已中断。'
   }

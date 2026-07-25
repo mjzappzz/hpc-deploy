@@ -1,6 +1,6 @@
 import unittest
 
-from app.core.task_runner import _prepare_task_log_message
+from app.core.task_runner import _prepare_task_log_message, _should_keep_progress_message
 
 
 class TaskLogFilterTests(unittest.TestCase):
@@ -23,6 +23,21 @@ class TaskLogFilterTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertLessEqual(len(result.encode("utf-8")), 4096)
         self.assertTrue(result.endswith("…[日志已截断]"))
+
+    def test_drops_repeated_integer_progress_for_same_task(self) -> None:
+        previous = "[########################################          ]  81% (Elapsed: 35166s / 43260s)"
+        current = "[########################################          ]  81% (Elapsed: 35286s / 43260s)"
+
+        self.assertFalse(_should_keep_progress_message(current, previous))
+
+    def test_keeps_progress_when_integer_percentage_changes(self) -> None:
+        previous = "[#######################################           ]  80% (Elapsed: 34926s / 43260s)"
+        current = "[########################################          ]  81% (Elapsed: 35166s / 43260s)"
+
+        self.assertTrue(_should_keep_progress_message(current, previous))
+
+    def test_keeps_non_progress_messages(self) -> None:
+        self.assertTrue(_should_keep_progress_message("[STAGE] report_generation", "81%"))
 
 
 if __name__ == "__main__":

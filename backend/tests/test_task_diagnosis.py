@@ -4,6 +4,19 @@ from app.core.task_diagnosis import diagnose_task_failure
 
 
 class TaskDiagnosisTests(unittest.TestCase):
+    def test_stress_root_requirement_has_specific_diagnosis(self) -> None:
+        diagnosis = diagnose_task_failure(
+            task_status="FAILED",
+            error_message="stress failed before start: root user is required",
+            logs=["[ERROR] 请使用 root 用户运行，或使用 sudo"],
+            task_type="stress",
+            file_name="cpu_mem_stress_report.sh",
+        )
+
+        self.assertEqual(diagnosis["category"], "stress_root_required")
+        self.assertIn("root", diagnosis["conclusion"])
+        self.assertTrue(any("SSH 用户" in item for item in diagnosis["possible_causes"]))
+
     def test_stress_ssh_degraded_is_not_classified_as_apptainer_failure(self) -> None:
         diagnosis = diagnose_task_failure(
             task_status="FAILED",

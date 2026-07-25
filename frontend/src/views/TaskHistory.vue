@@ -942,6 +942,7 @@
                     </el-tab-pane>
                     <el-tab-pane label="执行日志" name="logs">
                       <TaskExecutionLogPanel
+                        v-if="detailActivePanel === 'logs'"
                         ref="detailLogViewerRef"
                         :logs="detailLogs"
                         :loaded="detailLogsLoaded"
@@ -2094,10 +2095,13 @@ function startDrawerRealtime(taskId: string) {
   drawerWsHook.connect(
     taskId,
     (level, line, created_at) => {
-      drawerLogs.value = [
-        ...drawerLogs.value,
-        { id: 0, task_id: taskId, level, message: line, created_at: created_at || '' },
-      ]
+      drawerLogs.value.push({
+        id: 0,
+        task_id: taskId,
+        level,
+        message: line,
+        created_at: created_at || '',
+      })
     },
     (status) => {
       if (drawerTask.value) drawerTask.value = { ...drawerTask.value, status }
@@ -2105,6 +2109,9 @@ function startDrawerRealtime(taskId: string) {
     (status) => {
       if (drawerTask.value) drawerTask.value = { ...drawerTask.value, status }
       void refreshTaskDrawer()
+    },
+    () => {
+      drawerWsConnected.value = true
     },
   )
 
@@ -2791,10 +2798,13 @@ function detailStartRealtime(taskId: string) {
     taskId,
     // onLog: append incoming log lines
     (level, line, created_at) => {
-      detailLogs.value = [
-        ...detailLogs.value,
-        { id: 0, task_id: taskId, level, message: line, created_at: created_at || '' },
-      ]
+      detailLogs.value.push({
+        id: 0,
+        task_id: taskId,
+        level,
+        message: line,
+        created_at: created_at || '',
+      })
       if (detailActivePanel.value === 'logs') {
         void scrollDetailLogsToBottom()
       }
@@ -2812,6 +2822,9 @@ function detailStartRealtime(taskId: string) {
         const t = batchDetailData.value.tasks[batchDetailSelectedIdx.value]
         if (t) t.status = status
       }
+    },
+    () => {
+      detailWsConnected.value = true
     },
   )
 

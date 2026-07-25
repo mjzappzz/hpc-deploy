@@ -61,6 +61,7 @@ export function useTaskWebSocket() {
     onLog: OnLogCallback,
     onStatus: OnStatusCallback,
     onDone: OnDoneCallback,
+    onOpen?: () => void,
   ) {
     closed = false
     wsError.value = null
@@ -72,6 +73,7 @@ export function useTaskWebSocket() {
       ws.onopen = () => {
         isConnected.value = true
         wsError.value = null
+        onOpen?.()
         // Heartbeat ping every 30s
         heartbeatTimer = setInterval(() => {
           if (ws?.readyState === WebSocket.OPEN) {

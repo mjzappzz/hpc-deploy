@@ -27,7 +27,7 @@ HPCDeploy 通过 SSH 在远端执行白名单脚本，提供批量任务调度�
 | 压测与结果 | GPU、CPU/内存、磁盘压测；回收 `.log`、`.txt`、`.csv`、`.xlsx`、`.json` |
 | 可观测与恢复 | WebSocket 实时日志、CPU/内存/磁盘/GPU 监控、任务诊断与后端重启后恢复监控 |
 | 资产与治理 | Apptainer `.sif` 分发、任务历史与失败重跑、管理员模式、审计与自动清理 |
-| Windows 脚本库 | Windows 压测脚本上传、预览、复制、下载及 8 组 PowerShell 命令预设（不执行） |
+| Windows 脚本库 | Windows 压测脚本上传、预览、复制、下载及 8 组 PowerShell 命令预设（不执行）；当前内置脚本为 v90 |
 
 ## 快速启动
 
@@ -326,6 +326,7 @@ deploy/systemd/hpcdeploy-backend.service
 - 后端只执行白名单脚本（文件名白名单 + 目录校验）
 - Apptainer 只上传/分发 `.sif`，不执行 `run` / `exec`
 - Windows 压测页只管理与展示 `.ps1` / `.bat` / `.cmd`；不允许进入 Linux SSH 任务执行链路
+- 当前内置 Windows 压测脚本为 `v90_windows_stress.ps1`。v90 将磁盘性能参考值与致命稳定性故障分离，按磁盘类型设置最低活动门槛，对系统盘自动放宽阈值，并使用 DiskSpd `-si` 执行交错顺序吞吐探测。
 - NVIDIA 驱动任务仅接受安全文件名的 `.run` 文件；驱动类型必须为 GeForce 或 Data Center。临时上传驱动默认 7 天后清理，运行中被引用的文件不清理
 - CUDA 任务仅安装 Toolkit，不安装或覆盖 NVIDIA 驱动；任务先通过 `nvidia-smi` 校验驱动可用，再按目标系统安装对应版本
 - SSH 私钥只保存文件名，不保存内容；API 不返回私钥/公钥内容

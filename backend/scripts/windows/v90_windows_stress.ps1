@@ -1,8 +1,14 @@
 ﻿#requires -version 5.1
 <#
-NVIDIA GeForce / RTX FurMark2 + y-cruncher + DiskSpd Stability Report v89 Precheck+Log HTML Adaptive Disk Stability + Split Throughput Probe Per-Drive Threshold Private CHFS URLs Supplement Merge PDF Style HTML
+NVIDIA GeForce / RTX FurMark2 + y-cruncher + DiskSpd Stability Report v90 Precheck+Log HTML Adaptive Disk Stability + Split Throughput Probe Per-Drive Threshold Private CHFS URLs Supplement Merge PDF Style HTML
 Windows PowerShell 5.1+
 ASCII-safe script body. Chinese text in HTML is encoded as HTML entities where needed.
+
+V90 disk changes:
+- Relaxed profile-based minimum activity floors; no model-specific allowlist.
+- Separate fatal stability faults from performance reference values.
+- System-drive thresholds are automatically relaxed.
+- Throughput probe uses interlocked sequential access (-si).
 #>
 
 param(
@@ -18,7 +24,7 @@ param(
 
     [int]$IntervalSeconds = 5,
 
-    # v89 add: protect long stress tests from Windows Update reboot interruption
+    # v90: protect long stress tests from Windows Update reboot interruption
     [bool]$PauseWindowsUpdate = $true,
     [int]$WindowsUpdatePauseDays = 7,
     [bool]$EnableScreenshots = $false,
@@ -134,7 +140,7 @@ param(
 
 # Thermal policy optimized: CPU/GPU temperature warning and fail thresholds adjusted for HPC workloads.
 # Build/version identifiers (auto detected from script filename)
-# Example: v89_windows_stress.ps1 -> ScriptBuild = v89
+# Example: v90_windows_stress.ps1 -> ScriptBuild = v90
 # Do not hardcode version here.
 $ScriptFileName = [System.IO.Path]::GetFileNameWithoutExtension($MyInvocation.MyCommand.Name)
 $ScriptBuildMatch = [regex]::Match($ScriptFileName, "v\d+")
@@ -246,7 +252,7 @@ function Stage-Message([string]$Message) {
 
 
 
-# v89 add: pause Windows Update before long stress testing.
+# v90: pause Windows Update before long stress testing.
 # 增加中文阶段提示，方便现场查看压测进度。
 # This does not disable the Windows Update service; it only requests a temporary pause.
 function Pause-WindowsUpdateForStress {
@@ -479,34 +485,61 @@ function Get-DiskRotationRateValue([object]$Obj) {
     } catch {}
     return $null
 }
-function Get-DiskThresholdByProfile([string]$Profile) {
+# v90 disk policy:
+# - Performance "reference" values are informational targets, not vendor-model promises.
+# - "Critical" values are deliberately low minimum-activity floors used only to catch a stalled,
+#   unusable, or severely degraded test. They are profile-based and never tied to one SSD model.
+# - System drives receive an additional relaxation because Windows, Defender, pagefile, indexing,
+#   encryption, and application I/O can materially reduce mixed-random benchmark numbers.
+function Get-DiskThresholdByProfile([string]$Profile,[bool]$IsSystemDrive=$false) {
     if(!$AutoHardwareThreshold){
         return [pscustomobject]@{PassMBps=$DiskThroughputPassMBps;FailMBps=$DiskThroughputFailMBps}
     }
-    switch -Regex ("$Profile") {
-        '^NVMe SSD$' { return [pscustomobject]@{PassMBps=800;FailMBps=300} }
-        '^SATA SSD$|^SSD$|^Generic SSD$' { return [pscustomobject]@{PassMBps=300;FailMBps=100} }
-        '^SAS SSD$'  { return [pscustomobject]@{PassMBps=400;FailMBps=150} }
-        '^SATA HDD$' { return [pscustomobject]@{PassMBps=100;FailMBps=30} }
-        '^SAS HDD$'  { return [pscustomobject]@{PassMBps=150;FailMBps=50} }
-        '^HDD$'      { return [pscustomobject]@{PassMBps=100;FailMBps=30} }
-        '^RAID/Virtual Disk$|^RAID/Storage$' { return [pscustomobject]@{PassMBps=300;FailMBps=100} }
-        '^USB Disk$' { return [pscustomobject]@{PassMBps=80;FailMBps=20} }
-        default      { return [pscustomobject]@{PassMBps=$DiskThroughputPassMBps;FailMBps=$DiskThroughputFailMBps} }
+
+    $base = switch -Regex ("$Profile") {
+        '^NVMe SSD$' { [pscustomobject]@{PassMBps=500;FailMBps=50}; break }
+        '^SATA SSD$|^SSD$|^Generic SSD$' { [pscustomobject]@{PassMBps=200;FailMBps=30}; break }
+        '^SAS SSD$'  { [pscustomobject]@{PassMBps=300;FailMBps=40}; break }
+        '^SATA HDD$' { [pscustomobject]@{PassMBps=80;FailMBps=10}; break }
+        '^SAS HDD$'  { [pscustomobject]@{PassMBps=100;FailMBps=15}; break }
+        '^HDD$'      { [pscustomobject]@{PassMBps=80;FailMBps=10}; break }
+        '^RAID/Virtual Disk$|^RAID/Storage$' { [pscustomobject]@{PassMBps=200;FailMBps=30}; break }
+        '^USB Disk$' { [pscustomobject]@{PassMBps=40;FailMBps=5}; break }
+        '^SATA Unknown$' { [pscustomobject]@{PassMBps=80;FailMBps=10}; break }
+        '^SAS Unknown$'  { [pscustomobject]@{PassMBps=100;FailMBps=15}; break }
+        default      { [pscustomobject]@{PassMBps=100;FailMBps=10}; break }
     }
+
+    if($IsSystemDrive){
+        return [pscustomobject]@{
+            PassMBps = [int][math]::Max(1,[math]::Round([double]$base.PassMBps * 0.75))
+            FailMBps = [int][math]::Max(1,[math]::Round([double]$base.FailMBps * 0.75))
+        }
+    }
+    return $base
 }
-function Get-DiskRandomIopsThresholdByProfile([string]$Profile) {
-    switch -Regex ("$Profile") {
-        '^NVMe SSD$' { return [pscustomobject]@{PassIOPS=30000;FailIOPS=10000} }
-        '^SATA SSD$|^SSD$|^Generic SSD$' { return [pscustomobject]@{PassIOPS=10000;FailIOPS=3000} }
-        '^SAS SSD$'  { return [pscustomobject]@{PassIOPS=12000;FailIOPS=4000} }
-        '^SATA HDD$' { return [pscustomobject]@{PassIOPS=150;FailIOPS=50} }
-        '^SAS HDD$'  { return [pscustomobject]@{PassIOPS=250;FailIOPS=80} }
-        '^HDD$'      { return [pscustomobject]@{PassIOPS=150;FailIOPS=50} }
-        '^RAID/Virtual Disk$|^RAID/Storage$' { return [pscustomobject]@{PassIOPS=20000;FailIOPS=5000} }
-        '^USB Disk$' { return [pscustomobject]@{PassIOPS=500;FailIOPS=100} }
-        default      { return [pscustomobject]@{PassIOPS=5000;FailIOPS=1000} }
+function Get-DiskRandomIopsThresholdByProfile([string]$Profile,[bool]$IsSystemDrive=$false) {
+    $base = switch -Regex ("$Profile") {
+        '^NVMe SSD$' { [pscustomobject]@{PassIOPS=5000;FailIOPS=500}; break }
+        '^SATA SSD$|^SSD$|^Generic SSD$' { [pscustomobject]@{PassIOPS=1500;FailIOPS=200}; break }
+        '^SAS SSD$'  { [pscustomobject]@{PassIOPS=2500;FailIOPS=300}; break }
+        '^SATA HDD$' { [pscustomobject]@{PassIOPS=75;FailIOPS=8}; break }
+        '^SAS HDD$'  { [pscustomobject]@{PassIOPS=120;FailIOPS=12}; break }
+        '^HDD$'      { [pscustomobject]@{PassIOPS=75;FailIOPS=8}; break }
+        '^RAID/Virtual Disk$|^RAID/Storage$' { [pscustomobject]@{PassIOPS=3000;FailIOPS=200}; break }
+        '^USB Disk$' { [pscustomobject]@{PassIOPS=100;FailIOPS=10}; break }
+        '^SATA Unknown$' { [pscustomobject]@{PassIOPS=50;FailIOPS=5}; break }
+        '^SAS Unknown$'  { [pscustomobject]@{PassIOPS=80;FailIOPS=8}; break }
+        default      { [pscustomobject]@{PassIOPS=300;FailIOPS=30}; break }
     }
+
+    if($IsSystemDrive){
+        return [pscustomobject]@{
+            PassIOPS = [int][math]::Max(1,[math]::Round([double]$base.PassIOPS * 0.70))
+            FailIOPS = [int][math]::Max(1,[math]::Round([double]$base.FailIOPS * 0.50))
+        }
+    }
+    return $base
 }
 function Get-DiskProfileFromFields([string]$BusType,[string]$MediaType,[string]$Model,[Nullable[int]]$RotationRate) {
     $bus = "$BusType"
@@ -613,7 +646,7 @@ function Get-DiskProfileForDrive([string]$Drive) {
             }
         } catch {}
     }
-    $th = Get-DiskThresholdByProfile $profile
+    $th = Get-DiskThresholdByProfile $profile $isSystem
     return [pscustomobject]@{
         Drive = $driveNorm
         DiskNumber = $diskNumber
@@ -644,8 +677,9 @@ function Initialize-DiskDriveProfiles([string[]]$Drives) {
         $info = Get-DiskProfileForDrive $d
         $script:DiskDriveProfiles[$d] = $info
         $sys = if($info.IsSystemDrive){"system"}else{"data"}
-        $lines += ("{0}={1}; {2}; DiskNumber={3}; Bus={4}; Media={5}; RotationRate={6}; Model={7}; Ref>={8}MB/s; Critical>={9}MB/s" -f $d,$info.Profile,$sys,$info.DiskNumber,$info.BusType,$info.MediaType,$info.RotationRate,$info.Model,$info.PassMBps,$info.FailMBps)
-        Log ("[DISK PROFILE] {0} Profile={1} SystemDrive={2} DiskNumber={3} Bus={4} Media={5} RotationRate={6} Model={7} PassMBps={8} FailMBps={9} Source={10}" -f $d,$info.Profile,$info.IsSystemDrive,$info.DiskNumber,$info.BusType,$info.MediaType,$info.RotationRate,$info.Model,$info.PassMBps,$info.FailMBps,$info.Source)
+        $iops = Get-DiskRandomIopsThresholdByProfile $info.Profile $info.IsSystemDrive
+        $lines += ("{0}={1}; {2}; DiskNumber={3}; Bus={4}; Media={5}; RotationRate={6}; Model={7}; ThroughputRef>={8}MB/s; ThroughputMin>={9}MB/s; RandomRef>={10}IOPS; RandomMin>={11}IOPS" -f $d,$info.Profile,$sys,$info.DiskNumber,$info.BusType,$info.MediaType,$info.RotationRate,$info.Model,$info.PassMBps,$info.FailMBps,$iops.PassIOPS,$iops.FailIOPS)
+        Log ("[DISK PROFILE] {0} Profile={1} SystemDrive={2} DiskNumber={3} Bus={4} Media={5} RotationRate={6} Model={7} ThroughputRefMBps={8} ThroughputMinMBps={9} RandomRefIOPS={10} RandomMinIOPS={11} Source={12}" -f $d,$info.Profile,$info.IsSystemDrive,$info.DiskNumber,$info.BusType,$info.MediaType,$info.RotationRate,$info.Model,$info.PassMBps,$info.FailMBps,$iops.PassIOPS,$iops.FailIOPS,$info.Source)
     }
     if($lines.Count -gt 0){ $script:DiskThresholdProfile = ($lines -join " | ") }
     else { $script:DiskThresholdProfile = "No disk target" }
@@ -660,7 +694,8 @@ function Get-DiskThresholdSummaryText {
     foreach($d0 in $script:ResolvedTestDrives){
         $info = Get-DiskDriveThresholdInfo $d0
         $sys = if($info.IsSystemDrive){"System drive"}else{"Data drive"}
-        $lines += ("{0} | {1} | {2} | Disk {3} | Bus={4} | Media={5} | RotationRate={6} | {7} | Critical >= {8} MB/s | Reference >= {9} MB/s" -f $info.Drive,$sys,$info.Profile,$info.DiskNumber,$info.BusType,$info.MediaType,$info.RotationRate,$info.Model,$info.FailMBps,$info.PassMBps)
+        $iops = Get-DiskRandomIopsThresholdByProfile $info.Profile $info.IsSystemDrive
+        $lines += ("{0} | {1} | {2} | Disk {3} | Bus={4} | Media={5} | RotationRate={6} | {7} | Throughput minimum >= {8} MB/s | Throughput reference >= {9} MB/s | 4K random minimum >= {10} IOPS | 4K random reference >= {11} IOPS" -f $info.Drive,$sys,$info.Profile,$info.DiskNumber,$info.BusType,$info.MediaType,$info.RotationRate,$info.Model,$info.FailMBps,$info.PassMBps,$iops.FailIOPS,$iops.PassIOPS)
     }
     if($lines.Count -eq 0){ return "-" }
     return ($lines -join "`r`n")
@@ -1116,7 +1151,7 @@ function Start-MemoryWorkers([int]$DurationSeconds, [int]$OverrideTargetGB=0) {
 }
 
 function Resolve-YCruncherBackend([string]$YCruncherRoot,[string]$DefaultExe) {
-    # v89 add: explicit backend selection for newer CPU platforms.
+    # v90 add: explicit backend selection for newer CPU platforms.
     # Avoid relying on y-cruncher launcher auto-detection on some new server CPUs.
     $cpuName = ""
     try {
@@ -1135,7 +1170,7 @@ function Resolve-YCruncherBackend([string]$YCruncherRoot,[string]$DefaultExe) {
         }
     }
 
-    # v89 add: AMD Zen4 backend selection.
+    # v90 add: AMD Zen4 backend selection.
     # EPYC 9004 (Genoa) / Ryzen 7000 family use the Zen4 binary when available.
     if ($cpuName -match "EPYC 9[0-4]|EPYC 97|Zen 4|7950|7900|7700|7600") {
         $zen4 = Join-Path $binaryDir "22-ZN4 ~ Kizuna.exe"
@@ -1239,8 +1274,8 @@ function Start-DiskSpdWorkload([int]$DurationSeconds,[string]$PhaseName,[Validat
     if (!$exe) { Log "[ERROR] DiskSpd not found. Disk phase skipped."; return @() }
 
     if($WorkloadKind -eq "throughput") {
-        $argTemplate = "-c{0} -d{1} -w30 -t2 -o16 -b1M -Sh -L `"{2}`""
-        $evidence = "sequential 1M mixed read/write throughput probe; MB/s reference evidence"
+        $argTemplate = "-c{0} -d{1} -w30 -t2 -o16 -b1M -Sh -si -L `"{2}`""
+        $evidence = "interlocked sequential 1M mixed read/write throughput probe; MB/s reference evidence"
     } else {
         $argTemplate = "-c{0} -d{1} -r -w30 -t4 -o8 -b4K -L `"{2}`""
         $evidence = "4K random mixed stability workload; judged mainly by errors/IOPS/latency"
@@ -1255,7 +1290,7 @@ function Start-DiskSpdWorkload([int]$DurationSeconds,[string]$PhaseName,[Validat
         $args=($argTemplate -f $DiskFileSize,$DurationSeconds,$file)
         $outLog = Join-Path $LogDir ("diskspd_{0}_{1}.out.log" -f $WorkloadKind,$d.TrimEnd(':'))
         $errLog = Join-Path $LogDir ("diskspd_{0}_{1}.err.log" -f $WorkloadKind,$d.TrimEnd(':'))
-        Log ("[START] DiskSpd {0} {1} [{2}; critical>={3}MB/s; reference>={4}MB/s] {5} : `"{6}`" {7}" -f $WorkloadKind,$d,$di.Profile,$di.FailMBps,$di.PassMBps,$evidence,$exe,$args)
+        Log ("[START] DiskSpd {0} {1} [{2}; minimum>={3}MB/s; reference>={4}MB/s] {5} : `"{6}`" {7}" -f $WorkloadKind,$d,$di.Profile,$di.FailMBps,$di.PassMBps,$evidence,$exe,$args)
         try { $procs += Start-Process -FilePath $exe -ArgumentList $args -PassThru -RedirectStandardOutput $outLog -RedirectStandardError $errLog } catch { Log "[ERROR] DiskSpd $WorkloadKind start failed on $d : $($_.Exception.Message)" }
     }
     return $procs
@@ -1724,6 +1759,38 @@ function Get-DiskSpdParsedResult {
     } catch {}
     return [pscustomobject]$result
 }
+function Get-DiskSpdLogHealth([string]$Drive,[ValidateSet("stability","throughput")][string]$WorkloadKind) {
+    $d = Normalize-DriveLetter $Drive
+    $letter = $d.TrimEnd(':')
+    $outLog = Join-Path $LogDir ("diskspd_{0}_{1}.out.log" -f $WorkloadKind,$letter)
+    $errLog = Join-Path $LogDir ("diskspd_{0}_{1}.err.log" -f $WorkloadKind,$letter)
+    $allLines = @()
+    $warningLines = @()
+
+    foreach($path in @($outLog,$errLog)){
+        if(Test-Path $path){
+            try {
+                $lines = @(Get-Content -Path $path -ErrorAction SilentlyContinue)
+                $allLines += $lines
+                $warningLines += @($lines | Where-Object { $_ -match '(?i)^\s*WARNING\s*:' })
+            } catch {}
+        }
+    }
+
+    # Match explicit fatal I/O/startup failures only. Ordinary WARNING lines are retained as notes.
+    $fatalPattern = '(?i)^\s*(ERROR|FATAL)\s*:|error opening|failed to|failure opening|I/O error|input/output error|bad block|CRC error|data error|device is not ready|device does not exist|access is denied|not enough (disk )?space|disk full|timed out|timeout while'
+    $fatalLines = @($allLines | Where-Object { $_ -match $fatalPattern -and $_ -notmatch '(?i)^\s*WARNING\s*:' } | Select-Object -Unique)
+
+    return [pscustomobject]@{
+        HasOutput = (Test-Path $outLog)
+        HasFatalError = ($fatalLines.Count -gt 0)
+        FatalText = if($fatalLines.Count -gt 0){ (($fatalLines | Select-Object -First 5) -join ' | ') }else{ '' }
+        WarningText = if($warningLines.Count -gt 0){ (($warningLines | Select-Object -First 5) -join ' | ') }else{ '' }
+        OutLog = $outLog
+        ErrLog = $errLog
+    }
+}
+
 function Build-Report {
     $L = @{
         Title = "NVIDIA GeForce / RTX &#x6D88;&#x8D39;&#x7EA7;&#x663E;&#x5361; FurMark2 + y-cruncher &#x7A33;&#x5B9A;&#x6027;&#x6D4B;&#x8BD5;&#x62A5;&#x544A;"
@@ -1947,24 +2014,51 @@ function Build-Report {
                 $rr = $judgeMap[$d]
                 $state = "PASS"
                 $note = ""
-                $ioThr = Get-DiskRandomIopsThresholdByProfile $di.Profile
-                if($rr.TotalMiBps -eq $null){ $state="FAIL"; $note="no parsed DiskSpd result"; $diskOverallPass=$false }
+                $ioThr = Get-DiskRandomIopsThresholdByProfile $di.Profile $di.IsSystemDrive
+                $health = Get-DiskSpdLogHealth $d $judgeKind
+                if(!$health.HasOutput){ $state="FAIL"; $note="DiskSpd output log missing"; $diskOverallPass=$false }
+                elseif($health.HasFatalError){ $state="FAIL"; $note=("DiskSpd fatal error: {0}" -f $health.FatalText); $diskOverallPass=$false }
+                elseif($rr.TotalMiBps -eq $null){ $state="FAIL"; $note="no parsed DiskSpd result"; $diskOverallPass=$false }
                 elseif($judgeKind -eq "stability"){
-                    if($rr.Iops -ne $null -and $rr.Iops -ge $ioThr.FailIOPS){
-                        if($rr.Iops -lt $ioThr.PassIOPS){ $note=("stability accepted: 4K random IOPS {0} >= critical {1}; throughput MB/s is reference only" -f $rr.Iops,$ioThr.FailIOPS) }
-                        else { $note=("stability pass: 4K random IOPS {0} >= reference {1}; throughput MB/s is reference only" -f $rr.Iops,$ioThr.PassIOPS) }
-                    } else { $state="FAIL"; $note=("4K random IOPS below critical {0}" -f $ioThr.FailIOPS); $diskOverallPass=$false }
+                    if($rr.Iops -eq $null -or $rr.Iops -le 0){
+                        $state="FAIL"; $note="no measurable random I/O activity"; $diskOverallPass=$false
+                    } elseif($rr.Iops -lt $ioThr.FailIOPS){
+                        $state="FAIL"; $note=("4K random IOPS {0} below minimum activity floor {1}; possible severe degradation or stalled workload" -f $rr.Iops,$ioThr.FailIOPS); $diskOverallPass=$false
+                    } elseif($rr.Iops -lt $ioThr.PassIOPS){
+                        $note=("stability pass: 4K random IOPS {0} is above minimum floor {1} but below reference {2}; performance variation does not by itself indicate disk failure" -f $rr.Iops,$ioThr.FailIOPS,$ioThr.PassIOPS)
+                    } else {
+                        $note=("stability pass: 4K random IOPS {0} meets reference {1}; throughput MB/s is reference only" -f $rr.Iops,$ioThr.PassIOPS)
+                    }
                 } else {
-                    if($rr.TotalMiBps -lt $di.FailMBps){ $state="FAIL"; $note=("throughput below critical {0} MB/s" -f $di.FailMBps); $diskOverallPass=$false }
-                    elseif($rr.TotalMiBps -lt $di.PassMBps){ $note=("throughput below strict reference {0} MB/s, above critical" -f $di.PassMBps) }
-                    else { $note="throughput meets strict reference" }
+                    if($rr.TotalMiBps -le 0){ $state="FAIL"; $note="no measurable throughput"; $diskOverallPass=$false }
+                    elseif($rr.TotalMiBps -lt $di.FailMBps){ $state="FAIL"; $note=("throughput {0} MB/s below minimum activity floor {1} MB/s" -f $rr.TotalMiBps,$di.FailMBps); $diskOverallPass=$false }
+                    elseif($rr.TotalMiBps -lt $di.PassMBps){ $note=("throughput above minimum floor but below reference {0} MB/s; recorded as performance variation" -f $di.PassMBps) }
+                    else { $note="throughput meets reference" }
                 }
-                $diskStatusLines += ("{0} [{1}; {2}; {3}; {4}] total {5} MiB/s / read {6} / write {7}; IOPS {8}; MB critical >= {9}; MB reference >= {10}; random IOPS critical >= {11}; random IOPS reference >= {12}; {13}" -f $d,$di.Profile,$sys,$di.Model,$judgeKind,$rr.TotalMiBps,$rr.ReadMiBps,$rr.WriteMiBps,$rr.Iops,$di.FailMBps,$di.PassMBps,$ioThr.FailIOPS,$ioThr.PassIOPS,$note)
+                if($health.WarningText){ $note += ("; DiskSpd warning: {0}" -f $health.WarningText) }
+                $diskStatusLines += ("{0} [{1}; {2}; {3}; {4}] total {5} MiB/s / read {6} / write {7}; IOPS {8}; throughput minimum >= {9}; throughput reference >= {10}; random minimum >= {11}; random reference >= {12}; {13}" -f $d,$di.Profile,$sys,$di.Model,$judgeKind,$rr.TotalMiBps,$rr.ReadMiBps,$rr.WriteMiBps,$rr.Iops,$di.FailMBps,$di.PassMBps,$ioThr.FailIOPS,$ioThr.PassIOPS,$note)
                 $diskMetricItems += [pscustomobject]@{Name=("DiskSpd {0} {1}" -f $d,$judgeKind);Result=("{0} MiB/s | {1} IOPS | {2} | judge={3}" -f $rr.TotalMiBps,$rr.Iops,$di.Profile,$judgeKind);Ok=($state -eq "PASS")}
-                if($DiskIoProfile -eq "both" -and $throughputMap.ContainsKey($d)){
-                    $tr=$throughputMap[$d]
-                    $diskStatusLines += ("{0} throughput probe reference: total {1} MiB/s / read {2} / write {3}; reference >= {4} MB/s; critical >= {5} MB/s" -f $d,$tr.TotalMiBps,$tr.ReadMiBps,$tr.WriteMiBps,$di.PassMBps,$di.FailMBps)
-                    $diskMetricItems += [pscustomobject]@{Name=("DiskSpd {0} throughput probe" -f $d);Result=("{0} MiB/s | read {1} | write {2} | reference >= {3}" -f $tr.TotalMiBps,$tr.ReadMiBps,$tr.WriteMiBps,$di.PassMBps);Ok=$true}
+                if($DiskIoProfile -eq "both"){
+                    if($throughputMap.ContainsKey($d)){
+                        $tr=$throughputMap[$d]
+                        $trHealth = Get-DiskSpdLogHealth $d "throughput"
+                        $trOk = $true
+                        $trNote = ""
+                        if(!$trHealth.HasOutput){ $trOk=$false; $trNote="throughput output log missing" }
+                        elseif($trHealth.HasFatalError){ $trOk=$false; $trNote=("DiskSpd fatal error: {0}" -f $trHealth.FatalText) }
+                        elseif($tr.TotalMiBps -eq $null -or $tr.TotalMiBps -le 0){ $trOk=$false; $trNote="no measurable throughput" }
+                        elseif($tr.TotalMiBps -lt $di.FailMBps){ $trOk=$false; $trNote=("below minimum activity floor {0} MB/s" -f $di.FailMBps) }
+                        elseif($tr.TotalMiBps -lt $di.PassMBps){ $trNote=("above minimum floor, below reference {0} MB/s" -f $di.PassMBps) }
+                        else { $trNote="meets reference" }
+                        if($trHealth.WarningText){ $trNote += ("; warning: {0}" -f $trHealth.WarningText) }
+                        if(!$trOk){ $diskOverallPass=$false }
+                        $diskStatusLines += ("{0} throughput probe: total {1} MiB/s / read {2} / write {3}; reference >= {4} MB/s; minimum >= {5} MB/s; {6}" -f $d,$tr.TotalMiBps,$tr.ReadMiBps,$tr.WriteMiBps,$di.PassMBps,$di.FailMBps,$trNote)
+                        $diskMetricItems += [pscustomobject]@{Name=("DiskSpd {0} throughput probe" -f $d);Result=("{0} MiB/s | read {1} | write {2} | reference >= {3} | minimum >= {4}" -f $tr.TotalMiBps,$tr.ReadMiBps,$tr.WriteMiBps,$di.PassMBps,$di.FailMBps);Ok=$trOk}
+                    } else {
+                        $diskOverallPass=$false
+                        $diskStatusLines += ("{0} throughput probe parsed result missing" -f $d)
+                        $diskMetricItems += [pscustomobject]@{Name=("DiskSpd {0} throughput probe" -f $d);Result="No parsed result";Ok=$false}
+                    }
                 }
             } else {
                 $diskOverallPass = $false
@@ -2126,9 +2220,9 @@ function Build-Report {
     $criteria += "<tr><td><b>Cooling / Fan</b></td><td>$fanCriteria</td><td>GPU 风扇来自 nvidia-smi fan.speed；系统风扇依赖主板/BMC 支持。</td></tr>"
 
     $diskCriteria = CriteriaCell `
-        "<ul class='mini-list'><li>每个盘符使用独立 Profile 和阈值</li><li>稳定性：主要看 DiskSpd 错误、IOPS、延迟</li><li>速度：大文件顺序读写仅作性能参考</li></ul><div class='pre compact'>$diskThresholdText</div>" `
-        "<ul class='mini-list'><li>低于严格参考但高于 Critical 时记录说明</li><li>系统盘性能波动会结合稳定性判断</li></ul>" `
-        "<ul class='mini-list'><li>DiskSpd error / I/O error / bad block</li><li>无解析结果或测试文件创建失败</li><li>随机 IOPS 低于档位 Critical</li><li>吞吐测试低于档位 Critical</li></ul>"
+        "<ul class='mini-list'><li>每个盘符使用独立 Profile，并区分系统盘/数据盘</li><li>稳定性优先检查 DiskSpd 致命错误、无 I/O、测试中断</li><li>IOPS/吞吐 Reference 是性能参考，Minimum 仅用于识别停滞或严重退化</li></ul><div class='pre compact'>$diskThresholdText</div>" `
+        "<ul class='mini-list'><li>低于 Reference 但高于 Minimum 时只记录性能说明</li><li>系统盘自动放宽参考值和最低活动门槛</li></ul>" `
+        "<ul class='mini-list'><li>DiskSpd fatal / I/O error / bad block</li><li>无解析结果、无 I/O、测试文件创建失败</li><li>随机 IOPS 或吞吐低于极低的 Minimum 活动门槛</li></ul>"
     $criteria += "<tr><td><b>Disk</b><br><span class='muted'>Per-drive dynamic</span></td><td>$diskCriteria</td><td>所有本地固定盘均可测试，包括 C:。结果按盘符单独判定，不再混成一个全局阈值。</td></tr>"
     $statusRows=""; foreach($s in $script:StatusItems){
         $part=if($s.Participate){$L.Yes}else{$L.No}

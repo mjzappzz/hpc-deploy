@@ -58,6 +58,9 @@ TASK_LOG_MAX_MESSAGE_BYTES = 4096
 WGET_PROGRESS_LINE = re.compile(
     r"^\s*\d+(?:\.\d+)?[KMG]?\s+(?:\.{10}\s+){2,}\d+%",
 )
+STRESS_INTEGER_PROGRESS_LINE = re.compile(
+    r"^\[[# ]+\]\s+(?P<percent>\d{1,3})%\s+\(Elapsed:",
+)
 _progress_notice_task_ids: set[str] = set()
 _progress_notice_lock = threading.Lock()
 _scheduled_stress_recovery_task_ids: set[str] = set()
@@ -1447,6 +1450,18 @@ def _should_write_progress_notice(task_id: str) -> bool:
         return True
 
 
+def _should_keep_progress_message(message: str, previous_message: str | None) -> bool:
+    current_match = STRESS_INTEGER_PROGRESS_LINE.match(message)
+    if current_match is None:
+        return True
+    if not previous_message:
+        return True
+    previous_match = STRESS_INTEGER_PROGRESS_LINE.match(previous_message)
+    if previous_match is None:
+        return True
+    return current_match.group("percent") != previous_match.group("percent")
+
+
 def _add_log(db, task_id: str, level: str, message: str) -> None:
     prepared_message = _prepare_task_log_message(level, message)
     if prepared_message is None:
@@ -1455,6 +1470,20 @@ def _add_log(db, task_id: str, level: str, message: str) -> None:
         return
 
     message = prepared_message
+    if STRESS_INTEGER_PROGRESS_LINE.match(message):
+        previous_progress = (
+            db.query(TaskLog.message)
+            .filter(
+                TaskLog.task_id == task_id,
+                TaskLog.message.like("%(Elapsed:%"),
+            )
+            .order_by(TaskLog.id.desc())
+            .limit(1)
+            .scalar()
+        )
+        if not _should_keep_progress_message(message, previous_progress):
+            return
+
     db.add(TaskLog(task_id=task_id, level=level, message=message))
     task = db.query(Task).filter(Task.task_id == task_id).first()
     if task is not None and task.status in UNFINISHED_TASK_STATUSES:

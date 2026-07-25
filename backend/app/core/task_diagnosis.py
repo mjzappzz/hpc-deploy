@@ -684,6 +684,31 @@ def _precheck_stress_preflight_failed(
         return None
 
     text = "\n".join(filter(None, [error_message, logs_joined])).lower()
+    if "root user is required" in text or "请使用 root 用户运行" in text:
+        return {
+            "level": "error",
+            "category": "stress_root_required",
+            "attribution": "permission",
+            "title": "压测任务缺少 root 权限",
+            "conclusion": "压测脚本要求使用 root 用户执行，但当前 SSH 登录用户不是 root。",
+            "summary": (
+                "脚本已上传并启动，但在依赖检查阶段检测到当前用户权限不足，"
+                "因此未进入 CPU/内存压测阶段。"
+            ),
+            "possible_causes": [
+                "服务器配置的 SSH 用户不是 root",
+                "当前 SSH 用户未通过平台以 root 身份执行压测脚本",
+            ],
+            "suggestions": [
+                "将该服务器的 SSH 登录用户改为 root，并确认密钥或密码认证可用",
+                "重新执行任务前先通过服务器检测确认登录用户与权限",
+            ],
+            "risk_tips": [
+                "该任务未实际开始压测，也未生成可用于稳定性判断的报告",
+            ],
+            "matched_patterns": ["root user is required"],
+        }
+
     markers = (
         "stress failed before start",
         "gpu stress failed before start",
