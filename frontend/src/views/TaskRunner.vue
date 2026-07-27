@@ -3173,6 +3173,7 @@ onBeforeUnmount(() => {
 .action-card {
   position: relative;
   padding: 0;
+  border-radius: 14px;
 }
 
 /* ===== COMPACT FILE INFO (4-row vertical) ===== */
@@ -4022,9 +4023,9 @@ onBeforeUnmount(() => {
   font-size: 16px;
   font-weight: 600;
   color: var(--el-text-color-primary);
-  margin: -20px -20px 16px;
+  margin: -10px -16px 16px;
   padding: 10px 14px 10px 10px;
-  border-radius: 3px 3px 0 0;
+  border-radius: 13px 13px 0 0;
 }
 
 .step-placeholder {
