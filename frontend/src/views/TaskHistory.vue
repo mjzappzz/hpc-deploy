@@ -139,13 +139,14 @@
                 <el-button
                   v-if="item.tasks.some(task => task.task_type === 'stress')"
                   size="small"
-                  type="primary"
-                  :icon="FolderOpened"
-                  class="task-result-button hpc-interactive-pulse"
+                  type="warning"
+                  plain
+                  :icon="Files"
+                  class="task-result-button task-result-button--batch hpc-interactive-pulse"
                   :disabled="!canDownloadBatchReport(batchSummaryFromTasks(item.batchId, item.tasks))"
                   :loading="artLoading"
                   @click="openBatchArtifacts(item.batchId, item.tasks)"
-                >结果文件</el-button>
+                >批次 · 结果文件</el-button>
                 <el-tooltip
                   v-if="batchCudaCommandTask(item.tasks)"
                   placement="top"
@@ -305,11 +306,12 @@
                               v-if="isBatchDetailStressTask(t)"
                               size="small"
                               type="primary"
-                              :icon="FolderOpened"
+                              plain
+                              :icon="Document"
                               class="task-action-button task-action-button--result"
                               :disabled="!isBatchTaskTerminal(t.status)"
                               @click.stop="openBatchTaskArtifacts(t)"
-                            >结果文件</el-button>
+                            >单次 · 结果文件</el-button>
                           </div>
                         </template>
                       </el-table-column>
@@ -393,13 +395,14 @@
                 <el-button
                   v-if="row.task_type === 'stress'"
                   size="small"
-                  type="primary"
-                  :icon="FolderOpened"
-                  class="task-action-button task-action-button--result"
+                  type="warning"
+                  plain
+                  :icon="Files"
+                  class="task-action-button task-action-button--result task-action-button--batch-result"
                   :disabled="!canDownloadBatchReport(row)"
                   :loading="artLoading"
                   @click.stop="openBatchSummaryArtifacts(row)"
-                >结果文件</el-button>
+                >批次 · 结果文件</el-button>
                 <el-button
                   v-if="isBatchTaskTerminal(row.status)"
                   size="small"
@@ -447,37 +450,50 @@
           <el-button size="small" text @click="copyArtifactDir">复制路径</el-button>
         </div>
 
-        <template v-if="batchArtifactGroups.length > 0">
+        <template v-if="batchArtifactFiles.total > 0">
           <div class="art-list">
-            <div v-for="group in batchArtifactGroups" :key="group.taskId" class="art-group art-batch-group">
+            <div v-if="batchArtifactFiles.reports.length > 0" class="art-group">
               <div class="art-group-header">
-                <span class="art-group-title">{{ group.label }}</span>
-                <span class="art-group-desc">{{ group.serverLabel }}</span>
+                <span class="art-group-title">最终报告</span>
+                <span class="art-group-desc">各子任务压测汇总报告，优先下载查看。</span>
               </div>
-              <div v-if="group.remoteDir" class="art-dir-bar art-dir-bar--compact">
-                <span class="art-dir-label">远端服务器目录：</span>
-                <code class="art-dir-path">{{ group.remoteDir }}</code>
-                <el-button size="small" text @click="copyPath(group.remoteDir)">复制路径</el-button>
-              </div>
-              <template v-if="group.files.length === 0">
-                <div class="art-empty-inline">暂无结果文件</div>
-              </template>
               <div
-                v-for="f in group.files"
-                :key="`${group.taskId}:${f.name}`"
-                class="art-item"
-                :class="{ 'art-item-report': isXlsxArtifact(f) }"
+                v-for="item in batchArtifactFiles.reports"
+                :key="`${item.taskId}:${item.file.name}`"
+                class="art-item art-item-report"
               >
                 <div class="art-item-info">
-                  <span class="art-name" :title="f.name">{{ f.name }}</span>
+                  <span class="art-name" :title="item.file.name">{{ item.file.name }}</span>
                   <div class="art-meta-row">
-                    <span class="art-size">{{ formatFileSize(f.size) }}</span>
-                    <el-tag size="small" :type="isXlsxArtifact(f) ? 'primary' : 'info'">{{ f.type }}</el-tag>
-                    <el-tag v-if="isXlsxArtifact(f)" size="small" type="success" effect="dark">最终报告</el-tag>
-                    <span class="art-local-path" :title="f.local_relative_path">{{ f.local_relative_path }}</span>
+                    <span>{{ item.label }} · {{ item.serverLabel }}</span>
+                    <span class="art-size">{{ formatFileSize(item.file.size) }}</span>
+                    <el-tag size="small">{{ item.file.type }}</el-tag>
+                    <span class="art-local-path" :title="item.file.local_relative_path">{{ item.file.local_relative_path }}</span>
                   </div>
                 </div>
-                <el-button size="small" :type="isXlsxArtifact(f) ? 'primary' : 'default'" @click="downloadArtifact(f.name, group.taskId)">下载</el-button>
+                <el-button size="small" type="primary" @click="downloadArtifact(item.file.name, item.taskId)">下载</el-button>
+              </div>
+            </div>
+            <div v-if="batchArtifactFiles.rawFiles.length > 0" class="art-group">
+              <div class="art-group-header">
+                <span class="art-group-title">原始文件</span>
+                <span class="art-group-desc">包含各子任务的采样数据、运行日志和辅助文本。</span>
+              </div>
+              <div
+                v-for="item in batchArtifactFiles.rawFiles"
+                :key="`${item.taskId}:${item.file.name}`"
+                class="art-item"
+              >
+                <div class="art-item-info">
+                  <span class="art-name" :title="item.file.name">{{ item.file.name }}</span>
+                  <div class="art-meta-row">
+                    <span>{{ item.label }} · {{ item.serverLabel }}</span>
+                    <span class="art-size">{{ formatFileSize(item.file.size) }}</span>
+                    <el-tag size="small">{{ item.file.type }}</el-tag>
+                    <span class="art-local-path" :title="item.file.local_relative_path">{{ item.file.local_relative_path }}</span>
+                  </div>
+                </div>
+                <el-button size="small" @click="downloadArtifact(item.file.name, item.taskId)">下载</el-button>
               </div>
             </div>
           </div>
@@ -584,20 +600,7 @@
         <div class="task-drawer-actions">
           <el-tag v-if="drawerWsConnected" size="small" type="success">实时日志：已连接</el-tag>
           <el-tag v-else-if="drawerWsFallback" size="small" type="warning">实时日志：普通刷新</el-tag>
-          <el-button
-            v-if="drawerShowCancelButton"
-            type="danger"
-            plain
-            size="small"
-            @click="cancelDrawerTask"
-          >取消任务</el-button>
           <el-button size="small" type="warning" plain @click="openDrawerDiagnosis">诊断</el-button>
-          <el-button
-            v-if="drawerShowArtifactsButton"
-            size="small"
-            @click="openDrawerArtifacts"
-          >结果文件</el-button>
-          <el-button size="small" :loading="drawerTaskLoading" @click="refreshTaskDrawer">刷新</el-button>
         </div>
 
         <el-tabs v-model="drawerActivePanel" class="task-drawer-tabs" @tab-change="refreshDrawerPanel">
@@ -796,10 +799,11 @@
                         v-if="batchDetailShowArtifactsButton(task)"
                         size="small"
                         type="primary"
-                        text
+                        plain
+                        :icon="Document"
                         class="batch-detail-subtask__action"
                         @click.stop="detailOpenArtifacts(task)"
-                      >结果文件</el-button>
+                      >单次 · 结果文件</el-button>
                     </div>
                   </div>
                 </div>
@@ -1044,7 +1048,14 @@
     </el-dialog>
 
     <!-- 取消任务确认弹窗 -->
-    <el-dialog v-model="cancelDialogVisible" title="取消任务" width="420px" :close-on-click-modal="false">
+    <el-dialog
+      v-model="cancelDialogVisible"
+      title="取消任务"
+      width="420px"
+      :close-on-click-modal="false"
+      :close-on-press-escape="!cancelSubmitting"
+      :show-close="!cancelSubmitting"
+    >
       <div class="cancel-dialog-body">
         <p class="cancel-intro">确认取消当前任务？</p>
         <ul class="cancel-checklist">
@@ -1054,8 +1065,10 @@
         </ul>
       </div>
       <template #footer>
-        <el-button @click="cancelDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="cancelSubmitting" @click="confirmCancelTask">确认取消任务</el-button>
+        <el-button :disabled="cancelSubmitting" @click="cancelDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="cancelSubmitting" @click="confirmCancelTask">
+          {{ cancelSubmitting ? '取消中…' : '确认取消任务' }}
+        </el-button>
       </template>
     </el-dialog>
   </section>
@@ -1077,7 +1090,7 @@ import StatusTag from '@/components/StatusTag.vue'
 import TaskCard from '@/components/TaskCard.vue'
 import TaskDiagnosisDialog from '@/components/TaskDiagnosisDialog.vue'
 import TaskExecutionLogPanel from '@/components/TaskExecutionLogPanel.vue'
-import { DocumentCopy, FolderOpened, Loading } from '@element-plus/icons-vue'
+import { Document, DocumentCopy, Files, FolderOpened, Loading } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -1090,7 +1103,7 @@ const artLoading = ref(false)
 const artDir = ref('')
 const artFiles = ref<ArtifactFileDetail[]>([])
 const activeArtTaskId = ref('')
-const artDialogTitle = ref('结果文件')
+const artDialogTitle = ref('单次 · 结果文件')
 const activeArtBatchSummary = ref<BatchSummaryItem | null>(null)
 
 type BatchArtifactGroup = {
@@ -1102,6 +1115,10 @@ type BatchArtifactGroup = {
 }
 
 const batchArtifactGroups = ref<BatchArtifactGroup[]>([])
+
+type BatchArtifactFile = Omit<BatchArtifactGroup, 'files' | 'remoteDir'> & {
+  file: ArtifactFileDetail
+}
 
 const diagnosisVisible = ref(false)
 const diagnosisTaskId = ref('')
@@ -1117,6 +1134,24 @@ const artifactGroups = computed(() => {
     }
   }
   return { reports, rawFiles }
+})
+
+const batchArtifactFiles = computed(() => {
+  const reports: BatchArtifactFile[] = []
+  const rawFiles: BatchArtifactFile[] = []
+  for (const group of batchArtifactGroups.value) {
+    for (const file of group.files) {
+      const item: BatchArtifactFile = {
+        taskId: group.taskId,
+        label: group.label,
+        serverLabel: group.serverLabel,
+        file,
+      }
+      if (isXlsxArtifact(file)) reports.push(item)
+      else rawFiles.push(item)
+    }
+  }
+  return { reports, rawFiles, total: reports.length + rawFiles.length }
 })
 
 function isXlsxArtifact(file: ArtifactFileDetail): boolean {
@@ -1210,6 +1245,7 @@ const BATCH_TERMINAL_STATUSES = ['SUCCESS', 'FAILED', 'CANCELED', 'PARTIAL_FAILE
 const BATCH_PENDING_STATUSES = ['PENDING', 'QUEUED', 'CREATED']
 const BATCH_FAILED_STATUSES = ['FAILED', 'TIMEOUT']
 const BATCH_CANCELED_STATUSES = ['CANCELED', 'CANCELLED']
+const BATCH_ACTIVE_STATUSES = ['CONNECTING', 'PREPARING', 'UPLOADING', 'WAITING_REBOOT', 'RUNNING', 'CANCELING']
 
 function calcBatchChildStats(tasks: BatchTaskDetailItem[]) {
   const stats = {
@@ -1233,7 +1269,7 @@ function calcBatchChildStats(tasks: BatchTaskDetailItem[]) {
       stats.success += 1
     } else if (FAILED_FINAL_STATUSES.includes(status) || BATCH_FAILED_STATUSES.includes(status)) {
       stats.failed += 1
-    } else if (status === 'RUNNING') {
+    } else if (BATCH_ACTIVE_STATUSES.includes(status)) {
       stats.running += 1
     } else if (BATCH_PENDING_STATUSES.includes(status)) {
       stats.pending += 1
@@ -1264,9 +1300,9 @@ function batchGroupStats(tasks: TaskRecord[]) {
       stats.success += 1
     } else if (FAILED_FINAL_STATUSES.includes(status) || BATCH_FAILED_STATUSES.includes(status)) {
       stats.failed += 1
-    } else if (status === 'RUNNING') {
+    } else if (BATCH_ACTIVE_STATUSES.includes(status)) {
       stats.running += 1
-    } else if (BATCH_PENDING_STATUSES.includes(status) || ['CONNECTING', 'PREPARING', 'UPLOADING', 'QUEUED'].includes(status)) {
+    } else if (BATCH_PENDING_STATUSES.includes(status)) {
       stats.pending += 1
     } else if (CANCELED_STATUSES.includes(status) || BATCH_CANCELED_STATUSES.includes(status)) {
       stats.canceled += 1
@@ -1811,23 +1847,12 @@ const drawerFailureReason = computed(() => {
   return task?.failure_reason || task?.error_message || '-'
 })
 
-const drawerShowCancelButton = computed(() => {
-  const status = drawerTask.value?.status?.toUpperCase() ?? ''
-  return ['PENDING', 'CONNECTING', 'PREPARING', 'UPLOADING', 'RUNNING'].includes(status)
-})
-
 const drawerCanRetry = computed(() => {
   const task = drawerTask.value
   if (!task || task.batch_id) return false
   const status = task.status?.toUpperCase() ?? ''
   return ['FAILED', 'CANCELED', 'TIMEOUT'].includes(status)
     || task.report_status?.toUpperCase() === 'FAIL'
-})
-
-const drawerShowArtifactsButton = computed(() => {
-  const task = drawerTask.value
-  if (!task) return false
-  return task.task_type === 'stress' && ['SUCCESS', 'FAILED', 'CANCELED'].includes(task.status?.toUpperCase() ?? '')
 })
 
 const drawerShowManualLogLoad = computed(() => {
@@ -2251,10 +2276,6 @@ function downloadDrawerLogs() {
   if (drawerSelectedTaskId.value) downloadTaskLogs(drawerSelectedTaskId.value)
 }
 
-function cancelDrawerTask() {
-  if (drawerTask.value) cancelHistoryTask(drawerTask.value)
-}
-
 async function retryDrawerTask() {
   const task = drawerTask.value
   if (!task || drawerRetrySubmitting.value) return
@@ -2275,10 +2296,6 @@ function openDrawerDiagnosis() {
   if (!drawerSelectedTaskId.value) return
   diagnosisTaskId.value = drawerSelectedTaskId.value
   diagnosisVisible.value = true
-}
-
-function openDrawerArtifacts() {
-  if (drawerTask.value) openArtifacts(drawerTask.value)
 }
 
 async function cleanupTaskLocalArtifactsFor(task: TaskRecord) {
@@ -2340,16 +2357,41 @@ async function cleanupBatchLocalArtifactsFor(batchId: string, taskCount: number)
 async function loadTasks(silent = false) {
   if (!silent) loading.value = true
   try {
+    const wasRunningFilter = filters.status === 'RUNNING'
     const resp = (await listTasks({
       ...filters,
       include_batch_context: Boolean(filters.status),
     })).data
     tasks.value = resp.items
     total.value = resp.total
+
+    // "Running tasks" is a live entry point, not a permanent empty filter.
+    // Once all matching tasks finish, return to normal history automatically.
+    if (wasRunningFilter && resp.total === 0) {
+      filters.status = undefined
+      filters.offset = 0
+      const { status: _status, running_filter: _runningFilter, ...query } = route.query
+      await router.replace({ query })
+      const historyResp = (await listTasks({
+        ...filters,
+        include_batch_context: false,
+      })).data
+      tasks.value = historyResp.items
+      total.value = historyResp.total
+    }
   } finally {
     if (!silent) loading.value = false
   }
   checkAutoRefresh()
+}
+
+function applyTrackedTaskFromRoute(): boolean {
+  const taskId = route.query.task_id
+  if (typeof taskId !== 'string' || !taskId) return false
+  filters.status = undefined
+  filters.keyword = taskId
+  filters.offset = 0
+  return true
 }
 
 function clearTaskSearchTimer() {
@@ -2937,7 +2979,7 @@ function detailOpenArtifacts(task?: BatchTaskDetailItem) {
   activeArtTaskId.value = taskId
   activeArtBatchSummary.value = null
   batchArtifactGroups.value = []
-  artDialogTitle.value = '结果文件'
+  artDialogTitle.value = '单次 · 结果文件'
   artFiles.value = []
   artDir.value = ''
   artDialogVisible.value = true
@@ -3190,8 +3232,7 @@ function cancelHistoryTask(task: TaskRecord) {
 }
 
 async function confirmCancelTask() {
-  if (!cancelTargetTask) return
-  cancelDialogVisible.value = false
+  if (!cancelTargetTask || cancelSubmitting.value) return
   cancelSubmitting.value = true
   try {
     const resp = await cancelTask(cancelTargetTask.task_id)
@@ -3214,6 +3255,7 @@ async function confirmCancelTask() {
     }
   } finally {
     cancelSubmitting.value = false
+    cancelDialogVisible.value = false
     cancelTargetTask = null
   }
 }
@@ -3226,7 +3268,7 @@ async function openArtifacts(task: TaskRecord) {
   activeArtTaskId.value = task.task_id
   activeArtBatchSummary.value = null
   batchArtifactGroups.value = []
-  artDialogTitle.value = '结果文件'
+  artDialogTitle.value = '单次 · 结果文件'
   artFiles.value = []
   artDir.value = ''
   artDialogVisible.value = true
@@ -3248,7 +3290,7 @@ async function openBatchTaskArtifacts(task: BatchTaskDetailItem) {
   activeArtTaskId.value = task.task_id
   activeArtBatchSummary.value = null
   batchArtifactGroups.value = []
-  artDialogTitle.value = `${batchDetailTaskLabel(task)} · 结果文件`
+  artDialogTitle.value = `${batchDetailTaskLabel(task)}｜单次 · 结果文件`
   artFiles.value = []
   artDir.value = task.remote_work_dir || ''
   artDialogVisible.value = true
@@ -3268,7 +3310,7 @@ async function openBatchArtifacts(batchId: string, childTasks: TaskRecord[]) {
   batchArtifactGroups.value = []
   artFiles.value = []
   artDir.value = ''
-  artDialogTitle.value = '批次结果文件'
+  artDialogTitle.value = '批次 · 结果文件'
   artDialogVisible.value = true
   artLoading.value = true
   try {
@@ -3296,7 +3338,7 @@ async function openBatchSummaryArtifacts(summary: BatchSummaryItem) {
   batchArtifactGroups.value = []
   artFiles.value = []
   artDir.value = ''
-  artDialogTitle.value = '批次结果文件'
+  artDialogTitle.value = '批次 · 结果文件'
   artDialogVisible.value = true
   artLoading.value = true
   try {
@@ -3521,21 +3563,25 @@ onMounted(async () => {
     }
   }
 
-  // Support task_id query param — auto-search
-  const qTaskId = route.query.task_id
-  if (!filters.keyword && typeof qTaskId === 'string' && qTaskId) {
-    filters.keyword = qTaskId
-  }
+  // A direct task handoff must override stale history filters.
+  applyTrackedTaskFromRoute()
 
   loadTasks()
 })
 
 watch(() => [route.query.status, route.query.running_filter], ([status]) => {
   if (route.path !== '/history') return
-  const nextStatus = typeof status === 'string' && status ? status : undefined
+  const hasTrackedTask = typeof route.query.task_id === 'string' && Boolean(route.query.task_id)
+  const nextStatus = hasTrackedTask ? undefined : (typeof status === 'string' && status ? status : undefined)
   if (filters.status === nextStatus) return
   filters.status = nextStatus
   filters.offset = 0
+  loadTasks()
+})
+
+watch(() => route.query.task_id, (taskId) => {
+  if (route.path !== '/history' || typeof taskId !== 'string' || !taskId) return
+  applyTrackedTaskFromRoute()
   loadTasks()
 })
 
@@ -3555,6 +3601,7 @@ watch(batchDetailVisible, (visible) => {
   }
 })
 onActivated(() => {
+  applyTrackedTaskFromRoute()
   loadTasks()
 })
 onUnmounted(() => {
@@ -5028,6 +5075,24 @@ onUnmounted(() => {
 .task-result-button,
 .task-action-button--result {
   font-weight: 600;
+}
+
+.task-result-button--batch,
+.task-action-button--batch-result {
+  color: #92400e !important;
+  background: #fef3c7 !important;
+  border-color: #fde68a !important;
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.12);
+}
+
+.task-result-button--batch.el-button:not(.is-disabled):hover,
+.batch-row-actions :deep(.task-action-button--batch-result.el-button:not(.is-disabled):hover) {
+  color: #fff !important;
+  background: #b45309 !important;
+  border-color: #92400e !important;
+  box-shadow:
+    0 0 0 1px rgba(146, 64, 14, 0.30),
+    0 0 8px rgba(180, 83, 9, 0.24);
 }
 
 .batch-task-actions :deep(.task-action-button.el-button:not(.is-disabled):hover),

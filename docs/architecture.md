@@ -53,7 +53,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - 批量公钥部署（`/public-key/deploy`）— 仅允许首次探测成功且状态为 online 的服务器；按每台服务器自身认证方式登录，创建 `$HOME/.ssh` + `authorized_keys`，公钥已存在不重复追加。单台失败不影响其他
 - 单台公钥部署（`/{id}/deploy-public-key`）
 - 单台/批量 SSH 测试（`/{id}/test`、`/test-ssh-all`）
-- 探测全部（`/probe-all`），接口未指定 `server_ids` 时默认跳过离线服务器；执行任务页会显式提交当前全部服务器 ID，因此已知离线服务器也会重新探测
+- 探测全部（`/probe-all`），接口未指定 `server_ids` 时默认跳过离线服务器；服务器管理与执行任务页均只逐台并发复检当前在线服务器，离线服务器由服务器管理行内入口手动检测
 - 标签管理（`/tags` 统计、`tag` 参数筛选）；固定单选值为待压测、测试机、压测完成、故障待处理
 - 标签基于 `tags_json TEXT` 列存储，包含在线/离线计数；旧记录读取时兼容空标签并回退为待压测
 
@@ -63,6 +63,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - CUDA Toolkit 安装（`/cuda-toolkit`、`/cuda-toolkit/batch`）：支持 11.8、12.0–12.6、12.8、12.9、13.0，安装前校验 `nvidia-smi`，仅安装 Toolkit，不安装或覆盖驱动
 - 压测套件创建（`/stress-suite`），同服务器内按 GPU → CPU/内存 → 磁盘串行推进
 - 受控环境套件创建（`/managed-suite`）：基础环境配置按关闭锁屏/休眠 → 锁定系统版本，GPU 驱动安装按 NVIDIA 驱动 → CUDA Toolkit 严格串行；前序失败时后序不启动，后端重启后恢复套件 worker
+- Rocky 9.4 版本锁定脚本同时固定 BaseOS/AppStream/CRB Vault 仓库，并配置固定主版本的 EPEL 9 metalink 与 GPG 校验；避免 `/etc/dnf/vars/releasever=9.4` 使 EPEL 被错误解析为小版本仓库，保障 DKMS、stress-ng 等后续依赖可安装
 - 批次压测子任务重跑（`/{task_id}/retry-in-batch`）：仅支持白名单压测脚本中执行失败、取消、超时或报告 FAIL 的子任务；重跑任务追加到同批次、同服务器队列末尾，并阻止重复排队
 - 任务列表 `scope=single|batch`：按是否存在 `batch_id` 筛选单次任务或批次子任务，保持分页总数准确；`active_only=true` 统计 CONNECTING、PREPARING、UPLOADING、RUNNING、CANCELING 全部活动任务；`include_batch_context=true` 在状态筛选时保留命中批次的完整子任务
 - 状态查询、取消；管理员删除本机任务记录（`POST /api/tasks/{task_id}/local-artifacts/cleanup`）和整批记录（`POST /api/tasks/batches/{batch_id}/local-artifacts/cleanup`）
@@ -360,6 +361,8 @@ PENDING → CONNECTING → PREPARING → UPLOADING → RUNNING → SUCCESS
 ### 压测任务最终状态
 
 压测任务的展示状态由 `backend/app/core/task_state_resolver.py` 统一计算，优先级为：报告 `FAIL` → `FAILED`，报告 `PASS` → `SUCCESS`，执行状态 `FAILED` → `FAILED`，其余为 `UNKNOWN`。该规则用于任务卡、批次详情、诊断与批次汇总；不改变数据库中的原始执行状态。
+
+GPU 压测 TXT/XLSX 报告分别记录 `nvidia-smi --query-gpu=driver_version` 检出的 NVIDIA 驱动版本和 `nvcc --version` 检出的 CUDA Toolkit 版本，不使用 `nvidia-smi` 顶部 CUDA Version（驱动最高兼容版本）替代实际安装版本。
 
 ### 压测运行续租与报告回收
 

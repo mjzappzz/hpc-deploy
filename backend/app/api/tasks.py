@@ -3469,6 +3469,8 @@ def _build_command_preview(
             if "workers" in p:
                 env_parts.append(f"WORKERS={p['workers']}")
         elif script_name == "gpu_stress_report.sh":
+            if p.get("gpu_precision") == "fp64":
+                env_parts.append("GPU_BURN_PRECISION=fp64")
             gid = p.get("gpu_ids")
             if gid and gid != "all":
                 env_parts.append(f"CUDA_VISIBLE_DEVICES={gid}")

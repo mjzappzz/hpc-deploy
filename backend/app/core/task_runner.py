@@ -512,6 +512,8 @@ def _build_stress_command(task: Task) -> str:
             env_vars.append(f"WORKERS={params['workers']}")
 
     elif script_name == "gpu_stress_report.sh":
+        if params.get("gpu_precision") == "fp64":
+            env_vars.append("GPU_BURN_PRECISION=fp64")
         gpu_ids = params.get("gpu_ids")
         if gpu_ids and gpu_ids != "all":
             env_vars.append(f"CUDA_VISIBLE_DEVICES={gpu_ids}")

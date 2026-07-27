@@ -13,6 +13,8 @@ set -o pipefail
 # 参数：
 #   $1 = 压测秒数，默认 43200
 #   $2 = 采样间隔秒数，默认 2
+# 环境变量：
+#   GPU_BURN_PRECISION = fp32（默认）或 fp64；fp64 会向 gpu-burn 传入 -d
 #
 # 特点：
 #   1. gpu-burn 默认压测所有可见 NVIDIA GPU
@@ -23,6 +25,7 @@ set -o pipefail
 
 DURATION="${1:-43200}"
 INTERVAL="${2:-2}"
+GPU_BURN_PRECISION="${GPU_BURN_PRECISION:-fp32}"
 TIME_TAG="$(date +%F_%H%M%S)"
 
 WORKDIR="$(pwd)"
@@ -37,6 +40,14 @@ REPORT="${WORKDIR}/gpu_stress_report_${TIME_TAG}.txt"
 XLSX_REPORT="${WORKDIR}/gpu_stress_report_${TIME_TAG}.xlsx"
 
 FORCE_REBUILD="${FORCE_REBUILD:-0}"
+
+case "$GPU_BURN_PRECISION" in
+    fp32|fp64) ;;
+    *)
+        echo "[ERROR] GPU_BURN_PRECISION must be fp32 or fp64"
+        exit 2
+        ;;
+esac
 
 log() {
     echo "$(date '+%F %T') $*"
@@ -271,6 +282,7 @@ main() {
     echo "GPU Stress Test Start"
     echo "Duration : ${DURATION}s"
     echo "Interval : ${INTERVAL}s"
+    echo "Precision: ${GPU_BURN_PRECISION^^}"
     echo "Workdir  : ${WORKDIR}"
     echo "Burn Dir : ${GPU_BURN_DIR}"
     echo "======================================"
@@ -284,11 +296,16 @@ main() {
         CUDA_TOOLKIT="Not Found"
     fi
 
-    CUDA_DRIVER="$(nvidia-smi | grep -oE 'CUDA Version: [0-9.]+' | awk '{print $3}' | head -1 || true)"
+    NVIDIA_DRIVER_VERSION="$(
+        nvidia-smi --query-gpu=driver_version --format=csv,noheader,nounits 2>/dev/null \
+            | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
+            | sort -u \
+            | paste -sd ',' -
+    )"
     NVIDIA_SMI_PATH="$(command -v nvidia-smi || true)"
 
     echo "[INFO] nvidia-smi path: ${NVIDIA_SMI_PATH}"
-    echo "[INFO] CUDA Driver Version: ${CUDA_DRIVER:-Unknown}"
+    echo "[INFO] NVIDIA Driver Version: ${NVIDIA_DRIVER_VERSION:-Unknown}"
     echo "[INFO] CUDA Toolkit Version: ${CUDA_TOOLKIT:-Unknown}"
 
     echo "[INFO] Start monitoring all GPUs..."
@@ -300,11 +317,15 @@ main() {
     MON_PID=$!
     sleep 2
 
-    echo "[INFO] Start gpu-burn. It will stress all visible NVIDIA GPUs."
+    BURN_ARGS=("$DURATION")
+    if [ "$GPU_BURN_PRECISION" = "fp64" ]; then
+        BURN_ARGS=(-d "$DURATION")
+    fi
+    echo "[INFO] Start gpu-burn (${GPU_BURN_PRECISION^^}). It will stress all visible NVIDIA GPUs."
     set +e
     (
         cd "$GPU_BURN_DIR" || exit 1
-        ./gpu_burn "$DURATION"
+        ./gpu_burn "${BURN_ARGS[@]}"
     ) > "$BURN_RAW_LOG" 2>&1
     BURN_EXIT=$?
     set -e
@@ -358,8 +379,8 @@ main() {
         REASON="GPU/CUDA/gpu-burn runtime error detected."
     fi
 
-    export DURATION INTERVAL TIME_TAG WORKDIR GPU_BURN_DIR BURN_LOG MON_LOG GPU_META_CSV REPORT XLSX_REPORT
-    export BURN_EXIT ERROR_COUNT RESULT REASON CUDA_TOOLKIT CUDA_DRIVER NVIDIA_SMI_PATH GPU_COUNT
+    export DURATION INTERVAL GPU_BURN_PRECISION TIME_TAG WORKDIR GPU_BURN_DIR BURN_LOG MON_LOG GPU_META_CSV REPORT XLSX_REPORT
+    export BURN_EXIT ERROR_COUNT RESULT REASON CUDA_TOOLKIT NVIDIA_DRIVER_VERSION NVIDIA_SMI_PATH GPU_COUNT
 
     python3 - <<'PYEOF'
 import csv
@@ -376,6 +397,7 @@ from openpyxl.utils import get_column_letter
 
 duration = os.environ.get("DURATION", "")
 interval = os.environ.get("INTERVAL", "")
+gpu_burn_precision = os.environ.get("GPU_BURN_PRECISION", "fp32").upper()
 workdir = os.environ.get("WORKDIR", "")
 gpu_burn_dir = os.environ.get("GPU_BURN_DIR", "")
 burn_log = Path(os.environ["BURN_LOG"])
@@ -389,7 +411,7 @@ error_count = os.environ.get("ERROR_COUNT", "0")
 result = os.environ.get("RESULT", "UNKNOWN")
 reason = os.environ.get("REASON", "")
 cuda_toolkit = os.environ.get("CUDA_TOOLKIT", "")
-cuda_driver = os.environ.get("CUDA_DRIVER", "")
+nvidia_driver_version = os.environ.get("NVIDIA_DRIVER_VERSION", "")
 nvidia_smi_path = os.environ.get("NVIDIA_SMI_PATH", "")
 
 
@@ -607,11 +629,12 @@ lines.append("本次测试使用 gpu-burn 对系统中所有可见 NVIDIA GPU �
 lines.append("")
 lines.append("二、测试环境")
 lines.append(f"GPU 数量              : {len(gpu_summary)}")
-lines.append(f"CUDA Version Driver   : {cuda_driver}")
-lines.append(f"CUDA Toolkit nvcc     : {cuda_toolkit}")
+lines.append(f"NVIDIA 驱动版本       : {nvidia_driver_version}")
+lines.append(f"CUDA Toolkit 版本     : {cuda_toolkit}")
 lines.append(f"nvidia-smi            : {nvidia_smi_path}")
 lines.append(f"测试时长              : {duration} 秒")
 lines.append(f"采样间隔              : {interval} 秒")
+lines.append(f"计算精度              : {gpu_burn_precision}")
 lines.append(f"工作目录              : {workdir}")
 lines.append(f"gpu-burn目录          : {gpu_burn_dir}")
 lines.append("")
@@ -711,8 +734,9 @@ for k, v in [
     ("GPU 数量", len(gpu_summary)),
     ("测试时长", f"{duration} 秒"),
     ("采样间隔", f"{interval} 秒"),
-    ("CUDA Version Driver", cuda_driver),
-    ("CUDA Toolkit nvcc", cuda_toolkit),
+    ("计算精度", gpu_burn_precision),
+    ("NVIDIA 驱动版本", nvidia_driver_version),
+    ("CUDA Toolkit 版本", cuda_toolkit),
     ("nvidia-smi", nvidia_smi_path),
     ("工作目录", workdir),
     ("gpu-burn目录", gpu_burn_dir),

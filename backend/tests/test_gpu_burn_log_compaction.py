@@ -7,6 +7,15 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "stress" / "gpu_stres
 
 
 class GpuBurnLogCompactionTests(unittest.TestCase):
+    def test_report_distinguishes_driver_from_installed_cuda_toolkit(self) -> None:
+        source = SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("--query-gpu=driver_version", source)
+        self.assertIn('"NVIDIA 驱动版本"', source)
+        self.assertIn('"CUDA Toolkit 版本"', source)
+        self.assertNotIn('"CUDA Version Driver"', source)
+        self.assertNotIn('"CUDA Toolkit nvcc"', source)
+
     def test_normalizes_carriage_return_progress_before_sampling(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")
 

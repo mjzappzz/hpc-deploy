@@ -11,7 +11,21 @@
     header-cell-class-name="server-table-header"
     cell-class-name="server-table-cell"
   >
-    <el-table-column prop="name" label="服务器名称" width="120" show-overflow-tooltip />
+    <el-table-column label="服务器名称" width="140">
+      <template #default="{ row }">
+        <div class="server-name-cell">
+          <button
+            type="button"
+            class="server-star-button"
+            :class="{ 'is-starred': starredIds.includes(row.id) }"
+            :aria-label="starredIds.includes(row.id) ? `取消关注 ${row.name}` : `关注 ${row.name}`"
+            :title="starredIds.includes(row.id) ? '取消关注' : '标记为关注'"
+            @click="$emit('toggle-star', row.id)"
+          >{{ starredIds.includes(row.id) ? '★' : '☆' }}</button>
+          <span class="table-ellipsis" :title="row.name">{{ row.name }}</span>
+        </div>
+      </template>
+    </el-table-column>
     <el-table-column label="IP 地址" width="145" show-overflow-tooltip>
       <template #default="{ row }">
         <span class="table-ellipsis">{{ row.host }}</span>
@@ -38,7 +52,9 @@
     <!-- 固定单选标签：主表内直接选择，不允许自由输入 -->
     <el-table-column label="标签" class-name="server-tags-column">
       <template #default="{ row }">
+        <el-tag v-if="row.status === 'offline'" type="info" size="small">未知</el-tag>
         <el-select
+          v-else
           :model-value="row.tags?.[0] || '待压测'"
           size="small"
           class="server-tag-select"
@@ -87,16 +103,18 @@
     <el-table-column label="操作" width="200" class-name="server-actions-column">
       <template #default="{ row }">
         <div class="server-actions">
-          <el-button
-            link
-            type="warning"
-            class="server-detect-button"
-            :disabled="probingIds.includes(row.id)"
-            :class="{ 'is-probing': probingIds.includes(row.id) }"
-            @click="$emit('detect', row)"
-          >
-            检测
-          </el-button>
+          <el-tooltip :content="detectButtonTip(row)" placement="top">
+            <el-button
+              link
+              :type="detectButtonType(row)"
+              class="server-detect-button"
+              :disabled="probingIds.includes(row.id)"
+              :class="{ 'is-probing': probingIds.includes(row.id) }"
+              @click="$emit('detect', row)"
+            >
+              检测
+            </el-button>
+          </el-tooltip>
           <el-button
             link
             type="primary"
@@ -123,10 +141,12 @@ const props = withDefaults(defineProps<{
   loading?: boolean
   probingIds?: number[]
   isDetectingAll?: boolean
+  starredIds?: number[]
 }>(), {
   loading: false,
   probingIds: () => [],
   isDetectingAll: false,
+  starredIds: () => [],
 })
 
 const emit = defineEmits<{
@@ -134,6 +154,7 @@ const emit = defineEmits<{
   delete: [server: ServerRecord]
   detect: [server: ServerRecord]
   detail: [server: ServerRecord]
+  'toggle-star': [serverId: number]
   'update-tags': [serverId: number, tags: string[]]
 }>()
 
@@ -181,6 +202,12 @@ function cpuSummary(value: string | null | undefined) {
   const text = displayValue(value)
   if (text === '-') return text
 
+  const localizedModel = text.match(/(?:Model name|型号名称)\s*[：:]\s*(.+?)(?=\s+(?:BIOS Model name|CPU 系列|CPU family|型号\s*[：:]|Model\s*[：:])|$)/i)?.[1]?.trim()
+  const localizedCores = text.match(/(?:^|\s)(?:CPU\(s\)|CPU)\s*[：:]\s*(\d+)(?=\s|$)/i)?.[1]
+  if (localizedModel) {
+    return localizedCores ? `${localizedModel} / ${localizedCores}C` : localizedModel
+  }
+
   const cores = text.match(/(\d+)\s+cores?/i)?.[1]
   const model = text
     .replace(/\s*\/\s*\d+\s+cores?.*$/i, '')
@@ -195,9 +222,50 @@ function cpuSummary(value: string | null | undefined) {
 function updateInlineTag(row: ServerRecord, tag: string) {
   emit('update-tags', row.id, [tag])
 }
+
+function detectButtonType(row: ServerRecord): 'success' | 'danger' | 'warning' {
+  if (row.last_error || row.status === 'offline') return 'danger'
+  if (row.last_check_at && row.status === 'online') return 'success'
+  return 'warning'
+}
+
+function detectButtonTip(row: ServerRecord): string {
+  if (row.last_error) return `上次检测失败：${row.last_error}`
+  if (row.last_check_at && row.status === 'online') return '上次检测成功'
+  return '尚未完成检测'
+}
 </script>
 
 <style scoped>
+.server-name-cell {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+}
+
+.server-star-button {
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  color: var(--el-text-color-placeholder);
+  background: transparent;
+  cursor: pointer;
+  font-size: 17px;
+  line-height: 1;
+}
+
+.server-star-button:hover,
+.server-star-button:focus-visible,
+.server-star-button.is-starred {
+  color: var(--el-color-warning);
+}
+
+.server-star-button:focus-visible {
+  outline: 2px solid var(--el-color-primary-light-5);
+  outline-offset: 2px;
+}
+
 .server-table {
   min-width: 0;
   width: 100%;

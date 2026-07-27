@@ -50,7 +50,7 @@
     </div>
     <div class="task-card__actions">
       <el-button size="small" type="primary" plain class="hpc-interactive-pulse" @click="$emit('continueTask', task)">查看任务详情</el-button>
-      <el-button v-if="task.task_type === 'stress'" size="small" type="primary" :icon="FolderOpened" class="task-card__result-button hpc-interactive-pulse" :disabled="!isStressCompleted" @click="$emit('downloadReport', task)">结果文件</el-button>
+      <el-button v-if="task.task_type === 'stress'" size="small" type="primary" plain :icon="Document" class="task-card__result-button hpc-interactive-pulse" :disabled="!isStressCompleted" @click="$emit('downloadReport', task)">单次 · 结果文件</el-button>
       <el-tooltip
         v-if="showCommandCopyButtons"
         placement="top"
@@ -93,7 +93,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { DocumentCopy, FolderOpened } from '@element-plus/icons-vue'
+import { Document, DocumentCopy } from '@element-plus/icons-vue'
 import type { TaskRecord } from '@/api/task'
 import { formatBeijingDateKey, formatDateTime } from '@/utils/time'
 import { calcDurationSeconds, calcEstimatedEndTime, formatSeconds, statusLabel } from '@/composables/useTaskProgress'

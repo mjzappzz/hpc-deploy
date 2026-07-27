@@ -8,7 +8,7 @@ import logging
 from app.core.audit import write_audit_log
 from app.core.auth import require_admin_token
 from app.core.config import BACKEND_ROOT
-from app.core.ssh_detector import DEFAULT_DETECT_TIMEOUT, ServerDetectError, detect_server_info, summarize_detect_result
+from app.core.ssh_detector import CONSOLIDATED_PROBE_TIMEOUT, DEFAULT_DETECT_TIMEOUT, ServerDetectError, ServerDetectTimeout, detect_server_info, summarize_detect_result
 from app.models.settings import SystemSetting
 from app.core.ssh_executor import SSHExecutor, SSHExecutorError, shell_quote
 from app.core.ssh_tester import SSHTestError, test_ssh_connection
@@ -49,6 +49,20 @@ def _get_probe_timeout(db: Session) -> int:
         return int(setting.value)
     except (ValueError, TypeError):
         return DEFAULT_DETECT_TIMEOUT
+
+
+def _detect_server_info_with_deadline(*, deadline_seconds: float = CONSOLIDATED_PROBE_TIMEOUT, **kwargs):
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(detect_server_info, **kwargs)
+    try:
+        return future.result(timeout=deadline_seconds)
+    except concurrent.futures.TimeoutError as exc:
+        future.cancel()
+        raise ServerDetectTimeout(
+            f"server information probe timed out after {deadline_seconds:g}s"
+        ) from exc
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _get_server_or_404(db: Session, server_id: int) -> Server:
@@ -320,7 +334,7 @@ def probe_all_servers(
             server_start = monotonic()
 
             try:
-                raw_result, timings = detect_server_info(
+                raw_result, timings = _detect_server_info_with_deadline(
                     host=server.host,
                     port=server.port,
                     username=server.username,
@@ -355,10 +369,30 @@ def probe_all_servers(
                     elapsed_seconds=elapsed,
                     timings=timings,
                 )
+            except ServerDetectTimeout as exc:
+                server.last_check_at = datetime.utcnow()
+                server.last_error = str(exc)
+                thread_db.commit()
+                thread_db.refresh(server)
+                elapsed = round(monotonic() - server_start, 3)
+                logger.info(
+                    "[probe-one] done server_id=%d name=%s status=online elapsed=%.3fs error=%s",
+                    server.id, server.name, elapsed, str(exc),
+                )
+                return ProbeAllResult(
+                    server_id=server.id,
+                    name=server.name,
+                    host=server.host,
+                    status="online",
+                    last_check_at=server.last_check_at,
+                    last_error=str(exc),
+                    elapsed_seconds=elapsed,
+                    reason="probe_timeout",
+                )
             except ServerDetectError as exc:
                 server.status = "offline"
+                server.last_check_at = datetime.utcnow()
                 server.last_error = str(exc)
-                # Do NOT update last_check_at on failure
                 thread_db.commit()
                 thread_db.refresh(server)
                 elapsed = round(monotonic() - server_start, 3)
@@ -667,11 +701,11 @@ def _probe_server(db: Session, server: Server) -> ServerDetectResponse:
     """Probe a single server and update its health info in DB.
     Used by both single-server and bulk probe endpoints.
     On success: status=online, last_check_at updated, last_error cleared.
-    On failure: status=offline, last_error set, last_check_at NOT updated,
+    On failure: status=offline, last_error and last_check_at updated,
                 existing os/cpu/memory/disk/gpu info preserved.
     """
     try:
-        raw_result, timings = detect_server_info(
+        raw_result, timings = _detect_server_info_with_deadline(
             host=server.host,
             port=server.port,
             username=server.username,
@@ -700,8 +734,22 @@ def _probe_server(db: Session, server: Server) -> ServerDetectResponse:
                     "memory_info": server.memory_info, "gpu_info": server.gpu_info},
         )
         return _build_probe_response(server, success=True, timings=timings)
+    except ServerDetectTimeout as exc:
+        server.last_check_at = datetime.utcnow()
+        server.last_error = str(exc)
+        db.commit()
+        db.refresh(server)
+        write_audit_log(
+            db, action="server.probe", target_type="server", status="failed",
+            target_id=str(server.id), target_name=server.name,
+            server_id=server.id, server_name=server.name,
+            message=f"probe timed out for {server.name}: {exc}",
+            detail={"host": server.host, "error": str(exc), "status_preserved": server.status},
+        )
+        return _build_probe_response(server, success=False, error=str(exc))
     except ServerDetectError as exc:
         server.status = "offline"
+        server.last_check_at = datetime.utcnow()
         server.last_error = str(exc)
         db.commit()
         db.refresh(server)

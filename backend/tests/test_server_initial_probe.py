@@ -1,13 +1,18 @@
 import unittest
+import time
 from datetime import datetime
 from unittest.mock import patch
 
-from app.api.servers import create_server, server_ready_for_public_key_deploy
+from app.api.servers import _detect_server_info_with_deadline, _probe_server, create_server, server_ready_for_public_key_deploy
+from app.core.ssh_detector import ServerDetectError, ServerDetectTimeout
 from app.models.server import Server
 from app.schemas.server import ServerCreate
 
 
 class _FakeSession:
+    def get(self, _model, _key):
+        return None
+
     def add(self, _item) -> None:
         pass
 
@@ -19,6 +24,57 @@ class _FakeSession:
 
 
 class ServerInitialProbeTests(unittest.TestCase):
+    def test_probe_deadline_covers_entire_detector_call(self) -> None:
+        with patch("app.api.servers.detect_server_info", side_effect=lambda **_kwargs: time.sleep(0.2)):
+            with self.assertRaises(ServerDetectTimeout):
+                _detect_server_info_with_deadline(deadline_seconds=0.01)
+
+    def test_failed_probe_updates_last_check_time(self) -> None:
+        previous_check = datetime(2026, 7, 1)
+        server = Server(
+            id=1,
+            name="offline-server",
+            host="10.0.0.2",
+            port=22,
+            username="root",
+            auth_type="password",
+            password="secret",
+            status="offline",
+            last_check_at=previous_check,
+        )
+        db = _FakeSession()
+
+        with patch("app.api.servers.detect_server_info", side_effect=ServerDetectError("unreachable")), \
+             patch("app.api.servers.write_audit_log"):
+            result = _probe_server(db, server)
+
+        self.assertFalse(result.success)
+        self.assertGreater(server.last_check_at, previous_check)
+
+    def test_probe_command_timeout_preserves_online_status(self) -> None:
+        previous_check = datetime(2026, 7, 1)
+        server = Server(
+            id=2,
+            name="slow-server",
+            host="10.0.0.3",
+            port=22,
+            username="root",
+            auth_type="password",
+            password="secret",
+            status="online",
+            last_check_at=previous_check,
+        )
+        db = _FakeSession()
+
+        with patch("app.api.servers.detect_server_info", side_effect=ServerDetectTimeout("probe timed out")), \
+             patch("app.api.servers.write_audit_log"):
+            result = _probe_server(db, server)
+
+        self.assertFalse(result.success)
+        self.assertEqual(server.status, "online")
+        self.assertGreater(server.last_check_at, previous_check)
+        self.assertEqual(server.last_error, "probe timed out")
+
     def test_create_server_runs_initial_probe(self) -> None:
         payload = ServerCreate(
             name="new-server",

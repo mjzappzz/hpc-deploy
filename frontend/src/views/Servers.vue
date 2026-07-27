@@ -2,8 +2,10 @@
   <section class="page-section">
     <el-card shadow="never" class="server-table-card">
       <div class="toolbar">
-        <el-button @click="openCreate">新增服务器</el-button>
-        <el-button type="warning" plain :loading="isDetectingAll" @click="detectAll">全部检测</el-button>
+        <el-button type="primary" @click="openCreate">新增服务器</el-button>
+        <el-button type="warning" plain :loading="isDetectingAll" @click="detectAll">
+          {{ isDetectingAll ? `检测中 ${probeProgress.completed}/${probeProgress.total}` : '检测在线服务器' }}
+        </el-button>
         <el-badge
           :value="pendingPublicKeyDeployCount"
           :hidden="pendingPublicKeyDeployCount === 0"
@@ -40,10 +42,12 @@
             :loading="loading"
             :probing-ids="probingIds"
             :is-detecting-all="isDetectingAll"
+            :starred-ids="starredServerIds"
             @edit="openEdit"
             @delete="removeServer"
             @detect="detectOne"
             @detail="openDetail"
+            @toggle-star="toggleServerStar"
             @update-tags="updateServerTags"
           />
           <el-empty v-else description="一个在线服务器都没有… (•ˋ _ˊ•)" :image-size="60" />
@@ -62,10 +66,12 @@
               :loading="loading"
               :probing-ids="probingIds"
               :is-detecting-all="isDetectingAll"
+              :starred-ids="starredServerIds"
               @edit="openEdit"
               @delete="removeServer"
               @detect="detectOne"
               @detail="openDetail"
+              @toggle-star="toggleServerStar"
               @update-tags="updateServerTags"
             />
             <el-empty v-else description="离线服务器都没有… 世界和平 🌍" :image-size="60" />
@@ -446,15 +452,12 @@ import {
   listServers,
   listSshKeys,
   listTags,
-  probeAllServers,
-  testAllServerSsh,
   testServerSsh,
   updateServer,
-  type ProbeAllResponse,
   type CheckPublicKeyResponse,
   type DeployPublicKeyAllResponse,
-  type SSHTestAllResponse,
   type SSHKeyItem,
+  type ServerDetectResult,
   type ServerPayload,
   type ServerRecord,
   type TagSummary
@@ -486,14 +489,21 @@ const saving = ref(false)
 const dialogVisible = ref(false)
 const editingId = ref<number | null>(null)
 const servers = ref<ServerRecord[]>([])
-const onlineServers = computed(() => servers.value.filter((server) => server.status !== 'offline'))
-const offlineServers = computed(() => servers.value.filter((server) => server.status === 'offline'))
+const STARRED_SERVERS_STORAGE_KEY = 'hpcdeploy.starred-server-ids'
+const starredServerIds = ref<number[]>(loadStarredServerIds())
+const onlineServers = computed(() => servers.value
+  .filter((server) => server.status !== 'offline')
+  .sort(sortStarredFirst))
+const offlineServers = computed(() => servers.value
+  .filter((server) => server.status === 'offline')
+  .sort((a, b) => sortStarredFirst(a, b) || timestampValue(b.last_check_at) - timestampValue(a.last_check_at)))
 const showOfflineServers = ref(false)
 const serverReadyForPublicKeyDeploy = (server: ServerRecord) => server.status === 'online' && !!server.last_check_at
 const publicKeyTargetServers = computed(() => servers.value.filter(serverReadyForPublicKeyDeploy))
 const pendingPublicKeyDeployCount = computed(() => publicKeyTargetServers.value.filter((server) => server.auth_type === 'password').length)
 const probingIds = ref<number[]>([])
 const isDetectingAll = ref(false)
+const probeProgress = reactive({ completed: 0, total: 0 })
 const detailVisible = ref(false)
 const activeServer = ref<ServerRecord | null>(null)
 const sshKeys = ref<SSHKeyItem[]>([])
@@ -507,6 +517,27 @@ const publicKeyStatusMap = ref<Record<number, { status: PublicKeyStatus; message
 const filterTag = ref('')
 const filterKeyword = ref('')
 const tags = ref<TagSummary[]>([])
+
+function loadStarredServerIds(): number[] {
+  try {
+    const value = JSON.parse(localStorage.getItem(STARRED_SERVERS_STORAGE_KEY) ?? '[]')
+    if (!Array.isArray(value)) return []
+    return value.filter((id): id is number => Number.isInteger(id))
+  } catch {
+    return []
+  }
+}
+
+function toggleServerStar(serverId: number) {
+  starredServerIds.value = starredServerIds.value.includes(serverId)
+    ? starredServerIds.value.filter((id) => id !== serverId)
+    : [...starredServerIds.value, serverId]
+  localStorage.setItem(STARRED_SERVERS_STORAGE_KEY, JSON.stringify(starredServerIds.value))
+}
+
+function sortStarredFirst(a: ServerRecord, b: ServerRecord): number {
+  return Number(starredServerIds.value.includes(b.id)) - Number(starredServerIds.value.includes(a.id))
+}
 
 // ── Detail drawer (Phase 27A) ──
 const router = useRouter()
@@ -630,6 +661,12 @@ function sortServersByStatus(a: { status?: string | null }, b: { status?: string
     return 2 // offline
   }
   return rank(a.status) - rank(b.status)
+}
+
+function timestampValue(value: string | null | undefined): number {
+  if (!value) return 0
+  const timestamp = Date.parse(value)
+  return Number.isNaN(timestamp) ? 0 : timestamp
 }
 
 async function loadSshKeys() {
@@ -1016,38 +1053,52 @@ async function detectOne(server: ServerRecord) {
   }
 }
 
-/** 全部检测：先 SSH 测试全部，再探测在线服务器 */
+/** 全部检测：只并发复检当前在线服务器；离线服务器由单台“检测”手动复检 */
 async function detectAll() {
-  const targetIds = servers.value.map((s) => s.id)
-  if (targetIds.length === 0) {
-    ElMessage.warning(getDetectMessage())
+  const targets = servers.value
+    .filter((server) => server.status === 'online')
+  if (targets.length === 0) {
+    ElMessage.warning('当前没有在线服务器，请对离线服务器使用单台检测')
     return
   }
 
   isDetectingAll.value = true
-  probingIds.value = [...targetIds]
+  probeProgress.completed = 0
+  probeProgress.total = targets.length
+  probingIds.value = targets.map((server) => server.id)
+  const startedAt = performance.now()
   try {
-    // 1. 批量 SSH 测试
-    const sshResp: SSHTestAllResponse = (await testAllServerSsh(targetIds)).data
+    const results = await Promise.all(targets.map(async (server) => {
+      try {
+        return (await detectServer(server.id)).data
+      } catch (error) {
+        return {
+          success: false,
+          name: server.name,
+          status: server.status,
+          error: getApiErrorMessage(error),
+        } as ServerDetectResult
+      } finally {
+        probeProgress.completed += 1
+      }
+    }))
     await loadServers()
-    // 2. 在线服务器探测
-    const onlineIds = servers.value
-      .filter((s) => s.status === 'online' && targetIds.includes(s.id))
-      .map((s) => s.id)
-    let detectedOnline = 0
-    if (onlineIds.length > 0) {
-      const probeResp: ProbeAllResponse = (await probeAllServers(onlineIds)).data
-      detectedOnline = probeResp.online
-    }
-    await loadServers()
-    if (detectedOnline > 0) {
-      ElMessage.success(`检测成功：${detectedOnline} 台服务器在线`)
-    }
-    if (sshResp.offline > 0) {
-      ElMessage.warning(`离线服务器：${sshResp.offline} 台，已跳过检测`)
+    const elapsedSeconds = ((performance.now() - startedAt) / 1000).toFixed(1)
+    const succeeded = results.filter((result) => result.success).length
+    const timedOut = results.filter((result) => (result.error ?? result.last_error ?? '').includes('timed out'))
+    const failed = results.filter((result) => !result.success && !timedOut.includes(result))
+    const timeoutNames = timedOut.map((result) => result.name).filter(Boolean).join('、')
+    const failedNames = failed.map((result) => result.name).filter(Boolean).join('、')
+    if (timedOut.length > 0) {
+      const failedSummary = failed.length > 0 ? `，失败 ${failed.length}（${failedNames}）` : ''
+      ElMessage.warning(`检测完成：成功 ${succeeded}，超时 ${timedOut.length}（${timeoutNames}）${failedSummary}，耗时 ${elapsedSeconds} 秒`)
+    } else if (failed.length > 0) {
+      ElMessage.warning(`检测完成：成功 ${succeeded}，失败 ${failed.length}（${failedNames}），耗时 ${elapsedSeconds} 秒`)
+    } else {
+      ElMessage.success(`检测完成：${succeeded} 台服务器，耗时 ${elapsedSeconds} 秒`)
     }
   } catch (error) {
-    ElMessage.error(`全部检测失败：${getApiErrorMessage(error)}`)
+    ElMessage.error(`在线服务器检测失败：${getApiErrorMessage(error)}`)
   } finally {
     probingIds.value = []
     isDetectingAll.value = false
@@ -1379,13 +1430,12 @@ onMounted(() => {
   color: var(--el-color-primary);
 }
 .server-group__toggle {
-  font-size: 10px;
-  color: var(--el-text-color-secondary);
   width: 12px;
-  text-align: center;
   flex-shrink: 0;
+  color: var(--el-text-color-secondary);
+  font-size: 10px;
+  text-align: center;
 }
-
 .server-group__title {
   font-size: 14px;
   font-weight: 600;

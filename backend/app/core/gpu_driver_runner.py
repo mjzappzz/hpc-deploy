@@ -450,6 +450,9 @@ def run_rocky9_gpu_driver_task(task_id: str) -> None:
             nouveau_code, _out, _err = executor.exec_capture("lsmod | grep -q nouveau", timeout_seconds=15)
             nouveau_loaded = nouveau_code == 0
             preparation_script = build_rocky9_pre_reboot_script(nouveau_loaded) if os_profile == "rocky9" else build_ubuntu_pre_reboot_script(nouveau_loaded)
+            task.start_time = task.start_time or datetime.utcnow()
+            db.commit()
+            _set_status(db, task, "RUNNING")
             result = _run_script(executor, task.remote_work_dir, preparation_script, 7200,
                                  lambda line: _log(db, task_id, "INFO", line))
             if result != 0:
@@ -489,7 +492,7 @@ def run_rocky9_gpu_driver_task(task_id: str) -> None:
             db.refresh(task)
             if task.status in {"CANCELED", "CANCELING"}:
                 return
-            _set_status(db, task, "PREPARING")
+            _set_status(db, task, "RUNNING")
             _log(db, task_id, "SYSTEM", "post-reboot verification passed; starting detached NVIDIA driver installer")
             if uploaded_driver is not None:
                 executor.upload_file(str(uploaded_driver), f"{task.remote_work_dir.rstrip('/')}/{GPU_DRIVER_FILE_NAME}")

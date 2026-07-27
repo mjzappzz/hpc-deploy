@@ -28,9 +28,6 @@
                 <div class="selection-label-row step-header-band">
                   <div class="selection-heading">
                     <span class="selection-label step-label">① 选择目标服务器</span>
-                    <el-tooltip v-if="refreshingServerConnectivity" content="正在刷新在线服务器 SSH 状态" placement="top">
-                      <el-icon class="server-connectivity-spinner"><Loading /></el-icon>
-                    </el-tooltip>
                     <el-tag v-if="selectedServerIds.length > 0" type="success" size="small" effect="dark" class="step-complete-tag">已完成</el-tag>
                   </div>
                   <div class="selection-header-actions">
@@ -43,7 +40,7 @@
                       @click="probeAllManagedServers"
                     >
                       <el-icon v-if="!probingAllServers"><Refresh /></el-icon>
-                      探测全部服务器
+                      {{ probingAllServers ? `检测中 ${probeProgress.completed}/${probeProgress.total}` : '检测在线服务器' }}
                     </el-button>
                     <el-select v-model="selectedTag" placeholder="全部标签" clearable size="small" style="width:140px" @change="onTagFilterChange">
                       <el-option v-for="t in tags" :key="t.name" :label="t.name" :value="t.name" />
@@ -75,6 +72,14 @@
                           <div class="s-card-main">
                             <div class="s-card-title-row">
                               <div class="s-card-name-group">
+                                <button
+                                  type="button"
+                                  class="s-card-star"
+                                  :class="{ 'is-starred': starredServerIds.includes(server.id) }"
+                                  :aria-label="starredServerIds.includes(server.id) ? `取消关注 ${server.name}` : `关注 ${server.name}`"
+                                  :title="starredServerIds.includes(server.id) ? '取消关注' : '标记为关注'"
+                                  @click.stop="toggleServerStar(server.id)"
+                                >{{ starredServerIds.includes(server.id) ? '★' : '☆' }}</button>
                                 <span class="s-card-name">{{ server.name }}</span>
                                 <template v-if="server.tags && server.tags.length">
                                   <el-tag v-for="tag in server.tags.slice(0, 2)" :key="tag" size="small" :type="serverTagType(tag)" class="s-card-tag">{{ tag }}</el-tag>
@@ -385,12 +390,31 @@
                         <el-input-number v-model="durationParts.minutes" :min="0" :max="59" :step="1" controls-position="right" :disabled="isFormDisabled" size="small" style="width:120px" />
                         <span class="duration-unit">分钟</span>
                       </div>
-                      <div class="duration-presets">
-                        <el-button size="small" plain :disabled="isFormDisabled" @click="setDurationPreset(0, 1)">1分钟</el-button>
-                        <el-button size="small" plain :disabled="isFormDisabled" @click="setDurationPreset(0, 3)">3分钟</el-button>
-                        <el-button size="small" plain :disabled="isFormDisabled" @click="setDurationPreset(4, 0)">4小时</el-button>
-                        <el-button size="small" plain :disabled="isFormDisabled" @click="setDurationPreset(12, 0)">12小时</el-button>
-                      </div>
+                    </div>
+                  </el-form-item>
+                  <el-form-item label="采样间隔" required>
+                    <div class="sampling-interval-control">
+                      <el-input-number
+                        v-model="stressIntervalSeconds"
+                        :min="1"
+                        :max="stressIntervalMax"
+                        :step="1"
+                        controls-position="right"
+                        :disabled="isFormDisabled"
+                        size="small"
+                        style="width: 140px"
+                      />
+                      <span class="duration-unit">秒</span>
+                      <span class="form-help-text">默认随压测时长自动计算，可手动修改；范围 1–{{ stressIntervalMax }} 秒。</span>
+                    </div>
+                  </el-form-item>
+                  <el-form-item v-if="hasGpuStressSelected" label="GPU 计算精度">
+                    <div>
+                      <el-radio-group v-model="gpuPrecision" :disabled="isFormDisabled">
+                        <el-radio-button value="fp32">FP32 单精度</el-radio-button>
+                        <el-radio-button value="fp64">FP64 双精度</el-radio-button>
+                      </el-radio-group>
+                      <div class="form-help-text">默认 FP32；FP64 会使用 gpu-burn 的 -d 参数。</div>
                     </div>
                   </el-form-item>
 
@@ -444,7 +468,7 @@
                 <div class="preview-label">命令预览</div>
                 <pre class="command-preview">{{ commandPreview }}</pre>
                 <div v-if="showStressParamInfo" class="param-info">
-                  参数说明：第 1 个参数 = 压测时长（秒），第 2 个参数 = 采样间隔（秒）<span v-if="showDiskTestDirInPreview">；DISK_TEST_DIR = 磁盘测试文件写入目录</span>
+                  参数说明：第 1 个参数 = 压测时长（秒），第 2 个参数 = 采样间隔（秒）<span v-if="hasGpuStressSelected">；FP64 通过 GPU_BURN_PRECISION=fp64 启用</span><span v-if="showDiskTestDirInPreview">；DISK_TEST_DIR = 磁盘测试文件写入目录</span>
                 </div>
               </div>
 
@@ -545,7 +569,14 @@
     </el-dialog>
 
     <!-- 取消任务确认弹窗 -->
-    <el-dialog v-model="cancelDialogVisible" title="取消任务" width="420px" :close-on-click-modal="false">
+    <el-dialog
+      v-model="cancelDialogVisible"
+      title="取消任务"
+      width="420px"
+      :close-on-click-modal="false"
+      :close-on-press-escape="!cancelSubmitting"
+      :show-close="!cancelSubmitting"
+    >
       <div class="cancel-dialog-body">
         <p class="cancel-intro">确认取消当前任务？</p>
         <ul class="cancel-checklist">
@@ -555,8 +586,10 @@
         </ul>
       </div>
       <template #footer>
-        <el-button @click="cancelDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="cancelSubmitting" @click="confirmCancelCurrentTask">确认取消任务</el-button>
+        <el-button :disabled="cancelSubmitting" @click="cancelDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="cancelSubmitting" @click="confirmCancelCurrentTask">
+          {{ cancelSubmitting ? '取消中…' : '确认取消任务' }}
+        </el-button>
       </template>
     </el-dialog>
 
@@ -571,7 +604,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { listScriptFiles, type ScriptFileRecord } from '@/api/script'
-import { listServers, listTags, probeAllServers, testAllServerSsh, type ServerRecord, type TagSummary } from '@/api/server'
+import { detectServer, listServers, listTags, type ServerDetectResult, type ServerRecord, type TagSummary } from '@/api/server'
 import {
   batchRunTask,
   cancelTask,
@@ -618,7 +651,7 @@ import {
 import LogViewer from '@/components/LogViewer.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import TaskDiagnosisDialog from '@/components/TaskDiagnosisDialog.vue'
-import { Loading, Refresh } from '@element-plus/icons-vue'
+import { Refresh } from '@element-plus/icons-vue'
 import { useRoute, useRouter } from 'vue-router'
 
 type DurationParts = {
@@ -771,11 +804,13 @@ const defaultGpuDriverVersions: Record<'geforce' | 'datacenter', string> = {
 }
 const uploadingGpuDriver = ref(false)
 const servers = ref<ServerRecord[]>([])
+const STARRED_SERVERS_STORAGE_KEY = 'hpcdeploy.starred-server-ids'
+const starredServerIds = ref<number[]>(loadStarredServerIds())
 const selectedTag = ref('')
 const tags = ref<TagSummary[]>([])
 const files = ref<TaskRunnerFile[]>([])
-const refreshingServerConnectivity = ref(false)
 const probingAllServers = ref(false)
+const probeProgress = reactive({ completed: 0, total: 0 })
 const validating = ref(false)
 const submitting = ref(false)
 const cancelSubmitting = ref(false)
@@ -796,6 +831,8 @@ const durationParts = reactive<DurationParts>({
   hours: 0,
   minutes: 1
 })
+const stressIntervalSeconds = ref(10)
+const gpuPrecision = ref<'fp32' | 'fp64'>('fp32')
 const batchResult = ref<BatchTaskCreateResponse | null>(null)
 const showBatchResult = ref(false)
 const selectedStressScripts = ref<string[]>([])
@@ -828,7 +865,9 @@ function stopNowTimer() {
 }
 let pollTimer: number | null = null
 
-const allOnlineServers = computed(() => servers.value.filter((s) => s.status === 'online'))
+const allOnlineServers = computed(() => servers.value
+  .filter((s) => s.status === 'online')
+  .sort(sortStarredFirst))
 
 const filteredOnlineServers = computed(() => {
   let list = allOnlineServers.value
@@ -862,8 +901,29 @@ const groupedOnlineServers = computed(() => {
       if (orderDiff !== 0) return orderDiff
       return a.localeCompare(b, 'zh-CN')
     })
-    .map(([name, servers]) => ({ name, servers }))
+    .map(([name, servers]) => ({ name, servers: servers.sort(sortStarredFirst) }))
 })
+
+function loadStarredServerIds(): number[] {
+  try {
+    const value = JSON.parse(localStorage.getItem(STARRED_SERVERS_STORAGE_KEY) ?? '[]')
+    if (!Array.isArray(value)) return []
+    return value.filter((id): id is number => Number.isInteger(id))
+  } catch {
+    return []
+  }
+}
+
+function toggleServerStar(serverId: number) {
+  starredServerIds.value = starredServerIds.value.includes(serverId)
+    ? starredServerIds.value.filter((id) => id !== serverId)
+    : [...starredServerIds.value, serverId]
+  localStorage.setItem(STARRED_SERVERS_STORAGE_KEY, JSON.stringify(starredServerIds.value))
+}
+
+function sortStarredFirst(a: ServerRecord, b: ServerRecord): number {
+  return Number(starredServerIds.value.includes(b.id)) - Number(starredServerIds.value.includes(a.id))
+}
 
 function onTagFilterChange() {
   const validIds = new Set(filteredOnlineServers.value.map((s) => s.id))
@@ -957,10 +1017,6 @@ function selectEnvironmentFile(file: TaskRunnerFile) {
 function isEnvironmentFileSelected(file: TaskRunnerFile): boolean {
   if (selectedTaskCategory.value !== 'base_system') return selectedFilePath.value === file.path
   return selectedManagedActions.value.includes(managedActionForFile(file))
-}
-
-function setDurationPreset(hours: number, minutes: number) {
-  Object.assign(durationParts, { hours, minutes })
 }
 
 function stressCardDesc(name: string): string {
@@ -1149,6 +1205,11 @@ const stressDurationSeconds = computed(() => {
   const normalized = normalizeDurationParts(durationParts)
   return normalized.hours * 3600 + normalized.minutes * 60
 })
+const stressIntervalMax = computed(() => Math.max(1, Math.min(stressDurationSeconds.value, 3600)))
+const hasGpuStressSelected = computed(() =>
+  selectedFile.value?.name === 'gpu_stress_report.sh' ||
+  selectedStressScripts.value.some(path => path.includes('gpu_stress_report.sh'))
+)
 
 const commandPreview = computed(() => {
   if (selectedTaskCategory.value === 'base_system' && selectedManagedActions.value.length === 2) {
@@ -1170,7 +1231,7 @@ const commandPreview = computed(() => {
   // Stress suite: suite mode with 2+ scripts
   if (selectedTaskType.value === 'stress' && stressSuiteMode.value && selectedStressScripts.value.length >= 2) {
     const dur = stressDurationSeconds.value
-    const interval = calcStressInterval(dur)
+    const interval = stressIntervalSeconds.value
     const order = [
       { path: 'stress/gpu_stress_report.sh', label: 'GPU 压测', name: 'gpu_stress_report.sh' },
       { path: 'stress/cpu_mem_stress_report.sh', label: 'CPU/内存压测', name: 'cpu_mem_stress_report.sh' },
@@ -1179,6 +1240,9 @@ const commandPreview = computed(() => {
     const selected = order.filter(item => selectedStressScripts.value.some(p => p.includes(item.name)))
     const lines = selected.map((item, i) => {
       let prefix = ''
+      if (item.name === 'gpu_stress_report.sh' && gpuPrecision.value === 'fp64') {
+        prefix = 'GPU_BURN_PRECISION=fp64 '
+      }
       if (item.name === 'disk_stress_report.sh' && diskTestDir.value.trim()) {
         prefix = `DISK_TEST_DIR='${diskTestDir.value.trim()}' `
       }
@@ -1190,10 +1254,13 @@ const commandPreview = computed(() => {
   if (!selectedFile.value) return '请选择知识库文件'
   if (selectedFile.value.physical_category === 'stress') {
     const dur = stressDurationSeconds.value
-    const interval = calcStressInterval(dur)
-    const prefix = selectedFile.value.name === 'disk_stress_report.sh' && diskTestDir.value.trim()
-      ? `DISK_TEST_DIR='${diskTestDir.value.trim()}' `
-      : ''
+    const interval = stressIntervalSeconds.value
+    let prefix = ''
+    if (selectedFile.value.name === 'gpu_stress_report.sh' && gpuPrecision.value === 'fp64') {
+      prefix = 'GPU_BURN_PRECISION=fp64 '
+    } else if (selectedFile.value.name === 'disk_stress_report.sh' && diskTestDir.value.trim()) {
+      prefix = `DISK_TEST_DIR='${diskTestDir.value.trim()}' `
+    }
     return `${prefix}./${selectedFile.value.name} ${dur} ${interval}`
   }
   if (selectedFile.value.physical_category === 'apptainer') {
@@ -1365,41 +1432,56 @@ async function loadOptions() {
   }))
   gpuDriverLibrary.value = gpuDriverResp.data
   selectDefaultGpuDriver()
-  const serverIds = serverResp.data
-    .filter((server) => server.status === 'online')
-    .map((server) => server.id)
-  if (serverIds.length > 0) void refreshServerConnectivity(serverIds)
   void loadTags()
 }
 
-async function refreshServerConnectivity(serverIds: number[]) {
-  refreshingServerConnectivity.value = true
-  try {
-    await testAllServerSsh(serverIds)
-    servers.value = (await listServers()).data
-    const onlineIds = new Set(servers.value.filter((server) => server.status === 'online').map((server) => server.id))
-    selectedServerIds.value = selectedServerIds.value.filter((id) => onlineIds.has(id))
-  } catch (error) {
-    console.warn('background server SSH refresh failed', error)
-  } finally {
-    refreshingServerConnectivity.value = false
-  }
-}
-
 async function probeAllManagedServers() {
-  const serverIds = servers.value.map((server) => server.id)
-  if (serverIds.length === 0) return
+  const targets = servers.value
+    .filter((server) => server.status === 'online')
+  if (targets.length === 0) {
+    ElMessage.warning('当前没有在线服务器，请到服务器管理页对离线服务器使用单台检测')
+    return
+  }
 
   probingAllServers.value = true
+  probeProgress.completed = 0
+  probeProgress.total = targets.length
+  const startedAt = performance.now()
   try {
-    const result = (await probeAllServers(serverIds)).data
+    const results = await Promise.all(targets.map(async (server) => {
+      try {
+        return (await detectServer(server.id)).data
+      } catch (error) {
+        return {
+          success: false,
+          name: server.name,
+          status: server.status,
+          error: getApiErrorMessage(error),
+        } as ServerDetectResult
+      } finally {
+        probeProgress.completed += 1
+      }
+    }))
     servers.value = (await listServers()).data
     const onlineIds = new Set(servers.value.filter((server) => server.status === 'online').map((server) => server.id))
     selectedServerIds.value = selectedServerIds.value.filter((id) => onlineIds.has(id))
     void loadTags()
-    ElMessage.success(`探测完成：${result.online} 台在线，${result.offline} 台离线`)
+    const elapsedSeconds = ((performance.now() - startedAt) / 1000).toFixed(1)
+    const succeeded = results.filter((result) => result.success).length
+    const timedOut = results.filter((result) => (result.error ?? result.last_error ?? '').includes('timed out'))
+    const failed = results.filter((result) => !result.success && !timedOut.includes(result))
+    const timeoutNames = timedOut.map((result) => result.name).filter(Boolean).join('、')
+    const failedNames = failed.map((result) => result.name).filter(Boolean).join('、')
+    if (timedOut.length > 0) {
+      const failedSummary = failed.length > 0 ? `，失败 ${failed.length}（${failedNames}）` : ''
+      ElMessage.warning(`检测完成：成功 ${succeeded}，超时 ${timedOut.length}（${timeoutNames}）${failedSummary}，耗时 ${elapsedSeconds} 秒`)
+    } else if (failed.length > 0) {
+      ElMessage.warning(`检测完成：成功 ${succeeded}，失败 ${failed.length}（${failedNames}），耗时 ${elapsedSeconds} 秒`)
+    } else {
+      ElMessage.success(`检测完成：${succeeded} 台服务器，耗时 ${elapsedSeconds} 秒`)
+    }
   } catch (error) {
-    ElMessage.error(getApiErrorMessage(error))
+    ElMessage.error(`在线服务器检测失败：${getApiErrorMessage(error)}`)
   } finally {
     probingAllServers.value = false
   }
@@ -1429,6 +1511,8 @@ function categoryLabel(cat: string): string {
 
 function resetParamsForFile() {
   Object.assign(durationParts, { hours: 0, minutes: 1 })
+  stressIntervalSeconds.value = calcStressInterval(60)
+  gpuPrecision.value = 'fp32'
   apptainerTargetDir.value = '~/hpcdeploy/apptainer/'
   diskTestDir.value = ''
 }
@@ -1437,12 +1521,15 @@ function buildStressParams(): Record<string, unknown> {
   const dur = stressDurationSeconds.value
   const params: Record<string, unknown> = {
     duration_seconds: dur,
-    interval_seconds: calcStressInterval(dur),
+    interval_seconds: stressIntervalSeconds.value,
   }
   const hasDisk = selectedFile.value?.name === 'disk_stress_report.sh' ||
     selectedStressScripts.value.some(p => p.includes('disk_stress_report.sh'))
   if (hasDisk && diskTestDir.value.trim()) {
     params.disk_test_dir = diskTestDir.value.trim()
+  }
+  if (hasGpuStressSelected.value) {
+    params.gpu_precision = gpuPrecision.value
   }
   return params
 }
@@ -1864,8 +1951,7 @@ function cancelCurrentTask() {
 }
 
 async function confirmCancelCurrentTask() {
-  if (!activeTaskId.value) return
-  cancelDialogVisible.value = false
+  if (!activeTaskId.value || cancelSubmitting.value) return
   cancelSubmitting.value = true
   try {
     const resp = await cancelTask(activeTaskId.value)
@@ -1884,6 +1970,7 @@ async function confirmCancelCurrentTask() {
     }
   } finally {
     cancelSubmitting.value = false
+    cancelDialogVisible.value = false
   }
 }
 
@@ -2238,6 +2325,7 @@ watch(selectedFilePath, () => {
 
 watch(durationParts, () => {
   Object.assign(durationParts, normalizeDurationParts(durationParts))
+  stressIntervalSeconds.value = calcStressInterval(stressDurationSeconds.value)
 })
 
 watch(activePanel, (panel) => {
@@ -2323,16 +2411,6 @@ onBeforeUnmount(() => {
 
 .runner-card :deep(.el-card__body) {
   padding: 16px;
-}
-
-.server-connectivity-spinner {
-  margin-left: 6px;
-  color: var(--el-color-primary);
-  animation: server-connectivity-spin 1s linear infinite;
-}
-
-@keyframes server-connectivity-spin {
-  to { transform: rotate(360deg); }
 }
 
 .runner-header {
@@ -2458,6 +2536,28 @@ onBeforeUnmount(() => {
   gap: 4px;
   min-width: 0;
   flex: 1;
+}
+
+.s-card-star {
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  color: var(--el-text-color-placeholder);
+  background: transparent;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.s-card-star:hover,
+.s-card-star:focus-visible,
+.s-card-star.is-starred {
+  color: var(--el-color-warning);
+}
+
+.s-card-star:focus-visible {
+  outline: 2px solid var(--el-color-primary-light-5);
+  outline-offset: 2px;
 }
 
 .s-card-name {
@@ -3127,13 +3227,6 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 12px;
-  flex-wrap: wrap;
-}
-
-.duration-presets {
-  display: flex;
-  align-items: center;
-  gap: 6px;
   flex-wrap: wrap;
 }
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+SCRIPT_VERSION="1.1.0"
 BACKUP_ROOT="/var/backups/hpcdeploy"
 RUN_ID="$(date +%Y%m%d-%H%M%S)"
 BACKUP_DIR="${BACKUP_ROOT}/linux-release-lock-${RUN_ID}"
@@ -40,6 +41,11 @@ lock_rocky_release() {
         cp -a "$repo" "${BACKUP_DIR}/yum.repos.d/"
         rm -f "$repo"
     done
+    local epel_repos=(/etc/yum.repos.d/epel*.repo /etc/yum.repos.d/EPEL*.repo)
+    for repo in "${epel_repos[@]}"; do
+        cp -a "$repo" "${BACKUP_DIR}/yum.repos.d/"
+        rm -f "$repo"
+    done
     shopt -u nullglob
     if [[ -e /etc/dnf/vars/releasever ]]; then
         cp -a /etc/dnf/vars/releasever "${BACKUP_DIR}/releasever"
@@ -67,6 +73,16 @@ enabled=1
 gpgcheck=1
 gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-Rocky-9
 EOF
+    cat > /etc/yum.repos.d/epel-9-hpcdeploy.repo <<'EOF'
+[epel]
+name=Extra Packages for Enterprise Linux 9 - $basearch
+metalink=https://mirrors.fedoraproject.org/metalink?repo=epel-9&arch=$basearch
+enabled=1
+gpgcheck=1
+repo_gpgcheck=0
+gpgkey=https://dl.fedoraproject.org/pub/epel/RPM-GPG-KEY-EPEL-9
+skip_if_unavailable=0
+EOF
     mkdir -p /etc/dnf/vars
     printf '9.4\n' > /etc/dnf/vars/releasever
 
@@ -76,9 +92,11 @@ EOF
     dnf clean all
     rm -rf /var/cache/dnf
     dnf makecache
+    dnf --disablerepo='*' --enablerepo=epel makecache
 
     [[ "$(tr -d '[:space:]' < /etc/dnf/vars/releasever)" == "9.4" ]] || fail "releasever 验证失败"
     dnf repolist --enabled | grep -Eq 'baseos|appstream|crb' || fail "Rocky Linux 9.4 仓库验证失败"
+    dnf repolist --enabled | grep -Eq '(^|[[:space:]])epel([[:space:]]|$)' || fail "EPEL 9 仓库验证失败"
 }
 
 lock_ubuntu_lts() {
@@ -110,6 +128,7 @@ case "$OS_ID" in
     *) fail "不支持的系统：ID=${OS_ID:-unknown} VERSION_ID=${VERSION_ID:-unknown}" ;;
 esac
 
+log INFO "脚本版本：${SCRIPT_VERSION}"
 log PASS "系统版本策略配置完成"
 log INFO "备份目录：${BACKUP_DIR}"
 log INFO "该任务仅锁定 Rocky Linux 9.4；其他 Rocky 版本直接跳过，不执行跨版本降级"

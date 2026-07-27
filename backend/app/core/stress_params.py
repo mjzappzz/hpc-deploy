@@ -3,14 +3,15 @@ import re
 from fastapi import HTTPException, status
 
 
-STRESS_ALLOWED_INTERVALS: list[int] = [5, 10, 30, 60, 120]
+STRESS_MAX_INTERVAL_SECONDS = 3600
 STRESS_ALLOWED_DISK_FILE_SIZES: list[str] = ["1G", "10G", "50G", "100G"]
 STRESS_ALLOWED_GPU_BACKENDS: list[str] = ["cuda"]
+STRESS_ALLOWED_GPU_PRECISIONS: set[str] = {"fp32", "fp64"}
 STRESS_ALL_PARAM_KEYS: set[str] = {
     "duration_seconds", "interval_seconds",
     "memory_percent", "workers",
     "disk_file_size", "disk_path", "disk_test_dir",
-    "gpu_ids", "gpu_memory_percent", "gpu_backend",
+    "gpu_ids", "gpu_memory_percent", "gpu_backend", "gpu_precision",
 }
 
 _SAFE_DISK_DIR_PREFIXES: tuple[str, ...] = (
@@ -34,6 +35,26 @@ def auto_calc_stress_interval(duration_seconds: int) -> int:
     if duration_seconds <= 43200:
         return 60
     return 120
+
+
+def validate_stress_interval(raw: dict[str, object], duration_seconds: int) -> int:
+    interval = raw.get("interval_seconds")
+    if interval is None:
+        return auto_calc_stress_interval(duration_seconds)
+    if (
+        not isinstance(interval, int)
+        or isinstance(interval, bool)
+        or interval < 1
+        or interval > min(duration_seconds, STRESS_MAX_INTERVAL_SECONDS)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "interval_seconds must be an integer between 1 and "
+                f"{min(duration_seconds, STRESS_MAX_INTERVAL_SECONDS)}"
+            ),
+        )
+    return interval
 
 
 def validate_disk_test_dir(path: str) -> str:
@@ -88,7 +109,7 @@ def validate_stress_params(raw: dict[str, object], script_name: str) -> dict[str
             detail="duration_seconds must be an integer between 10 and 259200",
         )
     validated["duration_seconds"] = dur
-    validated["interval_seconds"] = auto_calc_stress_interval(dur)
+    validated["interval_seconds"] = validate_stress_interval(raw, dur)
 
     if script_name == "cpu_mem_stress_report.sh":
         if "memory_percent" in raw:
@@ -124,6 +145,14 @@ def validate_stress_params(raw: dict[str, object], script_name: str) -> dict[str
                 validated["disk_test_dir"] = validate_disk_test_dir(dtd)
 
     elif script_name == "gpu_stress_report.sh":
+        if "gpu_precision" in raw:
+            precision = raw["gpu_precision"]
+            if precision not in STRESS_ALLOWED_GPU_PRECISIONS:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="gpu_precision must be one of: fp32, fp64",
+                )
+            validated["gpu_precision"] = precision
         if "gpu_ids" in raw:
             gpu_ids = raw["gpu_ids"]
             if not isinstance(gpu_ids, str) or not re.match(r'^(\d+(,\d+)*|all)$', gpu_ids):
@@ -169,7 +198,7 @@ def validate_stress_suite_params(raw: dict[str, object], *, has_disk: bool) -> d
 
     suite_params: dict[str, object] = {
         "duration_seconds": dur,
-        "interval_seconds": auto_calc_stress_interval(dur),
+        "interval_seconds": validate_stress_interval(raw, dur),
     }
 
     for key in raw:

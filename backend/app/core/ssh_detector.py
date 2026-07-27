@@ -1,3 +1,4 @@
+import base64
 import logging
 import re
 from pathlib import Path
@@ -13,10 +14,15 @@ class ServerDetectError(Exception):
     pass
 
 
+class ServerDetectTimeout(ServerDetectError):
+    pass
+
+
 # Shared timeout for health/detect probes (both single-server and bulk).
 # 3s is sufficient to determine SSH connectivity; a longer timeout would
 # make bulk probe-all unacceptably slow when servers are offline.
 DEFAULT_DETECT_TIMEOUT = 3
+CONSOLIDATED_PROBE_TIMEOUT = 8
 
 
 # Consolidated bash probe script — runs as a single exec_command.
@@ -31,7 +37,7 @@ echo '__HPROBE_SECT_B__uname'
 uname -a 2>/dev/null
 echo '__HPROBE_SECT_E__'
 echo '__HPROBE_SECT_B__cpu'
-lscpu 2>/dev/null | head -40
+LC_ALL=C lscpu 2>/dev/null | head -40
 echo '__HPROBE_SECT_E__'
 echo '__HPROBE_SECT_B__memory'
 free -h 2>/dev/null
@@ -80,6 +86,11 @@ else
 fi
 echo '__HPROBE_SECT_E__'
 """
+CONSOLIDATED_PROBE_COMMAND = (
+    "printf '%s' '"
+    + base64.b64encode(CONSOLIDATED_PROBE_SCRIPT.encode("utf-8")).decode("ascii")
+    + f"' | base64 -d | timeout {CONSOLIDATED_PROBE_TIMEOUT}s bash"
+)
 
 # Regex to extract sections from the consolidated script output.
 # Matches: __HPROBE_SECT_B__<name>\n<content>\n__HPROBE_SECT_E__
@@ -142,11 +153,15 @@ def detect_server_info(
         # Execute the consolidated probe script
         exec_start = time_monotonic()
         _stdin, stdout, stderr = client.exec_command(
-            CONSOLIDATED_PROBE_SCRIPT, timeout=timeout,
+            CONSOLIDATED_PROBE_COMMAND, timeout=CONSOLIDATED_PROBE_TIMEOUT + 1,
         )
         exit_code = stdout.channel.recv_exit_status()
         raw_output = stdout.read().decode("utf-8", errors="replace").strip()
         err_output = stderr.read().decode("utf-8", errors="replace").strip()
+        if exit_code == 124:
+            raise ServerDetectTimeout(
+                f"server information probe timed out after {CONSOLIDATED_PROBE_TIMEOUT}s"
+            )
 
         exec_elapsed = round(time_monotonic() - exec_start, 3)
         logger.info(
@@ -248,10 +263,11 @@ def _summarize_cpu_info(raw: str) -> str:
     model = ""
     cores = ""
     for line in raw.splitlines():
-        if not model and line.startswith("Model name:"):
-            model = line.split(":", 1)[1].strip()
-        if not cores and line.startswith("CPU(s):"):
-            cores = line.split(":", 1)[1].strip()
+        normalized = line.strip().replace("：", ":")
+        if not model and re.match(r"^(Model name|型号名称):", normalized):
+            model = normalized.split(":", 1)[1].strip()
+        if not cores and re.match(r"^(CPU\(s\)|CPU):", normalized):
+            cores = normalized.split(":", 1)[1].strip()
     if not model and not cores:
         return raw.strip() or "-"
     if model and cores:
