@@ -4,7 +4,7 @@
       <div class="settings-topbar">
         <el-button type="warning" plain @click="passwordDialogVisible = true">修改管理员密码</el-button>
         <span v-if="form.admin_password_configured" class="password-hint">密码已通过系统设置配置</span>
-        <span v-else class="password-hint">当前使用环境变量默认密码</span>
+        <span v-else class="password-hint">当前使用首次安装时设置的管理员密码</span>
       </div>
 
       <!-- ═══ 运行数据与路径 ═══ -->
@@ -299,6 +299,17 @@
       </el-card>
 
       <el-dialog v-model="passwordDialogVisible" title="修改管理员密码" width="520px">
+        <el-alert
+          class="password-reset-hint"
+          type="info"
+          :closable="false"
+          show-icon
+        >
+          <template #title>
+            <div>忘记当前密码时，请在部署服务器的项目目录执行：</div>
+            <div class="password-reset-command">sudo deploy/scripts/reset_admin_password.sh</div>
+          </template>
+        </el-alert>
         <el-form label-width="110px">
           <el-form-item label="当前密码">
             <el-input v-model="passwordForm.current_password" type="password" show-password placeholder="输入当前管理员密码" />
@@ -1026,6 +1037,15 @@ onMounted(async () => {
   font-size: 12px;
   color: var(--el-text-color-secondary);
   margin-left: 8px;
+}
+
+.password-reset-hint {
+  margin-bottom: 16px;
+}
+
+.password-reset-command {
+  margin-top: 4px;
+  color: var(--el-text-color-primary);
 }
 
 .settings-topbar {

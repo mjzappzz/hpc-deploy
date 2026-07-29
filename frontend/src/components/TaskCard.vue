@@ -98,7 +98,7 @@ import type { TaskRecord } from '@/api/task'
 import { formatBeijingDateKey, formatDateTime } from '@/utils/time'
 import { calcDurationSeconds, calcEstimatedEndTime, formatSeconds, statusLabel } from '@/composables/useTaskProgress'
 import { formatTaskErrorMessage } from '@/utils/taskError'
-import { formatTaskDisplayName } from '@/utils/taskDisplay'
+import { formatTaskDisplayName, getTaskActionLabel } from '@/utils/taskDisplay'
 import StatusTag from './StatusTag.vue'
 
 defineEmits<{
@@ -147,12 +147,15 @@ const taskReadableType = computed(() => {
   if (props.task.task_type === 'cuda_toolkit') return 'CUDA 安装'
   if (props.task.task_type === 'stress') return 'Linux 服务器压测'
   if (props.task.task_type === 'apptainer') return 'Apptainer 分发'
-  if (props.task.task_type === 'script') return '服务器环境'
+  if (props.task.task_type === 'script') return getTaskActionLabel(props.task)
   return '任务'
 })
 
 const taskTypeTags = computed(() => {
   const fileName = (props.task.file_name || props.task.file_path || '').toLowerCase()
+  if (fileName.includes('disable_linux_lock_sleep') || fileName.includes('lock_linux_release')) {
+    return ['基础环境配置']
+  }
   if (fileName.includes('gpu')) return ['GPU']
   if (fileName.includes('cpu') || fileName.includes('mem')) return ['CPU/内存']
   if (fileName.includes('disk')) return ['磁盘']
@@ -160,7 +163,7 @@ const taskTypeTags = computed(() => {
 })
 
 const taskModuleLabel = computed(() => {
-  return taskTypeTags.value[0] || taskReadableType.value
+  return taskReadableType.value
 })
 
 const displayErrorMessage = computed(() => formatTaskErrorMessage(props.task.failure_reason || props.task.error_message))

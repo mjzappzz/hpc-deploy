@@ -14,11 +14,6 @@ logger = logging.getLogger(__name__)
 # ── Admin password from environment ──
 
 ADMIN_PASSWORD: str = os.environ.get("HPCDEPLOY_ADMIN_PASSWORD", "admin123")
-if ADMIN_PASSWORD == "admin123":
-    logger.warning(
-        "[auth] HPCDEPLOY_ADMIN_PASSWORD 使用默认值 admin123！"
-        " 生产环境请设置环境变量 HPCDEPLOY_ADMIN_PASSWORD"
-    )
 
 
 def verify_admin_password(password: str, db: Session | None = None) -> bool:

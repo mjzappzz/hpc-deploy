@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 
 from app.core.cuda_toolkit_runner import (
     build_cuda_toolkit_install_script,
@@ -44,3 +45,12 @@ class CudaToolkitRunnerTests(unittest.TestCase):
         commands = cuda_toolkit_environment_commands("12.9")
         self.assertIn("export PATH=/usr/local/cuda-12.9/bin:$PATH", commands)
         self.assertIn("export CUDA_PATH=/usr/local/cuda-12.9", commands)
+
+    def test_cuda_runner_recovers_running_detached_tasks_after_restart(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[1] / "app" / "core" / "cuda_toolkit_runner.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('Task.status.in_(("PENDING", "RUNNING"))', source)
+        self.assertIn("_build_detached_remote_execution_command(", source)
+        self.assertIn("startup recovery: reattached detached CUDA Toolkit monitor", source)

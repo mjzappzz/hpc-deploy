@@ -9,12 +9,12 @@ type TaskLike = {
 }
 
 const TASK_TYPE_LABELS: Record<string, string> = {
-  script: '服务器环境',
+  script: '基础环境配置',
   stress: 'Linux 服务器压测',
   apptainer: 'Apptainer 镜像',
   gpu_driver: 'GPU 驱动安装',
   cuda_toolkit: 'CUDA 安装',
-  mpi: '服务器环境',
+  mpi: 'MPI 编译环境配置',
   test: '测试脚本',
 }
 
@@ -28,13 +28,21 @@ export function getTaskTypeLabel(taskType?: string | null, fallback = '-'): stri
   return TASK_TYPE_LABELS[taskType] ?? taskType
 }
 
+export function getTaskActionLabel(task: Pick<TaskLike, 'task_type' | 'file_name' | 'file_path'>): string {
+  const fileName = (task.file_name || task.file_path || '').toLowerCase()
+  if (fileName.includes('disable_linux_lock_sleep')) return '关闭锁屏与休眠'
+  if (fileName.includes('lock_linux_release')) return '锁定系统版本'
+  return getTaskTypeLabel(task.task_type, '任务')
+}
+
 export function getTaskTypeTags(task: TaskLike): string[] {
   const fileName = (task.file_name || task.file_path || '').toLowerCase()
+  if (isBaseSystemTask(fileName)) return ['基础环境配置']
   if (fileName.includes('gpu')) return ['GPU']
   if (fileName.includes('cpu') || fileName.includes('mem')) return ['CPU/内存']
   if (fileName.includes('disk')) return ['磁盘']
   if (task.task_type === 'stress') return ['压测']
-  return [getTaskTypeLabel(task.task_type, '任务')]
+  return [getTaskActionLabel(task)]
 }
 
 export function formatTaskDisplayName(task: TaskLike): string {
@@ -46,7 +54,14 @@ export function formatTaskDisplayName(task: TaskLike): string {
     return task.task_id
   }
 
-  return `${serverLabel} · ${getTaskModuleLabel(task.task_type)} · ${scriptLabel} · ${dateLabel}`
+  const categoryLabel = isBaseSystemTask((task.file_name || task.file_path || '').toLowerCase())
+    ? '基础环境配置'
+    : getTaskActionLabel(task)
+  return `${serverLabel} · ${categoryLabel} · ${scriptLabel} · ${dateLabel}`
+}
+
+function isBaseSystemTask(fileName: string): boolean {
+  return fileName.includes('disable_linux_lock_sleep') || fileName.includes('lock_linux_release')
 }
 
 function normalizeServerLabel(value?: string | null): string {

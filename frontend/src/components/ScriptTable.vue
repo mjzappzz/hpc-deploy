@@ -1,8 +1,8 @@
 <template>
-  <el-table :data="files" border stripe v-loading="loading">
-    <el-table-column prop="name" label="文件名" min-width="220">
+  <el-table class="script-library-table" :data="files" border stripe v-loading="loading">
+    <el-table-column prop="name" label="文件名" min-width="330" show-overflow-tooltip>
       <template #default="{ row }">
-        <el-button link type="primary" @click="$emit('preview', row)">
+        <el-button class="script-name-button" link type="primary" :title="row.name" @click="$emit('preview', row)">
           {{ row.name }}
         </el-button>
       </template>
@@ -12,11 +12,12 @@
         <el-tag effect="plain">{{ categoryLabel(row) }}</el-tag>
       </template>
     </el-table-column>
-    <el-table-column label="类型" width="110">
+    <el-table-column label="版本" width="130" align="center">
       <template #default="{ row }">
-        <el-tag :type="row.is_text ? 'success' : 'warning'" effect="plain">
-          {{ row.is_text ? '文本' : '二进制' }}
+        <el-tag v-if="row.content_version" type="success" effect="plain">
+          {{ row.content_version }}
         </el-tag>
+        <span v-else>-</span>
       </template>
     </el-table-column>
     <el-table-column label="路径" min-width="340">
@@ -32,13 +33,6 @@
     <el-table-column label="最新修改时间" width="180">
       <template #default="{ row }">
         {{ formatMtime(row.updated_at) }}
-      </template>
-    </el-table-column>
-    <el-table-column label="预览" width="90">
-      <template #default="{ row }">
-        <el-tag :type="row.previewable ? 'success' : 'info'" effect="plain">
-          {{ row.previewable ? '支持' : '仅信息' }}
-        </el-tag>
       </template>
     </el-table-column>
     <el-table-column label="操作" width="200" fixed="right">
@@ -95,5 +89,22 @@ function categoryLabel(file: ScriptFileRecord) {
   white-space: normal;
   overflow-wrap: anywhere;
   line-height: 1.45;
+}
+
+.script-name-button {
+  max-width: 100%;
+}
+
+.script-name-button :deep(.el-button__text) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.script-library-table :deep(.el-table__cell) {
+  padding: 9px 0;
+}
+
+.script-library-table :deep(.cell) {
+  line-height: 24px;
 }
 </style>

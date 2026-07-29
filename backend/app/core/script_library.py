@@ -29,10 +29,14 @@ DISPLAY_CATEGORY_LABELS = {
     "windows": "Windows 压测",
     "apptainer": "Apptainer 容器",
 }
+BASE_SYSTEM_SCRIPT_NAMES = {
+    "disable_linux_lock_sleep.sh",
+    "lock_linux_release.sh",
+}
 MAX_WINDOWS_SCRIPT_BYTES = 2 * 1024 * 1024
 VERSION_VALUE = r"(?P<version>\d+(?:\.\d+){0,3}(?:[-+][A-Za-z0-9._-]+)?)"
 SCRIPT_VERSION_PATTERN = re.compile(
-    rf"^\s*(?:#|REM\s+)?\s*(?:script\s*version|version)\s*[:=]\s*['\"]?v?{VERSION_VALUE}",
+    rf"^\s*(?:#|REM\s+)?\s*(?:script[_\s-]*version|version)\s*[:=]\s*['\"]?v?{VERSION_VALUE}",
     re.IGNORECASE | re.MULTILINE,
 )
 SCRIPT_HEADER_VERSION_PATTERN = re.compile(
@@ -153,7 +157,11 @@ def build_library_file_record(path: Path) -> dict[str, object]:
         "relative_path": relative_path,
         "name": resolved.name,
         "physical_category": physical_category,
-        "display_category": DISPLAY_CATEGORY_LABELS[physical_category],
+        "display_category": (
+            "基础环境配置"
+            if physical_category == "mpi" and resolved.name in BASE_SYSTEM_SCRIPT_NAMES
+            else DISPLAY_CATEGORY_LABELS[physical_category]
+        ),
         "size": stat.st_size,
         "updated_at": updated_at,
         "executable": bool(stat.st_mode & 0o111),
@@ -165,12 +173,12 @@ def build_library_file_record(path: Path) -> dict[str, object]:
         "sha256": None,
         "encoding": None,
     }
-    if physical_category == "windows":
-        record.update(build_windows_script_metadata(resolved))
+    if suffix in TEXT_FILE_SUFFIXES:
+        record.update(build_text_script_metadata(resolved))
     return record
 
 
-def build_windows_script_metadata(path: Path) -> dict[str, object]:
+def build_text_script_metadata(path: Path) -> dict[str, object]:
     raw = path.read_bytes()
     content, encoding = decode_text_content(raw[:64 * 1024])
     content_version = extract_content_version(content)
@@ -187,6 +195,11 @@ def build_windows_script_metadata(path: Path) -> dict[str, object]:
         "sha256": hashlib.sha256(raw).hexdigest(),
         "encoding": encoding,
     }
+
+
+def build_windows_script_metadata(path: Path) -> dict[str, object]:
+    """Backward-compatible alias for callers using the old function name."""
+    return build_text_script_metadata(path)
 
 
 def decode_text_content(raw: bytes) -> tuple[str, str]:

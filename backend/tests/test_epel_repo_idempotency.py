@@ -19,7 +19,7 @@ class EpelRepoIdempotencyTests(unittest.TestCase):
 
         self.assertIn("/etc/yum.repos.d/epel.repo", source)
         self.assertNotIn("/etc/yum.repos.d/epel-9-hpcdeploy.repo", source)
-        self.assertIn("dnf versionlock list", source)
+        self.assertIn('dnf "${dnf_core_args[@]}" versionlock list', source)
         self.assertIn("--disablerepo=*", source)
         self.assertIn("--setopt=timeout=20", source)
 

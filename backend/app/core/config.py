@@ -21,3 +21,11 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+if settings.app_env == "production":
+    if (
+        not settings.secret_key
+        or settings.secret_key == "dev-secret-key-change-in-production"
+        or len(settings.secret_key) < 32
+    ):
+        raise RuntimeError("production requires a non-default SECRET_KEY of at least 32 characters")

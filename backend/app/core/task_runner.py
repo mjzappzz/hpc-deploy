@@ -48,6 +48,7 @@ STDERR_WARN_PATTERNS = (
 )
 PID_FILE_NAME = ".hpcdeploy.pid"
 EXIT_CODE_FILE_NAME = ".hpcdeploy.exit_code"
+COMMAND_LOG_FILE_NAME = "task.log"
 CANCELED_EXIT_CODE = -15
 STRESS_BOOT_ID_PARAM_KEY = "stress_boot_id"
 TASK_LEASE_SECONDS = 600
@@ -355,6 +356,28 @@ def build_remote_work_dir_name(task_type: str, file_name: str | None, timestamp:
 
 
 def _execute_command_task(db, executor: SSHExecutor, task: Task, task_id: str, command: str) -> None:
+    """Run a script detached from SSH and monitor its durable remote state."""
+    if not task.file_name:
+        raise TaskRunnerError("task file_name is empty")
+    if not task.remote_work_dir:
+        raise TaskRunnerError("task remote_work_dir is empty")
+
+    timeout_seconds = _resolve_command_timeout(task)
+    task.start_time = datetime.utcnow()
+    db.commit()
+    _ensure_task_not_canceled(db, task)
+    _set_status(db, task, "RUNNING")
+    pid_file = _build_remote_pid_file_path(task.remote_work_dir)
+    _add_log(db, task_id, "SYSTEM", f"command timeout seconds: {timeout_seconds}")
+    _add_log(db, task_id, "SYSTEM", f"remote pid file: {pid_file}")
+    _add_log(db, task_id, "SYSTEM", f"executing detached command: {command}")
+    executor.exec_simple(_build_detached_remote_execution_command(command, task.remote_work_dir))
+    _monitor_detached_command(db, executor, task, task_id, timeout_seconds=timeout_seconds)
+
+
+def _execute_command_task_foreground_legacy(
+    db, executor: SSHExecutor, task: Task, task_id: str, command: str
+) -> None:
     if not task.file_name:
         raise TaskRunnerError("task file_name is empty")
     if not task.remote_work_dir:
@@ -1208,30 +1231,15 @@ def _command_recovery_monitor(task_id: str) -> None:
             key_path=server.key_path,
             password=server.password,
         )
-        pid_file = _build_remote_pid_file_path(task.remote_work_dir)
-        exit_code_file = f"{task.remote_work_dir.rstrip('/')}/{EXIT_CODE_FILE_NAME}"
-        while True:
-            db.refresh(task)
-            if task.status in TERMINAL_TASK_STATUSES:
-                return
-            if _is_remote_pid_alive(executor, pid_file) is True:
-                _touch_task_heartbeat(task)
-                db.commit()
-                sleep(5)
-                continue
-            exit_code = _read_remote_exit_code(executor, exit_code_file)
-            task.end_time = datetime.utcnow()
-            if exit_code == 0:
-                task.status = "SUCCESS"
-                task.exit_code = 0
-                task.error_message = None
-            else:
-                task.status = "FAILED"
-                task.exit_code = exit_code
-                task.error_message = _command_failure_message(db, task_id, exit_code)
-            db.commit()
-            _broadcast_done_safe(task_id, task.status)
-            return
+        _add_log(db, task_id, "SYSTEM", "startup recovery: reattached detached script monitor")
+        _monitor_detached_command(
+            db,
+            executor,
+            task,
+            task_id,
+            timeout_seconds=_resolve_command_timeout(task),
+            recovery=True,
+        )
     except SSHExecutorError as exc:
         if 'task' in locals() and task is not None and task.status == "RUNNING":
             _fail_running_stress_task(db, task, task_id, f"startup recovery: script SSH connect failed: {exc}")
@@ -1526,6 +1534,128 @@ def _build_remote_execution_command(command: str, pid_file_path: str) -> str:
         "exit \"$exit_code\""
     )
     return f"setsid --wait bash -lc {shell_quote(inner_command)}"
+
+
+def _build_detached_remote_execution_command(command: str, remote_work_dir: str) -> str:
+    """Build a command that survives SSH/backend termination."""
+    work_dir = remote_work_dir.rstrip("/")
+    pid_file = f"{work_dir}/{PID_FILE_NAME}"
+    exit_file = f"{work_dir}/{EXIT_CODE_FILE_NAME}"
+    log_file = f"{work_dir}/{COMMAND_LOG_FILE_NAME}"
+    inner = (
+        f"printf '%s' $$ > {shell_quote(pid_file)}; "
+        f"{command}; rc=$?; "
+        f"printf '%s' \"$rc\" > {shell_quote(exit_file)}; "
+        "exit \"$rc\""
+    )
+    return (
+        f"cd {shell_quote(work_dir)} && "
+        f"rm -f {shell_quote(pid_file)} {shell_quote(exit_file)} {shell_quote(log_file)} && "
+        f"nohup setsid -f bash -lc {shell_quote(inner)} "
+        f"> {shell_quote(log_file)} 2>&1 < /dev/null"
+    )
+
+
+def _drain_detached_command_log(
+    db,
+    executor: SSHExecutor,
+    task_id: str,
+    log_file: str,
+    offset: int,
+    *,
+    skip_existing: set[str] | None = None,
+) -> int:
+    size_raw = executor.exec_simple(
+        f"wc -c < {shell_quote(log_file)} 2>/dev/null || echo 0"
+    ).strip()
+    size = int(size_raw) if size_raw.isdigit() else 0
+    if size <= offset:
+        return offset
+    segment = executor.exec_simple(
+        f"tail -c +{offset + 1} {shell_quote(log_file)} 2>/dev/null || true"
+    )
+    for line in segment.splitlines():
+        text = line.strip()
+        if text and (skip_existing is None or text not in skip_existing):
+            _add_log(db, task_id, "INFO", text)
+    return size
+
+
+def _finalize_detached_command(db, task: Task, task_id: str, exit_code: int | None) -> None:
+    db.refresh(task)
+    if task.status == "CANCELED":
+        return
+    task.end_time = datetime.utcnow()
+    if task.status == "CANCELING":
+        task.status = "CANCELED"
+        task.exit_code = CANCELED_EXIT_CODE
+        task.error_message = "canceled by user"
+    elif exit_code == 0:
+        task.status = "SUCCESS"
+        task.exit_code = 0
+        task.error_message = None
+    else:
+        task.status = "FAILED"
+        task.exit_code = exit_code
+        task.error_message = _command_failure_message(db, task_id, exit_code)
+        _add_log(db, task_id, "ERROR", f"command failed with exit code {exit_code}")
+    db.commit()
+    _broadcast_done_safe(task_id, task.status)
+
+
+def _monitor_detached_command(
+    db,
+    executor: SSHExecutor,
+    task: Task,
+    task_id: str,
+    *,
+    timeout_seconds: int,
+    recovery: bool = False,
+    finalize: bool = True,
+) -> int | None:
+    if not task.remote_work_dir:
+        raise TaskRunnerError("task remote_work_dir is empty")
+    work_dir = task.remote_work_dir.rstrip("/")
+    pid_file = f"{work_dir}/{PID_FILE_NAME}"
+    exit_file = f"{work_dir}/{EXIT_CODE_FILE_NAME}"
+    log_file = f"{work_dir}/{COMMAND_LOG_FILE_NAME}"
+    offset = 0
+    existing = None
+    if recovery:
+        existing = {
+            str(message)
+            for (message,) in db.query(TaskLog.message).filter(TaskLog.task_id == task_id).all()
+        }
+    started = monotonic()
+    while True:
+        db.refresh(task)
+        if task.status in TERMINAL_TASK_STATUSES:
+            return task.exit_code
+        offset = _drain_detached_command_log(
+            db, executor, task_id, log_file, offset, skip_existing=existing
+        )
+        exit_code = _read_remote_exit_code(executor, exit_file)
+        if exit_code is not None:
+            _add_log(db, task_id, "SYSTEM", f"command exited with code {exit_code}")
+            if finalize:
+                _finalize_detached_command(db, task, task_id, exit_code)
+            return exit_code
+        if _is_remote_pid_alive(executor, pid_file) is False:
+            sleep(1)
+            exit_code = _read_remote_exit_code(executor, exit_file)
+            if finalize:
+                _finalize_detached_command(db, task, task_id, exit_code)
+            return exit_code
+        if monotonic() - started >= timeout_seconds:
+            _terminate_remote_pid_group(executor, pid_file)
+            _add_log(db, task_id, "ERROR", f"command timed out after {timeout_seconds} seconds")
+            if finalize:
+                _finalize_detached_command(db, task, task_id, None)
+            return None
+        _touch_task_heartbeat(task)
+        db.commit()
+        _broadcast_status_safe(task_id, "RUNNING")
+        sleep(2)
 
 
 def _build_remote_pid_file_path(remote_work_dir: str | None) -> str:

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_VERSION="1.1.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common_runtime.sh"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -9,6 +10,8 @@ LEGACY_FRONTEND_SERVICE_DEST="/etc/systemd/system/hpcdeploy-frontend.service"
 NGINX_SITE_DEST="/etc/nginx/conf.d/hpcdeploy.conf"
 NGINX_DEFAULT_SITE="/etc/nginx/sites-enabled/default"
 WEB_ROOT="/var/www/hpcdeploy"
+HPCDEPLOY_CONFIG_DIR="/etc/hpcdeploy"
+HPCDEPLOY_ENV_FILE="/etc/hpcdeploy/hpcdeploy.env"
 SERVICE_USER="${SUDO_USER:-$(id -un)}"
 SERVICE_GROUP="$(id -gn "$SERVICE_USER")"
 BACKEND_DIR="$PROJECT_ROOT/backend"
@@ -84,12 +87,72 @@ require_cmd() {
   fi
 }
 
+configure_security_environment() {
+  local admin_password=""
+  local admin_password_confirm=""
+  local secret_key=""
+
+  install -d -m 700 -o root -g root "$HPCDEPLOY_CONFIG_DIR"
+  if [[ -f "$HPCDEPLOY_ENV_FILE" ]]; then
+    chmod 600 "$HPCDEPLOY_ENV_FILE"
+    if ! grep -q '^SECRET_KEY=.' "$HPCDEPLOY_ENV_FILE" \
+      || ! grep -q '^HPCDEPLOY_ADMIN_PASSWORD=.' "$HPCDEPLOY_ENV_FILE"; then
+      echo "安全配置不完整：$HPCDEPLOY_ENV_FILE" >&2
+      echo "请修复 SECRET_KEY 和 HPCDEPLOY_ADMIN_PASSWORD 后重新安装。" >&2
+      exit 1
+    fi
+    echo "保留现有安全配置：$HPCDEPLOY_ENV_FILE"
+    return
+  fi
+
+  secret_key="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+  if [[ -n "${HPCDEPLOY_ADMIN_PASSWORD:-}" ]]; then
+    admin_password="$HPCDEPLOY_ADMIN_PASSWORD"
+  elif [[ -t 0 ]]; then
+    while true; do
+      read -r -s -p "请设置管理员密码（至少 6 位）：" admin_password
+      printf '\n'
+      read -r -s -p "请再次输入管理员密码：" admin_password_confirm
+      printf '\n'
+      if [[ ${#admin_password} -lt 6 ]]; then
+        echo "管理员密码至少需要 6 位。"
+      elif [[ "$admin_password" != "$admin_password_confirm" ]]; then
+        echo "两次输入的管理员密码不一致。"
+      else
+        break
+      fi
+    done
+  else
+    admin_password="$(python3 -c 'import secrets; print(secrets.token_urlsafe(18))')"
+    GENERATED_ADMIN_PASSWORD="$admin_password"
+  fi
+
+  if [[ ${#admin_password} -lt 6 || "$admin_password" == *$'\n'* || "$admin_password" == *$'\r'* ]]; then
+    echo "HPCDEPLOY_ADMIN_PASSWORD 必须至少 6 位且不能包含换行符。" >&2
+    exit 1
+  fi
+
+  umask 077
+  admin_password="${admin_password//\\/\\\\}"
+  admin_password="${admin_password//\"/\\\"}"
+  {
+    printf 'APP_ENV=production\n'
+    printf 'SECRET_KEY=%s\n' "$secret_key"
+    printf 'HPCDEPLOY_ADMIN_PASSWORD="%s"\n' "$admin_password"
+  } > "$HPCDEPLOY_ENV_FILE"
+  chown root:root "$HPCDEPLOY_ENV_FILE"
+  chmod 600 "$HPCDEPLOY_ENV_FILE"
+  echo "已生成安全配置：$HPCDEPLOY_ENV_FILE"
+}
+
 install_prerequisites
 
 require_cmd python3
 require_cmd npm
 require_cmd nginx
 require_cmd systemctl
+
+configure_security_environment
 
 NODE_BIN_DIR="$(resolve_service_node_bin "$SERVICE_USER")"
 echo "使用 Node.js：$NODE_BIN_DIR/node ($("$NODE_BIN_DIR/node" --version))"
@@ -134,6 +197,7 @@ Type=simple
 User=$SERVICE_USER
 Group=$SERVICE_GROUP
 WorkingDirectory=$BACKEND_DIR
+EnvironmentFile=/etc/hpcdeploy/hpcdeploy.env
 Environment=PYTHONPATH=$BACKEND_DIR/.deps:$BACKEND_DIR
 ExecStart=$BACKEND_DIR/.deps/bin/uvicorn main:app --host 127.0.0.1 --port 8000
 Restart=always
@@ -159,8 +223,13 @@ if [[ -f "$LEGACY_FRONTEND_SERVICE_DEST" ]]; then
 fi
 
 echo "HPCDeploy 服务安装完成"
+echo "安装脚本版本：$SCRIPT_VERSION"
 echo "项目目录：$PROJECT_ROOT"
 echo "服务用户：$SERVICE_USER:$SERVICE_GROUP"
 echo "后端服务：systemctl status hpcdeploy-backend"
 echo "Web 服务：systemctl status nginx"
 echo "访问地址：http://<server-ip>:10086/"
+if [[ -n "${GENERATED_ADMIN_PASSWORD:-}" ]]; then
+  echo "非交互安装生成的管理员密码（仅显示本次）：$GENERATED_ADMIN_PASSWORD"
+fi
+echo "忘记管理员密码时执行：sudo $PROJECT_ROOT/deploy/scripts/reset_admin_password.sh"

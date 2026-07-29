@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import base64
 import threading
 import re
 from datetime import datetime
 
 from app.core.gpu_driver_runner import _connect, _log, _run_script, _set_status
-from app.core.ssh_executor import SSHExecutor, SSHExecutorError
+from app.core.ssh_executor import SSHExecutor, SSHExecutorError, shell_quote
+from app.core.task_runner import (
+    _build_detached_remote_execution_command,
+    _monitor_detached_command,
+)
 from app.core.ws_manager import ws_manager
 from app.db.database import SessionLocal
 from app.models.server import Server
@@ -132,8 +137,26 @@ def run_cuda_toolkit_task(task_id: str) -> None:
         force_install = bool(params.get("force_install", False))
         os_profile = str(params.get("os_profile", "")) or resolve_cuda_toolkit_os_profile(server.os_info)
 
-        _set_status(db, task, "CONNECTING")
+        recovering = task.status == "RUNNING"
+        if not recovering:
+            _set_status(db, task, "CONNECTING")
         _connect(executor, server)
+        if recovering:
+            if not task.remote_work_dir:
+                raise RuntimeError("CUDA Toolkit recovery directory is missing")
+            _log(db, task_id, "SYSTEM", "startup recovery: reattached detached CUDA Toolkit monitor")
+            exit_code = _monitor_detached_command(
+                db,
+                executor,
+                task,
+                task_id,
+                timeout_seconds=7200,
+                recovery=True,
+                finalize=False,
+            )
+            if exit_code != 0:
+                raise RuntimeError(f"CUDA Toolkit installer exited with code {exit_code}")
+
         nvidia_smi_code, _out, _err = executor.exec_capture("nvidia-smi", timeout_seconds=20)
         if nvidia_smi_code != 0:
             raise RuntimeError("NVIDIA driver is unavailable; install or repair the GPU driver first")
@@ -152,24 +175,41 @@ def run_cuda_toolkit_task(task_id: str) -> None:
             ws_manager.broadcast_done_sync(task_id, "SUCCESS")
             return
 
-        remote_home = executor.get_remote_home()
-        if not task.remote_work_dir:
-            task.remote_work_dir = f"{remote_home.rstrip('/')}/hpcdeploy/tasks/cuda-toolkit/{task.task_id}"
-            db.commit()
-        executor.mkdir_p(task.remote_work_dir)
-        _set_status(db, task, "PREPARING")
-        _log(db, task_id, "SYSTEM", f"installing CUDA Toolkit {version} for {os_profile}")
-        task.start_time = datetime.utcnow()
-        _set_status(db, task, "RUNNING")
-        exit_code = _run_script(
-            executor,
-            task.remote_work_dir,
-            build_cuda_toolkit_install_script(os_profile, version, force_install=force_install),
-            7200,
-            lambda line: _log(db, task_id, "INFO", line),
-        )
-        if exit_code != 0:
-            raise RuntimeError(f"CUDA Toolkit installer exited with code {exit_code}")
+        if not recovering:
+            remote_home = executor.get_remote_home()
+            if not task.remote_work_dir:
+                task.remote_work_dir = f"{remote_home.rstrip('/')}/hpcdeploy/tasks/cuda-toolkit/{task.task_id}"
+                db.commit()
+            executor.mkdir_p(task.remote_work_dir)
+            _set_status(db, task, "PREPARING")
+            _log(db, task_id, "SYSTEM", f"installing CUDA Toolkit {version} for {os_profile}")
+            encoded = base64.b64encode(
+                build_cuda_toolkit_install_script(
+                    os_profile, version, force_install=force_install
+                ).encode("utf-8")
+            ).decode("ascii")
+            installer = f"{task.remote_work_dir.rstrip('/')}/cuda-toolkit-install.sh"
+            executor.exec_simple(
+                f"printf %s {shell_quote(encoded)} | base64 -d > {shell_quote(installer)} && "
+                f"chmod 700 {shell_quote(installer)}"
+            )
+            task.start_time = datetime.utcnow()
+            _set_status(db, task, "RUNNING")
+            executor.exec_simple(
+                _build_detached_remote_execution_command(
+                    "bash ./cuda-toolkit-install.sh", task.remote_work_dir
+                )
+            )
+            exit_code = _monitor_detached_command(
+                db,
+                executor,
+                task,
+                task_id,
+                timeout_seconds=7200,
+                finalize=False,
+            )
+            if exit_code != 0:
+                raise RuntimeError(f"CUDA Toolkit installer exited with code {exit_code}")
         verify_code, verify_output, _verify_err = executor.exec_capture(f"{nvcc_path} --version", timeout_seconds=20)
         if verify_code != 0:
             raise RuntimeError(f"CUDA Toolkit {version} verification failed")
@@ -199,7 +239,7 @@ def resume_cuda_toolkit_tasks_after_startup() -> int:
     try:
         task_ids = [task_id for (task_id,) in db.query(Task.task_id).filter(
             Task.task_type == CUDA_TOOLKIT_TASK_TYPE,
-            Task.status == "PENDING",
+            Task.status.in_(("PENDING", "RUNNING")),
         ).all()]
     finally:
         db.close()

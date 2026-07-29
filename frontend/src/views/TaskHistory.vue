@@ -32,7 +32,7 @@
           @change="applyTaskFilters"
         >
           <el-option label="全部类型" value="" />
-          <el-option label="服务器环境" value="script" />
+          <el-option label="基础环境配置" value="script" />
           <el-option label="Linux 服务器压测" value="stress" />
           <el-option label="Apptainer 镜像" value="apptainer" />
         </el-select>
@@ -782,7 +782,7 @@
                     <div class="batch-detail-subtask__top">
                       <div class="batch-detail-subtask__title">
                         <span class="batch-detail-subtask__seq">{{ batchDetailTaskOrder(task) }}</span>
-                        <span class="batch-detail-subtask__name">{{ batchDetailTaskLabel(task) }}</span>
+                        <span class="batch-detail-subtask__name" :title="batchDetailTaskLabel(task)">{{ batchDetailTaskLabel(task) }}</span>
                       </div>
                       <StatusTag :status="batchChildDisplayStatus(task)" />
                     </div>
@@ -1084,7 +1084,7 @@ import { getApiErrorMessage as readApiErrorMessage, isApiRequestTimeout } from '
 import { formatTaskErrorMessage } from '@/utils/taskError'
 import { useTaskWebSocket } from '@/composables/useTaskWebSocket'
 import { calcDurationSeconds, calcEstimatedEndTime, calcEstimatedRemaining, calcProgress, formatSeconds, getTaskDuration, statusLabel } from '@/composables/useTaskProgress'
-import { formatTaskDisplayName, getTaskTypeLabel, getTaskTypeTags } from '@/utils/taskDisplay'
+import { formatTaskDisplayName, getTaskActionLabel, getTaskTypeLabel, getTaskTypeTags } from '@/utils/taskDisplay'
 import { adminMode, requireAdminConfirm } from '@/composables/useAdminConfirm'
 import StatusTag from '@/components/StatusTag.vue'
 import TaskCard from '@/components/TaskCard.vue'
@@ -1453,7 +1453,7 @@ function taskDisplayModuleName(task: TaskRecord): string {
   if (fileName.includes('gpu')) return 'GPU压测'
   if (fileName.includes('cpu') || fileName.includes('mem')) return 'CPU与内存压测'
   if (fileName.includes('disk')) return '磁盘压测'
-  return getTaskTypeLabel(task.task_type, '任务')
+  return getTaskActionLabel(task)
 }
 
 function batchDetailTaskLabel(task: BatchTaskDetailItem): string {
@@ -3386,8 +3386,8 @@ function copyPath(path: string) {
   void copyToClipboard(path, '远端路径')
 }
 
-async function ensureTaskLogs(taskId: string) {
-  if (taskLogCache[taskId]) {
+async function ensureTaskLogs(taskId: string, refresh = false) {
+  if (!refresh && taskLogCache[taskId]) {
     return taskLogCache[taskId]
   }
   const result = (await getTaskLogs(taskId)).data
@@ -3492,7 +3492,7 @@ function legacyCopy(text: string): boolean {
 
 async function prefetchEnvCommands(task: TaskRecord) {
   try {
-    await ensureTaskLogs(task.task_id)
+    await ensureTaskLogs(task.task_id, true)
   } catch {
     // ignore tooltip prefetch failures
   }
@@ -3500,7 +3500,7 @@ async function prefetchEnvCommands(task: TaskRecord) {
 
 async function prefetchVerifyCommands(task: TaskRecord) {
   try {
-    await ensureTaskLogs(task.task_id)
+    await ensureTaskLogs(task.task_id, true)
   } catch {
     // ignore tooltip prefetch failures
   }
@@ -3508,7 +3508,7 @@ async function prefetchVerifyCommands(task: TaskRecord) {
 
 async function copyEnvCommands(task: TaskRecord) {
   try {
-    const entries = await ensureTaskLogs(task.task_id)
+    const entries = await ensureTaskLogs(task.task_id, true)
     const commands = extractEnvCommands(entries)
     await copyText(commands, '未识别到环境变量命令', '已复制环境变量命令')
   } catch (error) {
@@ -3519,7 +3519,7 @@ async function copyEnvCommands(task: TaskRecord) {
 
 async function copyVerifyCommands(task: TaskRecord) {
   try {
-    const entries = await ensureTaskLogs(task.task_id)
+    const entries = await ensureTaskLogs(task.task_id, true)
     const commands = extractVerifyCommands(entries)
     await copyText(commands, '未识别到验证命令', '已复制验证命令')
   } catch (error) {
@@ -4389,7 +4389,7 @@ onUnmounted(() => {
 
 /* ── Left panel: sub-task list ── */
 .batch-detail-left {
-  width: 240px;
+  width: 300px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -4461,7 +4461,7 @@ onUnmounted(() => {
 
 .batch-detail-subtask__top {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 6px;
 }
@@ -4471,6 +4471,7 @@ onUnmounted(() => {
   align-items: center;
   gap: 6px;
   min-width: 0;
+  flex: 1;
 }
 
 .batch-detail-subtask__seq {
@@ -4491,12 +4492,13 @@ onUnmounted(() => {
 }
 
 .batch-detail-subtask__name {
+  min-width: 0;
   font-weight: 600;
   font-size: 13px;
   color: var(--el-text-color-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  line-height: 18px;
+  overflow-wrap: anywhere;
 }
 
 .batch-detail-subtask__meta {

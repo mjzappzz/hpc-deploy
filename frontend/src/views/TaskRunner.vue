@@ -283,23 +283,17 @@
                 <el-alert :title="gpuDriverOsLabel" :type="isSupportedGpuDriverOs ? 'info' : 'error'" :closable="false" show-icon />
                 <el-alert title="仅在 Nouveau 已加载或 Rocky 更新了默认启动内核时自动重启；安装成功仅以 nvidia-smi 为准。" type="warning" :closable="false" show-icon />
                 <el-form label-position="top" class="gpu-driver-form">
-                  <el-form-item label="驱动类型">
-                    <el-radio-group v-model="gpuDriverType" :disabled="isFormDisabled">
-                      <el-radio value="geforce">GeForce（RTX 5090 / 4090 / 4080 SUPER / 3090）</el-radio>
-                      <el-radio value="datacenter">Data Center（RTX Enterprise）— H200 / H100 / A100 / L40S / RTX PRO 6000</el-radio>
-                    </el-radio-group>
-                  </el-form-item>
-                  <el-form-item label="驱动来源">
+                  <el-form-item label="驱动来源" class="driver-primary-item">
                     <el-radio-group v-model="gpuDriverSource" :disabled="isFormDisabled || uploadingGpuDriver">
                       <el-radio value="library">从 Linux NVIDIA 驱动库选择</el-radio>
                       <el-radio value="upload">上传自定义 .run（保留 7 天）</el-radio>
                     </el-radio-group>
                   </el-form-item>
-                  <el-form-item label="安装策略">
-                    <div class="install-policy-row">
-                      <el-checkbox v-model="forceInstallIfDriverExists" :disabled="isFormDisabled">强制安装所选版本</el-checkbox>
-                      <span class="install-policy-hint">默认检测到 nvidia-smi 后跳过安装。</span>
-                    </div>
+                  <el-form-item label="驱动类型" class="driver-primary-item">
+                    <el-radio-group v-model="gpuDriverType" :disabled="isFormDisabled">
+                      <el-radio value="geforce">GeForce（RTX 5090 / 4090 / 4080 SUPER / 3090）</el-radio>
+                      <el-radio value="datacenter">Data Center（RTX Enterprise）— H200 / H100 / A100 / L40S / RTX PRO 6000</el-radio>
+                    </el-radio-group>
                   </el-form-item>
                   <el-form-item v-if="gpuDriverSource === 'library'" label="具体版本">
                     <el-select v-model="gpuDriverId" placeholder="选择知识库中的驱动版本" :disabled="isFormDisabled || !gpuDriverType" class="runner-control">
@@ -318,6 +312,12 @@
                     </el-upload>
                     <div v-if="gpuDriverUploadId" class="upload-success-row">已上传：{{ gpuDriverUploadName }}</div>
                     <div class="form-help">临时驱动默认保留 7 天；被执行中的任务引用时不会清理。</div>
+                  </el-form-item>
+                  <el-form-item label="安装策略" class="install-policy-item">
+                    <div class="install-policy-row">
+                      <el-checkbox v-model="forceInstallIfDriverExists" :disabled="isFormDisabled">强制安装所选版本</el-checkbox>
+                      <span class="install-policy-hint">默认检测到 nvidia-smi 后跳过安装。</span>
+                    </div>
                   </el-form-item>
                 </el-form>
               </template>
@@ -3862,6 +3862,17 @@ onBeforeUnmount(() => {
 
 .gpu-driver-form {
   margin-top: 14px;
+}
+
+.driver-primary-item :deep(.el-form-item__label) {
+  color: var(--el-text-color-primary);
+  font-weight: 600;
+}
+
+.install-policy-item :deep(.el-form-item__label),
+.install-policy-item :deep(.el-checkbox__label) {
+  color: var(--el-text-color-secondary);
+  font-weight: 400;
 }
 
 .install-policy-row {

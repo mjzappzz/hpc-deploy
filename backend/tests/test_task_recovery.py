@@ -1,11 +1,18 @@
 from datetime import datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
+import subprocess
+import tempfile
+import time
 import unittest
 from unittest.mock import Mock, patch
 
 from app.core.task_recovery import _is_stale, _reset_task_to_pending, should_requeue_after_restart
 from app.core import task_runner
-from app.core.task_runner import _build_remote_execution_command
+from app.core.task_runner import (
+    _build_detached_remote_execution_command,
+    _build_remote_execution_command,
+)
 
 
 class TaskRecoveryTests(unittest.TestCase):
@@ -133,6 +140,33 @@ class TaskRecoveryTests(unittest.TestCase):
         command = _build_remote_execution_command("bash ./install.sh", "/tmp/task/.hpcdeploy.pid")
 
         self.assertIn(".hpcdeploy.exit_code", command)
+
+    def test_detached_command_survives_ssh_disconnect_and_persists_state(self) -> None:
+        command = _build_detached_remote_execution_command("bash ./install.sh", "/tmp/task")
+
+        self.assertIn("nohup setsid -f bash -lc", command)
+        self.assertIn("> '/tmp/task/task.log' 2>&1 < /dev/null", command)
+        self.assertIn("/tmp/task/.hpcdeploy.pid", command)
+        self.assertIn("/tmp/task/.hpcdeploy.exit_code", command)
+
+    def test_detached_command_returns_before_child_and_keeps_running(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            command = _build_detached_remote_execution_command(
+                "sleep 1; printf detached-ok", temp_dir
+            )
+            started = time.monotonic()
+            subprocess.run(["bash", "-lc", command], check=True)
+            self.assertLess(time.monotonic() - started, 0.8)
+
+            exit_file = Path(temp_dir) / ".hpcdeploy.exit_code"
+            deadline = time.monotonic() + 3
+            while not exit_file.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertEqual(exit_file.read_text(encoding="utf-8"), "0")
+            self.assertIn(
+                "detached-ok",
+                (Path(temp_dir) / "task.log").read_text(encoding="utf-8"),
+            )
 
     @patch("app.core.task_runner._schedule_stress_recovery_retry")
     @patch("app.core.task_runner._fail_running_stress_task")

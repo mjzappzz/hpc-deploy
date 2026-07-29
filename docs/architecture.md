@@ -63,7 +63,9 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - CUDA Toolkit 安装（`/cuda-toolkit`、`/cuda-toolkit/batch`）：支持 11.8、12.0–12.6、12.8、12.9、13.0，安装前校验 `nvidia-smi`，仅安装 Toolkit，不安装或覆盖驱动
 - 压测套件创建（`/stress-suite`），同服务器内按 GPU → CPU/内存 → 磁盘串行推进
 - 受控环境套件创建（`/managed-suite`）：基础环境配置按关闭锁屏/休眠 → 锁定系统版本，GPU 驱动安装按 NVIDIA 驱动 → CUDA Toolkit 严格串行；前序失败时后序不启动，后端重启后恢复套件 worker
-- Rocky 9.4 版本锁定脚本 v1.2.1 同时固定 BaseOS/AppStream/CRB Vault 仓库，并将固定主版本的 EPEL 9 metalink 与 GPG 配置写入标准 `/etc/yum.repos.d/epel.repo`；NVIDIA 驱动安装及 GPU/CPU/磁盘压测依赖安装先检查已启用 repo ID，存在 `epel` 时跳过 `epel-release`，避免再次生成同名仓库定义。versionlock 已存在时跳过重复安装，makecache 限定到受管核心仓库并设置 20 秒连接超时和 2 次重试，不受 CUDA/Docker 等第三方源拖累
+- Rocky 9.4 版本锁定脚本 v1.2.4 同时固定 BaseOS/AppStream/CRB Vault 仓库，并将阿里云 EPEL 9 baseurl 与 GPG 配置写入标准 `/etc/yum.repos.d/epel.repo`；NVIDIA 驱动安装及 GPU/CPU/磁盘压测依赖安装先检查已启用 repo ID，存在 `epel` 时跳过 `epel-release`，避免再次生成同名仓库定义。versionlock 检查、安装、加锁和 makecache 仅启用 BaseOS/AppStream/CRB，并设置 20 秒连接超时和 2 次重试；EPEL 由依赖任务按需建立缓存
+- 资产库对所有文本脚本解析内容版本（支持 `SCRIPT_VERSION=...`、`ScriptVersion: ...` 等形式），API 通过 `content_version` 返回，管理表格统一展示“版本”列；未声明版本的文件显示 `-`。
+- 任务执行恢复：普通脚本和 CUDA Toolkit 与压测、NVIDIA 驱动一致，远端进程使用 `nohup + setsid` 脱离 SSH，任务目录保存 `.hpcdeploy.pid`、`task.log` 和 `.hpcdeploy.exit_code`。后端启动时扫描 RUNNING 任务，通过 SSH 重新附着监控、补录日志并按远端退出码收尾；CONNECTING/PREPARING/UPLOADING 阶段任务由启动恢复器重新排队。
 - 批次压测子任务重跑（`/{task_id}/retry-in-batch`）：仅支持白名单压测脚本中执行失败、取消、超时或报告 FAIL 的子任务；重跑任务追加到同批次、同服务器队列末尾，并阻止重复排队
 - 任务列表 `scope=single|batch`：按是否存在 `batch_id` 筛选单次任务或批次子任务，保持分页总数准确；`active_only=true` 统计 CONNECTING、PREPARING、UPLOADING、RUNNING、CANCELING 全部活动任务；`include_batch_context=true` 在状态筛选时保留命中批次的完整子任务
 - 状态查询、取消；管理员删除本机任务记录（`POST /api/tasks/{task_id}/local-artifacts/cleanup`）和整批记录（`POST /api/tasks/batches/{batch_id}/local-artifacts/cleanup`）
@@ -333,11 +335,14 @@ $HOME/hpcdeploy/
 ```
 
 ### 管理员密码
-- 通过环境变量 `HPCDEPLOY_ADMIN_PASSWORD` 设置，默认值 `admin123`
+- 生产安装通过 `/etc/hpcdeploy/hpcdeploy.env` 设置 `HPCDEPLOY_ADMIN_PASSWORD`；首次安装交互设置，开发模式才保留 `admin123` fallback
+- JWT `SECRET_KEY` 由安装脚本随机生成并保存在同一 root-only 文件，属于系统内部密钥，用户无需查看或记忆
 - 可通过系统设置页面修改密码，修改后保存到 `system_settings` 表 `admin_password` 键
 - 密码验证优先级：DB 存储密码 → 环境变量 `HPCDEPLOY_ADMIN_PASSWORD`
 - 删除 DB 配置后自动回退到环境变量密码，不会锁死
 - 密码不返回前端、不打印日志；GET /settings 只返回 `admin_password_configured: bool`
+- 忘记密码时由部署服务器 root 执行 `deploy/scripts/reset_admin_password.sh`；脚本先备份 SQLite，再清除 DB 覆盖、更新环境密码并轮换 JWT 密钥，使现有管理员会话失效
+- `APP_ENV=production` 时只强制 JWT 密钥为至少 32 位的非默认值；管理员密码内容由部署人员自行决定
 
 ### 文件说明
 | 文件 | 说明 |
@@ -345,6 +350,8 @@ $HOME/hpcdeploy/
 | `backend/app/core/auth.py` | `verify_admin_password()`、`create_admin_token()`（可选时长/标签页绑定 JWT）、`require_admin_token()` 依赖 |
 | `backend/app/api/auth.py` | 管理员验证、会话状态与退出端点 |
 | `frontend/src/composables/useAdminConfirm.ts` | 管理员模式、倒计时、会话恢复与退出 |
+| `deploy/scripts/reset_admin_password.sh` | root-only 管理员密码恢复、SQLite 备份和会话失效 |
+| `deploy/scripts/redeploy_hpcdeploy.sh` | 生产更新；重启前阻止活动任务期间发布，避免前台 SSH 通道被后端重启切断 |
 
 ---
 

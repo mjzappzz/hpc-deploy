@@ -2,6 +2,8 @@ from pathlib import Path
 import subprocess
 import unittest
 
+from app.core.script_library import extract_content_version
+
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts" / "mpi"
 
@@ -27,13 +29,15 @@ class EnvironmentMaintenanceScriptTests(unittest.TestCase):
         self.assertNotIn("download.rockylinux.org/pub/rocky/9.8", content)
         self.assertIn("printf '9.4\\n' > /etc/dnf/vars/releasever", content)
         self.assertIn("versionlock add", content)
-        self.assertIn('SCRIPT_VERSION="1.1.0"', content)
-        self.assertIn("repo=epel-9&arch=$basearch", content)
+        self.assertIn('SCRIPT_VERSION="1.2.4"', content)
+        self.assertIn("mirrors.aliyun.com/epel/9/Everything/$basearch/", content)
         self.assertIn("RPM-GPG-KEY-EPEL-9", content)
-        self.assertIn("--enablerepo=epel makecache", content)
+        self.assertNotIn("--enablerepo=epel makecache", content)
+        self.assertIn('dnf "${dnf_core_args[@]}" versionlock add', content)
         self.assertNotIn("dnf update", content)
         self.assertNotIn("yum update", content)
         self.assertNotIn("sudo ", content)
+        self.assertEqual(extract_content_version(content), "v1.2.4")
 
     def test_disable_linux_lock_sleep_avoids_session_disruption(self) -> None:
         content = _script("disable_linux_lock_sleep.sh")

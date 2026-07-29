@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_VERSION="1.1.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common_runtime.sh"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -19,6 +20,26 @@ run_as_service_user() {
   fi
 }
 
+assert_no_active_tasks() {
+  local payload
+  local active_count
+  local active_task_id
+  if ! payload="$(curl --noproxy '*' --fail --silent --show-error \
+    'http://127.0.0.1:8000/api/tasks?active_only=true&limit=1' 2>/dev/null)"; then
+    echo "后端当前不可查询活动任务；继续执行发布以允许故障恢复。"
+    return
+  fi
+  read -r active_count active_task_id < <(
+    python3 -c 'import json, sys; data=json.load(sys.stdin); items=data.get("items") or []; print(int(data.get("total") or 0), items[0].get("task_id", "-") if items else "-")' \
+      <<< "$payload"
+  )
+  if (( active_count > 0 )); then
+    echo "检测到活动任务，拒绝重启后端：count=$active_count task_id=$active_task_id" >&2
+    echo "请等待任务结束或取消任务后重新发布。" >&2
+    exit 1
+  fi
+}
+
 if [[ $EUID -ne 0 ]]; then
   echo "请使用 sudo 执行更新："
   echo "  sudo deploy/scripts/redeploy_hpcdeploy.sh"
@@ -30,6 +51,8 @@ if [[ $EUID -ne 0 ]]; then
   echo "  nginx -t && systemctl reload nginx"
   exit 0
 fi
+
+assert_no_active_tasks
 
 NODE_BIN_DIR="$(resolve_service_node_bin "$SERVICE_USER")"
 echo "使用 Node.js：$NODE_BIN_DIR/node ($("$NODE_BIN_DIR/node" --version))"
@@ -62,10 +85,12 @@ if [[ -f "$LEGACY_FRONTEND_SERVICE_DEST" ]]; then
   systemctl daemon-reload
 fi
 
+assert_no_active_tasks
 systemctl restart hpcdeploy-backend
 wait_for_backend_health
 systemctl reload nginx
 
 echo "HPCDeploy 已更新并重启完成"
+echo "更新脚本版本：$SCRIPT_VERSION"
 echo "项目目录：$PROJECT_ROOT"
 echo "访问地址：http://<server-ip>:10086/"

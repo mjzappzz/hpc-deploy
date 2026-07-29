@@ -50,6 +50,12 @@ sudo deploy/scripts/install_hpcdeploy_service.sh
 
 安装脚本会安装基础依赖和 Nginx、创建后端虚拟环境、构建前端、发布静态文件、初始化运行目录，并注册和启动后端 systemd 服务；后端健康检查通过后才会继续启动 Nginx 并报告部署成功。部署详情与日常更新见 [deploy/README.md](deploy/README.md)。
 
+首次安装会要求设置管理员密码，并在后台自动生成 JWT 签名密钥。两者写入仅 root 可读的 `/etc/hpcdeploy/hpcdeploy.env`；日常使用只需记住管理员密码，JWT 密钥由系统管理。忘记管理员密码时，在部署服务器执行：
+
+```bash
+sudo /path/to/hpc-deploy/deploy/scripts/reset_admin_password.sh
+```
+
 ## 使用流程
 
 1. 在“服务器管理”新增目标服务器并完成 SSH 探测。
@@ -303,15 +309,18 @@ backend/apptainer/*.sif
 | `APP_NAME` | `HPCDeploy` | 应用名称 |
 | `APP_ENV` | `development` | 运行环境 |
 | `DATABASE_URL` | `sqlite:///./data/hpc_control_panel.db` | 数据库连接，后端工作目录下解析为 `backend/data/hpc_control_panel.db` |
-| `SECRET_KEY` | `dev-secret-key-change-in-production` | JWT 签名密钥，生产环境必须修改 |
+| `SECRET_KEY` | 开发模式有内置值 | JWT 签名密钥；生产安装时自动随机生成，用户无需记忆 |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `480` | 登录/管理 token 过期时间 |
-| `HPCDEPLOY_ADMIN_PASSWORD` | `admin123` | 管理员密码环境变量 fallback |
+| `HPCDEPLOY_ADMIN_PASSWORD` | 开发模式为 `admin123` | 生产安装时交互设置；非交互安装自动生成并仅显示一次 |
 
 当前 systemd 服务显式设置：
 
 ```text
+EnvironmentFile=/etc/hpcdeploy/hpcdeploy.env
 PYTHONPATH=/home/tjzs/projects/hpc-deploy/backend/.deps:/home/tjzs/projects/hpc-deploy/backend
 ```
+
+生产安全配置文件由安装脚本维护，权限为 `root:root 0600`。项目内的 `backend/.env.example` 仅用于开发或手工启动参考，不包含真实凭据。生产模式强制 JWT 密钥使用至少 32 位的非默认值；管理员密码内容由部署人员自行决定。
 
 配置文件：
 
@@ -329,7 +338,8 @@ deploy/systemd/hpcdeploy-backend.service
 - 当前内置 Windows 压测脚本为 `v94_windows_stress.ps1`。v94 保留 v90 的磁盘稳定性/性能分离、按盘动态门槛、系统盘阈值放宽和 DiskSpd `-si` 吞吐探测，并统一报告状态为“通过 / 关注 / 不合格 / 未测试（或未采集）”；阈值、RAID/控制器识别与压测执行逻辑不因本次术语调整而改变。
 - NVIDIA 驱动任务仅接受安全文件名的 `.run` 文件；驱动类型必须为 GeForce 或 Data Center（RTX Enterprise）。临时上传驱动默认 7 天后清理，运行中被引用的文件不清理
 - CUDA 任务仅安装 Toolkit，不安装或覆盖 NVIDIA 驱动；任务先通过 `nvidia-smi` 校验驱动可用，再按目标系统安装对应版本
-- Rocky 9.4 系统版本锁定脚本 v1.2.1 将固定 EPEL 配置写入标准 `epel.repo`；NVIDIA 驱动和 Linux GPU/CPU/磁盘压测在 EPEL 已启用时跳过 `epel-release` 安装，避免重复 `[epel]` 仓库 ID。versionlock 已安装时不重复联网，缓存仅刷新 BaseOS/AppStream/CRB/EPEL，并设置 DNF 超时重试边界
+- Rocky 9.4 系统版本锁定脚本 v1.2.4 将固定 EPEL 配置写入标准 `epel.repo`，并使用目标机实测较快的阿里云 EPEL 9 镜像；NVIDIA 驱动和 Linux GPU/CPU/磁盘压测在 EPEL 已启用时跳过 `epel-release` 安装，避免重复 `[epel]` 仓库 ID。versionlock 检查、安装、加锁及缓存刷新仅启用 BaseOS/AppStream/CRB；EPEL 由实际依赖任务按需建立缓存
+- 远端执行任务采用脱离 SSH 会话的后台进程，并在任务目录持久化 PID、日志和退出码。后端意外重启后会重新接管普通脚本、压测、NVIDIA 驱动和 CUDA Toolkit 的运行状态；Apptainer 上传等未进入远端执行阶段的任务会重新排队。
 - SSH 私钥只保存文件名，不保存内容；API 不返回私钥/公钥内容
 - 远端清理只允许 `tasks` / `downloads` / `tmp`，不清理 `$HOME/hpcdeploy/apptainer`
 - 自动清理以任务结束时间（无结束时间时创建时间）判断保留期，同步清理 `backend/data/artifacts/<task_id>/` 与同任务 `task_logs`；不清理任务记录、远端目录、Apptainer 镜像、keys、scripts
@@ -338,7 +348,7 @@ deploy/systemd/hpcdeploy-backend.service
 - 部署公钥只写远端 `$HOME/.ssh/authorized_keys`，不覆盖、不修改 `sshd_config`、不重启 `sshd`
 - 部署公钥按每台服务器自身 `auth_type` 独立认证登录，不固定同一私钥
 - 密钥路径统一解析为 `KEYS_DIR` 下绝对路径，防止相对路径/CWD 问题
-- 管理员密码通过 `HPCDEPLOY_ADMIN_PASSWORD` 环境变量设置，不返回前端、不打印日志
+- 管理员密码通过 `/etc/hpcdeploy/hpcdeploy.env` 中的 `HPCDEPLOY_ADMIN_PASSWORD` 设置，不返回前端、不打印日志；忘记后由服务器 root 执行 `deploy/scripts/reset_admin_password.sh` 重置
 - 高风险接口通过可选时长或本标签页持续的 JWT 保护；浏览器以 HttpOnly Cookie 和标签页标识共同校验，关闭标签页后不能复用管理员权限
 
 ## 文档导航
