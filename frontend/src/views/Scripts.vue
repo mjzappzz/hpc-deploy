@@ -31,10 +31,10 @@
       </template>
 
       <div class="gpu-driver-library">
-        <el-alert title="仅允许 NVIDIA-Linux-x86_64-xxx.run；上传时必须标注 GeForce 或 Data Center，已有版本不会被覆盖。" type="info" :closable="false" />
+        <el-alert title="仅允许 NVIDIA-Linux-x86_64-xxx.run；上传时必须标注 GeForce 或 Data Center（RTX Enterprise），已有版本不会被覆盖。" type="info" :closable="false" />
         <el-table :data="gpuDriverLibrary" v-loading="loading" empty-text="暂未上传 Linux NVIDIA 驱动">
-          <el-table-column prop="filename" label="驱动文件" min-width="360" />
-          <el-table-column label="驱动类型" width="140">
+          <el-table-column prop="filename" label="驱动文件" min-width="320" />
+          <el-table-column label="驱动类型" width="240">
             <template #default="{ row }"><el-tag effect="plain">{{ row.label }}</el-tag></template>
           </el-table-column>
           <el-table-column label="常见适用显卡" min-width="260">
@@ -141,7 +141,7 @@
         <el-form-item label="驱动类型" required>
           <el-radio-group v-model="gpuDriverType">
             <el-radio value="geforce">GeForce</el-radio>
-            <el-radio value="datacenter">Data Center</el-radio>
+            <el-radio value="datacenter">Data Center（RTX Enterprise）</el-radio>
           </el-radio-group>
         </el-form-item>
         <el-form-item label="驱动文件" required>
@@ -159,7 +159,7 @@
         <div v-if="previewFile" class="preview-meta">
           <el-descriptions :column="2" border>
             <el-descriptions-item label="文件名">{{ previewFile.name }}</el-descriptions-item>
-            <el-descriptions-item label="分类">{{ previewFile.display_category }}</el-descriptions-item>
+            <el-descriptions-item label="分类">{{ fileDisplayCategory(previewFile) }}</el-descriptions-item>
             <el-descriptions-item label="路径" :span="2">
               <code class="script-path-code">{{ previewFile.resolved_path || previewFile.path }}</code>
             </el-descriptions-item>
@@ -221,7 +221,7 @@ import {
   uploadGpuDriverLibraryFile,
   type GpuDriverLibraryItem,
 } from '@/api/task'
-import { environmentBusinessCategory } from '@/utils/environmentCategory'
+import { environmentBusinessCategory, environmentBusinessCategoryLabel } from '@/utils/environmentCategory'
 
 type KnowledgeCategory = 'all' | 'base_system' | 'compiler_mpi' | 'stress' | 'apptainer'
 type ScriptUploadCategory = 'mpi' | 'stress' | 'apptainer'
@@ -451,6 +451,12 @@ function categoryLabel(category: KnowledgeCategory | ScriptFileRecord['physical_
 
 function formatSize(size: number) {
   return formatBytes(size)
+}
+
+function fileDisplayCategory(file: ScriptFileRecord) {
+  return file.physical_category === 'mpi'
+    ? environmentBusinessCategoryLabel(file.name)
+    : file.display_category
 }
 
 function formatDate(value: string | null | undefined) {

@@ -2,7 +2,23 @@
 
 set -e
 
+SCRIPT_VERSION="2026.07.29"
+
 echo "[INFO] Checking and installing dependencies..."
+
+epel_repo_enabled() {
+    dnf -q repolist --enabled 2>/dev/null |
+        awk 'NR > 1 {print $1}' |
+        grep -Eq '^epel(/|$)'
+}
+
+ensure_epel_repo() {
+    if epel_repo_enabled; then
+        echo "[INFO] EPEL repository already enabled; skip epel-release install."
+    else
+        yum install -y epel-release || true
+    fi
+}
 
 install_deps() {
     if [ "$(id -u)" -ne 0 ]; then
@@ -36,7 +52,7 @@ PYCHK
 
     if [ -f /etc/redhat-release ]; then
         echo "[INFO] Detected RHEL/CentOS/Rocky/Alma"
-        yum install -y epel-release || true
+        ensure_epel_repo
         yum install -y stress-ng python3 python3-pip python3-openpyxl || true
 
         if ! python3 - << 'PYCHK' >/dev/null 2>&1
@@ -637,6 +653,5 @@ echo "Kernel Error : ${ERR_LOG}"
 echo "Text Report  : ${REPORT}"
 echo "XLSX Report  : ${XLSX_REPORT}"
 echo "======================================"
-
 
 

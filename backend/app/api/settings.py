@@ -123,7 +123,7 @@ def _build_runtime_paths() -> list[dict[str, object]]:
             label="Linux NVIDIA 驱动库",
             path=GPU_DRIVER_LIBRARY_DIR,
             kind="directory",
-            description="脚本知识库上传的 GeForce、Data Center NVIDIA .run 驱动文件。",
+            description="脚本知识库上传的 GeForce、Data Center（RTX Enterprise）NVIDIA .run 驱动文件。",
             attention=True,
         ),
         _runtime_path(

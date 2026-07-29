@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.1.0"
+SCRIPT_VERSION="1.2.1"
 BACKUP_ROOT="/var/backups/hpcdeploy"
 RUN_ID="$(date +%Y%m%d-%H%M%S)"
 BACKUP_DIR="${BACKUP_ROOT}/linux-release-lock-${RUN_ID}"
@@ -73,7 +73,9 @@ enabled=1
 gpgcheck=1
 gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-Rocky-9
 EOF
-    cat > /etc/yum.repos.d/epel-9-hpcdeploy.repo <<'EOF'
+    # Keep the standard epel-release filename so a later package install cannot
+    # create a second file containing the same [epel] repository ID.
+    cat > /etc/yum.repos.d/epel.repo <<'EOF'
 [epel]
 name=Extra Packages for Enterprise Linux 9 - $basearch
 metalink=https://mirrors.fedoraproject.org/metalink?repo=epel-9&arch=$basearch
@@ -86,13 +88,25 @@ EOF
     mkdir -p /etc/dnf/vars
     printf '9.4\n' > /etc/dnf/vars/releasever
 
+    local dnf_core_args=(
+        "--disablerepo=*"
+        "--enablerepo=baseos"
+        "--enablerepo=appstream"
+        "--enablerepo=crb"
+        "--enablerepo=epel"
+        "--setopt=timeout=20"
+        "--setopt=retries=2"
+    )
+
     log INFO "安装并配置 DNF versionlock；不执行全量系统升级"
-    dnf install -y 'dnf-command(versionlock)'
+    if dnf versionlock list >/dev/null 2>&1; then
+        log INFO "DNF versionlock 已安装，跳过重复安装"
+    else
+        dnf "${dnf_core_args[@]}" install -y 'dnf-command(versionlock)'
+    fi
     dnf versionlock add 'rocky-release*' 'rocky-repos*' 'rocky-gpg-keys*'
-    dnf clean all
-    rm -rf /var/cache/dnf
-    dnf makecache
-    dnf --disablerepo='*' --enablerepo=epel makecache
+    dnf "${dnf_core_args[@]}" makecache --refresh
+    dnf --disablerepo='*' --enablerepo=epel --setopt=timeout=20 --setopt=retries=2 makecache --refresh
 
     [[ "$(tr -d '[:space:]' < /etc/dnf/vars/releasever)" == "9.4" ]] || fail "releasever 验证失败"
     dnf repolist --enabled | grep -Eq 'baseos|appstream|crb' || fail "Rocky Linux 9.4 仓库验证失败"

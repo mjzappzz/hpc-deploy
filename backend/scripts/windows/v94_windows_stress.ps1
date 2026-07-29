@@ -1,14 +1,14 @@
 ﻿#requires -version 5.1
 <#
-NVIDIA GeForce / RTX FurMark2 + y-cruncher + DiskSpd Stability Report v90 Precheck+Log HTML Adaptive Disk Stability + Split Throughput Probe Per-Drive Threshold Private CHFS URLs Supplement Merge PDF Style HTML
+NVIDIA GeForce / RTX FurMark2 + y-cruncher + DiskSpd Stability Report v94 Unified Pass Terminology
 Windows PowerShell 5.1+
 ASCII-safe script body. Chinese text in HTML is encoded as HTML entities where needed.
 
-V90 disk changes:
-- Relaxed profile-based minimum activity floors; no model-specific allowlist.
-- Separate fatal stability faults from performance reference values.
-- System-drive thresholds are automatically relaxed.
-- Throughput probe uses interlocked sequential access (-si).
+V94 report wording changes:
+- Project/module status uses: 通过 / 关注 / 不合格 / 未测试.
+- All participating test judgements use: 通过 / 关注 / 不合格 / 未测试 or 未采集.
+- Removed the label 通过; pass results now consistently display 通过.
+- Thresholds, RAID/controller detection and stress-test execution logic are unchanged from v92.
 #>
 
 param(
@@ -485,7 +485,102 @@ function Get-DiskRotationRateValue([object]$Obj) {
     } catch {}
     return $null
 }
-# v90 disk policy:
+
+function Convert-DiskSpdNumber([object]$Value) {
+    if($null -eq $Value){ return $null }
+    $s = ([string]$Value).Trim()
+    if([string]::IsNullOrWhiteSpace($s)){ return $null }
+    $s = $s.Replace([char]0x00A0,' ').Trim()
+    $styles = [Globalization.NumberStyles]::Float -bor [Globalization.NumberStyles]::AllowThousands
+    [double]$n = 0
+    if([double]::TryParse($s,$styles,[Globalization.CultureInfo]::InvariantCulture,[ref]$n)){ return $n }
+    if([double]::TryParse($s,$styles,[Globalization.CultureInfo]::CurrentCulture,[ref]$n)){ return $n }
+
+    $s2 = ($s -replace '\s','')
+    if($s2 -match '^[+-]?\d{1,3}(,\d{3})+(\.\d+)?$'){
+        $s2 = $s2 -replace ',',''
+    } elseif($s2 -match '^[+-]?\d+,\d+$' -and $s2 -notmatch '\.'){
+        $s2 = $s2 -replace ',','.'
+    }
+    [double]$n2 = 0
+    if([double]::TryParse($s2,[Globalization.NumberStyles]::Float,[Globalization.CultureInfo]::InvariantCulture,[ref]$n2)){ return $n2 }
+    return $null
+}
+function Format-DiskNumber([object]$Value,[int]$Decimals=2,[bool]$Thousands=$false) {
+    $n = Convert-DiskSpdNumber $Value
+    if($null -eq $n){ return "-" }
+    if($Thousands){ return $n.ToString(("N{0}" -f $Decimals),[Globalization.CultureInfo]::InvariantCulture) }
+    return $n.ToString(("F{0}" -f $Decimals),[Globalization.CultureInfo]::InvariantCulture)
+}
+function Get-DiskProfileDisplayName([string]$Profile) {
+    switch -Regex ("$Profile") {
+        '^NVMe SSD$' { return "NVMe 固态硬盘" }
+        '^SATA SSD$' { return "SATA 固态硬盘" }
+        '^SAS SSD$' { return "SAS 固态硬盘" }
+        '^SSD$|^Generic SSD$' { return "固态硬盘（接口未完全识别）" }
+        '^SATA HDD$' { return "SATA 机械硬盘" }
+        '^SAS HDD$' { return "SAS 机械硬盘" }
+        '^HDD$' { return "机械硬盘（接口未完全识别）" }
+        '^RAID SSD$' { return "阵列或存储控制器下的固态磁盘" }
+        '^RAID HDD$' { return "阵列或存储控制器下的机械磁盘" }
+        '^Controller Logical Disk$|^RAID/Virtual Disk$|^RAID/Storage$' { return "存储控制器逻辑磁盘（物理型号未透传）" }
+        '^Virtual Disk$' { return "虚拟磁盘" }
+        '^USB Disk$' { return "USB 磁盘" }
+        '^SATA Unknown$' { return "SATA 磁盘（介质类型未知）" }
+        '^SAS Unknown$' { return "SAS 磁盘（介质类型未知）" }
+        default { return "磁盘（类型未完全识别）" }
+    }
+}
+function Get-DiskRoleDisplayName([bool]$IsSystemDrive) {
+    if($IsSystemDrive){ return "系统盘" }
+    return "数据盘"
+}
+function Get-DiskSpdSectionResult($Lines,[ValidateSet("total","read","write")][string]$SectionName) {
+    $target = $SectionName.ToLower()
+    $active = $false
+    foreach($line0 in @($Lines)){
+        $line = [string]$line0
+        if($line -match '^\s*(Total|Read|Write)\s+IO\s*$'){
+            $active = ($Matches[1].ToLower() -eq $target)
+            continue
+        }
+        if($active -and $line -match '^\s*total\s*:\s*(.+)$'){
+            $cols = @($Matches[1] -split '\|' | ForEach-Object { $_.Trim() })
+            if($cols.Count -ge 5){
+                $mb = Convert-DiskSpdNumber $cols[2]
+                $io = Convert-DiskSpdNumber $cols[3]
+                $lat = Convert-DiskSpdNumber $cols[4]
+                if($null -ne $mb){
+                    return [pscustomobject]@{MiBps=$mb;Iops=$io;AvgLatMs=$lat;Raw=$line}
+                }
+            }
+        }
+    }
+
+    # Fallback for output variants that omit or alter the section headings.
+    $totals = @()
+    foreach($line0 in @($Lines)){
+        $line = [string]$line0
+        if($line -match '^\s*total\s*:\s*(.+)$'){
+            $cols = @($Matches[1] -split '\|' | ForEach-Object { $_.Trim() })
+            if($cols.Count -ge 5){
+                $mb = Convert-DiskSpdNumber $cols[2]
+                if($null -ne $mb){
+                    $totals += [pscustomobject]@{
+                        MiBps=$mb
+                        Iops=(Convert-DiskSpdNumber $cols[3])
+                        AvgLatMs=(Convert-DiskSpdNumber $cols[4])
+                        Raw=$line
+                    }
+                }
+            }
+        }
+    }
+    $idx = switch($target){ "total" {0}; "read" {1}; "write" {2}; default {-1} }
+    if($idx -ge 0 -and $totals.Count -gt $idx){ return $totals[$idx] }
+    return $null
+}
+# v91 disk policy:
 # - Performance "reference" values are informational targets, not vendor-model promises.
 # - "Critical" values are deliberately low minimum-activity floors used only to catch a stalled,
 #   unusable, or severely degraded test. They are profile-based and never tied to one SSD model.
@@ -500,10 +595,12 @@ function Get-DiskThresholdByProfile([string]$Profile,[bool]$IsSystemDrive=$false
         '^NVMe SSD$' { [pscustomobject]@{PassMBps=500;FailMBps=50}; break }
         '^SATA SSD$|^SSD$|^Generic SSD$' { [pscustomobject]@{PassMBps=200;FailMBps=30}; break }
         '^SAS SSD$'  { [pscustomobject]@{PassMBps=300;FailMBps=40}; break }
+        '^RAID SSD$' { [pscustomobject]@{PassMBps=200;FailMBps=25}; break }
         '^SATA HDD$' { [pscustomobject]@{PassMBps=80;FailMBps=10}; break }
         '^SAS HDD$'  { [pscustomobject]@{PassMBps=100;FailMBps=15}; break }
+        '^RAID HDD$' { [pscustomobject]@{PassMBps=80;FailMBps=10}; break }
         '^HDD$'      { [pscustomobject]@{PassMBps=80;FailMBps=10}; break }
-        '^RAID/Virtual Disk$|^RAID/Storage$' { [pscustomobject]@{PassMBps=200;FailMBps=30}; break }
+        '^Controller Logical Disk$|^RAID/Virtual Disk$|^RAID/Storage$|^Virtual Disk$' { [pscustomobject]@{PassMBps=100;FailMBps=10}; break }
         '^USB Disk$' { [pscustomobject]@{PassMBps=40;FailMBps=5}; break }
         '^SATA Unknown$' { [pscustomobject]@{PassMBps=80;FailMBps=10}; break }
         '^SAS Unknown$'  { [pscustomobject]@{PassMBps=100;FailMBps=15}; break }
@@ -523,10 +620,12 @@ function Get-DiskRandomIopsThresholdByProfile([string]$Profile,[bool]$IsSystemDr
         '^NVMe SSD$' { [pscustomobject]@{PassIOPS=5000;FailIOPS=500}; break }
         '^SATA SSD$|^SSD$|^Generic SSD$' { [pscustomobject]@{PassIOPS=1500;FailIOPS=200}; break }
         '^SAS SSD$'  { [pscustomobject]@{PassIOPS=2500;FailIOPS=300}; break }
+        '^RAID SSD$' { [pscustomobject]@{PassIOPS=1500;FailIOPS=150}; break }
         '^SATA HDD$' { [pscustomobject]@{PassIOPS=75;FailIOPS=8}; break }
         '^SAS HDD$'  { [pscustomobject]@{PassIOPS=120;FailIOPS=12}; break }
+        '^RAID HDD$' { [pscustomobject]@{PassIOPS=75;FailIOPS=8}; break }
         '^HDD$'      { [pscustomobject]@{PassIOPS=75;FailIOPS=8}; break }
-        '^RAID/Virtual Disk$|^RAID/Storage$' { [pscustomobject]@{PassIOPS=3000;FailIOPS=200}; break }
+        '^Controller Logical Disk$|^RAID/Virtual Disk$|^RAID/Storage$|^Virtual Disk$' { [pscustomobject]@{PassIOPS=300;FailIOPS=30}; break }
         '^USB Disk$' { [pscustomobject]@{PassIOPS=100;FailIOPS=10}; break }
         '^SATA Unknown$' { [pscustomobject]@{PassIOPS=50;FailIOPS=5}; break }
         '^SAS Unknown$'  { [pscustomobject]@{PassIOPS=80;FailIOPS=8}; break }
@@ -546,47 +645,59 @@ function Get-DiskProfileFromFields([string]$BusType,[string]$MediaType,[string]$
     $media = "$MediaType"
     $modelText = "$Model"
 
-    if($bus -match "RAID|Storage Spaces|Spaces") { return "RAID/Virtual Disk" }
-    if($bus -match "USB") { return "USB Disk" }
-    if($bus -match "NVMe" -or $modelText -match "NVMe|PCIe|M\.2") { return "NVMe SSD" }
+    if($modelText -match '(?i)VMware|Virtual Disk|QEMU|VBOX|Virtual HD|Msft Virtual|Hyper-V'){ return "Virtual Disk" }
+
+    # RAID/VMD/Storage Spaces is an access path, not a fault. Use media hints when available.
+    if($bus -match '(?i)RAID|Storage Spaces|Spaces|VMD'){
+        if(($RotationRate -ne $null -and $RotationRate -eq 0) -or $media -match '(?i)SSD|Solid State' -or $modelText -match '(?i)NVMe|SSD|Solid|PCIe|M\.2'){
+            return "RAID SSD"
+        }
+        if(($RotationRate -ne $null -and $RotationRate -gt 0) -or $media -match '(?i)HDD|Hard Disk' -or $modelText -match '(?i)HDD|Hard|Seagate|HGST|Hitachi|TOSHIBA|Western Digital|\bWD\b|ST[0-9]|WDC'){
+            return "RAID HDD"
+        }
+        return "Controller Logical Disk"
+    }
+
+    if($bus -match "(?i)USB") { return "USB Disk" }
+    if($bus -match "(?i)NVMe" -or $modelText -match "(?i)NVMe|PCIe|M\.2") { return "NVMe SSD" }
 
     if($RotationRate -ne $null){
         if($RotationRate -gt 0){
-            if($bus -match "SATA") { return "SATA HDD" }
-            if($bus -match "SAS") { return "SAS HDD" }
+            if($bus -match "(?i)SATA") { return "SATA HDD" }
+            if($bus -match "(?i)SAS") { return "SAS HDD" }
             return "HDD"
         }
         if($RotationRate -eq 0){
-            if($bus -match "SATA") { return "SATA SSD" }
-            if($bus -match "SAS") { return "SAS SSD" }
+            if($bus -match "(?i)SATA") { return "SATA SSD" }
+            if($bus -match "(?i)SAS") { return "SAS SSD" }
             return "SSD"
         }
     }
 
-    if($media -match "HDD|Hard Disk") {
-        if($bus -match "SATA") { return "SATA HDD" }
-        if($bus -match "SAS") { return "SAS HDD" }
+    if($media -match "(?i)HDD|Hard Disk") {
+        if($bus -match "(?i)SATA") { return "SATA HDD" }
+        if($bus -match "(?i)SAS") { return "SAS HDD" }
         return "HDD"
     }
-    if($media -match "SSD|Solid State") {
-        if($bus -match "SATA") { return "SATA SSD" }
-        if($bus -match "SAS") { return "SAS SSD" }
+    if($media -match "(?i)SSD|Solid State") {
+        if($bus -match "(?i)SATA") { return "SATA SSD" }
+        if($bus -match "(?i)SAS") { return "SAS SSD" }
         return "SSD"
     }
 
-    if($modelText -match "SSD|Solid") {
-        if($bus -match "SATA") { return "SATA SSD" }
-        if($bus -match "SAS") { return "SAS SSD" }
+    if($modelText -match "(?i)SSD|Solid") {
+        if($bus -match "(?i)SATA") { return "SATA SSD" }
+        if($bus -match "(?i)SAS") { return "SAS SSD" }
         return "SSD"
     }
-    if($modelText -match "HDD|Hard|Seagate|HGST|Hitachi|TOSHIBA|Western Digital|\bWD\b|ST[0-9]|WDC") {
-        if($bus -match "SATA") { return "SATA HDD" }
-        if($bus -match "SAS") { return "SAS HDD" }
+    if($modelText -match "(?i)HDD|Hard|Seagate|HGST|Hitachi|TOSHIBA|Western Digital|\bWD\b|ST[0-9]|WDC") {
+        if($bus -match "(?i)SATA") { return "SATA HDD" }
+        if($bus -match "(?i)SAS") { return "SAS HDD" }
         return "HDD"
     }
 
-    if($bus -match "SATA") { return "SATA Unknown" }
-    if($bus -match "SAS") { return "SAS Unknown" }
+    if($bus -match "(?i)SATA") { return "SATA Unknown" }
+    if($bus -match "(?i)SAS") { return "SAS Unknown" }
     return "Generic Disk"
 }
 function Get-DiskProfileForDrive([string]$Drive) {
@@ -601,6 +712,7 @@ function Get-DiskProfileForDrive([string]$Drive) {
     $rotationRate = $null
     $profile = "Generic Disk"
     $source = "Fallback"
+    $detectionEvidence = ""
     try {
         $part = Get-Partition -DriveLetter $letter -ErrorAction SilentlyContinue | Select-Object -First 1
         if($part){
@@ -611,8 +723,33 @@ function Get-DiskProfileForDrive([string]$Drive) {
                 $media = "$($disk.MediaType)"
                 $model = "$($disk.FriendlyName)"
                 $rotationRate = Get-DiskRotationRateValue $disk
+                $diskSerial = "$(Get-DiskObjectPropertyValue $disk @("SerialNumber"))"
+
                 try {
-                    $pdMatch = @(Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { "$($_.FriendlyName)" -eq $model })
+                    $wmi = Get-CimInstance Win32_DiskDrive -Filter ("Index={0}" -f $diskNumber) -ErrorAction SilentlyContinue | Select-Object -First 1
+                    if($wmi){
+                        $wmiModel = "$(Get-DiskObjectPropertyValue $wmi @("Model","Caption"))"
+                        $wmiMedia = "$(Get-DiskObjectPropertyValue $wmi @("MediaType"))"
+                        $wmiInterface = "$(Get-DiskObjectPropertyValue $wmi @("InterfaceType"))"
+                        $wmiPnp = "$(Get-DiskObjectPropertyValue $wmi @("PNPDeviceID"))"
+                        $wmiSerial = "$(Get-DiskObjectPropertyValue $wmi @("SerialNumber"))"
+                        if([string]::IsNullOrWhiteSpace($model) -or $model -match '(?i)^Disk\s+\d+$|Microsoft Storage Space Device'){ $model = $wmiModel }
+                        if([string]::IsNullOrWhiteSpace($media) -or $media -match '(?i)Unspecified|Unknown'){ $media = $wmiMedia }
+                        if([string]::IsNullOrWhiteSpace($diskSerial)){ $diskSerial = $wmiSerial }
+                        $detectionEvidence = "$wmiModel $wmiMedia $wmiInterface $wmiPnp"
+                    }
+                } catch {}
+
+                try {
+                    $allPhysical = @(Get-PhysicalDisk -ErrorAction SilentlyContinue)
+                    $pdMatch = @($allPhysical | Where-Object {
+                        $pdModel = "$(Get-DiskObjectPropertyValue $_ @("FriendlyName","Model"))"
+                        $pdSerial = "$(Get-DiskObjectPropertyValue $_ @("SerialNumber"))"
+                        $pdDeviceId = "$(Get-DiskObjectPropertyValue $_ @("DeviceId"))"
+                        ($pdModel -and $model -and $pdModel -eq $model) -or
+                        ($pdSerial -and $diskSerial -and $pdSerial.Trim() -eq $diskSerial.Trim()) -or
+                        ($pdDeviceId -and $null -ne $diskNumber -and $pdDeviceId -eq "$diskNumber")
+                    })
                     if($pdMatch.Count -eq 1){
                         $pd = $pdMatch[0]
                         $pdBus = Get-DiskObjectPropertyValue $pd @("BusType")
@@ -625,8 +762,10 @@ function Get-DiskProfileForDrive([string]$Drive) {
                         if($rotationRate -eq $null) { $rotationRate = $pdRotation }
                     }
                 } catch {}
-                $profile = Get-DiskProfileFromFields $bus $media $model $rotationRate
-                $source = "Get-Partition/Get-Disk"
+
+                $profileInputModel = ("{0} {1}" -f $model,$detectionEvidence).Trim()
+                $profile = Get-DiskProfileFromFields $bus $media $profileInputModel $rotationRate
+                $source = "Get-Partition/Get-Disk + Win32_DiskDrive/Get-PhysicalDisk"
             }
         }
     } catch {}
@@ -651,6 +790,7 @@ function Get-DiskProfileForDrive([string]$Drive) {
         Drive = $driveNorm
         DiskNumber = $diskNumber
         Profile = $profile
+        ProfileDisplay = (Get-DiskProfileDisplayName $profile)
         BusType = $bus
         MediaType = $media
         RotationRate = $rotationRate
@@ -693,12 +833,37 @@ function Get-DiskThresholdSummaryText {
     $lines=@()
     foreach($d0 in $script:ResolvedTestDrives){
         $info = Get-DiskDriveThresholdInfo $d0
-        $sys = if($info.IsSystemDrive){"System drive"}else{"Data drive"}
+        $role = Get-DiskRoleDisplayName $info.IsSystemDrive
+        $profileDisplay = Get-DiskProfileDisplayName $info.Profile
         $iops = Get-DiskRandomIopsThresholdByProfile $info.Profile $info.IsSystemDrive
-        $lines += ("{0} | {1} | {2} | Disk {3} | Bus={4} | Media={5} | RotationRate={6} | {7} | Throughput minimum >= {8} MB/s | Throughput reference >= {9} MB/s | 4K random minimum >= {10} IOPS | 4K random reference >= {11} IOPS" -f $info.Drive,$sys,$info.Profile,$info.DiskNumber,$info.BusType,$info.MediaType,$info.RotationRate,$info.Model,$info.FailMBps,$info.PassMBps,$iops.FailIOPS,$iops.PassIOPS)
+        $modelText = if([string]::IsNullOrWhiteSpace("$($info.Model)")){"型号未识别"}else{"$($info.Model)"}
+        $lines += ("{0} | {1} | {2} | {3} | 4K随机读写参考 >= {4} IOPS | 顺序读写参考 >= {5} MiB/s" -f $info.Drive,$role,$profileDisplay,$modelText,$iops.PassIOPS,$info.PassMBps)
     }
     if($lines.Count -eq 0){ return "-" }
     return ($lines -join "`r`n")
+}
+function Get-DiskThresholdSummaryHtml {
+    $rows=""
+    foreach($d0 in $script:ResolvedTestDrives){
+        $info = Get-DiskDriveThresholdInfo $d0
+        $role = Get-DiskRoleDisplayName $info.IsSystemDrive
+        $profileDisplay = Get-DiskProfileDisplayName $info.Profile
+        $iops = Get-DiskRandomIopsThresholdByProfile $info.Profile $info.IsSystemDrive
+        $modelText = if([string]::IsNullOrWhiteSpace("$($info.Model)")){"型号未识别"}else{"$($info.Model)"}
+        $rows += ("<tr><td><b>{0}</b><br><span class='muted'>{1}</span></td><td><b>{2}</b><br><span class='muted'>{3}</span></td><td>≥ {4} IOPS</td><td>≥ {5} MiB/s</td></tr>" -f `
+            (Html $info.Drive),(Html $role),(Html $profileDisplay),(Html $modelText),`
+            (Format-DiskNumber $iops.PassIOPS 0 $true),(Format-DiskNumber $info.PassMBps 0 $true))
+    }
+    if([string]::IsNullOrWhiteSpace($rows)){
+        return "<div class='muted'>未启用磁盘测试。</div>"
+    }
+    return @"
+<table class='disk-reference-table'>
+<tr><th style='width:14%'>盘符</th><th>磁盘类型与型号</th><th style='width:23%'>4K 随机读写参考</th><th style='width:23%'>顺序读写参考</th></tr>
+$rows
+</table>
+<div class='small'>参考值用于性能对比。实测值低于参考值时标记“关注”，不会直接判定硬盘故障；仅在出现 I/O 错误、测试中断、无有效结果或性能严重异常时判定不合格。</div>
+"@
 }
 
 function Apply-AutoHardwareThresholds {
@@ -1291,7 +1456,16 @@ function Start-DiskSpdWorkload([int]$DurationSeconds,[string]$PhaseName,[Validat
         $outLog = Join-Path $LogDir ("diskspd_{0}_{1}.out.log" -f $WorkloadKind,$d.TrimEnd(':'))
         $errLog = Join-Path $LogDir ("diskspd_{0}_{1}.err.log" -f $WorkloadKind,$d.TrimEnd(':'))
         Log ("[START] DiskSpd {0} {1} [{2}; minimum>={3}MB/s; reference>={4}MB/s] {5} : `"{6}`" {7}" -f $WorkloadKind,$d,$di.Profile,$di.FailMBps,$di.PassMBps,$evidence,$exe,$args)
-        try { $procs += Start-Process -FilePath $exe -ArgumentList $args -PassThru -RedirectStandardOutput $outLog -RedirectStandardError $errLog } catch { Log "[ERROR] DiskSpd $WorkloadKind start failed on $d : $($_.Exception.Message)" }
+        try {
+            $proc = Start-Process -FilePath $exe -ArgumentList $args -PassThru -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+            $proc | Add-Member -NotePropertyName DiskDrive -NotePropertyValue $d -Force
+            $proc | Add-Member -NotePropertyName DiskWorkloadKind -NotePropertyValue $WorkloadKind -Force
+            $proc | Add-Member -NotePropertyName DiskErrLog -NotePropertyValue $errLog -Force
+            $procs += $proc
+        } catch {
+            ("ERROR: DiskSpd {0} start failed on {1}: {2}" -f $WorkloadKind,$d,$_.Exception.Message) | Out-File -FilePath $errLog -Encoding UTF8 -Append
+            Log "[ERROR] DiskSpd $WorkloadKind start failed on $d : $($_.Exception.Message)"
+        }
     }
     return $procs
 }
@@ -1342,8 +1516,31 @@ function Wait-DiskSpdFlush($Processes,[int]$TimeoutSeconds=180) {
         foreach($p in $diskProcs) {
             try { $p.Refresh(); if(!$p.HasExited){ $alive += $p } } catch {}
         }
-        if($alive.Count -eq 0){ Log "[DISKSPD] All DiskSpd processes exited normally."; return }
+        if($alive.Count -eq 0){
+            foreach($p in $diskProcs){
+                try {
+                    $p.Refresh()
+                    $driveText = if($p.PSObject.Properties["DiskDrive"]){$p.DiskDrive}else{"?"}
+                    $kindText = if($p.PSObject.Properties["DiskWorkloadKind"]){$p.DiskWorkloadKind}else{"?"}
+                    $exitCode = $p.ExitCode
+                    Log ("[DISKSPD EXIT] PID={0}; Drive={1}; Kind={2}; ExitCode={3}" -f $p.Id,$driveText,$kindText,$exitCode)
+                    if($exitCode -ne 0 -and $p.PSObject.Properties["DiskErrLog"]){
+                        ("ERROR: DiskSpd exited with code {0}; Drive={1}; Workload={2}" -f $exitCode,$driveText,$kindText) | Out-File -FilePath $p.DiskErrLog -Encoding UTF8 -Append
+                    }
+                } catch {}
+            }
+            Log "[DISKSPD] All DiskSpd processes exited."
+            return
+        }
         Start-Sleep -Seconds 2
+    }
+    foreach($p in $diskProcs){
+        try {
+            $p.Refresh()
+            if(!$p.HasExited -and $p.PSObject.Properties["DiskErrLog"]){
+                ("ERROR: DiskSpd timed out before result flush; PID={0}; Drive={1}; Workload={2}" -f $p.Id,$p.DiskDrive,$p.DiskWorkloadKind) | Out-File -FilePath $p.DiskErrLog -Encoding UTF8 -Append
+            }
+        } catch {}
     }
     Log "[WARN] DiskSpd flush wait timeout; remaining DiskSpd processes will be stopped."
 }
@@ -1619,7 +1816,7 @@ function HtmlPipeList([object]$v) {
     return "<ul class='metric-list'>$lis</ul>"
 }
 function CriteriaCell([string]$pass,[string]$warn,[string]$fail) {
-    return "<div class='criteria-grid'><div><div class='criteria-title pass'>通过</div>$pass</div><div><div class='criteria-title warn'>关注</div>$warn</div><div><div class='criteria-title fail'>不合格</div>$fail</div></div>"
+    return "<div class='criteria-grid'><div><div class='criteria-title pass'>通过条件</div>$pass</div><div><div class='criteria-title warn'>关注条件</div>$warn</div><div><div class='criteria-title fail'>不合格条件</div>$fail</div></div>"
 }
 function FmtVal($v,$unit="") { if($null -eq $v -or [string]::IsNullOrWhiteSpace([string]$v)){return "-"}; return ("$v $unit").Trim() }
 function Get-MinTime($rows){ $arr=@(); foreach($r in $rows){ try{$arr += [datetime]$r.Timestamp}catch{} }; if($arr.Count -eq 0){return $null}; return ($arr|Sort-Object|Select-Object -First 1) }
@@ -1695,68 +1892,110 @@ function Merge-BaseReportNonDiskSamples {
 
 function Get-DiskSpdParsedResult {
     $result=[ordered]@{TotalMiBps=$null;ReadMiBps=$null;WriteMiBps=$null;Iops=$null;AvgLatMs=$null;Files=0;Source="";Details=@()}
+    $details=@()
     try{
         $files=@(Get-ChildItem -Path $LogDir -Filter "diskspd_*.out.log" -ErrorAction SilentlyContinue)
         if($files.Count -eq 0){ return [pscustomobject]$result }
-        $total=0.0; $read=0.0; $write=0.0; $iops=0.0; $latMax=$null; $used=0; $details=@()
+
         foreach($f in $files){
             $drive=""
             $kind='stability'
-            if($f.Name -match '^diskspd_(stability|throughput)_([A-Za-z])\.out\.log$'){ $kind=$Matches[1]; $drive = ($Matches[2].ToUpper() + ':') }
-            elseif($f.Name -match '^diskspd_([A-Za-z])\.out\.log$'){ $drive = ($Matches[1].ToUpper() + ':') }
-            else { $drive = $f.BaseName }
-            $section=""; $fileTotal=$null; $fileRead=$null; $fileWrite=$null; $fileIops=$null; $fileLat=$null
-            foreach($line in (Get-Content -Path $f.FullName -ErrorAction SilentlyContinue)){
-                if($line -match '^\s*Total IO'){ $section='total'; continue }
-                if($line -match '^\s*Read IO'){ $section='read'; continue }
-                if($line -match '^\s*Write IO'){ $section='write'; continue }
-                if($line -match '^\s*total:\s+\d+\s+\|\s+\d+\s+\|\s+([0-9.]+)\s+\|\s+([0-9.]+)\s+\|\s+([0-9.]+)'){
-                    $mb=[double]$Matches[1]; $io=[double]$Matches[2]; $lat=[double]$Matches[3]
-                    if($section -eq 'total'){ $fileTotal=$mb; $fileIops=$io; $fileLat=$lat }
-                    elseif($section -eq 'read'){ $fileRead=$mb }
-                    elseif($section -eq 'write'){ $fileWrite=$mb }
-                }
+            if($f.Name -match '^diskspd_(stability|throughput)_([A-Za-z])\.out\.log$'){
+                $kind=$Matches[1]
+                $drive = ($Matches[2].ToUpper() + ':')
+            } elseif($f.Name -match '^diskspd_([A-Za-z])\.out\.log$'){
+                $drive = ($Matches[1].ToUpper() + ':')
+            } else {
+                Log "[DISKSPD PARSE] Ignore unrecognized log filename: $($f.Name)"
+                continue
             }
-            if($fileTotal -ne $null){ $total += $fileTotal; $used++ }
-            if($fileRead -ne $null){ $read += $fileRead }
-            if($fileWrite -ne $null){ $write += $fileWrite }
-            if($fileIops -ne $null){ $iops += $fileIops }
-            if($fileLat -ne $null){ if($latMax -eq $null -or $fileLat -gt $latMax){ $latMax=$fileLat } }
-            if($fileTotal -ne $null -or $fileRead -ne $null -or $fileWrite -ne $null){
-                $di = Get-DiskDriveThresholdInfo $drive
-                $details += [pscustomobject]@{
-                    Drive = (Normalize-DriveLetter $drive)
-                    TotalMiBps = if($fileTotal -ne $null){[math]::Round($fileTotal,2)}else{$null}
-                    ReadMiBps = if($fileRead -ne $null){[math]::Round($fileRead,2)}else{$null}
-                    WriteMiBps = if($fileWrite -ne $null){[math]::Round($fileWrite,2)}else{$null}
-                    Iops = if($fileIops -ne $null){[math]::Round($fileIops,2)}else{$null}
-                    AvgLatMs = if($fileLat -ne $null){[math]::Round($fileLat,3)}else{$null}
-                    Profile = $di.Profile
-                    PassMBps = $di.PassMBps
-                    FailMBps = $di.FailMBps
-                    IsSystemDrive = $di.IsSystemDrive
-                    Model = $di.Model
-                    LogFile = $f.Name
-                    WorkloadKind = $kind
+
+            $fileTotal=$null
+            $fileRead=$null
+            $fileWrite=$null
+            $fileIops=$null
+            $fileLat=$null
+            $parseOk=$false
+            $parseReason=""
+            try {
+                $lines = @(Get-Content -Path $f.FullName -ErrorAction Stop)
+                if($lines.Count -eq 0){
+                    $parseReason = "结果日志为空"
+                } else {
+                    $totalRow = Get-DiskSpdSectionResult $lines "total"
+                    $readRow = Get-DiskSpdSectionResult $lines "read"
+                    $writeRow = Get-DiskSpdSectionResult $lines "write"
+                    if($null -ne $totalRow){
+                        $fileTotal = $totalRow.MiBps
+                        $fileIops = $totalRow.Iops
+                        $fileLat = $totalRow.AvgLatMs
+                        if($null -ne $readRow){ $fileRead = $readRow.MiBps }
+                        if($null -ne $writeRow){ $fileWrite = $writeRow.MiBps }
+                        $parseOk = ($null -ne $fileTotal)
+                    } else {
+                        $parseReason = "未找到 DiskSpd total 汇总行"
+                    }
                 }
+            } catch {
+                $parseReason = $_.Exception.Message
+            }
+
+            if(!$parseOk -and [string]::IsNullOrWhiteSpace($parseReason)){
+                $parseReason = "结果格式未识别"
+            }
+            if(!$parseOk){
+                Log ("[DISKSPD PARSE WARN] Drive={0} Kind={1} File={2} Reason={3}" -f $drive,$kind,$f.Name,$parseReason)
+            }
+
+            $di = Get-DiskDriveThresholdInfo $drive
+            $details += [pscustomobject]@{
+                Drive = (Normalize-DriveLetter $drive)
+                TotalMiBps = if($null -ne $fileTotal){[math]::Round([double]$fileTotal,2)}else{$null}
+                ReadMiBps = if($null -ne $fileRead){[math]::Round([double]$fileRead,2)}else{$null}
+                WriteMiBps = if($null -ne $fileWrite){[math]::Round([double]$fileWrite,2)}else{$null}
+                Iops = if($null -ne $fileIops){[math]::Round([double]$fileIops,2)}else{$null}
+                AvgLatMs = if($null -ne $fileLat){[math]::Round([double]$fileLat,3)}else{$null}
+                Profile = $di.Profile
+                PassMBps = $di.PassMBps
+                FailMBps = $di.FailMBps
+                IsSystemDrive = $di.IsSystemDrive
+                Model = $di.Model
+                LogFile = $f.Name
+                WorkloadKind = $kind
+                ParseOk = $parseOk
+                ParseReason = $parseReason
             }
         }
-        if($used -gt 0){
-            $preferredKind = if($DiskIoProfile -eq "throughput") { "throughput" } else { "stability" }
-            $pref = @($details | Where-Object { $_.WorkloadKind -eq $preferredKind })
-            if($pref.Count -gt 0){
-                $total = 0.0; $read = 0.0; $write = 0.0; $iops = 0.0; $latMax=$null; $used=$pref.Count
-                foreach($x in $pref){
-                    if($x.TotalMiBps -ne $null){$total += [double]$x.TotalMiBps}
-                    if($x.ReadMiBps -ne $null){$read += [double]$x.ReadMiBps}
-                    if($x.WriteMiBps -ne $null){$write += [double]$x.WriteMiBps}
-                    if($x.Iops -ne $null){$iops += [double]$x.Iops}
-                    if($x.AvgLatMs -ne $null){ if($latMax -eq $null -or [double]$x.AvgLatMs -gt $latMax){$latMax=[double]$x.AvgLatMs} }
+
+        $preferredKind = if($DiskIoProfile -eq "throughput") { "throughput" } else { "stability" }
+        $pref = @($details | Where-Object { $_.WorkloadKind -eq $preferredKind -and $_.ParseOk })
+        if($pref.Count -gt 0){
+            $total=0.0
+            $read=0.0
+            $write=0.0
+            $iops=0.0
+            $latMax=$null
+            foreach($x in $pref){
+                if($null -ne $x.TotalMiBps){$total += [double]$x.TotalMiBps}
+                if($null -ne $x.ReadMiBps){$read += [double]$x.ReadMiBps}
+                if($null -ne $x.WriteMiBps){$write += [double]$x.WriteMiBps}
+                if($null -ne $x.Iops){$iops += [double]$x.Iops}
+                if($null -ne $x.AvgLatMs){
+                    if($null -eq $latMax -or [double]$x.AvgLatMs -gt $latMax){$latMax=[double]$x.AvgLatMs}
                 }
             }
-            $result.TotalMiBps=[math]::Round($total,2); $result.ReadMiBps=[math]::Round($read,2); $result.WriteMiBps=[math]::Round($write,2); $result.Iops=[math]::Round($iops,2); if($latMax -ne $null){$result.AvgLatMs=[math]::Round($latMax,3)}; $result.Files=$used; $result.Source=("DiskSpd {0} out.log" -f $preferredKind); $result.Details=@($details)
+            $result.TotalMiBps=[math]::Round($total,2)
+            $result.ReadMiBps=[math]::Round($read,2)
+            $result.WriteMiBps=[math]::Round($write,2)
+            $result.Iops=[math]::Round($iops,2)
+            if($null -ne $latMax){$result.AvgLatMs=[math]::Round($latMax,3)}
+            $result.Files=$pref.Count
+            $result.Source=("DiskSpd {0} out.log" -f $preferredKind)
         }
-    } catch {}
+        $result.Details=@($details)
+    } catch {
+        Log "[DISKSPD PARSE ERROR] $($_.Exception.Message)"
+    }
     return [pscustomobject]$result
 }
 function Get-DiskSpdLogHealth([string]$Drive,[ValidateSet("stability","throughput")][string]$WorkloadKind) {
@@ -1766,7 +2005,12 @@ function Get-DiskSpdLogHealth([string]$Drive,[ValidateSet("stability","throughpu
     $errLog = Join-Path $LogDir ("diskspd_{0}_{1}.err.log" -f $WorkloadKind,$letter)
     $allLines = @()
     $warningLines = @()
+    $outExists = Test-Path $outLog
+    $outBytes = 0
 
+    if($outExists){
+        try { $outBytes = (Get-Item -LiteralPath $outLog -ErrorAction Stop).Length } catch {}
+    }
     foreach($path in @($outLog,$errLog)){
         if(Test-Path $path){
             try {
@@ -1780,14 +2024,93 @@ function Get-DiskSpdLogHealth([string]$Drive,[ValidateSet("stability","throughpu
     # Match explicit fatal I/O/startup failures only. Ordinary WARNING lines are retained as notes.
     $fatalPattern = '(?i)^\s*(ERROR|FATAL)\s*:|error opening|failed to|failure opening|I/O error|input/output error|bad block|CRC error|data error|device is not ready|device does not exist|access is denied|not enough (disk )?space|disk full|timed out|timeout while'
     $fatalLines = @($allLines | Where-Object { $_ -match $fatalPattern -and $_ -notmatch '(?i)^\s*WARNING\s*:' } | Select-Object -Unique)
+    $hasResultMarker = (@($allLines | Where-Object { $_ -match '(?i)Results for timespan|^\s*Total IO\s*$|^\s*total\s*:' }).Count -gt 0)
 
     return [pscustomobject]@{
-        HasOutput = (Test-Path $outLog)
+        OutputExists = $outExists
+        HasOutput = ($outExists -and $outBytes -gt 0)
+        OutputBytes = $outBytes
+        HasResultMarker = $hasResultMarker
         HasFatalError = ($fatalLines.Count -gt 0)
         FatalText = if($fatalLines.Count -gt 0){ (($fatalLines | Select-Object -First 5) -join ' | ') }else{ '' }
         WarningText = if($warningLines.Count -gt 0){ (($warningLines | Select-Object -First 5) -join ' | ') }else{ '' }
         OutLog = $outLog
         ErrLog = $errLog
+    }
+}
+function Get-DiskMeasurementEvaluation($Detail,$Health,$DriveInfo,[ValidateSet("stability","throughput")][string]$WorkloadKind) {
+    $profileDisplay = Get-DiskProfileDisplayName $DriveInfo.Profile
+    $ioThr = Get-DiskRandomIopsThresholdByProfile $DriveInfo.Profile $DriveInfo.IsSystemDrive
+    $title = if($WorkloadKind -eq "stability"){"4K 随机读写性能"}else{"顺序读写速度"}
+    $state = "PASS"
+    $actual = "-"
+    $reference = "-"
+    $conclusion = "通过"
+    $summary = ""
+
+    if($Health.HasFatalError){
+        $state = "FAIL"
+        $conclusion = "测试执行失败"
+        $actual = "测试过程中检测到 I/O 或工具执行错误"
+        $reference = "请查看原始日志并复核磁盘、控制器、权限和剩余空间"
+        $summary = "$title：测试执行失败"
+    } elseif(!$Health.HasOutput){
+        $state = "FAIL"
+        $conclusion = "未获得有效结果"
+        $actual = "测试未生成有效结果"
+        $reference = "请检查测试工具是否启动、测试文件是否创建以及磁盘剩余空间"
+        $summary = "$title：未获得有效结果"
+    } elseif($null -eq $Detail -or !$Detail.ParseOk){
+        $state = "WARN"
+        $conclusion = "结果需复核"
+        $actual = "测试日志已生成，但自动汇总未能识别结果"
+        $reference = "原始日志已保留，建议人工复核；该情况不等同于硬盘故障"
+        $summary = "$title：结果需复核"
+    } elseif($WorkloadKind -eq "stability"){
+        $actual = ("<div class='result-line'><span>每秒读写次数</span><b>{0} IOPS</b></div><div class='result-line'><span>平均响应时间</span><b>{1} ms</b></div><div class='result-note'>测试条件：4KiB 数据块，70% 读取 / 30% 写入</div>" -f `
+            (Format-DiskNumber $Detail.Iops 2 $true),`
+            (Format-DiskNumber $Detail.AvgLatMs 3 $false))
+        $reference = ("<div class='reference-main'>参考性能：≥ {0} IOPS</div><div class='result-note'>数值越高表示小文件和系统随机访问能力越强；响应时间越低越好。</div>" -f `
+            (Format-DiskNumber $ioThr.PassIOPS 0 $true))
+        if($null -eq $Detail.Iops -or [double]$Detail.Iops -le 0){
+            $state="FAIL"; $conclusion="无有效随机读写"; $summary="$title：无有效随机读写结果"
+        } elseif([double]$Detail.Iops -lt [double]$ioThr.FailIOPS){
+            $state="FAIL"; $conclusion="性能严重异常"; $summary=("$title：{0} IOPS，性能严重异常" -f (Format-DiskNumber $Detail.Iops 2 $true))
+        } elseif([double]$Detail.Iops -lt [double]$ioThr.PassIOPS){
+            $state="WARN"; $conclusion="低于参考值"; $summary=("$title：{0} IOPS，平均响应时间 {1} ms，低于参考值" -f (Format-DiskNumber $Detail.Iops 2 $true),(Format-DiskNumber $Detail.AvgLatMs 3 $false))
+        } else {
+            $summary=("$title：{0} IOPS，平均响应时间 {1} ms，通过" -f (Format-DiskNumber $Detail.Iops 2 $true),(Format-DiskNumber $Detail.AvgLatMs 3 $false))
+        }
+    } else {
+        $actual = ("<div class='result-line'><span>读取速度</span><b>{0} MiB/s</b></div><div class='result-line'><span>写入速度</span><b>{1} MiB/s</b></div><div class='result-line result-total'><span>综合读写速度</span><b>{2} MiB/s</b></div><div class='result-note'>测试条件：1MiB 数据块，70% 读取 / 30% 写入</div>" -f `
+            (Format-DiskNumber $Detail.ReadMiBps 2 $false),`
+            (Format-DiskNumber $Detail.WriteMiBps 2 $false),`
+            (Format-DiskNumber $Detail.TotalMiBps 2 $false))
+        $reference = ("<div class='reference-main'>综合读写参考：≥ {0} MiB/s</div><div class='result-note'>用于反映大文件连续读取和写入能力。</div>" -f `
+            (Format-DiskNumber $DriveInfo.PassMBps 0 $true))
+        if($null -eq $Detail.TotalMiBps -or [double]$Detail.TotalMiBps -le 0){
+            $state="FAIL"; $conclusion="无有效顺序读写"; $summary="$title：无有效顺序读写结果"
+        } elseif([double]$Detail.TotalMiBps -lt [double]$DriveInfo.FailMBps){
+            $state="FAIL"; $conclusion="性能严重异常"; $summary=("$title：综合读写速度 {0} MiB/s，性能严重异常" -f (Format-DiskNumber $Detail.TotalMiBps 2 $false))
+        } elseif([double]$Detail.TotalMiBps -lt [double]$DriveInfo.PassMBps){
+            $state="WARN"; $conclusion="低于参考值"; $summary=("$title：读取 {0} MiB/s，写入 {1} MiB/s，综合 {2} MiB/s，低于参考值" -f (Format-DiskNumber $Detail.ReadMiBps 2 $false),(Format-DiskNumber $Detail.WriteMiBps 2 $false),(Format-DiskNumber $Detail.TotalMiBps 2 $false))
+        } else {
+            $summary=("$title：读取 {0} MiB/s，写入 {1} MiB/s，综合 {2} MiB/s，通过" -f (Format-DiskNumber $Detail.ReadMiBps 2 $false),(Format-DiskNumber $Detail.WriteMiBps 2 $false),(Format-DiskNumber $Detail.TotalMiBps 2 $false))
+        }
+    }
+
+    if($Health.WarningText){
+        $reference += "<div class='result-note'>工具日志包含提示信息，建议结合原始日志复核。</div>"
+    }
+    return [pscustomobject]@{
+        WorkloadKind=$WorkloadKind
+        Title=$title
+        State=$state
+        ActualHtml=$actual
+        ReferenceHtml=$reference
+        Conclusion=$conclusion
+        Summary=$summary
+        ProfileDisplay=$profileDisplay
     }
 }
 
@@ -1826,7 +2149,7 @@ function Build-Report {
         PhaseStart = "&#x5F00;&#x59CB;&#x65F6;&#x95F4;"
         PhaseEnd = "&#x7ED3;&#x675F;&#x65F6;&#x95F4;"
         Duration = "&#x6301;&#x7EED;&#x65F6;&#x95F4;"
-        Sec4 = "&#x5341;&#x4E00;&#x3001;&#x6D4B;&#x8BD5;&#x5DE5;&#x5177;&#x4FE1;&#x606F;"
+        Sec4 = "&#x5341;&#x4E8C;&#x3001;&#x6D4B;&#x8BD5;&#x5DE5;&#x5177;&#x4FE1;&#x606F;"
         Module = "&#x6D4B;&#x8BD5;&#x6A21;&#x5757;"
         Tool = "&#x5DE5;&#x5177;"
         Backend = "&#x540E;&#x7AEF;/&#x6A21;&#x5F0F;"
@@ -1857,11 +2180,12 @@ function Build-Report {
         Status = "&#x72B6;&#x6001;"
         MainResult = "&#x4E3B;&#x8981;&#x7ED3;&#x679C;"
         Participate = "&#x53C2;&#x4E0E;&#x603B;&#x8BC4;"
-        SecMetrics = "&#x4E03;&#x3001;&#x6838;&#x5FC3;&#x6307;&#x6807;&#x6C47;&#x603B;"
-        SecStageMetrics = "&#x516B;&#x3001;&#x5206;&#x9879;&#x6307;&#x6807;&#x6C47;&#x603B;"
-        SecCharts = "&#x4E5D;&#x3001;&#x8D8B;&#x52BF;&#x66F2;&#x7EBF;&#xFF08;&#x6309;&#x6D4B;&#x8BD5;&#x987A;&#x5E8F;&#xFF09;"
-        ChartNote = "&#x6BCF;&#x5F20;&#x66F2;&#x7EBF;&#x6A2A;&#x8F74;&#x4E3A;&#x5B9E;&#x9645;&#x91C7;&#x6837;&#x65F6;&#x95F4;&#xFF0C;&#x5E76;&#x6807;&#x6CE8; GPU / CPU / DISK &#x9636;&#x6BB5;&#x533A;&#x95F4;&#x3002;"
-        SecRaw = "&#x5341;&#x3001;&#x539F;&#x59CB;&#x6570;&#x636E;&#x6587;&#x4EF6;"
+        SecDiskResult = "&#x4E03;&#x3001;&#x78C1;&#x76D8;&#x6D4B;&#x8BD5;&#x7ED3;&#x679C;"
+        SecMetrics = "&#x516B;&#x3001;&#x6838;&#x5FC3;&#x6307;&#x6807;&#x6C47;&#x603B;"
+        SecStageMetrics = "&#x4E5D;&#x3001;&#x5206;&#x9879;&#x6307;&#x6807;&#x6C47;&#x603B;"
+        SecCharts = "&#x5341;&#x3001;&#x8D8B;&#x52BF;&#x66F2;&#x7EBF;&#xFF08;&#x6309;&#x6D4B;&#x8BD5;&#x987A;&#x5E8F;&#xFF09;"
+        ChartNote = "&#x6BCF;&#x5F20;&#x66F2;&#x7EBF;&#x6A2A;&#x8F74;&#x4E3A;&#x5B9E;&#x9645;&#x91C7;&#x6837;&#x65F6;&#x95F4;&#x3002;&#x78C1;&#x76D8;&#x66F2;&#x7EBF;&#x53EA;&#x7528;&#x4E8E;&#x89C2;&#x5BDF;&#x8D8B;&#x52BF;&#xFF0C;&#x6700;&#x7EC8;&#x5224;&#x5B9A;&#x4EE5; DiskSpd &#x7ED3;&#x679C;&#x8868;&#x4E3A;&#x51C6;&#x3002;"
+        SecRaw = "&#x5341;&#x4E00;&#x3001;&#x539F;&#x59CB;&#x6570;&#x636E;&#x6587;&#x4EF6;"
         SampleCsv = "&#x91C7;&#x6837; CSV"
         GpuCsv = "GPU &#x6E29;&#x5EA6;/&#x529F;&#x8017; CSV"
         CpuSensorCsv = "CPU &#x6E29;&#x5EA6; CSV"
@@ -1899,8 +2223,8 @@ function Build-Report {
         CpuClockChart = "CPU &#x5F53;&#x524D;&#x9891;&#x7387;"
         CpuTempChart = "CPU &#x6E29;&#x5EA6;"
         MemChart = "&#x5185;&#x5B58;&#x4F7F;&#x7528;&#x7387;"
-        DiskReadChart = "&#x78C1;&#x76D8;&#x8BFB;&#x53D6;&#x541E;&#x5410;"
-        DiskWriteChart = "&#x78C1;&#x76D8;&#x5199;&#x5165;&#x541E;&#x5410;"
+        DiskReadChart = "&#x78C1;&#x76D8;&#x8BFB;&#x53D6;&#x901F;&#x5EA6;"
+        DiskWriteChart = "&#x78C1;&#x76D8;&#x5199;&#x5165;&#x901F;&#x5EA6;"
         NoGpuText = "&#x672A;&#x68C0;&#x6D4B;&#x5230; NVIDIA GPU"
         GpuNotTestedText = "GPU &#x9636;&#x6BB5;&#x672A;&#x542F;&#x7528;&#xFF0C;&#x72B6;&#x6001;&#x4E3A;&#x672A;&#x6D4B;&#x8BD5;&#xFF0C;&#x4E0D;&#x53C2;&#x4E0E;&#x603B;&#x4F53;&#x7ED3;&#x8BBA;&#x3002;"
         AllFixedDrives = "&#x6240;&#x6709;&#x672C;&#x5730;&#x56FA;&#x5B9A;&#x76D8;&#xFF08;&#x5305;&#x62EC; C:&#xFF09;"
@@ -1937,7 +2261,7 @@ function Build-Report {
     $diskTotal=0; if($null -ne $diskRead){$diskTotal+=$diskRead}; if($null -ne $diskWrite){$diskTotal+=$diskWrite}
     $diskSpd=Get-DiskSpdParsedResult
     $diskJudgeTotal=$diskTotal; $diskJudgeRead=$diskRead; $diskJudgeWrite=$diskWrite; $diskJudgeSource="real-time monitor"
-    if($diskSpd.TotalMiBps -ne $null){ $diskJudgeTotal=$diskSpd.TotalMiBps; $diskJudgeRead=$diskSpd.ReadMiBps; $diskJudgeWrite=$diskSpd.WriteMiBps; $diskJudgeSource="DiskSpd parsed result" }
+    if($diskSpd.TotalMiBps -ne $null){ $diskJudgeTotal=$diskSpd.TotalMiBps; $diskJudgeRead=$diskSpd.ReadMiBps; $diskJudgeWrite=$diskSpd.WriteMiBps; $diskJudgeSource="DiskSpd 最终结果" }
     $gpuDetected = ($gpuCnt -ne $null -and $gpuCnt -gt 0)
     $gpuEnabled = (($Mode -eq "staged" -and $GpuMinutes -gt 0) -or (($Mode -eq "gpu" -or $Mode -eq "all") -and $DurationHours -gt 0) -or $AllHours -gt 0)
     $cpuEnabled = (($Mode -eq "staged" -and $CpuMinutes -gt 0) -or (($Mode -eq "cpu" -or $Mode -eq "all") -and $DurationHours -gt 0) -or $AllHours -gt 0)
@@ -1991,10 +2315,15 @@ function Build-Report {
         }
     } else { Add-Status $L.MemPressure "NOT_TESTED" "CPU/memory stage disabled" $false }
     $diskOverallPass = $true
+    $diskModuleState = "PASS"
     $diskStatusLines = @()
     $diskMetricItems = @()
-    if(!$diskEnabled){ Add-Status $L.DiskPressure "NOT_TESTED" $L.DiskLowSpace $false }
-    else{
+    $diskStageSummaryItems = @()
+    $diskResultTableRows = ""
+    if(!$diskEnabled){
+        Add-Status $L.DiskPressure "NOT_TESTED" $L.DiskLowSpace $false
+        $diskResultTableHtml = "<div class='disk-guide'>磁盘阶段未启用或没有满足空间条件的测试盘。</div>"
+    } else {
         $stabilityMap=@{}
         $throughputMap=@{}
         foreach($dd in @($diskSpd.Details)){
@@ -2004,73 +2333,113 @@ function Build-Report {
                 else { $stabilityMap[$key] = $dd }
             }
         }
-        $judgeKind = if($DiskIoProfile -eq "throughput") { "throughput" } else { "stability" }
+
+        $expectedKinds = @()
+        if($DiskIoProfile -eq "stability"){ $expectedKinds=@("stability") }
+        elseif($DiskIoProfile -eq "throughput"){ $expectedKinds=@("throughput") }
+        else { $expectedKinds=@("stability","throughput") }
+
         foreach($d0 in $script:ResolvedTestDrives){
             $d = Normalize-DriveLetter $d0
             $di = Get-DiskDriveThresholdInfo $d
-            $sys = if($di.IsSystemDrive){"System"}else{"Data"}
-            $judgeMap = if($judgeKind -eq "throughput") { $throughputMap } else { $stabilityMap }
-            if($judgeMap.ContainsKey($d)){
-                $rr = $judgeMap[$d]
-                $state = "PASS"
-                $note = ""
-                $ioThr = Get-DiskRandomIopsThresholdByProfile $di.Profile $di.IsSystemDrive
-                $health = Get-DiskSpdLogHealth $d $judgeKind
-                if(!$health.HasOutput){ $state="FAIL"; $note="DiskSpd output log missing"; $diskOverallPass=$false }
-                elseif($health.HasFatalError){ $state="FAIL"; $note=("DiskSpd fatal error: {0}" -f $health.FatalText); $diskOverallPass=$false }
-                elseif($rr.TotalMiBps -eq $null){ $state="FAIL"; $note="no parsed DiskSpd result"; $diskOverallPass=$false }
-                elseif($judgeKind -eq "stability"){
-                    if($rr.Iops -eq $null -or $rr.Iops -le 0){
-                        $state="FAIL"; $note="no measurable random I/O activity"; $diskOverallPass=$false
-                    } elseif($rr.Iops -lt $ioThr.FailIOPS){
-                        $state="FAIL"; $note=("4K random IOPS {0} below minimum activity floor {1}; possible severe degradation or stalled workload" -f $rr.Iops,$ioThr.FailIOPS); $diskOverallPass=$false
-                    } elseif($rr.Iops -lt $ioThr.PassIOPS){
-                        $note=("stability pass: 4K random IOPS {0} is above minimum floor {1} but below reference {2}; performance variation does not by itself indicate disk failure" -f $rr.Iops,$ioThr.FailIOPS,$ioThr.PassIOPS)
-                    } else {
-                        $note=("stability pass: 4K random IOPS {0} meets reference {1}; throughput MB/s is reference only" -f $rr.Iops,$ioThr.PassIOPS)
-                    }
+            $role = Get-DiskRoleDisplayName $di.IsSystemDrive
+            $profileDisplay = Get-DiskProfileDisplayName $di.Profile
+            $modelText = if([string]::IsNullOrWhiteSpace("$($di.Model)")){"型号未透传"}else{"$($di.Model)"}
+            $driveState = "PASS"
+            $driveSummaries = @()
+
+            foreach($kind in $expectedKinds){
+                $map = if($kind -eq "throughput"){$throughputMap}else{$stabilityMap}
+                $detail = $null
+                if($map.ContainsKey($d)){ $detail = $map[$d] }
+                $health = Get-DiskSpdLogHealth $d $kind
+                $eval = Get-DiskMeasurementEvaluation $detail $health $di $kind
+
+                if($eval.State -eq "FAIL"){
+                    $driveState = "FAIL"
+                    $diskModuleState = "FAIL"
+                    $diskOverallPass = $false
+                } elseif($eval.State -eq "WARN" -and $driveState -ne "FAIL"){
+                    $driveState = "WARN"
+                    if($diskModuleState -eq "PASS"){ $diskModuleState = "WARN" }
+                }
+
+                $driveSummaries += $eval.Summary
+                $judgeHtml = if($eval.State -eq "PASS"){
+                    "<span class='pass'>通过</span>"
+                } elseif($eval.State -eq "WARN"){
+                    "<span class='warn'>关注</span>"
                 } else {
-                    if($rr.TotalMiBps -le 0){ $state="FAIL"; $note="no measurable throughput"; $diskOverallPass=$false }
-                    elseif($rr.TotalMiBps -lt $di.FailMBps){ $state="FAIL"; $note=("throughput {0} MB/s below minimum activity floor {1} MB/s" -f $rr.TotalMiBps,$di.FailMBps); $diskOverallPass=$false }
-                    elseif($rr.TotalMiBps -lt $di.PassMBps){ $note=("throughput above minimum floor but below reference {0} MB/s; recorded as performance variation" -f $di.PassMBps) }
-                    else { $note="throughput meets reference" }
+                    "<span class='fail'>不合格</span>"
                 }
-                if($health.WarningText){ $note += ("; DiskSpd warning: {0}" -f $health.WarningText) }
-                $diskStatusLines += ("{0} [{1}; {2}; {3}; {4}] total {5} MiB/s / read {6} / write {7}; IOPS {8}; throughput minimum >= {9}; throughput reference >= {10}; random minimum >= {11}; random reference >= {12}; {13}" -f $d,$di.Profile,$sys,$di.Model,$judgeKind,$rr.TotalMiBps,$rr.ReadMiBps,$rr.WriteMiBps,$rr.Iops,$di.FailMBps,$di.PassMBps,$ioThr.FailIOPS,$ioThr.PassIOPS,$note)
-                $diskMetricItems += [pscustomobject]@{Name=("DiskSpd {0} {1}" -f $d,$judgeKind);Result=("{0} MiB/s | {1} IOPS | {2} | judge={3}" -f $rr.TotalMiBps,$rr.Iops,$di.Profile,$judgeKind);Ok=($state -eq "PASS")}
-                if($DiskIoProfile -eq "both"){
-                    if($throughputMap.ContainsKey($d)){
-                        $tr=$throughputMap[$d]
-                        $trHealth = Get-DiskSpdLogHealth $d "throughput"
-                        $trOk = $true
-                        $trNote = ""
-                        if(!$trHealth.HasOutput){ $trOk=$false; $trNote="throughput output log missing" }
-                        elseif($trHealth.HasFatalError){ $trOk=$false; $trNote=("DiskSpd fatal error: {0}" -f $trHealth.FatalText) }
-                        elseif($tr.TotalMiBps -eq $null -or $tr.TotalMiBps -le 0){ $trOk=$false; $trNote="no measurable throughput" }
-                        elseif($tr.TotalMiBps -lt $di.FailMBps){ $trOk=$false; $trNote=("below minimum activity floor {0} MB/s" -f $di.FailMBps) }
-                        elseif($tr.TotalMiBps -lt $di.PassMBps){ $trNote=("above minimum floor, below reference {0} MB/s" -f $di.PassMBps) }
-                        else { $trNote="meets reference" }
-                        if($trHealth.WarningText){ $trNote += ("; warning: {0}" -f $trHealth.WarningText) }
-                        if(!$trOk){ $diskOverallPass=$false }
-                        $diskStatusLines += ("{0} throughput probe: total {1} MiB/s / read {2} / write {3}; reference >= {4} MB/s; minimum >= {5} MB/s; {6}" -f $d,$tr.TotalMiBps,$tr.ReadMiBps,$tr.WriteMiBps,$di.PassMBps,$di.FailMBps,$trNote)
-                        $diskMetricItems += [pscustomobject]@{Name=("DiskSpd {0} throughput probe" -f $d);Result=("{0} MiB/s | read {1} | write {2} | reference >= {3} | minimum >= {4}" -f $tr.TotalMiBps,$tr.ReadMiBps,$tr.WriteMiBps,$di.PassMBps,$di.FailMBps);Ok=$trOk}
-                    } else {
-                        $diskOverallPass=$false
-                        $diskStatusLines += ("{0} throughput probe parsed result missing" -f $d)
-                        $diskMetricItems += [pscustomobject]@{Name=("DiskSpd {0} throughput probe" -f $d);Result="No parsed result";Ok=$false}
-                    }
+                $judgeNote = if($eval.State -eq "PASS"){""}else{"<br><span class='muted'>$(Html $eval.Conclusion)</span>"}
+                $diskResultTableRows += ("<tr><td><b>{0}</b><br><span class='muted'>{1}</span></td><td><b>{2}</b><br><span class='muted'>{3}</span></td><td><b>{4}</b></td><td>{5}</td><td>{6}</td><td class='disk-judge'>{7}{8}</td></tr>" -f `
+                    (Html $d),(Html $role),(Html $profileDisplay),(Html $modelText),(Html $eval.Title),$eval.ActualHtml,$eval.ReferenceHtml,$judgeHtml,$judgeNote)
+
+                $metricResult = if($kind -eq "stability" -and $null -ne $detail -and $detail.ParseOk){
+                    ("每秒读写次数：{0} IOPS | 平均响应时间：{1} ms" -f `
+                        (Format-DiskNumber $detail.Iops 2 $true),(Format-DiskNumber $detail.AvgLatMs 3 $false))
+                } elseif($kind -eq "throughput" -and $null -ne $detail -and $detail.ParseOk){
+                    ("读取速度：{0} MiB/s | 写入速度：{1} MiB/s | 综合读写速度：{2} MiB/s" -f `
+                        (Format-DiskNumber $detail.ReadMiBps 2 $false),(Format-DiskNumber $detail.WriteMiBps 2 $false),(Format-DiskNumber $detail.TotalMiBps 2 $false))
+                } else {
+                    $eval.Summary
                 }
-            } else {
-                $diskOverallPass = $false
-                $diskStatusLines += ("{0} [{1}; {2}] no DiskSpd {3} parsed result" -f $d,$di.Profile,$di.Model,$judgeKind)
-                $diskMetricItems += [pscustomobject]@{Name=("DiskSpd {0} {1}" -f $d,$judgeKind);Result=("No parsed result | {0}" -f $di.Profile);Ok=$false}
+                $diskMetricItems += [pscustomobject]@{
+                    Name=("磁盘 {0} - {1}" -f $d,$eval.Title)
+                    Result=$metricResult
+                    State=$eval.State
+                }
+                $diskStageSummaryItems += [pscustomobject]@{
+                    Label=("{0} {1}" -f $d,$eval.Title)
+                    Value=$metricResult
+                    State=$eval.State
+                }
             }
+
+            $driveConclusion = if($driveState -eq "PASS"){"通过"}elseif($driveState -eq "WARN"){"关注"}else{"不合格"}
+            $diskStatusLines += ("{0}：{1}，{2}，{3}" -f $d,$role,$profileDisplay,$modelText)
+            foreach($driveSummary in $driveSummaries){
+                $diskStatusLines += ("{0}：{1}" -f $d,$driveSummary)
+            }
+            $diskStatusLines += ("{0}：综合结论 {1}" -f $d,$driveConclusion)
         }
-        if($script:ResolvedTestDrives.Count -eq 0){ $diskOverallPass = $false; $diskStatusLines += "No resolved test drive" }
-        if($diskOverallPass){ Add-Status $L.DiskPressure "PASS" ($diskStatusLines -join " ; ") $true }
-        else{ Add-Status $L.DiskPressure "FAIL" ($diskStatusLines -join " ; ") $true }
+
+        if($script:ResolvedTestDrives.Count -eq 0){
+            $diskModuleState = "FAIL"
+            $diskOverallPass = $false
+            $diskStatusLines += "没有解析到可测试的本地固定盘"
+        }
+
+        if($diskModuleState -eq "FAIL"){
+            Add-Status $L.DiskPressure "FAIL" ($diskStatusLines -join "; ") $true
+        } elseif($diskModuleState -eq "WARN"){
+            Add-Status $L.DiskPressure "WARN" ($diskStatusLines -join "; ") $true
+        } else {
+            Add-Status $L.DiskPressure "PASS" ($diskStatusLines -join "; ") $true
+        }
+
+        if([string]::IsNullOrWhiteSpace($diskResultTableRows)){
+            $diskResultTableRows = "<tr><td colspan='6'>没有可显示的磁盘结果。请查看 logs 目录中的 DiskSpd 原始日志。</td></tr>"
+        }
+        $diskResultTableHtml = @"
+<div class='disk-guide'>
+  <b>测试说明：</b>4K 随机读写用于反映系统盘、小文件和程序启动时的响应能力；顺序读写用于反映大文件连续传输能力。本次两项测试均采用 70% 读取、30% 写入的混合负载。
+</div>
+<table class='disk-result-table'>
+<tr><th style='width:9%'>盘符</th><th style='width:21%'>磁盘类型与型号</th><th style='width:16%'>测试内容</th><th style='width:25%'>实测结果</th><th style='width:18%'>参考标准</th><th style='width:11%'>结果</th></tr>
+$diskResultTableRows
+</table>
+"@
     }
-    $overall="PASS"; foreach($s in $script:StatusItems|Where-Object {$_.Participate}){ if($s.Status -eq "FAIL"){$overall="FAIL";break} }
+    $overall="PASS"
+    foreach($s in $script:StatusItems|Where-Object {$_.Participate}){
+        if($s.Status -eq "FAIL"){
+            $overall="FAIL"
+            break
+        }
+        if($s.Status -eq "WARN" -and $overall -eq "PASS"){ $overall="WARN" }
+    }
     $note=$L.PassNote; if($overall -eq "WARN"){$note=$L.WarnNote} elseif($overall -eq "FAIL"){$note=$L.FailNote}
     New-SvgChart (Join-Path $ChartDir "gpu_util.svg") $gpuRows "GPU_Util_Max_Percent" "GPU Max Utilization" " %"
     New-SvgChart (Join-Path $ChartDir "gpu_temp.svg") $gpuRows "GPU_Temp_Max_C" "GPU Max Temperature" " C"
@@ -2109,8 +2478,12 @@ function Build-Report {
     $testInfo += "<tr><th>$($L.MemoryTarget)</th><td>y-cruncher policy $YCruncherMemoryPercent% RAM</td></tr>"
     $testInfo += "<tr><th>$($L.GpuBackend)</th><td>$(Html $gpuBackendDisplay)</td><th>$($L.CpuBackend)</th><td>$(Html $CpuMemBackend)</td></tr>"
     $testInfo += "<tr><th>GPU 状态</th><td>$(Html $gpuStatusDisplay)</td><th>GPU 实际时长</th><td>$(Html $gpuActualDisplay)</td></tr>"
-    $diskProbeText = if($DiskIoProfile -eq "both" -and $DiskBothTimePolicy -eq "split"){ "已包含在磁盘总时长内，按比例拆分" } elseif($DiskIoProfile -eq "both") { "$DiskThroughputProbeSeconds 秒（额外追加）" } elseif($DiskIoProfile -eq "throughput") { "仅速度测试" } else { "未启用" }
-    $diskPolicyText = if($DiskIoProfile -eq "both"){ if([string]::IsNullOrWhiteSpace($DiskBothTimePolicy)){ "split" } else { $DiskBothTimePolicy } } else { "-" }
+    $diskProbeText = if($DiskIoProfile -eq "both" -and $DiskBothTimePolicy -eq "split"){ "已包含在磁盘总时长内" } elseif($DiskIoProfile -eq "both") { "$DiskThroughputProbeSeconds 秒（在总时长外追加）" } elseif($DiskIoProfile -eq "throughput") { "仅进行顺序读写测试" } else { "未启用" }
+    $diskPolicyText = if($DiskIoProfile -eq "both"){
+        if($DiskBothTimePolicy -eq "split" -or [string]::IsNullOrWhiteSpace($DiskBothTimePolicy)){ "随机读写与顺序读写平均分配总时长" }
+        else { "顺序读写测试在稳定性测试后追加" }
+    } else { "单项测试" }
+    $diskProfileDisplay = if($DiskIoProfile -eq "both"){"随机读写 + 顺序读写"}elseif($DiskIoProfile -eq "stability"){"随机读写"}else{"顺序读写"}
     $gpuTestEnabled = $Mode -in @("gpu","all","staged")
     $cpuTestEnabled = $Mode -in @("cpu","all","staged")
     $diskTestEnabled = $Mode -in @("disk","all","staged")
@@ -2150,9 +2523,9 @@ function Build-Report {
     <div class='card-title'>磁盘测试模块</div>
     <div class='info-row'><div class='info-key'>状态</div><div class='info-val'>$diskModuleStatus</div></div>`n    $(if($diskTestEnabled){"<div class='info-row'><div class='info-key'>磁盘总时长</div><div class='info-val'>$diskStageDisplay</div></div>"})
     <div class='info-row'><div class='info-key'>$($L.DiskTarget)</div><div class='info-val'>$(Html $diskTargets)</div></div>
-    <div class='info-row'><div class='info-key'>I/O Profile</div><div class='info-val'>$(Html $DiskIoProfile)</div></div>
-    <div class='info-row'><div class='info-key'>时间策略</div><div class='info-val'>$(Html $diskPolicyText)</div></div>
-    <div class='info-row'><div class='info-key'>速度探针</div><div class='info-val'>$(Html $diskProbeText)</div></div>
+    <div class='info-row'><div class='info-key'>测试组合</div><div class='info-val'>$(Html $diskProfileDisplay)</div></div>
+    <div class='info-row'><div class='info-key'>时长分配</div><div class='info-val'>$(Html $diskPolicyText)</div></div>
+    <div class='info-row'><div class='info-key'>顺序读写测试</div><div class='info-val'>$(Html $diskProbeText)</div></div>
   </div>
 </div>
 "@
@@ -2183,8 +2556,8 @@ function Build-Report {
     }catch{$sysInfo="-"}
     try{ $g=& nvidia-smi --query-gpu=index,name,driver_version,temperature.gpu,fan.speed,power.draw,memory.used,memory.total --format=csv,noheader,nounits 2>$null; if($g){$gpuInfo=Html ($g -join "`r`n")} else {$gpuInfo="未检测到 NVIDIA GPU<br>GPU 压测：未测试<br>GPU 相关项目：全部跳过"} }catch{$gpuInfo="未检测到 NVIDIA GPU<br>GPU 压测：未测试<br>GPU 相关项目：全部跳过"}
     try{ $ds=Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3"|Sort-Object DeviceID|ForEach-Object{"{0} | Size {1} GB | Free {2} GB" -f $_.DeviceID,(ToGB $_.Size),(ToGB $_.FreeSpace)}; $diskInfo=Html ($ds -join "`r`n") }catch{$diskInfo="-"}
-    $diskThresholdText = Html (Get-DiskThresholdSummaryText)
-    $thresholdInfo = "CPU Threshold Profile : $script:CpuThresholdProfile<br>GPU Threshold Profile : $script:GpuThresholdProfile<br>Disk Threshold Profile : Per-drive dynamic<br><div class='pre'>$diskThresholdText</div>Auto Hardware Threshold : $AutoHardwareThreshold<br>Customer Acceptance Mode : Lenient / major-fault only<br>CPU Stable Window : skip first ${CpuStableSkipStartSeconds}s and last ${CpuStableSkipEndSeconds}s<br>GPU Effective Window : util >= ${GpuEffectiveLoadMinPercent}% or power >= ${GpuEffectivePowerMinW}W<br>Disk Evidence : DiskIoProfile=$DiskIoProfile; DiskBothTimePolicy=$DiskBothTimePolicy; stability uses 4K random mixed I/O and is judged by errors/IOPS/latency; throughput probe uses 1M sequential mixed I/O and MB/s as reference"
+    $diskThresholdHtml = Get-DiskThresholdSummaryHtml
+    $thresholdInfo = "<div class='threshold-summary'><div><b>CPU 参考类型：</b>$(Html $script:CpuThresholdProfile)</div><div><b>GPU 参考类型：</b>$(Html $script:GpuThresholdProfile)</div></div><div class='threshold-subtitle'>磁盘性能参考</div>$diskThresholdHtml"
     $hwTable=@"
 <div class='hw-grid'>
   <div class='hw-card hw-card-main'>$script:CpuSummaryBox</div>
@@ -2192,7 +2565,7 @@ function Build-Report {
   <div class='hw-card'><div class='card-title'>$($L.GpuInfo)</div><div class='pre compact'>$gpuInfo</div></div>
   <div class='hw-card'><div class='card-title'>$($L.DiskInfo)</div><div class='pre compact'>$diskInfo</div></div>
 </div>
-<div class='threshold-panel'><div class='card-title'>本机动态验收标准</div><div class='pre compact'>$thresholdInfo</div></div>
+<div class='threshold-panel'><div class='card-title'>本机测试参考标准</div>$thresholdInfo</div>
 "@
     $criteria=""
     $cpuCriteria = CriteriaCell `
@@ -2209,21 +2582,21 @@ function Build-Report {
 
     $gpuCriteria = CriteriaCell `
         "<ul class='mini-list'><li>GPU 最大利用率 ≥ 80%</li><li>GPU 温度 &lt; ${GpuTempFailC} C</li><li>严格参考：平均 ${GpuAvgLoadPassPercent}%、功耗 ${GpuPowerPassW} W</li></ul>" `
-        "<ul class='mini-list'><li>平均负载/功耗低于严格参考时记录说明</li><li>负载和温度正常时不直接失败</li></ul>" `
+        "<ul class='mini-list'><li>平均负载/功耗低于严格参考时记录说明</li><li>负载和温度未达到不合格条件时，不直接判定不合格</li></ul>" `
         "<ul class='mini-list'><li>GPU 温度 ≥ ${GpuTempFailC} C</li><li>最大利用率 &lt; 80%</li><li>驱动重置、黑屏、崩溃、GPU 消失</li></ul>"
     $criteria += "<tr><td><b>GPU</b><br><span class='muted'>$script:GpuThresholdProfile</span></td><td>$gpuCriteria</td><td>Detected GPU: $(HtmlE $script:DetectedGpuNameForThreshold)。有效平均只统计有负载样本；风扇只作为散热参考。</td></tr>"
 
     $fanCriteria = CriteriaCell `
-        "<ul class='mini-list'><li>温度正常</li><li>支持风扇遥测时可记录转速</li></ul>" `
+        "<ul class='mini-list'><li>温度处于允许范围</li><li>支持风扇遥测时可记录转速</li></ul>" `
         "<ul class='mini-list'><li>高温但风扇偏低</li><li>风扇速度 N/A</li></ul>" `
         "<ul class='mini-list'><li>温度上升但风扇 0% / 停转</li><li>传感器确认散热异常</li></ul>"
     $criteria += "<tr><td><b>Cooling / Fan</b></td><td>$fanCriteria</td><td>GPU 风扇来自 nvidia-smi fan.speed；系统风扇依赖主板/BMC 支持。</td></tr>"
 
     $diskCriteria = CriteriaCell `
-        "<ul class='mini-list'><li>每个盘符使用独立 Profile，并区分系统盘/数据盘</li><li>稳定性优先检查 DiskSpd 致命错误、无 I/O、测试中断</li><li>IOPS/吞吐 Reference 是性能参考，Minimum 仅用于识别停滞或严重退化</li></ul><div class='pre compact'>$diskThresholdText</div>" `
-        "<ul class='mini-list'><li>低于 Reference 但高于 Minimum 时只记录性能说明</li><li>系统盘自动放宽参考值和最低活动门槛</li></ul>" `
-        "<ul class='mini-list'><li>DiskSpd fatal / I/O error / bad block</li><li>无解析结果、无 I/O、测试文件创建失败</li><li>随机 IOPS 或吞吐低于极低的 Minimum 活动门槛</li></ul>"
-    $criteria += "<tr><td><b>Disk</b><br><span class='muted'>Per-drive dynamic</span></td><td>$diskCriteria</td><td>所有本地固定盘均可测试，包括 C:。结果按盘符单独判定，不再混成一个全局阈值。</td></tr>"
+        "<ul class='mini-list'><li>测试完整结束并获得有效结果</li><li>4K 随机读写和顺序读写达到相应参考值</li><li>未发现 I/O 错误、坏块、掉盘或测试中断</li></ul>" `
+        "<ul class='mini-list'><li>测试结果有效，但性能低于参考值</li><li>自动汇总未识别结果，需要结合原始日志复核</li><li>部分阵列或存储控制器环境只显示逻辑磁盘名称，此情况本身不代表硬盘异常</li></ul>" `
+        "<ul class='mini-list'><li>出现 I/O 错误、坏块、掉盘或测试中断</li><li>未生成有效测试结果</li><li>性能严重异常，明显低于该类磁盘的合理性能范围</li></ul>"
+    $criteria += "<tr><td><b>Disk</b><br><span class='muted'>按盘符分别测试</span></td><td>$diskCriteria</td><td>4K 随机读写主要看每秒读写次数（IOPS）和响应时间；顺序读写主要看读取速度、写入速度和综合读写速度。</td></tr>"
     $statusRows=""; foreach($s in $script:StatusItems){
         $part=if($s.Participate){$L.Yes}else{$L.No}
         $reasonText = if($s.Status -eq "NOT_TESTED"){ "-" } else { HtmlListFromText $s.Reason }
@@ -2231,24 +2604,27 @@ function Build-Report {
     }
     if([string]::IsNullOrWhiteSpace($statusRows)){ $statusRows = "<tr><td colspan='4'>-</td></tr>" }
     function KeyMetricRow($item,$result,$judge){ return "<tr><td><b>$item</b></td><td>$(HtmlPipeList $result)</td><td>$judge</td></tr>" }
-    $judgeOk = "<span class='pass'>&#x6B63;&#x5E38;</span>"
-    $judgePass = "<span class='pass'>&#x901A;&#x8FC7;</span>"
-    $judgeFullPass = "<span class='pass'>&#x538B;&#x6EE1;&#xFF0C;&#x901A;&#x8FC7;</span>"
-    $judgeAccept = "<span class='pass'>&#x53EF;&#x63A5;&#x53D7;</span>"
+    # Customer-facing terminology policy:
+    # - Module/project status: 通过 / 关注 / 不合格 / 未测试
+    # - Individual metric judgement: 通过 / 关注 / 不合格 / 仅记录 / 未采集
+    $judgeOk = "<span class='pass'>&#x901A;&#x8FC7;</span>"
+    $judgePass = $judgeOk
+    $judgeFullPass = $judgeOk
+    $judgeAccept = "<span class='warn'>&#x5173;&#x6CE8;</span>"
     $judgeNote = "<span class='na'>&#x4EC5;&#x8BB0;&#x5F55;</span>"
-    $judgeBad = "<span class='fail'>&#x5F02;&#x5E38;</span>"
+    $judgeBad = "<span class='fail'>&#x4E0D;&#x5408;&#x683C;</span>"
+    $judgeWarn = "<span class='warn'>&#x5173;&#x6CE8;</span>"
     $cpuMaxJudge = if($cpuMax -ne $null -and $cpuMax -ge 80){$judgeOk}else{$judgeBad}
     $cpuAvgJudge = if($cpuAvg -ne $null -and $cpuAvg -ge 50){$judgeOk}else{$judgeBad}
-    $cpuTempJudge = if($cpuTemp -eq $null){"<span class='na'>&#x672A;&#x91C7;&#x96C6;&#xFF0C;&#x4E0D;&#x4F5C;&#x786C;&#x4EF6;&#x5F02;&#x5E38;</span>"}elseif($cpuTemp -ge $CpuTempFailC){$judgeBad}elseif($cpuTemp -ge $CpuTempWarnC){$judgeAccept}else{$judgeOk}
+    $cpuTempJudge = if($cpuTemp -eq $null){"<span class='na'>&#x672A;&#x91C7;&#x96C6;&#xFF0C;&#x4E0D;&#x53C2;&#x4E0E;&#x5224;&#x5B9A;</span>"}elseif($cpuTemp -ge $CpuTempFailC){$judgeBad}elseif($cpuTemp -ge $CpuTempWarnC){$judgeAccept}else{$judgeOk}
     $memJudge = if($memMax -ne $null -and $memMax -ge 95){$judgeFullPass}elseif($memMax -ne $null -and $memMax -ge 40){$judgePass}else{$judgeBad}
-    $gpuTelemetryNA = "<span class='na'>&#x672A;&#x91C7;&#x96C6;&#xFF0C;&#x4E0D;&#x53C2;&#x4E0E;&#x603B;&#x8BC4;</span>"
+    $gpuTelemetryNA = "<span class='na'>&#x672A;&#x91C7;&#x96C6;&#xFF0C;&#x4E0D;&#x53C2;&#x4E0E;&#x5224;&#x5B9A;</span>"
     $gpuMaxJudge = if(!$gpuUtilAvailable){$gpuTelemetryNA}elseif($gpuUtil -ge 80){$judgeOk}else{$judgeBad}
     $gpuAvgJudge = if(!$gpuUtilAvgAvailable){$gpuTelemetryNA}elseif($gpuUtilAvg -ge 80){$judgeOk}elseif($gpuUtilAvg -ge 50){$judgeAccept}else{$judgeBad}
     $gpuTempJudge = if($gpuTemp -eq $null){$judgeNote}elseif($gpuTemp -ge $GpuTempFailC){$judgeBad}elseif($gpuTemp -ge $GpuTempWarnC){$judgeAccept}else{$judgeOk}
-    $gpuFanJudge = if($gpuFan -eq $null){"<span class='na'>N/A&#xFF0C;&#x4E0D;&#x53C2;&#x4E0E;&#x603B;&#x8BC4;</span>"}else{$judgeOk}
+    $gpuFanJudge = if($gpuFan -eq $null){"<span class='na'>&#x672A;&#x91C7;&#x96C6;&#xFF0C;&#x4E0D;&#x53C2;&#x4E0E;&#x5224;&#x5B9A;</span>"}else{$judgeOk}
     $gpuPowerJudge = if(!$gpuPowerAvailable){$gpuTelemetryNA}elseif($gpuPower -ge $GpuPowerPassW){$judgeOk}else{$judgeAccept}
-    $diskTotalText = if($diskSpd.TotalMiBps -ne $null){FmtVal $diskSpd.TotalMiBps 'MiB/s'}else{FmtVal $diskJudgeTotal 'MB/s'}
-    $diskJudge = if($diskOverallPass){$judgeOk}else{$judgeBad}
+    $diskJudge = if($diskModuleState -eq "PASS"){$judgeOk}elseif($diskModuleState -eq "WARN"){$judgeWarn}else{$judgeBad}
     $metrics=""
     $metrics += "<tr><th>&#x9879;&#x76EE;</th><th>&#x7ED3;&#x679C;</th><th>&#x5224;&#x65AD;</th></tr>"
     $metrics += KeyMetricRow "&#x811A;&#x672C;&#x6784;&#x5EFA;&#x7248;&#x672C;" $ScriptBuild $judgeNote
@@ -2266,9 +2642,10 @@ function Build-Report {
         $metrics += KeyMetricRow "GPU &#x6700;&#x5927;&#x529F;&#x8017;" (FmtVal $gpuPower 'W') $gpuPowerJudge
     }
     if($diskTestEnabled){
-        $metrics += KeyMetricRow "DiskSpd Aggregate Total" $diskTotalText $diskJudge
-        foreach($dmr in $diskMetricItems){ $metrics += KeyMetricRow $dmr.Name $dmr.Result $(if($dmr.Ok){$judgeOk}else{$judgeBad}) }
-        $metrics += KeyMetricRow "DiskSpd Aggregate IOPS" (FmtVal $diskSpd.Iops '') $judgeOk
+        foreach($dmr in $diskMetricItems){
+            $dmJudge = if($dmr.State -eq "PASS"){$judgeOk}elseif($dmr.State -eq "WARN"){$judgeWarn}else{$judgeBad}
+            $metrics += KeyMetricRow $dmr.Name $dmr.Result $dmJudge
+        }
     }
     function MetricItem($label,$value){ return "<div class='metric-row'><div class='metric-key'>$(Html $label)</div><div class='metric-val'>$value</div></div>" }
     function PhaseMetricCard($title,$items){
@@ -2293,19 +2670,13 @@ function Build-Report {
         $cpuItems += MetricItem "内存最高使用率" (FmtVal (Get-Max $cpuRows 'Memory_Used_Percent') '%')
         $stageMetricCards += PhaseMetricCard "CPU / 内存阶段汇总" $cpuItems
     }
-    if($diskRows.Count -gt 0 -or $diskStabilityRows.Count -gt 0 -or $diskThroughputRows.Count -gt 0){
+    if($diskTestEnabled){
         $diskItems=@()
-        if($diskStabilityRows.Count -gt 0){
-            $diskItems += MetricItem "稳定性阶段磁盘读最高" (FmtVal (Get-Max $diskStabilityRows 'Disk_Read_MBps') 'MB/s')
-            $diskItems += MetricItem "稳定性阶段磁盘写最高" (FmtVal (Get-Max $diskStabilityRows 'Disk_Write_MBps') 'MB/s')
-        }
-        if($diskThroughputRows.Count -gt 0){
-            $diskItems += MetricItem "速度阶段磁盘读最高" (FmtVal (Get-Max $diskThroughputRows 'Disk_Read_MBps') 'MB/s')
-            $diskItems += MetricItem "速度阶段磁盘写最高" (FmtVal (Get-Max $diskThroughputRows 'Disk_Write_MBps') 'MB/s')
+        foreach($dsi in @($diskStageSummaryItems)){
+            $diskItems += MetricItem $dsi.Label (HtmlPipeList $dsi.Value)
         }
         if($diskItems.Count -eq 0){
-            $diskItems += MetricItem "磁盘读最高" (FmtVal (Get-Max $diskRows 'Disk_Read_MBps') 'MB/s')
-            $diskItems += MetricItem "磁盘写最高" (FmtVal (Get-Max $diskRows 'Disk_Write_MBps') 'MB/s')
+            $diskItems += MetricItem "状态" "没有可显示的磁盘测试结果"
         }
         $stageMetricCards += PhaseMetricCard "磁盘阶段汇总" $diskItems
     }
@@ -2355,6 +2726,7 @@ th { background:#f5f7fa; text-align:left; font-weight:700; }
 .metric-row:last-child { border-bottom:0; }
 .metric-key { color:#4b5563; font-weight:700; }
 .metric-val { color:#111827; text-align:right; }
+.metric-val .metric-list { text-align:left; display:inline-block; }
 .criteria-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
 .criteria-grid > div { background:#fbfdff; border:1px solid #edf1f7; border-radius:5px; padding:8px; }
 .status-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin:8px 0 18px; }
@@ -2366,6 +2738,21 @@ th { background:#f5f7fa; text-align:left; font-weight:700; }
 .status-foot { margin-top:10px; padding-top:8px; border-top:1px dashed #e5e7eb; display:flex; justify-content:space-between; gap:12px; }
 .status-foot-key { color:#4b5563; font-weight:700; }
 .status-foot-val { color:#111827; }
+.disk-guide { border:1px solid #93b7dc; background:#f3f8fd; border-radius:6px; padding:11px 13px; margin:8px 0 12px; line-height:1.65; }
+.disk-result-table td { line-height:1.55; }
+.disk-result-table td:nth-child(4), .disk-result-table td:nth-child(5) { font-size:12.5px; }
+.disk-result-table .result-line { display:flex; justify-content:space-between; gap:12px; padding:3px 0; border-bottom:1px dashed #e5e7eb; }
+.disk-result-table .result-line:last-of-type { border-bottom:0; }
+.disk-result-table .result-line span { color:#4b5563; }
+.disk-result-table .result-line b { color:#111827; white-space:nowrap; }
+.disk-result-table .result-total { margin-top:3px; padding-top:5px; font-weight:700; }
+.result-note { color:#6b7280; font-size:11.5px; margin-top:5px; line-height:1.45; }
+.reference-main { font-weight:700; color:#1f4e79; margin-bottom:4px; }
+.disk-judge { text-align:center; vertical-align:middle; }
+.disk-reference-table { margin:7px 0 8px; }
+.disk-reference-table th,.disk-reference-table td { padding:7px 9px; }
+.threshold-summary { display:flex; gap:28px; flex-wrap:wrap; margin-bottom:8px; }
+.threshold-subtitle { color:#1f4e79; font-weight:800; margin:8px 0 4px; }
 .criteria-title { font-weight:800; margin-bottom:5px; }
 .mini-list,.reason-list,.metric-list { margin:0; padding-left:18px; }
 .mini-list li,.reason-list li,.metric-list li { margin:2px 0; }
@@ -2388,6 +2775,7 @@ th { background:#f5f7fa; text-align:left; font-weight:700; }
 <h2>$($L.Sec3)</h2><table><tr><th>$($L.Phase)</th><th>$($L.PhaseStart)</th><th>$($L.PhaseEnd)</th><th>$($L.Duration)</th></tr>$stageRows</table>
 <h2>$($L.SecCriteria)</h2><table class='criteria-table'><tr><th style='width:18%'>$($L.Metric)</th><th>判定规则</th><th style='width:24%'>$($L.Remark)</th></tr>$criteria</table>
 <h2>$($L.SecStatus)</h2><table class='status-table'><tr><th style='width:22%'>$($L.Item)</th><th style='width:10%'>$($L.Status)</th><th>$($L.MainResult)</th><th style='width:10%'>$($L.Participate)</th></tr>$statusRows</table>
+<h2>$($L.SecDiskResult)</h2>$diskResultTableHtml
 <h2>$($L.SecMetrics)</h2><table>$metrics</table>
 <h2>$($L.SecStageMetrics)</h2><div class='stage-grid'>$stageMetricCards</div>
 <h2>$($L.SecCharts)</h2><p class='small'>$($L.ChartNote)</p>$charts

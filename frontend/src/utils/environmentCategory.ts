@@ -8,3 +8,9 @@ const BASE_SYSTEM_SCRIPTS = new Set([
 export function environmentBusinessCategory(fileName: string): EnvironmentBusinessCategory {
   return BASE_SYSTEM_SCRIPTS.has(fileName) ? 'base_system' : 'compiler_mpi'
 }
+
+export function environmentBusinessCategoryLabel(fileName: string): string {
+  return environmentBusinessCategory(fileName) === 'base_system'
+    ? '基础环境配置'
+    : 'MPI 编译环境配置'
+}

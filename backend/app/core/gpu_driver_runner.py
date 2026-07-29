@@ -36,7 +36,7 @@ GPU_DRIVER_UPLOAD_ROOT = BACKEND_ROOT / "data" / "gpu_driver_uploads"
 GPU_DRIVER_LIBRARY_ROOT = BACKEND_ROOT / "data" / "gpu_driver_library"
 GPU_DRIVER_LIBRARY_TYPES = {
     "geforce": "GeForce",
-    "datacenter": "Data Center",
+    "datacenter": "Data Center（RTX Enterprise）",
 }
 LEGACY_GPU_DRIVER_LIBRARY_REFS = {
     "geforce_580": ("geforce", "000000000000000000000001"),
@@ -152,7 +152,16 @@ set -euo pipefail
 sudo -n true
 echo '========== [1/6] 检查 NVIDIA 显卡 =========='
 echo '========== [1/6] 安装构建依赖 =========='
-sudo yum install -y epel-release
+epel_repo_enabled() {
+    sudo dnf -q repolist --enabled 2>/dev/null |
+        awk 'NR > 1 {print $1}' |
+        grep -Eq '^epel(/|$)'
+}
+if epel_repo_enabled; then
+    echo 'EPEL repository already enabled; skip epel-release install'
+else
+    sudo yum install -y epel-release
+fi
 sudo yum install -y gcc make dkms elfutils-libelf-devel libglvnd-devel pciutils pkgconfig curl
 echo '========== [2/6] 检查 NVIDIA 显卡 =========='
 lspci | grep -i nvidia || { echo 'ERROR: 未检测到 NVIDIA GPU'; exit 20; }

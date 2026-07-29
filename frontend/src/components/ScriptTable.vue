@@ -7,9 +7,9 @@
         </el-button>
       </template>
     </el-table-column>
-    <el-table-column prop="category" label="分类" width="130">
+    <el-table-column prop="category" label="分类" width="180">
       <template #default="{ row }">
-        <el-tag effect="plain">{{ row.display_category }}</el-tag>
+        <el-tag effect="plain">{{ categoryLabel(row) }}</el-tag>
       </template>
     </el-table-column>
     <el-table-column label="类型" width="110">
@@ -55,6 +55,7 @@
 
 <script setup lang="ts">
 import type { ScriptFileRecord } from '@/api/script'
+import { environmentBusinessCategoryLabel } from '@/utils/environmentCategory'
 
 withDefaults(defineProps<{
   files: ScriptFileRecord[]
@@ -75,6 +76,12 @@ const formatMtime = formatDateTime
 
 function formatSize(size: number) {
   return formatBytes(size)
+}
+
+function categoryLabel(file: ScriptFileRecord) {
+  return file.physical_category === 'mpi'
+    ? environmentBusinessCategoryLabel(file.name)
+    : file.display_category
 }
 </script>
 

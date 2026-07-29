@@ -4415,6 +4415,7 @@ onUnmounted(() => {
 
 .batch-detail-subtask {
   display: flex;
+  flex-shrink: 0;
   align-items: stretch;
   gap: 0;
   border-radius: 8px;

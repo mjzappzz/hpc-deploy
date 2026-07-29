@@ -23,11 +23,11 @@ HPCDeploy 通过 SSH 在远端执行白名单脚本，提供批量任务调度�
 |---|---|
 | 服务器接入 | SSH 探测、密码/密钥认证、公钥部署、标签管理与在线状态复检 |
 | 自动化执行 | 白名单脚本库、单台/批量任务、同服务器压测套件严格串行调度；兼容远端 shell 启动输出并在 SFTP 不可用时自动回退到 SSH 流式传输 |
-| GPU 软件部署 | Linux NVIDIA `.run` 驱动库（GeForce 默认 `580.159.04`、Data Center 默认 `580.173.02`）与 CUDA Toolkit 11.8、12.0–12.6、12.8、12.9、13.0 自动安装 |
+| GPU 软件部署 | Linux NVIDIA `.run` 驱动库（GeForce 默认 `580.159.04`、Data Center（RTX Enterprise）默认 `580.173.02`）与 CUDA Toolkit 11.8、12.0–12.6、12.8、12.9、13.0 自动安装 |
 | 压测与结果 | GPU、CPU/内存、磁盘压测；回收 `.log`、`.txt`、`.csv`、`.xlsx`、`.json` |
 | 可观测与恢复 | WebSocket 实时日志、CPU/内存/磁盘/GPU 监控、任务诊断与后端重启后恢复监控 |
 | 资产与治理 | Apptainer `.sif` 分发、任务历史与失败重跑、管理员模式、审计与自动清理 |
-| Windows 脚本库 | Windows 压测脚本上传、预览、复制、下载及 8 组 PowerShell 命令预设（不执行）；当前内置脚本为 v90 |
+| Windows 脚本库 | Windows 压测脚本上传、预览、复制、下载及 8 组 PowerShell 命令预设（不执行）；当前内置脚本为 v94 |
 
 ## 快速启动
 
@@ -79,7 +79,7 @@ sudo deploy/scripts/install_hpcdeploy_service.sh
 | ORM | SQLAlchemy |
 | 数据库 | SQLite |
 | SSH 执行 | Paramiko |
-| 实时日志 | WebSocket + HTTP 双通道 |
+| 实时日志 | WebSocket 主通道 + 2s HTTP 并行轮询兜底 |
 
 ## 权限模型
 
@@ -149,7 +149,7 @@ cd frontend && npm run build
 | `backend/keys/` | SSH 私钥/公钥存放目录 | 目录保留，密钥不进 Git |
 | `backend/data/` | SQLite 数据库、任务结果、运行数据 | 不进 Git |
 | `backend/data/artifacts/` | 后端从远端回收的报告、日志、CSV、XLSX 等结果文件 | 不进 Git |
-| `backend/data/gpu_driver_library/` | Linux NVIDIA 驱动库，按 GeForce / Data Center 分类保存 `.run` 文件 | 不进 Git |
+| `backend/data/gpu_driver_library/` | Linux NVIDIA 驱动库，按 GeForce / Data Center（RTX Enterprise）分类保存 `.run` 文件 | 不进 Git |
 | `backend/data/gpu_driver_uploads/` | 任务页临时上传的自定义 NVIDIA 驱动，默认保留 7 天 | 不进 Git |
 | `frontend/src/views/` | 前端页面 | 是 |
 | `frontend/src/components/` | 前端复用组件 | 是 |
@@ -326,9 +326,10 @@ deploy/systemd/hpcdeploy-backend.service
 - 后端只执行白名单脚本（文件名白名单 + 目录校验）
 - Apptainer 只上传/分发 `.sif`，不执行 `run` / `exec`
 - Windows 压测页只管理与展示 `.ps1` / `.bat` / `.cmd`；不允许进入 Linux SSH 任务执行链路
-- 当前内置 Windows 压测脚本为 `v90_windows_stress.ps1`。v90 将磁盘性能参考值与致命稳定性故障分离，按磁盘类型设置最低活动门槛，对系统盘自动放宽阈值，并使用 DiskSpd `-si` 执行交错顺序吞吐探测。
-- NVIDIA 驱动任务仅接受安全文件名的 `.run` 文件；驱动类型必须为 GeForce 或 Data Center。临时上传驱动默认 7 天后清理，运行中被引用的文件不清理
+- 当前内置 Windows 压测脚本为 `v94_windows_stress.ps1`。v94 保留 v90 的磁盘稳定性/性能分离、按盘动态门槛、系统盘阈值放宽和 DiskSpd `-si` 吞吐探测，并统一报告状态为“通过 / 关注 / 不合格 / 未测试（或未采集）”；阈值、RAID/控制器识别与压测执行逻辑不因本次术语调整而改变。
+- NVIDIA 驱动任务仅接受安全文件名的 `.run` 文件；驱动类型必须为 GeForce 或 Data Center（RTX Enterprise）。临时上传驱动默认 7 天后清理，运行中被引用的文件不清理
 - CUDA 任务仅安装 Toolkit，不安装或覆盖 NVIDIA 驱动；任务先通过 `nvidia-smi` 校验驱动可用，再按目标系统安装对应版本
+- Rocky 9.4 系统版本锁定脚本 v1.2.1 将固定 EPEL 配置写入标准 `epel.repo`；NVIDIA 驱动和 Linux GPU/CPU/磁盘压测在 EPEL 已启用时跳过 `epel-release` 安装，避免重复 `[epel]` 仓库 ID。versionlock 已安装时不重复联网，缓存仅刷新 BaseOS/AppStream/CRB/EPEL，并设置 DNF 超时重试边界
 - SSH 私钥只保存文件名，不保存内容；API 不返回私钥/公钥内容
 - 远端清理只允许 `tasks` / `downloads` / `tmp`，不清理 `$HOME/hpcdeploy/apptainer`
 - 自动清理以任务结束时间（无结束时间时创建时间）判断保留期，同步清理 `backend/data/artifacts/<task_id>/` 与同任务 `task_logs`；不清理任务记录、远端目录、Apptainer 镜像、keys、scripts

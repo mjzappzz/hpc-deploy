@@ -4,10 +4,33 @@
 
 ## 当前完成度
 
+### 2026-07-29 — Windows 压测脚本 v94
+
+- Windows 压测资料库当前内置脚本更新为 `v94_windows_stress.ps1`，继续兼容 Windows PowerShell 5.1；页面仍仅提供上传、预览、复制、下载和命令预设，不进入 Linux SSH 执行链路。
+- 报告中的项目、模块和参与测试判定统一使用“通过 / 关注 / 不合格 / 未测试（或未采集）”。磁盘稳定性/性能分离策略、测试阈值、RAID/控制器识别及 GPU、CPU、磁盘压测执行逻辑保持不变。
+- Windows 磁盘单项命令补齐 LibreHardwareMonitor 自动下载和无界面启动参数，避免只运行磁盘测试时留下硬件监控弹窗。
+
+### 2026-07-29 — Rocky EPEL 重复源修复
+
+- 从测试246任务日志复现 `Repository epel is listed more than once in the configuration`：系统版本锁定先创建 `epel-9-hpcdeploy.repo` 的 `[epel]`，后续 NVIDIA 驱动任务再次安装 `epel-release` 并生成 `epel.repo`，形成重复 repo ID。
+- `lock_linux_release.sh` 升级至 v1.2.1，固定 EPEL 配置改用标准 `/etc/yum.repos.d/epel.repo`；运行前仍备份并移除现有 `epel*.repo`，可重复执行。versionlock 已安装时跳过重复联网，makecache 仅访问 BaseOS/AppStream/CRB/EPEL，并设置 20 秒连接超时和 2 次重试，避免无关第三方仓库拖住任务。
+- NVIDIA Rocky 9 驱动预处理和 `gpu_stress_report.sh`、`cpu_mem_stress_report.sh`、`disk_stress_report.sh`（版本 `2026.07.29`）新增 EPEL 已启用检测，命中后跳过 `epel-release` 安装。
+- 兼容边界：仅改变 RPM 系发行版的 EPEL 准备步骤；Ubuntu 依赖安装、压测负载、报告结构和判定规则不变。
+
+### 2026-07-29 — 实时日志文档与实现对齐
+
+- 当前实时日志端点为 `/api/tasks/{task_id}/logs/ws`，前端连接成功后每 30 秒发送一次 `ping`。
+- WebSocket 消息使用扁平 JSON 字段，不使用 `data` 包装；多 worker 场景由连接所在 worker 每秒 tail SQLite `task_logs` 和任务状态补发。
+- 任务详情始终保留 2 秒 HTTP 轮询，用于状态刷新和完整日志补齐；当前 WebSocket 断开后不主动重连，文档已移除“自动重连/切换”和“60 秒超时清理”的不实描述。
+
 ### 2026-07-27 — 执行任务步骤标题样式
 
 - 执行任务页第 ④ 步“配置参数并执行”的外层卡片、蓝色标题背景、左侧强调边和顶部圆角与第 ①–③ 步统一。
 - 标题偏移按第 ④ 步内容区实际内边距校正，避免标题向左上越界、宽度超出及左侧蓝边被外层卡片裁剪。
+
+### 2026-07-28 — NVIDIA 驱动类型展示
+
+- Linux NVIDIA 驱动库与执行任务页面将 `datacenter` 类型统一展示为 `Data Center（RTX Enterprise）`；底层类型值、存储目录和默认驱动版本保持不变。
 
 ### 2026-07-27 — GPU 驱动任务运行状态
 
@@ -73,7 +96,7 @@
 
 - 执行任务页将任务类型按“环境部署 / 稳定性验证 / 资产分发”分组展示；环境部署包含基础环境、GPU 驱动和 MPI 编译环境，压测与 Apptainer 分别独立成组。
 - 四个执行步骤统一使用横向浅色标题带、左侧强调线和底部分隔线，完成状态与步骤操作保留在标题带中，强化长页面中的阶段边界。
-- Linux NVIDIA 驱动库按类型自动选择默认版本：GeForce 使用 `580.159.04`，Data Center 使用 `580.173.02`；切换类型或切回驱动库来源时自动匹配，当前有效选择不会被覆盖。
+- Linux NVIDIA 驱动库按类型自动选择默认版本：GeForce 使用 `580.159.04`，Data Center（RTX Enterprise）使用 `580.173.02`；切换类型或切回驱动库来源时自动匹配，当前有效选择不会被覆盖。
 - 驱动版本下拉项统一显示为“类型：完整文件名”，默认项追加“（默认）”，例如 `GeForce：NVIDIA-Linux-x86_64-580.159.04.run（默认）`。
 
 ### 2026-07-22 — 部署运行保障
@@ -150,7 +173,7 @@
 
 ### 2026-07-21 — GPU 软件部署、CUDA 与服务器资产视图
 
-- 脚本知识库新增 Linux NVIDIA 驱动库：上传 `.run` 文件必须选择 GeForce 或 Data Center；保留实际版本文件名。执行任务从库中选择具体版本，同时保留临时自定义驱动上传，默认保留 7 天且运行中任务引用的文件不清理。
+- 脚本知识库新增 Linux NVIDIA 驱动库：上传 `.run` 文件必须选择 GeForce 或 Data Center（RTX Enterprise）；保留实际版本文件名。执行任务从库中选择具体版本，同时保留临时自定义驱动上传，默认保留 7 天且运行中任务引用的文件不清理。
 - GPU 驱动任务支持 Rocky 9 与 Ubuntu 自动识别、混合系统多服务器并行。默认检测到可用 `nvidia-smi` 时跳过；可显式强制安装指定版本。安装流程自动处理依赖、Nouveau、必要重启和恢复执行，仅以 `nvidia-smi` 完成验证。
 - 新增 CUDA Toolkit 独立任务：可选 11.8、12.0–12.6、12.8、12.9、13.0，默认 12.8；按 Rocky 9 / Ubuntu 22.04 / Ubuntu 24.04 使用 NVIDIA 官方源安装，不安装或覆盖驱动。任务完成后在日志和历史详情提供实际版本的环境变量与 `nvcc --version` 验证命令。
 - 服务器探测补充 NVIDIA GPU、驱动和 CUDA 信息；任务目标卡片按固定业务标签分组，显示简化 OS、GPU 驱动与 CUDA 状态。无 NVIDIA GPU 的服务器不展示驱动/CUDA 状态。
@@ -215,8 +238,8 @@ HPCDeploy 已形成完整闭环，端到端链路全部打通：
 - 历史任务按状态筛选时保留命中批次的完整子任务上下文；活动任务统计覆盖 CONNECTING、PREPARING、UPLOADING、RUNNING、CANCELING
 
 ### 实时日志
-- WebSocket 主通道（心跳 30s、断线自动 HTTP 轮询备用）
-- HTTP 轮询备用通道
+- WebSocket 主通道（连接后每 30s 发送 `ping`，当前断线不主动重连）
+- HTTP 每 2s 始终并行轮询，补齐任务状态和完整日志
 - 日志下载（task_id.log 格式）
 
 ### 实时监控
@@ -328,7 +351,7 @@ HPCDeploy 已形成完整闭环，端到端链路全部打通：
 9. **取消/超时远端文件不删除** — 确认 `TaskCancelRequest.delete_remote_files` 默认 `False`，超时/失败流程无自动远程目录清理
 10. **WebSocket 多进程广播** — WS endpoint 主动 tail 数据库日志和任务状态，多 uvicorn worker 下可补发日志与终态
 11. **清理中心布局优化** — 远端优先、本地次之的重排
-12. **WebSocket 实时日志** — 双通道日志推送，心跳 30s，断线自动 HTTP 轮询
+12. **WebSocket 实时日志** — WebSocket 推送与 2s HTTP 并行轮询，心跳 30s；当前断线不主动重连
 13. **审计日志全面完善** — 统一英文 action 命名、全调用点 detail_json 上下文、敏感字段过滤、新增 server_id
 14. **批次视图展开状态修复** — 自动刷新不再折叠已展开行，通过 `:expand-row-keys` + `toggleRowExpansion` 恢复
 15. **stress-suite 串行调度修复** — 同服务器加锁，后续子任务只在前序任务终态后启动，后台启动成功不再被误判为完成
@@ -408,7 +431,7 @@ HPCDeploy 已形成完整闭环，端到端链路全部打通：
 - 新增实时已运行时长、预计剩余倒计时（非终态任务实时刷新）
 
 **日志与实时性**
-- 执行日志 WebSocket 实时推送 + 2s 状态轮询，断线自动重连
+- 执行日志 WebSocket 实时推送 + 2s HTTP 并行轮询；断线后由 HTTP 继续补齐，不主动重连 WebSocket
 - LogViewer 改为 `v-show` 常驻挂载，加载日志自动滚动到底部
 - 选中子任务时独立请求 `getTask()` 获取完整记录，`start_time` 不受 batch 刷新覆盖
 - 后端重启后已运行时长不归零（缓存独立于 batch 自动刷新）

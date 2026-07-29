@@ -3,6 +3,8 @@
 set -u
 set -o pipefail
 
+SCRIPT_VERSION="2026.07.29"
+
 # ============================================================
 # GPU 多卡稳定性压力测试报告脚本
 #
@@ -53,6 +55,20 @@ log() {
     echo "$(date '+%F %T') $*"
 }
 
+epel_repo_enabled() {
+    dnf -q repolist --enabled 2>/dev/null |
+        awk 'NR > 1 {print $1}' |
+        grep -Eq '^epel(/|$)'
+}
+
+ensure_epel_repo() {
+    if epel_repo_enabled; then
+        echo "[INFO] EPEL repository already enabled; skip epel-release install."
+    else
+        yum install -y epel-release || true
+    fi
+}
+
 install_deps() {
     if [ "$(id -u)" -ne 0 ]; then
         echo "[ERROR] 请使用 root 用户运行，或使用 sudo"
@@ -95,7 +111,7 @@ PYCHK
     echo "[INFO] Missing dependencies detected, installing..."
 
     if [ -f /etc/redhat-release ]; then
-        yum install -y epel-release || true
+        ensure_epel_repo
         yum install -y git gcc gcc-c++ make wget unzip python3 python3-pip python3-openpyxl || true
 
         if ! python3 - <<'PYCHK' >/dev/null 2>&1

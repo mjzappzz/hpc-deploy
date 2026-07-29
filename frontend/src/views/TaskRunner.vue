@@ -286,7 +286,7 @@
                   <el-form-item label="驱动类型">
                     <el-radio-group v-model="gpuDriverType" :disabled="isFormDisabled">
                       <el-radio value="geforce">GeForce（RTX 5090 / 4090 / 4080 SUPER / 3090）</el-radio>
-                      <el-radio value="datacenter">Data Center（H200 / H100 / A100 / L40S / RTX PRO 6000）</el-radio>
+                      <el-radio value="datacenter">Data Center（RTX Enterprise）— H200 / H100 / A100 / L40S / RTX PRO 6000</el-radio>
                     </el-radio-group>
                   </el-form-item>
                   <el-form-item label="驱动来源">

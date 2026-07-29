@@ -63,13 +63,15 @@ function startAdminCountdown(): void {
   countdownTimer = setInterval(updateCountdown, 1000)
 }
 
+function activateAdminMode(): void {
+  adminMode.value = true
+  sessionStorage.removeItem(ADMIN_MODE_DISMISSED_KEY)
+  startAdminCountdown()
+}
+
 export async function enterAdminMode(): Promise<boolean> {
   const ok = await requireAdminConfirm('进入管理员模式')
-  adminMode.value = ok
-  if (ok) {
-    sessionStorage.removeItem(ADMIN_MODE_DISMISSED_KEY)
-    startAdminCountdown()
-  }
+  if (!ok) adminMode.value = false
   return ok
 }
 
@@ -94,8 +96,7 @@ export async function restoreAdminMode(): Promise<void> {
     const response = await request.get<{ expires_in: number | null }>('/auth/admin/status')
     if (response.data.expires_in !== null && response.data.expires_in <= 0) return
     tokenExpiry = response.data.expires_in === null ? null : Date.now() + (response.data.expires_in * 1000)
-    adminMode.value = true
-    startAdminCountdown()
+    activateAdminMode()
   } catch {
     // No valid browser session: stay in ordinary mode without interrupting page load.
   }
@@ -111,6 +112,7 @@ export async function requireAdminConfirm(actionName: string): Promise<boolean> 
     return true
   }
   if (tokenExpiry !== null && Date.now() < tokenExpiry) {
+    activateAdminMode()
     return true
   }
 
@@ -184,6 +186,7 @@ export async function requireAdminConfirm(actionName: string): Promise<boolean> 
     const res = await adminVerify(password.value, durationMinutes.value, tabId)
     setAdminTabHeader(tabId)
     tokenExpiry = res.data.expires_in === null ? null : Date.now() + (res.data.expires_in * 1000)
+    activateAdminMode()
 
     return true
   } catch (error: any) {

@@ -24,7 +24,7 @@
 | 后端 API | FastAPI |
 | 数据库 | SQLite |
 | 远端执行 | Paramiko SSH / SFTP |
-| 实时日志 | WebSocket + HTTP 轮询双通道 |
+| 实时日志 | WebSocket 主通道 + 2s HTTP 并行轮询兜底 |
 | 部署 | Nginx 静态前端 + systemd 后端服务 |
 
 ### 文件目录
@@ -59,16 +59,16 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 
 ### tasks API (`/api/tasks`)
 - 任务创建、批量创建（`/batch`）
-- GPU 驱动安装（`/gpu-driver/rocky9`、`/gpu-driver/batch`）：按目标服务器 OS 自动选择 Rocky 9 或 Ubuntu 安装脚本，支持 GeForce / Data Center 驱动库与临时 `.run` 上传
+- GPU 驱动安装（`/gpu-driver/rocky9`、`/gpu-driver/batch`）：按目标服务器 OS 自动选择 Rocky 9 或 Ubuntu 安装脚本，支持 GeForce / Data Center（RTX Enterprise）驱动库与临时 `.run` 上传
 - CUDA Toolkit 安装（`/cuda-toolkit`、`/cuda-toolkit/batch`）：支持 11.8、12.0–12.6、12.8、12.9、13.0，安装前校验 `nvidia-smi`，仅安装 Toolkit，不安装或覆盖驱动
 - 压测套件创建（`/stress-suite`），同服务器内按 GPU → CPU/内存 → 磁盘串行推进
 - 受控环境套件创建（`/managed-suite`）：基础环境配置按关闭锁屏/休眠 → 锁定系统版本，GPU 驱动安装按 NVIDIA 驱动 → CUDA Toolkit 严格串行；前序失败时后序不启动，后端重启后恢复套件 worker
-- Rocky 9.4 版本锁定脚本同时固定 BaseOS/AppStream/CRB Vault 仓库，并配置固定主版本的 EPEL 9 metalink 与 GPG 校验；避免 `/etc/dnf/vars/releasever=9.4` 使 EPEL 被错误解析为小版本仓库，保障 DKMS、stress-ng 等后续依赖可安装
+- Rocky 9.4 版本锁定脚本 v1.2.1 同时固定 BaseOS/AppStream/CRB Vault 仓库，并将固定主版本的 EPEL 9 metalink 与 GPG 配置写入标准 `/etc/yum.repos.d/epel.repo`；NVIDIA 驱动安装及 GPU/CPU/磁盘压测依赖安装先检查已启用 repo ID，存在 `epel` 时跳过 `epel-release`，避免再次生成同名仓库定义。versionlock 已存在时跳过重复安装，makecache 限定到受管核心仓库并设置 20 秒连接超时和 2 次重试，不受 CUDA/Docker 等第三方源拖累
 - 批次压测子任务重跑（`/{task_id}/retry-in-batch`）：仅支持白名单压测脚本中执行失败、取消、超时或报告 FAIL 的子任务；重跑任务追加到同批次、同服务器队列末尾，并阻止重复排队
 - 任务列表 `scope=single|batch`：按是否存在 `batch_id` 筛选单次任务或批次子任务，保持分页总数准确；`active_only=true` 统计 CONNECTING、PREPARING、UPLOADING、RUNNING、CANCELING 全部活动任务；`include_batch_context=true` 在状态筛选时保留命中批次的完整子任务
 - 状态查询、取消；管理员删除本机任务记录（`POST /api/tasks/{task_id}/local-artifacts/cleanup`）和整批记录（`POST /api/tasks/batches/{batch_id}/local-artifacts/cleanup`）
 - 删除仅允许终态任务：清理本地 artifacts、任务日志和数据库任务记录，**不删除远端目录**，审计日志保留
-- 日志查询、日志下载、WebSocket 实时日志（`/logs/ws`）
+- 日志查询、日志下载、WebSocket 实时日志（`/api/tasks/{task_id}/logs/ws`）
 - 失败诊断（`/{task_id}/diagnosis`）
 - 结构化监控（`/{task_id}/monitor` — CPU/内存/磁盘/GPU 5s 轮询）
 - 历史任务统一展示：普通任务按单次任务卡展示；同一 `batch_id` 在前端聚合为批次卡，首页展示批次概览，批次详情弹窗展示完整子任务信息
@@ -125,7 +125,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - 只上传，不执行 `run` / `exec`
 
 ### GPU 驱动与 CUDA runner
-- `gpu_driver_runner.py` 管理驱动库、临时上传驱动和安装任务。驱动文件名限制为 `NVIDIA-Linux-x86_64-*.run`，类型为 GeForce / Data Center；临时文件默认保留 7 天，引用中的文件不会清理。
+- `gpu_driver_runner.py` 管理驱动库、临时上传驱动和安装任务。驱动文件名限制为 `NVIDIA-Linux-x86_64-*.run`，类型为 GeForce / Data Center（RTX Enterprise）；临时文件默认保留 7 天，引用中的文件不会清理。
 - 驱动安装根据探测 OS 选择 Rocky 9 或 Ubuntu 自动化脚本。若已存在可用 `nvidia-smi`，默认跳过；勾选强制安装时才覆盖执行。需要时自动完成 Nouveau 禁用、重启与恢复执行。
 - `cuda_toolkit_runner.py` 使用 NVIDIA 官方软件源安装指定 Toolkit；写入 `/etc/profile.d/cuda-<version>.sh` 并维护 `/usr/local/cuda` 软链接。成功后仅以 `nvcc --version` 验证，并在任务日志输出可复制的环境变量。
 
@@ -229,7 +229,7 @@ $HOME/hpcdeploy/
 - 文件名通过 `_safe_basename()` 校验（禁止 `..`、禁止 `/`）
 - 路径通过 `resolve()` + `startswith()` 防逃逸
 - `backend/scripts/windows/` 仅为 Windows 压测资料库，任务执行器拒绝该分类，避免 PowerShell/批处理文件进入 Linux SSH 执行链路
-- 驱动库仅允许 `NVIDIA-Linux-x86_64-*.run`，并按 GeForce / Data Center 固定分类；驱动文件必须位于专用运行目录，不能作为通用脚本执行
+- 驱动库仅允许 `NVIDIA-Linux-x86_64-*.run`，并按 GeForce / Data Center（RTX Enterprise）固定分类；驱动文件必须位于专用运行目录，不能作为通用脚本执行
 
 ### 参数白名单
 - stress 参数只允许数字
@@ -374,10 +374,10 @@ GPU 压测 TXT/XLSX 报告分别记录 `nvidia-smi --query-gpu=driver_version` �
 ## 8. WebSocket 实时日志（Phase 23A）
 
 - 端点：`/api/tasks/{task_id}/logs/ws`
-- 心跳间隔 30s，超时 60s 清理
-- 消息格式：`{ "type": "log|status|done", "data": {...} }`
+- 浏览器连接成功后每 30s 发送一次文本 `ping`；连接关闭时清理前端心跳定时器
+- 消息为扁平 JSON：日志使用 `{ "type": "log", "task_id", "level", "line", "created_at" }`，状态和终态分别使用 `{ "type": "status|done", "task_id", "status" }`
 - 前端 `useTaskWebSocket` composable 管理生命周期
-- HTTP 轮询作为备用通道，WS 断线自动切换
+- HTTP 每 2s 始终并行拉取任务和完整日志，用于状态刷新、去重和补齐漏收消息；当前 WebSocket 断开后不主动重连
 - 多 uvicorn worker 场景下，WebSocket 连接所在 worker 每秒 tail 数据库 `task_logs` 和任务状态；同进程 `ws_manager` 即时广播仍保留
 
 ---
