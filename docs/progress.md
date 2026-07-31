@@ -4,6 +4,12 @@
 
 ## 当前完成度
 
+### 2026-07-31 — 前端构建依赖安全升级
+
+- `vue-tsc` 从 2.2.12 升级到 3.3.8，连带更新 `@vue/language-core` 并移除受影响的 `minimatch` / `brace-expansion` 依赖链。
+- `postcss` 升级到 8.5.25，修复 source map 自动加载路径穿越风险。
+- 前端工具测试 8 项、生产构建及 `npm audit` 均通过；审计结果为 0 vulnerabilities。
+
 ### 2026-07-31 — Windows 压测脚本 v95 与 Apptainer 软下线
 
 - Windows 压测资料库由 `v94_windows_stress.ps1` 更新为 `v95_windows_stress.ps1`；报告按实际负载进程是否启动判定模块是否完成测试，未执行时展示原因，原有阈值与硬件评估逻辑保持不变。
