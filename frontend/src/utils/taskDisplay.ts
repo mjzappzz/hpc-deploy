@@ -1,6 +1,8 @@
 import { environmentBusinessCategoryLabel } from './environmentCategory.ts'
-import { getTaskNameLabel } from './taskPresentation.ts'
+import { getTaskCategoryLabel, getTaskNameLabel } from './taskPresentation.ts'
 import { formatBeijingDateTimeKey } from './time.ts'
+
+export { getTaskTypeLabel } from './taskPresentation.ts'
 
 type TaskLike = {
   task_id: string
@@ -10,26 +12,6 @@ type TaskLike = {
   created_at?: string | null
   file_name?: string | null
   file_path?: string | null
-}
-
-const TASK_TYPE_LABELS: Record<string, string> = {
-  script: '基础环境配置',
-  stress: 'Linux 服务器压测',
-  apptainer: 'Apptainer 镜像',
-  gpu_driver: 'GPU 驱动安装',
-  cuda_toolkit: 'CUDA 安装',
-  mpi: 'MPI 编译环境配置',
-  test: '测试脚本',
-}
-
-export function getTaskModuleLabel(taskType?: string | null): string {
-  if (!taskType) return '任务'
-  return TASK_TYPE_LABELS[taskType] ?? taskType
-}
-
-export function getTaskTypeLabel(taskType?: string | null, fallback = '-'): string {
-  if (!taskType) return fallback
-  return TASK_TYPE_LABELS[taskType] ?? taskType
 }
 
 export function getTaskActionLabel(task: Pick<TaskLike, 'task_type' | 'file_name' | 'file_path'>): string {
@@ -58,9 +40,11 @@ export function formatTaskDisplayName(task: TaskLike): string {
     return task.task_id
   }
 
-  const categoryLabel = task.task_type === 'script'
-    ? environmentBusinessCategoryLabel(sourceFileName.replace(/\\/g, '/').split('/').pop() || sourceFileName)
-    : getTaskModuleLabel(task.task_type)
+  const categoryLabel = getTaskCategoryLabel({
+    task_type: task.task_type,
+    file_name: sourceFileName,
+    file_path: task.file_path,
+  })
   return `${serverLabel} · ${categoryLabel} · ${dateLabel}`
 }
 

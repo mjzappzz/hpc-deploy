@@ -380,7 +380,7 @@ GPU 压测 TXT/XLSX 报告分别记录 `nvidia-smi --query-gpu=driver_version` �
 
 任务列表、单任务详情和批次子任务共用缓存摘要中的 `failure_reason`。结构化诊断发现旧版 GPU 脚本已输出 `Start gpu-burn`、却因缺少 `[STAGE] stress_start` 被 300 秒启动超时终止时，归因为平台阶段协议不一致，并将中文诊断结论写入该字段；原始 `Task.error_message` 保留用于日志和审计。
 
-前端任务展示通过 `frontend/src/utils/taskPresentation.ts` 接受单任务与批次详情的结构兼容输入，统一计算模块名称、GPU 精度、受控套件动作、批次步骤名称和最终状态；`taskError.ts` 统一选择 `outcome_message`、`failure_reason`、`error_message` 并格式化详情说明。后端仅在确认整个安装任务未产生安装动作时返回成功跳过说明：单组件或依赖步骤跳过不计入，oneAPI 与 AOCC/AOCL/OpenMPI 等组合安装必须全部目标组件均已存在。单次和批次组件只保留布局及各入口已有的兜底文案。
+前端任务展示通过 `frontend/src/utils/taskPresentation.ts` 接受单任务与批次详情的结构兼容输入，统一计算功能分类、模块名称、GPU 精度、受控套件动作、批次步骤名称和最终状态；仪表盘、服务器详情与历史任务均传入完整任务对象，`script` 只有缺少文件上下文时才回退显示为“服务器环境”，避免把 MPI 编译环境误标为基础环境。`taskError.ts` 统一选择 `outcome_message`、`failure_reason`、`error_message` 并格式化详情说明。后端仅在确认整个安装任务未产生安装动作时返回成功跳过说明：单组件或依赖步骤跳过不计入，oneAPI 与 AOCC/AOCL/OpenMPI 等组合安装必须全部目标组件均已存在。单次和批次组件只保留布局及各入口已有的兜底文案。
 
 ### 压测运行续租与报告回收
 

@@ -17,7 +17,7 @@ type TaskModuleLabelOptions = {
 }
 
 const TASK_TYPE_LABELS: Record<string, string> = {
-  script: '基础环境配置',
+  script: '服务器环境',
   stress: 'Linux 服务器压测',
   apptainer: 'Apptainer 分发',
   gpu_driver: 'GPU 驱动安装',
@@ -45,6 +45,22 @@ function getManagedSuiteTaskLabel(task: TaskPresentationSource): string {
     return 'GPU 驱动安装'
   }
   return ''
+}
+
+export function getTaskCategoryLabel(task: TaskPresentationSource): string {
+  const suiteKind = task.params?.__managed_suite_kind
+  if (suiteKind === 'base_system') return '基础环境配置'
+  if (suiteKind === 'gpu_software') return 'GPU 驱动安装'
+  if (task.task_type === 'script') {
+    const fileName = taskSourceName(task).split('/').pop() || ''
+    return fileName ? environmentBusinessCategoryLabel(fileName) : TASK_TYPE_LABELS.script
+  }
+  return TASK_TYPE_LABELS[task.task_type || ''] || task.task_type || '任务'
+}
+
+export function getTaskTypeLabel(taskType?: string | null, fallback = '-'): string {
+  if (!taskType) return fallback
+  return TASK_TYPE_LABELS[taskType] ?? taskType
 }
 
 export function getGpuStressLabel(params?: Record<string, unknown> | null): string {

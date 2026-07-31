@@ -343,11 +343,11 @@
               <el-table v-if="recentTasks.length > 0" :data="recentTasks" stripe size="small" class="hpc-table" max-height="300">
                 <el-table-column label="任务名称" min-width="160" show-overflow-tooltip>
                   <template #default="{ row }">
-                    <span>{{ row.file_name || row.task_type || '-' }}</span>
+                    <span>{{ getTaskNameLabel(row) }}</span>
                   </template>
                 </el-table-column>
                 <el-table-column prop="task_type" label="类型" width="80">
-                  <template #default="{ row }">{{ taskTypeLabel(row.task_type) }}</template>
+                  <template #default="{ row }">{{ getTaskCategoryLabel(row) }}</template>
                 </el-table-column>
                 <el-table-column label="状态" width="90">
                   <template #default="{ row }"><StatusTag :status="row.status" /></template>
@@ -441,7 +441,7 @@ import { useRouter } from 'vue-router'
 import { formatDateTime } from '@/utils/time'
 import { getApiErrorMessage as readApiErrorMessage } from '@/utils/apiError'
 import { getDetectMessage } from '@/composables/useFunMessages'
-import { getTaskTypeLabel } from '@/utils/taskDisplay'
+import { getTaskCategoryLabel, getTaskNameLabel } from '@/utils/taskPresentation'
 import {
   createServer,
   checkPublicKey,
@@ -1250,10 +1250,6 @@ function getApiErrorMessage(error: unknown) {
 
 function formatTime(value: string | null | undefined) {
   return formatDateTime(value)
-}
-
-function taskTypeLabel(type: string | null | undefined): string {
-  return getTaskTypeLabel(type, '-')
 }
 
 onMounted(() => {

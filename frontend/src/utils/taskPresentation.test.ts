@@ -5,6 +5,7 @@ import {
   getBatchSummaryModuleLabels,
   getBatchSummaryTypeLabel,
   getBatchStepLabel,
+  getTaskCategoryLabel,
   getTaskDisplayStatus,
   getTaskModuleLabel,
   getTaskNameLabel,
@@ -86,6 +87,7 @@ test('compiler and MPI installation scripts are not labeled as base environment 
   }
 
   for (const task of [oneapiTask, aoccTask]) {
+    assert.equal(getTaskCategoryLabel(task), 'MPI 编译环境配置')
     assert.equal(getTaskModuleLabel(task), 'MPI 编译环境配置')
     assert.equal(environmentBusinessCategoryLabel(task.file_name), 'MPI 编译环境配置')
   }
@@ -122,7 +124,12 @@ test('system maintenance scripts remain base environment tasks', () => {
       file_name,
     }
 
+    assert.equal(getTaskCategoryLabel(task), '基础环境配置')
     assert.equal(getTaskModuleLabel(task), file_name.startsWith('lock_') ? '锁定当前系统版本' : '关闭锁屏与休眠')
     assert.equal(environmentBusinessCategoryLabel(task.file_name), '基础环境配置')
   }
+})
+
+test('raw script type remains neutral when file context is unavailable', () => {
+  assert.equal(getTaskCategoryLabel({ task_type: 'script' }), '服务器环境')
 })

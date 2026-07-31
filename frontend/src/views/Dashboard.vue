@@ -119,7 +119,7 @@
         <el-table-column prop="server_name" label="服务器" min-width="150" show-overflow-tooltip />
         <el-table-column label="类型" width="140" show-overflow-tooltip>
           <template #default="{ row }">
-            <span class="recent-task-type">{{ getTaskModuleLabel(row.task_type) }}</span>
+            <span class="recent-task-type">{{ getTaskCategoryLabel(row) }}</span>
           </template>
         </el-table-column>
         <el-table-column label="状态" width="110" align="center">
@@ -145,7 +145,8 @@ import {
   type DashboardSummary,
 } from '@/api/dashboard'
 import StatusTag from '@/components/StatusTag.vue'
-import { formatTaskDisplayName, getTaskModuleLabel, getTaskTypeTags } from '@/utils/taskDisplay'
+import { formatTaskDisplayName, getTaskTypeTags } from '@/utils/taskDisplay'
+import { getTaskCategoryLabel } from '@/utils/taskPresentation'
 import { formatDateTime } from '@/utils/time'
 
 const router = useRouter()

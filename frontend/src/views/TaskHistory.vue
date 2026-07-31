@@ -32,9 +32,8 @@
           @change="applyTaskFilters"
         >
           <el-option label="全部类型" value="" />
-          <el-option label="基础环境配置" value="script" />
+          <el-option label="服务器环境" value="script" />
           <el-option label="Linux 服务器压测" value="stress" />
-          <el-option label="Apptainer 镜像" value="apptainer" />
         </el-select>
 
         <el-input
@@ -1418,7 +1417,10 @@ function batchGroupDisplayName(tasks: TaskRecord[]): string {
       ? 'GPU 驱动安装'
       : tasks.some(task => task.task_type === 'stress')
         ? 'Linux 服务器压测'
-        : getTaskTypeLabel(tasks[0]?.task_type, '任务')
+        : getBatchSummaryTypeLabel(
+            tasks[0]?.task_type ?? null,
+            tasks.map(task => task.file_name || task.file_path || '').filter(Boolean),
+          )
   return formatHistoryTaskTitle('批次', serverLabel, typeLabel, batchGroupCreatedAt(tasks))
 }
 
