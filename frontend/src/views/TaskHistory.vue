@@ -365,12 +365,12 @@
           </el-table-column>
           <el-table-column label="模块" width="140" show-overflow-tooltip>
             <template #default="{ row }">
-              <span>{{ batchSummaryScriptLabels(row.script_names || []).join('、') || '-' }}</span>
+              <span>{{ getBatchSummaryModuleLabels(row.script_names || []).join('、') || '-' }}</span>
             </template>
           </el-table-column>
           <el-table-column prop="task_type" label="类型" width="60">
             <template #default="{ row }">
-              <span>{{ taskTypeLabel(row.task_type) }}</span>
+              <span>{{ getBatchSummaryTypeLabel(row.task_type, row.script_names || []) }}</span>
             </template>
           </el-table-column>
           <el-table-column label="状态" width="80">
@@ -552,7 +552,7 @@
     <el-dialog
       v-model="taskDetailDrawerVisible"
       title="任务详情"
-      width="1200px"
+      width="min(1200px, calc(100vw - 32px))"
       top="4vh"
       :close-on-click-modal="false"
       class="batch-detail-dialog single-task-detail-dialog"
@@ -727,7 +727,14 @@
     </el-dialog>
 
     <!-- ─── Batch detail dialog (inline detail panel) ─── -->
-    <el-dialog v-model="batchDetailVisible" title="批次详情" width="1200px" top="4vh" :close-on-click-modal="false" class="batch-detail-dialog">
+    <el-dialog
+      v-model="batchDetailVisible"
+      title="批次详情"
+      width="min(1200px, calc(100vw - 32px))"
+      top="4vh"
+      :close-on-click-modal="false"
+      class="batch-detail-dialog"
+    >
       <div v-loading="batchDetailLoading" class="batch-detail-loading-wrap">
         <template v-if="batchDetailData">
           <div class="batch-detail-summary-bar">
@@ -928,7 +935,7 @@
                       <div class="detail-summary-rows">
                         <div class="detail-summary__row">
                           <span class="detail-summary__label">任务类型</span>
-                          <span>{{ taskTypeLabel(batchDetailData.summary.task_type) }}</span>
+                          <span>{{ getBatchSummaryTypeLabel(batchDetailData.summary.task_type, batchDetailData.summary.script_names || []) }}</span>
                         </div>
                         <div class="detail-summary__row">
                           <span class="detail-summary__label">当前任务</span>
@@ -1081,10 +1088,21 @@ import { useRoute, useRouter } from 'vue-router'
 import { cancelBatch, cancelTask, cleanupBatchLocalArtifacts, cleanupTaskLocalArtifacts, downloadBatchReportZip, downloadTaskLogs, getTask, getTaskLogs, getTaskMonitor, listArtifacts, listBatches, getBatchDetail, listTasks, retryBatchTask, retryTask, type ArtifactFileDetail, type BatchDetailResponse, type BatchQuery, type BatchSummaryItem, type BatchTaskDetailItem, type MonitorType, type TaskLogRecord, type TaskListQuery, type TaskMonitorStructuredResponse, type TaskRecord } from '@/api/task'
 import { formatBeijingDateKey, formatDateTime } from '@/utils/time'
 import { getApiErrorMessage as readApiErrorMessage, isApiRequestTimeout } from '@/utils/apiError'
-import { formatTaskErrorMessage } from '@/utils/taskError'
+import {
+  extractEnvironmentCommands as extractTaskEnvironmentCommands,
+  extractVerifyCommands as extractTaskVerifyCommands,
+} from '@/utils/taskCommands'
+import { formatTaskErrorMessage, getTaskOutcomeDisplayMessage } from '@/utils/taskError'
 import { useTaskWebSocket } from '@/composables/useTaskWebSocket'
 import { calcDurationSeconds, calcEstimatedEndTime, calcEstimatedRemaining, calcProgress, formatSeconds, getTaskDuration, statusLabel } from '@/composables/useTaskProgress'
-import { formatTaskDisplayName, getTaskActionLabel, getTaskTypeLabel, getTaskTypeTags } from '@/utils/taskDisplay'
+import { formatTaskDisplayName, getTaskTypeLabel, getTaskTypeTags } from '@/utils/taskDisplay'
+import {
+  getBatchStepLabel,
+  getBatchSummaryModuleLabels,
+  getBatchSummaryTypeLabel,
+  getTaskDisplayStatus,
+  getTaskModuleLabel,
+} from '@/utils/taskPresentation'
 import { adminMode, requireAdminConfirm } from '@/composables/useAdminConfirm'
 import StatusTag from '@/components/StatusTag.vue'
 import TaskCard from '@/components/TaskCard.vue'
@@ -1313,10 +1331,7 @@ function batchGroupStats(tasks: TaskRecord[]) {
 }
 
 function taskDisplayStatus(task: TaskRecord): string {
-  if (task.task_type === 'stress' && task.final_status && task.final_status !== 'UNKNOWN') {
-    return task.final_status
-  }
-  return task.status
+  return getTaskDisplayStatus(task)
 }
 
 function batchEffectiveTasks(tasks: TaskRecord[]): TaskRecord[] {
@@ -1412,13 +1427,7 @@ function compactTaskDate(value?: string | null): string {
 }
 
 function batchStepLabel(task: TaskRecord): string {
-  const managedLabel = managedSuiteTaskLabel(task.params, task.file_name || task.file_path || '', task.task_type)
-  if (managedLabel) return managedLabel
-  const seq = task.sequence_index
-  if (task.task_type === 'stress' && seq === 1) return 'GPU'
-  if (task.task_type === 'stress' && seq === 2) return 'CPU与内存'
-  if (task.task_type === 'stress' && seq === 3) return '磁盘'
-  return taskDisplayModuleName(task).replace('压测', '') || `子任务 ${task.task_id}`
+  return getBatchStepLabel(task)
 }
 
 function batchGroupStartTime(tasks: TaskRecord[]): string | null {
@@ -1443,44 +1452,11 @@ function batchGroupDuration(tasks: TaskRecord[]): number | null {
 }
 
 function taskDisplayModuleName(task: TaskRecord): string {
-  const managedLabel = managedSuiteTaskLabel(task.params, task.file_name || task.file_path || '', task.task_type)
-  if (managedLabel) return managedLabel
-  const seq = task.sequence_index
-  if (task.task_type === 'stress' && seq === 1) return 'GPU压测'
-  if (task.task_type === 'stress' && seq === 2) return 'CPU与内存压测'
-  if (task.task_type === 'stress' && seq === 3) return '磁盘压测'
-  const fileName = (task.file_name || task.file_path || '').toLowerCase()
-  if (fileName.includes('gpu')) return 'GPU压测'
-  if (fileName.includes('cpu') || fileName.includes('mem')) return 'CPU与内存压测'
-  if (fileName.includes('disk')) return '磁盘压测'
-  return getTaskActionLabel(task)
+  return getTaskModuleLabel(task)
 }
 
 function batchDetailTaskLabel(task: BatchTaskDetailItem): string {
-  const managedLabel = managedSuiteTaskLabel(task.params, task.task_name, '')
-  if (managedLabel) return managedLabel
-  const seq = task.sequence_index
-  const name = (task.task_name || '').toLowerCase()
-  if (name.includes('gpu')) return 'GPU压测'
-  if (name.includes('cpu') || name.includes('mem')) return 'CPU与内存压测'
-  if (name.includes('disk')) return '磁盘压测'
-  return task.task_name || `子任务 ${task.task_id}`
-}
-
-function managedSuiteTaskLabel(params: Record<string, unknown> | null | undefined, name: string, taskType: string | null | undefined): string {
-  const kind = params?.__managed_suite_kind
-  const normalized = name.toLowerCase()
-  if (kind === 'base_system') {
-    if (normalized.includes('disable_linux_lock_sleep')) return '关闭锁屏与休眠'
-    if (normalized.includes('lock_linux_release')) return '锁定系统版本'
-    return '基础环境配置'
-  }
-  if (kind === 'gpu_software') {
-    if (taskType === 'gpu_driver' || normalized.includes('gpu_driver')) return 'NVIDIA 驱动安装'
-    if (taskType === 'cuda_toolkit' || normalized.includes('cuda')) return 'CUDA Toolkit 安装'
-    return 'GPU 驱动安装'
-  }
-  return ''
+  return getTaskModuleLabel(task)
 }
 
 function batchManagedSuiteKind(tasks: TaskRecord[]): string {
@@ -1596,17 +1572,11 @@ function hasStressDuration(params: Record<string, unknown> | null | undefined): 
 }
 
 function batchTaskInlineReason(task: TaskRecord): string {
-  if (task.outcome_message) return formatTaskErrorMessage(task.outcome_message)
   const status = taskDisplayStatus(task).toUpperCase()
-  if (status === 'FAILED' || status === 'FAIL' || status === 'TIMEOUT') {
-    return formatTaskErrorMessage(task.failure_reason || task.error_message) || (task.task_type === 'stress'
-      ? '报告检测到压测结果为 FAIL，请查看结果文件。'
-      : '任务执行失败，请查看执行日志。')
-  }
-  if (status === 'CANCELED') {
-    return formatTaskErrorMessage(task.error_message || task.failure_reason) || '任务已被取消'
-  }
-  return ''
+  const failedFallback = task.task_type === 'stress'
+    ? '报告检测到压测结果为 FAIL，请查看结果文件。'
+    : '任务执行失败，请查看执行日志。'
+  return getTaskOutcomeDisplayMessage(task, status, failedFallback)
 }
 
 function batchTaskInlineReasonClass(task: TaskRecord): string {
@@ -1676,9 +1646,11 @@ const batchFilters = reactive<BatchQuery>({
   page_size: 20,
   status: undefined,
   keyword: undefined,
+  batch_ids: undefined,
 })
 
 const filters = reactive<TaskListQuery>({
+  task_ids: undefined,
   status: undefined,
   scope: undefined,
   task_type: undefined,
@@ -2433,13 +2405,19 @@ function handleSizeChange(size: number) {
 
 function resetFilters() {
   clearTaskSearchTimer()
+  clearBatchSearchTimer()
   filters.status = undefined
   filters.scope = undefined
   filters.task_type = undefined
   filters.server_id = undefined
   filters.keyword = undefined
+  filters.task_ids = undefined
   filters.limit = 50
   filters.offset = 0
+  batchFilters.status = undefined
+  batchFilters.keyword = undefined
+  batchFilters.batch_ids = undefined
+  batchFilters.page = 1
   router.replace({ query: {} })
   loadTasks()
 }
@@ -2468,6 +2446,7 @@ function scheduleBatchSearch() {
 function clearBatchSearch() {
   clearBatchSearchTimer()
   batchFilters.keyword = undefined
+  batchFilters.batch_ids = undefined
   batchFilters.page = 1
   loadBatches()
 }
@@ -3395,57 +3374,23 @@ async function ensureTaskLogs(taskId: string, refresh = false) {
   return result
 }
 
-function extractCommandBlock(
-  entries: TaskLogRecord[],
-  startMarker: string,
-  endMarker: string,
-  lineFilter: (line: string) => boolean
-) {
-  const messages = entries.map((item) => item.message)
-  const startIndex = messages.findIndex((message) => message.includes(startMarker))
-  if (startIndex === -1) return ''
-
-  const lines: string[] = []
-  for (let index = startIndex + 1; index < messages.length; index += 1) {
-    const message = messages[index]
-    if (message.includes(endMarker)) break
-    for (const line of message.split('\n')) {
-      const trimmed = line.trimStart()
-      if (trimmed && lineFilter(trimmed)) {
-        lines.push(trimmed)
-      }
-    }
-  }
-  return lines.join('\n')
-}
-
 function extractEnvCommands(entries: TaskLogRecord[]) {
-  return extractCommandBlock(
-    entries,
-    '如需仅当前终端临时加载，请执行：',
-    '如需验证环境，请执行：',
-    (line) => line.startsWith('source ') || line.startsWith('export ')
-  )
+  return extractTaskEnvironmentCommands(entries.map(item => item.message))
 }
 
 function extractVerifyCommands(entries: TaskLogRecord[]) {
-  return extractCommandBlock(
-    entries,
-    '如需验证环境，请执行：',
-    '如需删除安装包',
-    (line) => Boolean(line.trim())
-  )
+  return extractTaskVerifyCommands(entries.map(item => item.message))
 }
 
 function getEnvTooltip(taskId: string) {
   const entries = taskLogCache[taskId]
-  if (!entries) return '未识别到环境变量命令'
+  if (!entries) return '正在加载环境变量命令…'
   return extractEnvCommands(entries) || '未识别到环境变量命令'
 }
 
 function getVerifyTooltip(taskId: string) {
   const entries = taskLogCache[taskId]
-  if (!entries) return '未识别到验证命令'
+  if (!entries) return '正在加载验证命令…'
   return extractVerifyCommands(entries) || '未识别到验证命令'
 }
 
@@ -3492,7 +3437,7 @@ function legacyCopy(text: string): boolean {
 
 async function prefetchEnvCommands(task: TaskRecord) {
   try {
-    await ensureTaskLogs(task.task_id, true)
+    await ensureTaskLogs(task.task_id)
   } catch {
     // ignore tooltip prefetch failures
   }
@@ -3500,7 +3445,7 @@ async function prefetchEnvCommands(task: TaskRecord) {
 
 async function prefetchVerifyCommands(task: TaskRecord) {
   try {
-    await ensureTaskLogs(task.task_id, true)
+    await ensureTaskLogs(task.task_id)
   } catch {
     // ignore tooltip prefetch failures
   }
@@ -3547,7 +3492,22 @@ onMounted(async () => {
   const qKeyword = route.query.keyword
   const qView = route.query.view
   const qBatchId = route.query.batch_id
+  const qBatchIds = route.query.batch_ids
+  const qTaskIds = route.query.task_ids
   const qServerId = route.query.server_id
+  if (typeof qBatchIds === 'string' && qBatchIds) {
+    batchFilters.batch_ids = qBatchIds
+  }
+  if (typeof qTaskIds === 'string' && qTaskIds) {
+    filters.task_ids = qTaskIds
+    viewMode.value = 'tasks'
+  }
+  if (
+    (qView === 'batch' || qView === 'batches')
+    && (!(typeof qBatchId === 'string' && qBatchId) || Boolean(batchFilters.batch_ids))
+  ) {
+    viewMode.value = 'batches'
+  }
   if (typeof qStatus === 'string' && qStatus) filters.status = qStatus
   if (typeof qTaskType === 'string' && qTaskType) filters.task_type = qTaskType
   if (typeof qKeyword === 'string' && qKeyword) filters.keyword = qKeyword
@@ -3566,7 +3526,11 @@ onMounted(async () => {
   // A direct task handoff must override stale history filters.
   applyTrackedTaskFromRoute()
 
-  loadTasks()
+  if (viewMode.value === 'batches') {
+    loadBatches()
+  } else {
+    loadTasks()
+  }
 })
 
 watch(() => [route.query.status, route.query.running_filter], ([status]) => {
@@ -5098,6 +5062,18 @@ onUnmounted(() => {
     0 0 8px rgba(180, 83, 9, 0.24);
 }
 
+.task-result-button--batch.el-button.is-disabled,
+.task-result-button--batch.el-button.is-disabled:hover,
+.batch-row-actions :deep(.task-action-button--batch-result.el-button.is-disabled),
+.batch-row-actions :deep(.task-action-button--batch-result.el-button.is-disabled:hover) {
+  color: var(--el-text-color-placeholder) !important;
+  background: var(--el-fill-color-light) !important;
+  border-color: var(--el-border-color) !important;
+  box-shadow: none !important;
+  opacity: 1;
+  cursor: not-allowed;
+}
+
 .batch-task-actions :deep(.task-action-button.el-button:not(.is-disabled):hover),
 .batch-row-actions :deep(.task-action-button.el-button:not(.is-disabled):hover) {
   background: rgba(64, 158, 255, 0.10);
@@ -5297,6 +5273,72 @@ onUnmounted(() => {
   margin-top: 10px;
   font-size: 12px;
   color: var(--el-text-color-secondary);
+}
+
+@media (max-width: 768px) {
+  .batch-detail-dialog :deep(.el-dialog__header) {
+    padding: 14px 16px 10px;
+  }
+
+  .batch-detail-dialog :deep(.el-dialog__body) {
+    max-height: calc(96vh - 66px);
+    padding: 8px 12px 14px;
+  }
+
+  .task-drawer-title-row {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .task-drawer-title {
+    width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .task-drawer-grid,
+  .task-drawer-monitor-grid,
+  .detail-monitor-gpu-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .task-drawer-grid span {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .task-drawer-actions {
+    flex-wrap: wrap;
+  }
+
+  .task-drawer-panel {
+    min-height: 220px;
+  }
+
+  .batch-detail-split {
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .batch-detail-left {
+    width: 100%;
+  }
+
+  .batch-detail-left__list {
+    max-height: 190px;
+  }
+
+  .batch-detail-right {
+    padding-top: 12px;
+    padding-left: 0;
+    border-top: 1px solid var(--el-border-color-light);
+    border-left: 0;
+  }
+
+  .task-drawer-overview__row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
 }
 
 /* ── Cancel dialog ── */

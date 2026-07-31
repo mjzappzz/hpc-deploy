@@ -18,6 +18,20 @@ _SUMMARY_JOBS: set[str] = set()
 _SUMMARY_JOBS_LOCK = Lock()
 
 
+def resolve_failure_reason(
+    task_error_message: str | None,
+    report_status: str,
+    diagnosis: dict[str, Any],
+) -> str | None:
+    if report_status not in {"FAIL", "UNKNOWN"}:
+        return None
+    if diagnosis.get("category") == "stress_startup_marker_mismatch":
+        conclusion = diagnosis.get("conclusion")
+        if isinstance(conclusion, str) and conclusion.strip():
+            return conclusion.strip()
+    return task_error_message
+
+
 def unknown_report_summary(task: Task, *, reason: str = "report summary not generated") -> dict[str, Any]:
     return {
         "report_status": "UNKNOWN",
@@ -128,7 +142,7 @@ def generate_report_summary(task_id: str) -> TaskReportSummary | None:
             report_result=report_result,
         )
         report_status = report_result or "UNKNOWN"
-        failure_reason = task.error_message if report_status in {"FAIL", "UNKNOWN"} else None
+        failure_reason = resolve_failure_reason(task.error_message, report_status, diagnosis)
         summary_json = {
             "report_status": report_status,
             "failure_reason": failure_reason,

@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+SCRIPT_VERSION="1.1.0"
 
 # ============================================================
 # Intel oneAPI 2022 Offline Auto Installer
@@ -39,6 +40,47 @@ MKL_DIR="${INSTALL_DIR}/mkl/latest"
 BASEKIT_COMPONENTS="intel.oneapi.lin.mkl.devel"
 HPCKIT_COMPONENTS="intel.oneapi.lin.dpcpp-cpp-compiler-pro:intel.oneapi.lin.ifort-compiler:intel.oneapi.lin.mpi.devel"
 
+load_oneapi_environment() {
+    if [ -f "${INSTALL_DIR}/setvars.sh" ]; then
+        # setvars 在非交互任务中可能输出提示，探测阶段静默加载。
+        source "${INSTALL_DIR}/setvars.sh" --force >/dev/null 2>&1 || true
+    fi
+}
+
+basekit_is_ready() {
+    load_oneapi_environment
+    [ -d "${MKL_DIR}" ] && [ -n "${MKLROOT:-}" ] && [ -d "${MKLROOT}" ]
+}
+
+hpckit_is_ready() {
+    load_oneapi_environment
+    local cmd
+    for cmd in icc icx ifort mpiicc mpiifort mpirun; do
+        command -v "${cmd}" >/dev/null 2>&1 || return 1
+    done
+}
+
+verify_required_commands() {
+    local failed=0
+    local cmd
+    for cmd in icc icx ifort mpiicc mpiifort mpirun; do
+        echo "+ which ${cmd}"
+        if ! command -v "${cmd}"; then
+            echo "[ERROR] 未找到必需命令：${cmd}"
+            failed=1
+        fi
+        echo
+    done
+    if [ -z "${MKLROOT:-}" ] || [ ! -d "${MKLROOT:-/nonexistent}" ]; then
+        echo "[ERROR] MKLROOT 未设置或目录不存在：${MKLROOT:-未设置}"
+        failed=1
+    else
+        echo "+ echo \"\$MKLROOT\""
+        echo "${MKLROOT}"
+    fi
+    return "${failed}"
+}
+
 echo "============================================================"
 echo " Intel oneAPI 2022 Offline Installer"
 echo "============================================================"
@@ -73,6 +115,17 @@ mkdir -p "${DOWNLOAD_DIR}"
 mkdir -p "${INSTALL_DIR}"
 
 cd "${DOWNLOAD_DIR}"
+
+INSTALL_BASEKIT=1
+INSTALL_HPCKIT=1
+if basekit_is_ready; then
+    INSTALL_BASEKIT=0
+    echo "[INFO] BaseKit 目标组件已安装，跳过安装"
+fi
+if hpckit_is_ready; then
+    INSTALL_HPCKIT=0
+    echo "[INFO] HPCKit 目标组件已安装，跳过安装"
+fi
 
 download_file() {
     local name="$1"
@@ -131,7 +184,11 @@ echo "============================================================"
 
 echo "[INFO] 检测内网 IP 是否可达：${INNER_IP}"
 
-if ping -c 2 -W 2 "${INNER_IP}" >/dev/null 2>&1; then
+if [ "${INSTALL_BASEKIT}" -eq 0 ] && [ "${INSTALL_HPCKIT}" -eq 0 ]; then
+    BASEKIT_URL=""
+    HPCKIT_URL=""
+    DOWNLOAD_SOURCE="无需下载（目标组件已安装）"
+elif ping -c 2 -W 2 "${INNER_IP}" >/dev/null 2>&1; then
     echo "[INFO] 内网可达，使用内网下载地址"
     BASEKIT_URL="${BASEKIT_INNER_URL}"
     HPCKIT_URL="${HPCKIT_INNER_URL}"
@@ -153,50 +210,66 @@ echo "============================================================"
 echo "[2/7] 下载 oneAPI 离线安装包"
 echo "============================================================"
 
-download_file "BaseKit" "${BASEKIT_FILE}" "${BASEKIT_URL}"
-download_file "HPCKit" "${HPCKIT_FILE}" "${HPCKIT_URL}"
+if [ "${INSTALL_BASEKIT}" -eq 1 ]; then
+    download_file "BaseKit" "${BASEKIT_FILE}" "${BASEKIT_URL}"
+fi
+if [ "${INSTALL_HPCKIT}" -eq 1 ]; then
+    download_file "HPCKit" "${HPCKIT_FILE}" "${HPCKIT_URL}"
+fi
 
 echo
 echo "============================================================"
 echo "[3/7] 检查安装包"
 echo "============================================================"
 
-if [ ! -s "${BASEKIT_FILE}" ]; then
+if [ "${INSTALL_BASEKIT}" -eq 1 ] && [ ! -s "${BASEKIT_FILE}" ]; then
     echo "[ERROR] BaseKit 文件不存在或为空：${DOWNLOAD_DIR}/${BASEKIT_FILE}"
     exit 1
 fi
 
-if [ ! -s "${HPCKIT_FILE}" ]; then
+if [ "${INSTALL_HPCKIT}" -eq 1 ] && [ ! -s "${HPCKIT_FILE}" ]; then
     echo "[ERROR] HPCKit 文件不存在或为空：${DOWNLOAD_DIR}/${HPCKIT_FILE}"
     exit 1
 fi
 
-chmod +x "${BASEKIT_FILE}" "${HPCKIT_FILE}"
-
-echo "[INFO] BaseKit OK：${DOWNLOAD_DIR}/${BASEKIT_FILE}"
-echo "[INFO] HPCKit  OK：${DOWNLOAD_DIR}/${HPCKIT_FILE}"
+if [ "${INSTALL_BASEKIT}" -eq 1 ]; then
+    chmod +x "${BASEKIT_FILE}"
+    echo "[INFO] BaseKit OK：${DOWNLOAD_DIR}/${BASEKIT_FILE}"
+fi
+if [ "${INSTALL_HPCKIT}" -eq 1 ]; then
+    chmod +x "${HPCKIT_FILE}"
+    echo "[INFO] HPCKit  OK：${DOWNLOAD_DIR}/${HPCKIT_FILE}"
+fi
 
 echo
 echo "============================================================"
 echo "[4/7] 安装 BaseKit：MKL"
 echo "============================================================"
 
-bash "${BASEKIT_FILE}" \
-    -a --action install \
-    --components "${BASEKIT_COMPONENTS}" \
-    -s --eula accept \
-    --install-dir "${INSTALL_DIR}"
+if [ "${INSTALL_BASEKIT}" -eq 1 ]; then
+    bash "${BASEKIT_FILE}" \
+        -a --action install \
+        --components "${BASEKIT_COMPONENTS}" \
+        -s --eula accept \
+        --install-dir "${INSTALL_DIR}"
+else
+    echo "[INFO] BaseKit 目标组件已安装，跳过安装"
+fi
 
 echo
 echo "============================================================"
 echo "[5/7] 安装 HPCKit：C/C++、Fortran、Intel MPI"
 echo "============================================================"
 
-bash "${HPCKIT_FILE}" \
-    -a --action install \
-    --components "${HPCKIT_COMPONENTS}" \
-    -s --eula accept \
-    --install-dir "${INSTALL_DIR}"
+if [ "${INSTALL_HPCKIT}" -eq 1 ]; then
+    bash "${HPCKIT_FILE}" \
+        -a --action install \
+        --components "${HPCKIT_COMPONENTS}" \
+        -s --eula accept \
+        --install-dir "${INSTALL_DIR}"
+else
+    echo "[INFO] HPCKit 目标组件已安装，跳过安装"
+fi
 
 echo
 echo "============================================================"
@@ -236,28 +309,10 @@ echo "============================================================"
 echo "[TEST] which 命令测试"
 echo "============================================================"
 
-echo "+ which icc"
-which icc || true
-
-echo
-echo "+ which icx"
-which icx || true
-
-echo
-echo "+ which ifort"
-which ifort || true
-
-echo
-echo "+ which mpiicc"
-which mpiicc || true
-
-echo
-echo "+ which mpiifort"
-which mpiifort || true
-
-echo
-echo "+ which mpirun"
-which mpirun || true
+if ! verify_required_commands; then
+    echo "[ERROR] Intel oneAPI 2022 最终验证失败"
+    exit 1
+fi
 
 echo
 echo "============================================================"

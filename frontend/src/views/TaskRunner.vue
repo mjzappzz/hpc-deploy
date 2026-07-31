@@ -350,7 +350,7 @@
               </template>
               <template v-if="selectedTaskCategory === 'base_system' && selectedManagedActions.length === 2">
                 <div class="card-title">套件执行计划</div>
-                <el-alert title="同一服务器按 关闭锁屏与休眠 → 锁定系统版本 严格串行；前序失败时不启动后序任务。" type="info" :closable="false" show-icon />
+                <el-alert title="同一服务器按 关闭锁屏与休眠 → 锁定当前系统版本 严格串行；前序失败时不启动后序任务。" type="info" :closable="false" show-icon />
               </template>
               <!-- 套件执行计划 - suite mode -->
               <template v-if="stressSuiteMode">
@@ -504,12 +504,15 @@
           <span v-if="batchResult.failed > 0" class="batch-summary-item batch-summary-fail">失败 {{ batchResult.failed }} 台</span>
         </div>
         <div class="batch-id-bar">
-          <span class="batch-id-label">批次 ID：</span>
-          <code class="batch-id-value">{{ batchResult.batch_id }}</code>
+          <span class="batch-id-label">独立任务：</span>
+          <code class="batch-id-value">{{ getCreatedTaskIds(batchResult).length }} 个</code>
           <span class="batch-script-name" v-if="batchResult.script_name">脚本：{{ batchResult.script_name }}</span>
         </div>
         <el-table :data="batchResult.items" max-height="360" stripe size="small">
           <el-table-column prop="server_name" label="服务器" width="140" />
+          <el-table-column prop="task_id" label="任务 ID" min-width="230">
+            <template #default="{ row }"><code class="batch-task-id">{{ row.task_id || '—' }}</code></template>
+          </el-table-column>
           <el-table-column label="结果" width="100">
             <template #default="{ row }">
               <el-tag v-if="row.success" type="success" size="small">成功</el-tag>
@@ -519,7 +522,7 @@
           </el-table-column>
           <el-table-column label="说明" min-width="220">
             <template #default="{ row }">
-              <span v-if="row.task_id" class="batch-task-id">{{ row.task_id }}</span>
+              <span v-if="row.success">单次任务</span>
               <span v-else class="batch-reason">{{ row.reason }}</span>
             </template>
           </el-table-column>
@@ -527,7 +530,7 @@
       </template>
       <template #footer>
         <el-button @click="showBatchResult = false">关闭</el-button>
-        <el-button type="primary" @click="goToBatchHistory">查看批次详情</el-button>
+        <el-button type="primary" @click="goToBatchHistory">查看任务详情</el-button>
       </template>
     </el-dialog>
 
@@ -535,14 +538,17 @@
     <el-dialog v-model="showStressSuiteResult" title="压测套件已创建" width="650px" :close-on-click-modal="false">
       <template v-if="stressSuiteResult">
         <div class="batch-id-bar">
-          <span class="batch-id-label">批次 ID：</span>
-          <code class="batch-id-value">{{ stressSuiteResult.batch_id }}</code>
+          <span class="batch-id-label">服务器批次：</span>
+          <code class="batch-id-value">{{ getStressSuiteBatchIds(stressSuiteResult).length }} 个</code>
         </div>
         <div style="margin:10px 0; font-size:13px; color:#909399;">
           子任务将按 GPU → CPU/内存 → 磁盘顺序串行执行，请到历史任务批次视图查看状态和报告。
         </div>
         <el-table :data="stressSuiteResult.items" max-height="360" stripe size="small">
           <el-table-column prop="server_name" label="服务器" width="140" />
+          <el-table-column prop="batch_id" label="批次 ID" min-width="230">
+            <template #default="{ row }"><code class="batch-task-id">{{ row.batch_id || '—' }}</code></template>
+          </el-table-column>
           <el-table-column prop="task_name" label="压测类型" width="120" />
           <el-table-column label="状态" width="100">
             <template #default="{ row }">
@@ -641,6 +647,12 @@ import { formatBytes } from '@/utils/format'
 import { serverTagType } from '@/constants/serverTags'
 import { environmentBusinessCategory } from '@/utils/environmentCategory'
 import {
+  getCreatedTaskHistoryQuery,
+  getCreatedTaskIds,
+  getStressSuiteBatchIds,
+  getStressSuiteHistoryQuery,
+} from '@/utils/stressSuiteResult'
+import {
   calcDurationSeconds,
   calcEstimatedRemaining,
   calcProgress,
@@ -706,9 +718,9 @@ function environmentScriptInfo(fileName: string): { vendor: string; tagType: 'pr
     return {
       vendor: 'Linux',
       tagType: 'danger',
-      title: 'Linux 系统版本锁定',
-      description: 'Rocky 9.4 锁定软件源，其他 Rocky 版本直接跳过；Ubuntu 22.04/24.04 禁止跨版本升级。',
-      target: 'Rocky Linux / Ubuntu 22.04、24.04 · 需 root',
+      title: 'Linux 当前版本策略锁定',
+      description: 'Rocky 9.x 自动锁定当前小版本；Rocky 与 Ubuntu 22.04/24.04 均自动锁定正在运行的内核。',
+      target: 'x86_64 Rocky Linux 9.x / Ubuntu 22.04、24.04 · 需 root',
     }
   }
   if (fileName === 'disable_linux_lock_sleep.sh') {
@@ -1571,7 +1583,7 @@ async function validateRunner() {
     }
 
     if (selectedTaskCategory.value === 'base_system' && selectedManagedActions.value.length === 2) {
-      ElMessage.success('参数校验通过。将按关闭锁屏与休眠 → 锁定系统版本串行执行。')
+      ElMessage.success('参数校验通过。将按关闭锁屏与休眠 → 锁定当前系统版本串行执行。')
       return
     }
 
@@ -1697,8 +1709,8 @@ async function createTask() {
         const parts = [`成功 ${result.created} 台`]
         if (result.skipped > 0) parts.push(`跳过 ${result.skipped} 台`)
         if (result.failed > 0) parts.push(`失败 ${result.failed} 台`)
-        ElMessage.success(`GPU 驱动批次已创建：${parts.join('，')}。`)
-        await router.push({ path: '/history', query: { view: 'batches', batch_id: result.batch_id } })
+        ElMessage.success(`GPU 驱动任务已创建：${parts.join('，')}。`)
+        await router.push({ path: '/history', query: getCreatedTaskHistoryQuery(result) })
         return
       }
       const result = (await runRockyGpuDriverTask({ server_id: selectedServerIds.value[0], ...driverPayload })).data
@@ -1730,8 +1742,8 @@ async function createTask() {
         const parts = [`成功 ${result.created} 台`]
         if (result.skipped > 0) parts.push(`跳过 ${result.skipped} 台`)
         if (result.failed > 0) parts.push(`失败 ${result.failed} 台`)
-        ElMessage.success(`CUDA Toolkit 批次已创建：${parts.join('，')}。`)
-        await router.push({ path: '/history', query: { view: 'batches', batch_id: result.batch_id } })
+        ElMessage.success(`CUDA Toolkit 任务已创建：${parts.join('，')}。`)
+        await router.push({ path: '/history', query: getCreatedTaskHistoryQuery(result) })
         return
       }
       const result = (await runCudaToolkitTask({ server_id: selectedServerIds.value[0], ...cudaPayload })).data
@@ -1862,13 +1874,11 @@ async function createStressSuiteTask() {
     notifyTaskCreated()
     stressSuiteResult.value = result
     showStressSuiteResult.value = false
-    ElMessage.success('压测套件已创建，正在跳转历史任务。')
+    const batchCount = getStressSuiteBatchIds(result).length
+    ElMessage.success(`压测套件已创建 ${batchCount} 个服务器批次，正在跳转历史任务。`)
     await router.push({
       path: '/history',
-      query: {
-        view: 'batches',
-        batch_id: result.batch_id,
-      },
+      query: getStressSuiteHistoryQuery(result),
     })
   } catch (error: unknown) {
     ElMessage.error(getApiErrorMessage(error))
@@ -1908,8 +1918,9 @@ async function createManagedSuiteTask() {
       } : {}),
     })).data
     notifyTaskCreated()
-    ElMessage.success('串行安装套件已创建，正在跳转历史任务。')
-    await router.push({ path: '/history', query: { view: 'batches', batch_id: result.batch_id } })
+    const batchCount = getStressSuiteBatchIds(result).length
+    ElMessage.success(`串行安装套件已创建 ${batchCount} 个服务器批次，正在跳转历史任务。`)
+    await router.push({ path: '/history', query: getStressSuiteHistoryQuery(result) })
   } catch (error: unknown) {
     ElMessage.error(getApiErrorMessage(error))
   } finally {
@@ -1979,8 +1990,13 @@ function goToHistory() {
 }
 
 function goToBatchHistory() {
-  const batchId = stressSuiteResult.value?.batch_id || batchResult.value?.batch_id
-  router.push(batchId ? { path: '/history', query: { view: 'batches', batch_id: batchId } } : '/history')
+  if (stressSuiteResult.value) {
+    router.push({ path: '/history', query: getStressSuiteHistoryQuery(stressSuiteResult.value) })
+  } else {
+    router.push(batchResult.value
+      ? { path: '/history', query: getCreatedTaskHistoryQuery(batchResult.value) }
+      : '/history')
+  }
   showBatchResult.value = false
   showStressSuiteResult.value = false
 }
@@ -2244,13 +2260,10 @@ async function batchCreate() {
     if (res.created > 0) parts.push(`成功 ${res.created} 台`)
     if (res.skipped > 0) parts.push(`跳过 ${res.skipped} 台`)
     if (res.failed > 0) parts.push(`失败 ${res.failed} 台`)
-    ElMessage.success(`批量任务已创建：${parts.join('，')}，正在跳转历史任务。`)
+    ElMessage.success(`多服务器任务已创建：${parts.join('，')}，正在跳转历史任务。`)
     await router.push({
       path: '/history',
-      query: {
-        view: 'batches',
-        batch_id: res.batch_id,
-      },
+      query: getCreatedTaskHistoryQuery(res),
     })
   } catch (error: unknown) {
     ElMessage.error(getApiErrorMessage(error))

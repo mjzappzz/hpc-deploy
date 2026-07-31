@@ -1,5 +1,6 @@
 import { h, nextTick, ref } from 'vue'
-import { ElInput, ElMessageBox, ElMessage, ElOption, ElSelect } from 'element-plus'
+import { ElIcon, ElInput, ElMessageBox, ElMessage, ElRadio, ElRadioButton, ElRadioGroup } from 'element-plus'
+import { Key, Lock, Timer, WarningFilled } from '@element-plus/icons-vue'
 import { request } from '@/api/request'
 import { adminVerify, type AdminSessionDuration } from '@/api/auth'
 
@@ -124,11 +125,28 @@ export async function requireAdminConfirm(actionName: string): Promise<boolean> 
     const passwordInput = ref<{ focus: () => void } | null>(null)
     const durationMinutes = ref<AdminSessionDuration>(5)
     await ElMessageBox({
-      title: '管理员确认',
       message: () => h('div', { class: 'admin-confirm-form' }, [
-        h('p', { class: 'admin-confirm-description' }, `执行“${actionName}”需要管理员密码`),
+        h('div', { class: 'admin-confirm-hero' }, [
+          h('div', { class: 'admin-confirm-emblem', 'aria-hidden': 'true' }, [
+            h(ElIcon, { size: 24 }, () => h(Key)),
+          ]),
+          h('div', { class: 'admin-confirm-heading' }, [
+            h('span', { class: 'admin-confirm-eyebrow' }, 'ADMIN ACCESS'),
+            h('h2', { class: 'admin-confirm-title' }, '解锁管理员模式'),
+            h('p', { class: 'admin-confirm-description' }, `验证身份后执行“${actionName}”`),
+          ]),
+        ]),
+        h('div', { class: 'admin-confirm-permissions' }, [
+          h(ElIcon, { size: 17 }, () => h(WarningFilled)),
+          h('span', '将开放删除、清理、审计与系统设置等高风险权限'),
+        ]),
+        h('label', { class: 'admin-confirm-field-label' }, [
+          h(ElIcon, { size: 15 }, () => h(Lock)),
+          h('span', '管理员密码'),
+        ]),
         h(ElInput, {
           ref: passwordInput,
+          class: 'admin-confirm-password',
           modelValue: password.value,
           type: 'password',
           showPassword: true,
@@ -151,28 +169,35 @@ export async function requireAdminConfirm(actionName: string): Promise<boolean> 
             if (confirmButton && !confirmButton.disabled) confirmButton.click()
           },
         }),
-        h('div', { class: 'admin-confirm-duration-label' }, '管理员模式时长'),
-        h(ElSelect, {
-          class: 'admin-confirm-duration-select',
+        h('div', { class: 'admin-confirm-field-label admin-confirm-duration-label' }, [
+          h(ElIcon, { size: 15 }, () => h(Timer)),
+          h('span', '授权时长'),
+        ]),
+        h(ElRadioGroup, {
+          class: 'admin-confirm-duration-options',
           modelValue: durationMinutes.value === null ? 'tab' : String(durationMinutes.value),
-          ariaLabel: '管理员模式时长',
           'onUpdate:modelValue': (value: string | number | boolean | undefined) => {
             durationMinutes.value = value === 'tab' ? null : Number(value) as Exclude<AdminSessionDuration, null>
           },
         }, () => [
-          h(ElOption, { label: '5 分钟', value: '5' }),
-          h(ElOption, { label: '15 分钟', value: '15' }),
-          h(ElOption, { label: '30 分钟', value: '30' }),
-          h(ElOption, { label: '60 分钟', value: '60' }),
-          h(ElOption, { label: '本标签页持续（关闭标签页后失效）', value: 'tab' }),
+          h('div', { class: 'admin-confirm-duration-segments' }, [
+            h(ElRadioButton, { label: '5', value: '5' }, () => '5 分钟'),
+            h(ElRadioButton, { label: '15', value: '15' }, () => '15 分钟'),
+            h(ElRadioButton, { label: '30', value: '30' }, () => '30 分钟'),
+            h(ElRadioButton, { label: '60', value: '60' }, () => '60 分钟'),
+          ]),
+          h(ElRadio, { class: 'admin-confirm-tab-duration', label: 'tab', value: 'tab' }, () => [
+            h('span', { class: 'admin-confirm-tab-duration__title' }, '本标签页持续'),
+            h('span', { class: 'admin-confirm-tab-duration__hint' }, '关闭标签页后自动失效'),
+          ]),
         ]),
       ]),
-      confirmButtonText: '进入管理员模式',
+      confirmButtonText: '解锁管理员模式',
       cancelButtonText: '取消',
       closeOnClickModal: false,
       autofocus: false,
       customClass: 'admin-confirm-dialog',
-      roundButton: true,
+      modalClass: 'admin-confirm-overlay',
       beforeClose: (action, _instance, done) => {
         if (action === 'confirm' && !password.value.trim()) {
           ElMessage.warning('请输入管理员密码')

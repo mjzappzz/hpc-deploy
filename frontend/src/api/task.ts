@@ -230,6 +230,7 @@ export interface TaskDeleteResponse {
 }
 
 export interface TaskListQuery {
+  task_ids?: string
   status?: string
   /** Only include tasks currently in active execution. */
   active_only?: boolean
@@ -358,6 +359,7 @@ export interface BatchTaskCreatePayload {
 export interface BatchTaskCreateItem {
   server_id: number
   server_name: string
+  batch_id: string
   task_id: string | null
   success: boolean
   status: string
@@ -366,6 +368,13 @@ export interface BatchTaskCreateItem {
 
 export interface BatchTaskCreateResponse {
   batch_id: string
+  batch_ids: string[]
+  batches: Array<{
+    server_id: number
+    server_name: string
+    batch_id: string
+  }>
+  task_ids: string[]
   script_name: string
   total: number
   created: number
@@ -389,6 +398,7 @@ export interface StressSuitePayload {
 export interface StressSuiteItem {
   server_id: number
   server_name: string
+  batch_id: string
   task_id: string
   script_path: string
   task_name: string
@@ -397,6 +407,12 @@ export interface StressSuiteItem {
 
 export interface StressSuiteResponse {
   batch_id: string
+  batch_ids: string[]
+  batches: Array<{
+    server_id: number
+    server_name: string
+    batch_id: string
+  }>
   total: number
   items: StressSuiteItem[]
 }
@@ -458,6 +474,7 @@ export interface BatchQuery {
   page_size?: number
   status?: string
   keyword?: string
+  batch_ids?: string
 }
 
 export interface BatchTaskDetailItem {

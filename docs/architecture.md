@@ -62,10 +62,14 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - GPU 驱动安装（`/gpu-driver/rocky9`、`/gpu-driver/batch`）：按目标服务器 OS 自动选择 Rocky 9 或 Ubuntu 安装脚本，支持 GeForce / Data Center（RTX Enterprise）驱动库与临时 `.run` 上传
 - CUDA Toolkit 安装（`/cuda-toolkit`、`/cuda-toolkit/batch`）：支持 11.8、12.0–12.6、12.8、12.9、13.0，安装前校验 `nvidia-smi`，仅安装 Toolkit，不安装或覆盖驱动
 - 压测套件创建（`/stress-suite`），同服务器内按 GPU → CPU/内存 → 磁盘串行推进
-- 受控环境套件创建（`/managed-suite`）：基础环境配置按关闭锁屏/休眠 → 锁定系统版本，GPU 驱动安装按 NVIDIA 驱动 → CUDA Toolkit 严格串行；前序失败时后序不启动，后端重启后恢复套件 worker
-- Rocky 9.4 版本锁定脚本 v1.2.4 同时固定 BaseOS/AppStream/CRB Vault 仓库，并将阿里云 EPEL 9 baseurl 与 GPG 配置写入标准 `/etc/yum.repos.d/epel.repo`；NVIDIA 驱动安装及 GPU/CPU/磁盘压测依赖安装先检查已启用 repo ID，存在 `epel` 时跳过 `epel-release`，避免再次生成同名仓库定义。versionlock 检查、安装、加锁和 makecache 仅启用 BaseOS/AppStream/CRB，并设置 20 秒连接超时和 2 次重试；EPEL 由依赖任务按需建立缓存
+- 受控环境套件创建（`/managed-suite`）：基础环境配置按关闭锁屏/休眠 → 锁定当前系统版本，GPU 驱动安装按 NVIDIA 驱动 → CUDA Toolkit 严格串行；多台服务器各自创建独立批次，前序失败时后序不启动，后端重启后恢复套件 worker
+- 多服务器单动作入口按服务器创建互相独立的单次任务：普通脚本/单项压测/Apptainer（`/batch`）、GPU 驱动（`/gpu-driver/batch`）和 CUDA Toolkit（`/cuda-toolkit/batch`）均返回完整 `task_ids`，每条任务的 `batch_id` 为空；只有同一服务器包含多个有序步骤的受控环境套件和压测套件才创建批次，并按服务器分配独立 `batch_id`
+- Intel oneAPI 2022 安装脚本 v1.1.0 在执行安装器前分别检查 MKL 与编译器/Intel MPI 命令；目标组件已完整安装时跳过对应离线包下载和安装，最终严格验证 `icc`、`icx`、`ifort`、`mpiicc`、`mpiifort`、`mpirun` 及 `MKLROOT`，重复执行不再因 Intel 安装器返回“already installed”而误报失败
+- AOCC/AOCL + OpenMPI 安装脚本 v1.1.0 分别检测 AOCC 编译器、AOCL 库和 OpenMPI wrapper；已完整安装的组件跳过下载、包安装或编译，最终严格验证 `clang`、`clang++`、`flang`、`mpicc`、`mpicxx`、`mpif90`、`mpirun`、AOCL 库及 `mpicc --showme`
+- Linux 当前版本锁定脚本 v1.6.0 接受 x86_64 Rocky 9.x 与 Ubuntu 22.04/24.04。Rocky 读取执行前 `VERSION_ID` 与 `uname -r`，要求当前运行内核存在对应 `kernel-core` RPM，并收集当前内核对应的已安装 `kernel`、`kernel-core`、`kernel-modules*`、`kernel-devel` 及已安装的 `kernel-headers`；随后预检并固定当前小版本仓库，通过 DNF versionlock 锁定 release/repo/GPG 与内核包。每个 Rocky 候选源的隔离 DNF 预检由 coreutils `timeout` 限制为 90 秒，超时后发送 TERM、10 秒后强制结束并切换下一源；所有候选失败时仍处于预检阶段，不修改系统配置。Ubuntu 将 `Prompt` 设置为 `never`，收集当前运行内核对应的 image/modules/headers 包以及已安装的 generic、HWE、virtual、lowlatency、OEM 内核元包，再通过 `apt-mark hold` 锁定并逐项验证。Ubuntu 备份原发行版升级配置与原 hold 清单，保留既有 hold，失败时只撤销本次新增 hold 并恢复配置。Rocky 备份全部 `.repo`、`releasever` 与 `versionlock.list`，失败时完整恢复并校验。脚本不自动补装、升级或切换内核，也不执行跨版本升级、降级或全量更新；内核安全更新需在维护窗口手动解锁、升级并重新验证驱动。
 - 资产库对所有文本脚本解析内容版本（支持 `SCRIPT_VERSION=...`、`ScriptVersion: ...` 等形式），API 通过 `content_version` 返回，管理表格统一展示“版本”列；未声明版本的文件显示 `-`。
 - 任务执行恢复：普通脚本和 CUDA Toolkit 与压测、NVIDIA 驱动一致，远端进程使用 `nohup + setsid` 脱离 SSH，任务目录保存 `.hpcdeploy.pid`、`task.log` 和 `.hpcdeploy.exit_code`。后端启动时扫描 RUNNING 任务，通过 SSH 重新附着监控、补录日志并按远端退出码收尾；CONNECTING/PREPARING/UPLOADING 阶段任务由启动恢复器重新排队。
+- 重启恢复中的普通脚本与 CUDA Toolkit 遇到 SSH 连接或 channel 临时不可用时保持 RUNNING，并以 60 秒间隔重新附着；NVIDIA 驱动已有同类延迟重试，压测执行多次即时重连后再延迟重试。控制面连接失败不再直接覆盖远端任务真实退出状态。
 - 批次压测子任务重跑（`/{task_id}/retry-in-batch`）：仅支持白名单压测脚本中执行失败、取消、超时或报告 FAIL 的子任务；重跑任务追加到同批次、同服务器队列末尾，并阻止重复排队
 - 任务列表 `scope=single|batch`：按是否存在 `batch_id` 筛选单次任务或批次子任务，保持分页总数准确；`active_only=true` 统计 CONNECTING、PREPARING、UPLOADING、RUNNING、CANCELING 全部活动任务；`include_batch_context=true` 在状态筛选时保留命中批次的完整子任务
 - 状态查询、取消；管理员删除本机任务记录（`POST /api/tasks/{task_id}/local-artifacts/cleanup`）和整批记录（`POST /api/tasks/batches/{batch_id}/local-artifacts/cleanup`）
@@ -371,10 +375,16 @@ PENDING → CONNECTING → PREPARING → UPLOADING → RUNNING → SUCCESS
 
 GPU 压测 TXT/XLSX 报告分别记录 `nvidia-smi --query-gpu=driver_version` 检出的 NVIDIA 驱动版本和 `nvcc --version` 检出的 CUDA Toolkit 版本，不使用 `nvidia-smi` 顶部 CUDA Version（驱动最高兼容版本）替代实际安装版本。
 
+任务列表、单任务详情和批次子任务共用缓存摘要中的 `failure_reason`。结构化诊断发现旧版 GPU 脚本已输出 `Start gpu-burn`、却因缺少 `[STAGE] stress_start` 被 300 秒启动超时终止时，归因为平台阶段协议不一致，并将中文诊断结论写入该字段；原始 `Task.error_message` 保留用于日志和审计。
+
+前端任务展示通过 `frontend/src/utils/taskPresentation.ts` 接受单任务与批次详情的结构兼容输入，统一计算模块名称、GPU 精度、受控套件动作、批次步骤名称和最终状态；`taskError.ts` 统一选择 `outcome_message`、`failure_reason`、`error_message` 并格式化详情说明。单次和批次组件只保留布局及各入口已有的兜底文案。
+
 ### 压测运行续租与报告回收
 
 - 远端脚本先写入临时 XLSX，再原子替换最终文件名；采集端下载到本地 `.part`，完成 ZIP 完整性校验后再原子入库。
 - 运行中的压测任务每次 SSH 健康轮询都会更新 heartbeat/lease；后端重启后通过 SSH 检查远端 PID，并恢复对应监控线程。
+- GPU、CPU/内存和磁盘压测脚本依次输出 `[STAGE] dependency_check_start`、`[STAGE] dependency_check_done`、`[STAGE] stress_start`。后端以 `stress_start` 区分“启动前依赖卡住”和“负载已进入长时间运行”，避免历史依赖安装日志在 300 秒后误触发启动超时。
+- 压测套件以服务器为批次边界：每台服务器使用独立 `batch_id`，同服务器子任务按 GPU → CPU/内存 → 磁盘串行，不同服务器批次并行。批次取消、重试和结果文件只作用于对应服务器；一次多服务器请求通过响应中的 `batch_ids`/`batches` 关联，不合并为历史页中的单个批次。
 
 ---
 

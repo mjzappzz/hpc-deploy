@@ -338,7 +338,10 @@ deploy/systemd/hpcdeploy-backend.service
 - 当前内置 Windows 压测脚本为 `v94_windows_stress.ps1`。v94 保留 v90 的磁盘稳定性/性能分离、按盘动态门槛、系统盘阈值放宽和 DiskSpd `-si` 吞吐探测，并统一报告状态为“通过 / 关注 / 不合格 / 未测试（或未采集）”；阈值、RAID/控制器识别与压测执行逻辑不因本次术语调整而改变。
 - NVIDIA 驱动任务仅接受安全文件名的 `.run` 文件；驱动类型必须为 GeForce 或 Data Center（RTX Enterprise）。临时上传驱动默认 7 天后清理，运行中被引用的文件不清理
 - CUDA 任务仅安装 Toolkit，不安装或覆盖 NVIDIA 驱动；任务先通过 `nvidia-smi` 校验驱动可用，再按目标系统安装对应版本
-- Rocky 9.4 系统版本锁定脚本 v1.2.4 将固定 EPEL 配置写入标准 `epel.repo`，并使用目标机实测较快的阿里云 EPEL 9 镜像；NVIDIA 驱动和 Linux GPU/CPU/磁盘压测在 EPEL 已启用时跳过 `epel-release` 安装，避免重复 `[epel]` 仓库 ID。versionlock 检查、安装、加锁及缓存刷新仅启用 BaseOS/AppStream/CRB；EPEL 由实际依赖任务按需建立缓存
+- Linux 当前版本锁定脚本 v1.6.0 支持 x86_64 Rocky 9.x 与 Ubuntu 22.04/24.04。Rocky 读取执行前的 `VERSION_ID` 与 `uname -r`，预检固定版本仓库后锁定当前小版本、当前运行内核对应的已安装 RPM 及已安装的 `kernel-headers`；每个候选仓库预检最多运行 90 秒，超时终止 DNF 并自动切换下一源，全部失败时不修改系统配置。Ubuntu 禁止发行版升级，并通过 `apt-mark hold` 锁定当前运行内核对应的 image/modules/headers 包及已安装的 generic、HWE、virtual、lowlatency、OEM 内核元包；保留原有 hold，失败时撤销本次新增 hold。两类系统均不自动安装、升级或切换内核，也不执行全量更新；内核安全更新需在维护窗口手动解锁、升级并重新验证驱动。Rocky 旧小版本可能来自 Vault，不再获得安全更新；EPEL 9 按主版本滚动，不随 Rocky 小版本冻结。
+- Linux 压测脚本使用统一启动阶段标记供后端识别依赖检查和实际负载启动；GPU、磁盘脚本版本为 `2026.07.30`，CPU/内存脚本版本为 `2026.07.29`。该标记不改变压测参数、负载、报告格式或判定阈值。
+- 多服务器执行单个普通脚本、MPI 环境脚本、单项压测、Apptainer 分发、GPU 驱动或 CUDA Toolkit 时，每台服务器创建一条独立单次任务，任务之间不共享批次；提交后历史页按本次 `task_ids` 精确展示。只有同一服务器包含多个有序步骤的基础环境、GPU 软件和压测套件才创建批次。
+- 多服务器压测套件按服务器创建独立批次：每台服务器内部顺序执行所选压测，不同服务器批次并行；历史、取消、重试和结果文件均按服务器区分。
 - 远端执行任务采用脱离 SSH 会话的后台进程，并在任务目录持久化 PID、日志和退出码。后端意外重启后会重新接管普通脚本、压测、NVIDIA 驱动和 CUDA Toolkit 的运行状态；Apptainer 上传等未进入远端执行阶段的任务会重新排队。
 - SSH 私钥只保存文件名，不保存内容；API 不返回私钥/公钥内容
 - 远端清理只允许 `tasks` / `downloads` / `tmp`，不清理 `$HOME/hpcdeploy/apptainer`

@@ -20,9 +20,9 @@
         <span v-else>-</span>
       </template>
     </el-table-column>
-    <el-table-column label="路径" min-width="340">
+    <el-table-column label="用途说明" min-width="300">
       <template #default="{ row }">
-        <code class="script-path-code">{{ row.resolved_path || row.path }}</code>
+        <span class="script-purpose">{{ scriptAssetPurpose(row.name) }}</span>
       </template>
     </el-table-column>
     <el-table-column label="大小" width="120">
@@ -49,7 +49,7 @@
 
 <script setup lang="ts">
 import type { ScriptFileRecord } from '@/api/script'
-import { environmentBusinessCategoryLabel } from '@/utils/environmentCategory'
+import { environmentBusinessCategoryLabel, scriptAssetPurpose } from '@/utils/environmentCategory'
 
 withDefaults(defineProps<{
   files: ScriptFileRecord[]
@@ -80,14 +80,8 @@ function categoryLabel(file: ScriptFileRecord) {
 </script>
 
 <style scoped>
-.script-path-code {
-  display: inline-block;
-  max-width: 100%;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 12px;
-  color: var(--el-text-color-primary);
-  white-space: normal;
-  overflow-wrap: anywhere;
+.script-purpose {
+  color: var(--el-text-color-regular);
   line-height: 1.45;
 }
 

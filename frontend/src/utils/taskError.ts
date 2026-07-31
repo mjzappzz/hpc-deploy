@@ -42,3 +42,26 @@ export function formatTaskErrorMessage(message?: string | null): string {
   if (value.includes('artifact collection')) return '结果文件回收异常，请检查任务日志和远端报告文件。'
   return /[\u3400-\u9fff]/.test(value) ? value : '任务执行异常，请查看任务日志获取详细信息。'
 }
+
+type TaskOutcomeSource = {
+  outcome_message?: string | null
+  failure_reason?: string | null
+  error_message?: string | null
+}
+
+export function getTaskOutcomeDisplayMessage(
+  task: TaskOutcomeSource,
+  displayStatus: string,
+  failedFallback: string,
+): string {
+  if (task.outcome_message) return formatTaskErrorMessage(task.outcome_message)
+
+  const status = displayStatus.toUpperCase()
+  if (status === 'FAILED' || status === 'FAIL' || status === 'TIMEOUT') {
+    return formatTaskErrorMessage(task.failure_reason || task.error_message) || failedFallback
+  }
+  if (status === 'CANCELED') {
+    return formatTaskErrorMessage(task.error_message || task.failure_reason) || '任务已被取消'
+  }
+  return ''
+}

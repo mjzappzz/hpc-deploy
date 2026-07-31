@@ -3,7 +3,7 @@
 set -u
 set -o pipefail
 
-SCRIPT_VERSION="2026.07.29"
+SCRIPT_VERSION="2026.07.30"
 
 # ============================================================
 # GPU 多卡稳定性压力测试报告脚本
@@ -292,7 +292,9 @@ build_gpu_burn_if_needed() {
 }
 
 main() {
+    echo "[STAGE] dependency_check_start"
     install_deps
+    echo "[STAGE] dependency_check_done"
 
     echo "======================================"
     echo "GPU Stress Test Start"
@@ -337,6 +339,7 @@ main() {
     if [ "$GPU_BURN_PRECISION" = "fp64" ]; then
         BURN_ARGS=(-d "$DURATION")
     fi
+    echo "[STAGE] stress_start"
     echo "[INFO] Start gpu-burn (${GPU_BURN_PRECISION^^}). It will stress all visible NVIDIA GPUs."
     set +e
     (

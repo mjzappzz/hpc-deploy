@@ -7,7 +7,7 @@
     v-loading="loading"
     table-layout="fixed"
     style="width: 100%"
-    class="server-table glow-table no-horizontal-scroll-table"
+    class="server-table glow-table"
     header-cell-class-name="server-table-header"
     cell-class-name="server-table-cell"
   >
@@ -50,7 +50,7 @@
       </template>
     </el-table-column>
     <!-- 固定单选标签：主表内直接选择，不允许自由输入 -->
-    <el-table-column label="标签" class-name="server-tags-column">
+    <el-table-column label="标签" min-width="120" class-name="server-tags-column">
       <template #default="{ row }">
         <el-tag v-if="row.status === 'offline'" type="info" size="small">未知</el-tag>
         <el-select
@@ -269,16 +269,6 @@ function detectButtonTip(row: ServerRecord): string {
 .server-table {
   min-width: 0;
   width: 100%;
-}
-
-.no-horizontal-scroll-table :deep(.el-table__inner-wrapper),
-.no-horizontal-scroll-table :deep(.el-table__body-wrapper),
-.no-horizontal-scroll-table :deep(.el-scrollbar__wrap) {
-  overflow-x: hidden;
-}
-
-.no-horizontal-scroll-table :deep(.el-scrollbar__bar.is-horizontal) {
-  display: none;
 }
 
 .server-table :deep(.el-table__header th.el-table__cell) {

@@ -2,8 +2,9 @@
 
 set -e
 
-SCRIPT_VERSION="2026.07.29"
+SCRIPT_VERSION="2026.07.30"
 
+echo "[STAGE] dependency_check_start"
 echo "[INFO] Checking and installing dependencies..."
 
 epel_repo_enabled() {
@@ -82,6 +83,7 @@ PYCHK
 
 install_deps
 
+echo "[STAGE] dependency_check_done"
 echo "[INFO] Dependency check done."
 
 DURATION=${1:-43200}
@@ -200,6 +202,7 @@ sleep 2
 
 set +e
 
+echo "[STAGE] stress_start"
 (
   cd "$TEST_DIR" || exit 1
 
@@ -653,5 +656,4 @@ echo "Kernel Error : ${ERR_LOG}"
 echo "Text Report  : ${REPORT}"
 echo "XLSX Report  : ${XLSX_REPORT}"
 echo "======================================"
-
 

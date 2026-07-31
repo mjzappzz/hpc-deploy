@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from secrets import token_hex
 from time import sleep
+from typing import Callable
 from urllib.parse import quote
 
 from app.core.batch_report_exporter import export_batch_report_zip
@@ -80,10 +81,12 @@ from app.schemas.task import (
     BatchSummaryListResponse,
     BatchTaskRetryResponse,
     BatchTaskCreateItem,
+    BatchServerItem,
     BatchTaskCreateRequest,
     BatchTaskCreateResponse,
     BatchTaskDetailItem,
     StressSuiteCreateItem,
+    StressSuiteBatchItem,
     StressSuiteCreateRequest,
     StressSuiteCreateResponse,
     TaskCancelRequest,
@@ -216,6 +219,7 @@ def list_tasks(
     task_scope: str | None = Query(None, alias="scope"),
     server_id: int | None = Query(None, ge=1),
     keyword: str | None = Query(None, min_length=1),
+    task_ids: str | None = None,
     include_batch_context: bool = Query(False),
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
@@ -246,6 +250,17 @@ def list_tasks(
 
     # --- build query ---
     query = db.query(Task).filter(Task.hidden_from_history == 0)
+
+    if task_ids:
+        requested_task_ids = list(dict.fromkeys(
+            task_id.strip() for task_id in task_ids.split(",") if task_id.strip()
+        ))
+        if len(requested_task_ids) > 100:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="task_ids supports at most 100 IDs",
+            )
+        query = query.filter(Task.task_id.in_(requested_task_ids))
 
     if active_only is True:
         query = query.filter(Task.status.in_(EXECUTING_TASK_STATUSES))
@@ -626,7 +641,6 @@ def run_gpu_driver_batch(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     server_ids = list(dict.fromkeys(payload.server_ids))
-    batch_id = f"batch-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{token_hex(3)}"
     items: list[BatchTaskCreateItem] = []
     task_ids: list[str] = []
     created = skipped = failed = 0
@@ -669,25 +683,32 @@ def run_gpu_driver_batch(
                 "os_profile": os_profile,
             },
             status="PENDING",
-            batch_id=batch_id,
+            batch_id=None,
         )
         db.add(task)
-        db.add(TaskLog(task_id=task_id, level="SYSTEM", message=f"{server.os_info} NVIDIA GPU driver batch task created"))
+        db.add(TaskLog(task_id=task_id, level="SYSTEM", message=f"{server.os_info} NVIDIA GPU driver task created"))
         task_ids.append(task_id)
-        items.append(BatchTaskCreateItem(server_id=server_id, server_name=server.name, task_id=task_id, success=True, status="PENDING"))
+        items.append(BatchTaskCreateItem(
+            server_id=server_id, server_name=server.name,
+            task_id=task_id, success=True, status="PENDING",
+        ))
         created += 1
 
     db.commit()
     for task_id in task_ids:
         threading.Thread(target=run_rocky9_gpu_driver_task, args=(task_id,), daemon=True).start()
+    primary_task_id = task_ids[0] if task_ids else ""
     write_audit_log(
         db, action="task.gpu_driver_batch_create", target_type="task", status="success" if failed == 0 else "failed",
-        actor="visitor", target_id=batch_id, target_name=f"NVIDIA GPU Driver · {driver.name}", task_id=batch_id,
-        message=f"GPU driver batch created: {created} created, {skipped} skipped, {failed} failed",
-        detail={"batch_id": batch_id, "server_ids": server_ids, "driver_type": payload.driver_type, "driver_id": payload.driver_id, "created": created, "skipped": skipped, "failed": failed},
+        actor="visitor", target_id=primary_task_id, target_name=f"NVIDIA GPU Driver · {driver.name}", task_id=primary_task_id,
+        message=f"GPU driver tasks created: {created} created, {skipped} skipped, {failed} failed",
+        detail={"task_ids": task_ids, "server_ids": server_ids,
+                "driver_type": payload.driver_type, "driver_id": payload.driver_id,
+                "created": created, "skipped": skipped, "failed": failed},
     )
     return BatchTaskCreateResponse(
-        batch_id=batch_id, script_name=f"NVIDIA GPU 驱动 · {driver.name}", total=len(server_ids),
+        task_ids=task_ids,
+        script_name=f"NVIDIA GPU 驱动 · {driver.name}", total=len(server_ids),
         created=created, skipped=skipped, failed=failed, items=items,
     )
 
@@ -770,7 +791,6 @@ def run_cuda_toolkit_batch(
     db: Session = Depends(get_db),
 ) -> BatchTaskCreateResponse:
     server_ids = list(dict.fromkeys(payload.server_ids))
-    batch_id = f"batch-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{token_hex(3)}"
     items: list[BatchTaskCreateItem] = []
     task_ids: list[str] = []
     created = skipped = failed = 0
@@ -801,23 +821,30 @@ def run_cuda_toolkit_batch(
             cuda_version=payload.cuda_version,
             force_install=payload.force_install,
             os_profile=os_profile,
-            batch_id=batch_id,
+            batch_id=None,
         ))
-        db.add(TaskLog(task_id=task_id, level="SYSTEM", message=f"{server.os_info} CUDA Toolkit {payload.cuda_version} batch task created"))
+        db.add(TaskLog(task_id=task_id, level="SYSTEM", message=f"{server.os_info} CUDA Toolkit {payload.cuda_version} task created"))
         task_ids.append(task_id)
-        items.append(BatchTaskCreateItem(server_id=server_id, server_name=server.name, task_id=task_id, success=True, status="PENDING"))
+        items.append(BatchTaskCreateItem(
+            server_id=server_id, server_name=server.name,
+            task_id=task_id, success=True, status="PENDING",
+        ))
         created += 1
     db.commit()
     for task_id in task_ids:
         threading.Thread(target=run_cuda_toolkit_task, args=(task_id,), daemon=True).start()
+    primary_task_id = task_ids[0] if task_ids else ""
     write_audit_log(
         db, action="task.cuda_toolkit_batch_create", target_type="task", status="success" if failed == 0 else "failed",
-        actor="visitor", target_id=batch_id, target_name=f"CUDA Toolkit {payload.cuda_version}", task_id=batch_id,
-        message=f"CUDA Toolkit batch created: {created} created, {skipped} skipped, {failed} failed",
-        detail={"batch_id": batch_id, "server_ids": server_ids, "cuda_version": payload.cuda_version, "created": created, "skipped": skipped, "failed": failed},
+        actor="visitor", target_id=primary_task_id, target_name=f"CUDA Toolkit {payload.cuda_version}", task_id=primary_task_id,
+        message=f"CUDA Toolkit tasks created: {created} created, {skipped} skipped, {failed} failed",
+        detail={"task_ids": task_ids, "server_ids": server_ids,
+                "cuda_version": payload.cuda_version, "created": created,
+                "skipped": skipped, "failed": failed},
     )
     return BatchTaskCreateResponse(
-        batch_id=batch_id, script_name=f"CUDA Toolkit {payload.cuda_version}", total=len(server_ids),
+        task_ids=task_ids,
+        script_name=f"CUDA Toolkit {payload.cuda_version}", total=len(server_ids),
         created=created, skipped=skipped, failed=failed, items=items,
     )
 
@@ -885,8 +912,9 @@ def create_managed_suite(payload: ManagedSuiteCreateRequest, db: Session = Depen
         except GpuDriverValidationError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
-    batch_id = f"batch-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{token_hex(3)}"
     items: list[StressSuiteCreateItem] = []
+    batches: list[StressSuiteBatchItem] = []
+    batch_ids_by_server: dict[int, str] = {}
     runnable_servers: list[int] = []
     for server_id in dict.fromkeys(payload.server_ids):
         server = db.get(Server, server_id)
@@ -900,6 +928,13 @@ def create_managed_suite(payload: ManagedSuiteCreateRequest, db: Session = Depen
         except (GpuDriverValidationError, CudaToolkitValidationError):
             continue
 
+        batch_id = _build_managed_suite_batch_ids([server_id])[server_id]
+        batch_ids_by_server[server_id] = batch_id
+        batches.append(StressSuiteBatchItem(
+            server_id=server_id,
+            server_name=server.name,
+            batch_id=batch_id,
+        ))
         previous_id: str | None = None
         for sequence, (action, path) in enumerate(MANAGED_SUITE_ACTIONS[payload.suite_type], start=1):
             task_id = _generate_task_id()
@@ -934,21 +969,37 @@ def create_managed_suite(payload: ManagedSuiteCreateRequest, db: Session = Depen
                 task.params = {**(task.params or {}), MANAGED_SUITE_PARAM_KEY: payload.suite_type}
             db.add(task)
             db.add(TaskLog(task_id=task_id, level="SYSTEM", message=f"managed suite task created: {action}"))
-            items.append(StressSuiteCreateItem(server_id=server_id, server_name=server.name, task_id=task_id, script_path=path, task_name=action, status="PENDING"))
+            items.append(StressSuiteCreateItem(
+                server_id=server_id, server_name=server.name, batch_id=batch_id,
+                task_id=task_id, script_path=path, task_name=action, status="PENDING",
+            ))
             previous_id = task_id
         runnable_servers.append(server_id)
     if not runnable_servers:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="no eligible online server for managed suite")
     db.commit()
     for server_id in runnable_servers:
-        threading.Thread(target=_run_managed_suite_for_server, args=(server_id, batch_id), daemon=True).start()
+        threading.Thread(
+            target=_run_managed_suite_for_server,
+            args=(server_id, batch_ids_by_server[server_id]),
+            daemon=True,
+        ).start()
+    batch_ids = [batch.batch_id for batch in batches]
+    primary_batch_id = batch_ids[0]
     write_audit_log(
         db, action="task.managed_suite_create", target_type="task", status="success", actor="visitor",
-        target_id=batch_id, target_name=payload.suite_type, task_id=batch_id,
+        target_id=primary_batch_id, target_name=payload.suite_type, task_id=primary_batch_id,
         message=f"managed suite created on {len(runnable_servers)} servers",
-        detail={"suite_type": payload.suite_type, "actions": payload.actions, "server_ids": runnable_servers},
+        detail={"suite_type": payload.suite_type, "actions": payload.actions,
+                "server_ids": runnable_servers, "batch_ids": batch_ids},
     )
-    return StressSuiteCreateResponse(batch_id=batch_id, total=len(items), items=items)
+    return StressSuiteCreateResponse(
+        batch_id=primary_batch_id,
+        batch_ids=batch_ids,
+        batches=batches,
+        total=len(items),
+        items=items,
+    )
 
 
 # ───── Batch task creation ─────
@@ -1035,6 +1086,7 @@ def batch_run_task(
 
     # Validate script file (reuses single-task validation)
     file_record = _get_library_file_or_400(payload.script_path)
+    script_name = str(file_record["name"])
 
     physical = file_record["physical_category"]
     if payload.script_type == "script":
@@ -1069,12 +1121,8 @@ def batch_run_task(
     # Deduplicate server_ids preserving order
     server_ids: list[int] = list(dict.fromkeys(payload.server_ids))
 
-    # Generate batch_id for grouping
-    now_str = datetime.now().strftime("%Y%m%d-%H%M%S")
-    rand_suffix = token_hex(3)
-    batch_id = f"batch-{now_str}-{rand_suffix}"
-
     items: list[BatchTaskCreateItem] = []
+    task_ids: list[str] = []
     created = 0
     skipped = 0
     failed = 0
@@ -1130,7 +1178,7 @@ def batch_run_task(
                 db, server, payload.script_type,
                 payload.script_path, script_name, file_record,
                 params,
-                batch_id=batch_id,
+                batch_id=None,
             )
             # Start each task in its own daemon thread for true concurrency
             _start_task_thread(task_id)
@@ -1143,6 +1191,7 @@ def batch_run_task(
                     status="PENDING",
                 )
             )
+            task_ids.append(task_id)
             created += 1
         except HTTPException as exc:
             detail = exc.detail
@@ -1159,16 +1208,20 @@ def batch_run_task(
             )
             failed += 1
 
+    primary_task_id = task_ids[0] if task_ids else ""
     write_audit_log(
         db, action="task.batch_create", target_type="task", status="success" if failed == 0 else "failed",
         actor="visitor",
         target_name=script_name,
         message=f"batch create {script_name}: {created} created, {skipped} skipped, {failed} failed",
-        detail={"batch_id": batch_id, "script_type": payload.script_type, "script_name": script_name,
+        target_id=primary_task_id,
+        task_id=primary_task_id,
+        detail={"task_ids": task_ids,
+                "script_type": payload.script_type, "script_name": script_name,
                 "server_ids": server_ids, "created": created, "skipped": skipped, "failed": failed},
     )
     return BatchTaskCreateResponse(
-        batch_id=batch_id,
+        task_ids=task_ids,
         script_name=script_name,
         total=len(server_ids),
         created=created,
@@ -1190,6 +1243,45 @@ STRESS_SUITE_ALLOWED_PATHS: set[str] = {s["path"] for s in STRESS_SUITE_SCRIPTS}
 _STRESS_SUITE_SERVER_LOCKS: dict[int, threading.Lock] = {}
 _STRESS_SUITE_SERVER_LOCKS_GUARD = threading.Lock()
 STRESS_SUITE_LOCK_ACQUIRE_TIMEOUT_SECONDS = 5
+
+
+def _build_batch_ids_by_server(
+    server_ids: list[int],
+    *,
+    now_str: str | None = None,
+    token_factory: Callable[[], str] = lambda: token_hex(3),
+) -> dict[int, str]:
+    timestamp = now_str or datetime.now().strftime("%Y%m%d-%H%M%S")
+    return {
+        server_id: f"batch-{timestamp}-{token_factory()}"
+        for server_id in server_ids
+    }
+
+
+def _build_stress_suite_batch_ids(
+    server_ids: list[int],
+    *,
+    now_str: str | None = None,
+    token_factory: Callable[[], str] = lambda: token_hex(3),
+) -> dict[int, str]:
+    return _build_batch_ids_by_server(
+        server_ids,
+        now_str=now_str,
+        token_factory=token_factory,
+    )
+
+
+def _build_managed_suite_batch_ids(
+    server_ids: list[int],
+    *,
+    now_str: str | None = None,
+    token_factory: Callable[[], str] = lambda: token_hex(3),
+) -> dict[int, str]:
+    return _build_batch_ids_by_server(
+        server_ids,
+        now_str=now_str,
+        token_factory=token_factory,
+    )
 
 
 def _get_stress_suite_server_lock(server_id: int) -> threading.Lock:
@@ -1455,13 +1547,12 @@ def create_stress_suite(
     # ── 3. Deduplicate server_ids ──
     server_ids: list[int] = list(dict.fromkeys(payload.server_ids))
 
-    # ── 4. Generate batch_id ──
-    now_str = datetime.now().strftime("%Y%m%d-%H%M%S")
-    rand_suffix = token_hex(3)
-    batch_id = f"batch-{now_str}-{rand_suffix}"
+    # ── 4. Generate one batch_id per server ──
+    batch_ids_by_server = _build_batch_ids_by_server(server_ids)
 
     # ── 5. Validate servers and create tasks ──
     items: list[StressSuiteCreateItem] = []
+    batches: list[StressSuiteBatchItem] = []
     per_server_tasks: dict[int, list[tuple[str, str]]] = {}  # server_id → [(task_id, prev_task_id)]
 
     for sid in server_ids:
@@ -1499,6 +1590,12 @@ def create_stress_suite(
                 ))
             continue
 
+        server_batch_id = batch_ids_by_server[sid]
+        batches.append(StressSuiteBatchItem(
+            server_id=sid,
+            server_name=server.name,
+            batch_id=server_batch_id,
+        ))
         server_tasks: list[tuple[str, str]] = []
         prev_task_id: str | None = None
 
@@ -1527,7 +1624,7 @@ def create_stress_suite(
                 command_preview=command_preview,
                 params=suite_params,
                 status="PENDING",
-                batch_id=batch_id,
+                batch_id=server_batch_id,
                 sequence_index=int(s["seq"]),
                 depends_on_task_id=prev_task_id,
             )
@@ -1538,6 +1635,7 @@ def create_stress_suite(
 
             items.append(StressSuiteCreateItem(
                 server_id=sid, server_name=server.name,
+                batch_id=server_batch_id,
                 task_id=task_id, script_path=str(s["path"]),
                 task_name=str(s["label"]), status="PENDING",
             ))
@@ -1550,27 +1648,31 @@ def create_stress_suite(
     for sid in per_server_tasks:
         thread = threading.Thread(
             target=_run_stress_suite_for_server,
-            args=(sid, batch_id),
+            args=(sid, batch_ids_by_server[sid]),
             daemon=True,
         )
         thread.start()
 
     # ── 7. Audit log ──
     script_names = [str(s["label"]) for s in selected_scripts]
+    created_batch_ids = [batch.batch_id for batch in batches]
+    primary_batch_id = created_batch_ids[0] if created_batch_ids else ""
     write_audit_log(
         db, action="task.stress_suite_create", target_type="task", status="success",
         actor="visitor",
-        target_id=batch_id,
+        target_id=primary_batch_id,
         target_name=", ".join(script_names),
-        task_id=batch_id,
+        task_id=primary_batch_id,
         message=f"stress suite created: {', '.join(script_names)} on {len(per_server_tasks)} servers",
-        detail={"batch_id": batch_id, "server_ids": server_ids,
+        detail={"batch_id": primary_batch_id, "batch_ids": created_batch_ids, "server_ids": server_ids,
                 "scripts": [str(s["path"]) for s in selected_scripts],
                 "total_tasks": len(items), "server_count": len(per_server_tasks)},
     )
 
     return StressSuiteCreateResponse(
-        batch_id=batch_id,
+        batch_id=primary_batch_id,
+        batch_ids=created_batch_ids,
+        batches=batches,
         total=len(items),
         items=items,
     )
@@ -1941,6 +2043,7 @@ def list_batches(
     page_size: int = Query(20, ge=1, le=100),
     status: str | None = Query(None),
     keyword: str | None = Query(None, min_length=1),
+    batch_ids: str | None = None,
 ) -> BatchSummaryListResponse:
     """List all batch groups with aggregate summaries."""
     # Subquery: group tasks by batch_id (non-null only)
@@ -1959,6 +2062,17 @@ def list_batches(
         .filter(Task.batch_id.isnot(None))
         .filter(Task.hidden_from_history == 0)
     )
+
+    if batch_ids:
+        requested_batch_ids = list(dict.fromkeys(
+            batch_id.strip() for batch_id in batch_ids.split(",") if batch_id.strip()
+        ))
+        if len(requested_batch_ids) > 100:
+            raise HTTPException(
+                status_code=400,
+                detail="batch_ids supports at most 100 IDs",
+            )
+        batch_query = batch_query.filter(Task.batch_id.in_(requested_batch_ids))
 
     if keyword is not None:
         like_pattern = f"%{keyword}%"

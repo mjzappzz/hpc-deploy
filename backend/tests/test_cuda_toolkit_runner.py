@@ -54,3 +54,5 @@ class CudaToolkitRunnerTests(unittest.TestCase):
         self.assertIn('Task.status.in_(("PENDING", "RUNNING"))', source)
         self.assertIn("_build_detached_remote_execution_command(", source)
         self.assertIn("startup recovery: reattached detached CUDA Toolkit monitor", source)
+        self.assertIn("CUDA Toolkit recovery SSH unavailable; task remains RUNNING", source)
+        self.assertIn("_schedule_cuda_recovery_retry(task_id)", source)

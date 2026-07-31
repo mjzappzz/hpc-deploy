@@ -749,6 +749,57 @@ def _precheck_stress_preflight_failed(
     }
 
 
+def _precheck_stress_startup_marker_mismatch(
+    task_status: str | None,
+    task_type: str | None,
+    error_message: str | None,
+    logs_joined: str,
+    file_name: str | None,
+    **kwargs: Any,
+) -> dict[str, Any] | None:
+    if task_type != "stress" or task_status != "FAILED":
+        return None
+
+    text = "\n".join(filter(None, [error_message, logs_joined])).lower()
+    if (
+        "gpu_stress_report" not in (file_name or "").lower()
+        or "dependency installation did not finish within 300s" not in text
+        or "start gpu-burn" not in text
+        or "[stage] stress_start" in text
+    ):
+        return None
+
+    return {
+        "level": "error",
+        "category": "stress_startup_marker_mismatch",
+        "attribution": "platform",
+        "title": "GPU 压测启动阶段识别错误",
+        "conclusion": (
+            "GPU 压测已实际启动，但旧版脚本缺少启动阶段标记，"
+            "平台在 300 秒后误判为依赖安装未完成并终止任务。"
+        ),
+        "summary": (
+            "日志已记录 gpu-burn 启动，说明依赖安装和构建已经完成；"
+            "失败由旧版 GPU 脚本与后端启动阶段协议不一致导致。"
+        ),
+        "possible_causes": [
+            "旧版 gpu_stress_report.sh 未输出 [STAGE] stress_start",
+            "后端启动超时判断继续匹配到历史依赖安装日志",
+        ],
+        "suggestions": [
+            "更新到包含统一阶段标记的 GPU 压测脚本后重新执行",
+            "该历史任务未完成计划压测时长，不能作为稳定性结论",
+        ],
+        "risk_tips": [
+            "任务被平台提前终止，不能根据本次记录判断 GPU 稳定性",
+        ],
+        "matched_patterns": [
+            "Start gpu-burn",
+            "dependency installation did not finish within 300s",
+        ],
+    }
+
+
 def _precheck_stress_stuck(
     logs_joined: str,
     task_type: str | None,
@@ -987,6 +1038,7 @@ _PRE_CHECKS = [
     ("artifact_recovery_failed", _precheck_artifact_recovery_failed),
     ("report_not_finalized", _precheck_report_not_finalized),
     ("timeout_no_report", _precheck_timeout_no_report),
+    ("stress_startup_marker_mismatch", _precheck_stress_startup_marker_mismatch),
     ("stress_preflight_failed", _precheck_stress_preflight_failed),
     ("stress_stuck", _precheck_stress_stuck),
     # Priority 6-8: Status-based pre-checks

@@ -4,6 +4,42 @@
 
 ## 当前完成度
 
+### 2026-07-30 — 历史任务命令复制按钮范围修正
+
+- 资产库“全部”列表改为按基础环境配置 → MPI 编译环境配置 → Linux 服务器压测 → Apptainer 镜像排序，各业务分类内部再按文件名排序；不改变各分类标签页和后端文件记录顺序。
+- 资产库表格移除重复分散的绝对“路径”列，新增“用途说明”列，为 7 个内置 Linux 脚本和 Rocky/OpenMPI Apptainer 镜像提供简短用途；后续自定义资产显示通用预览提示。
+- “系统设置 → 运行数据与路径”保留统一路径入口，并按核心数据与凭据、资产库、结果与备份、远端运行目录四个功能组展示；路径、大小、文件数、状态和维护说明继续使用后端实时数据。
+- 历史任务卡片的“复制环境变量 / 复制验证命令”按钮改为仅对成功的 CUDA Toolkit、Intel oneAPI、AOCC/AOCL + OpenMPI 安装任务显示；系统版本锁定、关闭锁屏与休眠等不输出命令块的基础环境任务不再显示无效按钮。
+- 历史任务名称、模块标签和类型标签统一按脚本文件名区分环境脚本：`install_oneapi_2022.sh` 与 `install_openmpi_4.1.6_aocc_aocl.sh` 显示为“MPI 编译环境配置”，系统版本锁定与关闭锁屏脚本继续显示为“基础环境配置”。
+- MPI 编译环境任务详情中的“任务名称”按脚本精简为“Intel oneAPI 2022”和“AMD OpenMPI 4.1.6”，模块标签仍统一为“MPI 编译环境配置”；历史卡片顶部标题保持“单次 · 服务器 · MPI 编译环境配置 · 脚本名 · 日期”的统一结构，历史数据按文件名动态生效，无需迁移。
+- 修复普通批量执行接口未从资产记录读取脚本名导致的 HTTP 500；同一脚本选择多台服务器时恢复逐服务器创建任务并并行启动。
+- 修正多服务器任务模型：普通脚本、MPI 环境、单项压测、Apptainer、GPU 驱动和 CUDA Toolkit 均按服务器创建独立单次任务，返回 `task_ids` 且 `batch_id` 为空；只有同服务器包含多个有序步骤的基础环境、GPU 软件和压测套件才创建批次。多服务器单动作提交后进入历史任务视图并按本次 `task_ids` 精确展示。
+- `install_oneapi_2022.sh` 升级至 v1.1.0：重复执行时分别检测已安装的 MKL、编译器和 Intel MPI，完整组件跳过下载/安装并进入严格验证，修复安装器以 “already installed” 返回 1 导致任务误报失败。批次详情中的 MPI 子任务名称复用单次任务规则，显示“Intel oneAPI 2022”或“AMD OpenMPI 4.1.6”，模块仍显示“MPI 编译环境配置”。
+- 横向修复 `install_openmpi_4.1.6_aocc_aocl.sh` 同类幂等问题并升级至 v1.1.0：AOCC、AOCL、OpenMPI 分组件探测，目标环境完整时不再重复下载、安装或编译；最终验证由宽松 `which ... || true` 提升为必需命令、AOCL 库和 OpenMPI wrapper 严格校验。
+- 修复后端重启后普通脚本和 CUDA Toolkit 恢复监控遇到一次 SSH/channel 超时便误判 FAILED：临时连接失败保持 RUNNING，60 秒后重新附着并继续读取远端 PID、日志和退出码；GPU 驱动与压测已有重试路径并经横向核查保留。
+- 修复多服务器任务创建后跳转历史页展示范围错误：单动作创建结果将本次全部 `task_ids` 带入路由并由任务列表接口精确过滤；多步骤套件继续携带全部 `batch_ids` 并由批次列表精确过滤。即使某台服务器瞬间完成，也仍保留在本次结果中。
+- 批次列表与详情的 MPI 展示复用单次任务业务分类：oneAPI 模块显示“Intel oneAPI 2022”、AMD 模块显示“AMD OpenMPI 4.1.6”，类型/主题统一显示“MPI 编译环境配置”，不再因底层 `task_type=script` 误显示“基础环境配置”。
+
+### 2026-07-30 — Rocky/Ubuntu 当前版本与运行内核动态锁定
+
+- `lock_linux_release.sh` 升级至 v1.6.0：Rocky 由仅处理 9.4 改为锁定执行前检测到的当前 x86_64 Rocky 9.x 小版本；例如 9.6、9.7、9.8 分别锁定自身版本，不升级或降级到其他小版本。
+- 修改系统前依次预检南方科技大学 Rocky Vault、Rocky 官方当前版本目录和 Rocky 官方 Vault；通过隔离的临时 DNF 配置验证目标版本 BaseOS/AppStream/CRB 与阿里云 EPEL 9 均能完成 `makecache` 后才写入系统，候选源均不可用时任务失败且不修改仓库。
+- 每个 Rocky 候选源增加 90 秒外层硬超时；DNF 自身网络超时未返回时发送 TERM，10 秒后强制结束并继续下一候选，避免单个源将任务卡到 3600 秒总超时。
+- Rocky 自动识别 `uname -r`，锁定当前运行内核对应的已安装 `kernel`、`kernel-core`、`kernel-modules*`、`kernel-devel` 及已安装的 `kernel-headers`；缺少匹配的 `kernel-devel` 仅告警，不自动安装、升级或切换内核。内核安全更新需在维护窗口手动解锁、升级并重新验证 NVIDIA/OFED 等驱动。
+- Ubuntu 22.04/24.04 自动识别 `uname -r`，通过 `apt-mark hold` 锁定当前运行内核对应的 image/modules/headers 包及已安装的 generic、HWE、virtual、lowlatency、OEM 内核元包，同时继续设置 `Prompt=never`。执行前备份原配置与 hold 清单，保留既有 hold；失败时只撤销本次新增 hold 并恢复发行版升级配置。
+- 每次执行使用纳秒时间与进程 ID 排他创建唯一 `/var/backups/hpcdeploy/linux-release-lock-*` 备份并保存全部 `.repo` 文件及原 `versionlock.list`；仅剥离目标 repo ID 段，混合文件中的其他私有仓库保持不变。持久配置后再次刷新，验证四个目标 ID 各且仅有一个并指向当前小版本，同时核验内核 versionlock。任一步失败尝试恢复执行前完整 `.repo` 文件集合、`releasever` 与 versionlock 列表并逐文件校验；回滚校验失败时明确报错并保留备份供人工恢复。
+- 前端动作名称同步改为“锁定当前系统版本”，基础环境卡片明确 Rocky 9.x 当前小版本以及 Rocky/Ubuntu 当前运行内核均自动锁定。
+
+### 2026-07-30 — GPU/磁盘压测启动阶段误判修复
+
+- 多服务器压测套件改为每台服务器创建独立 `batch_id`：服务器内部选中的 GPU、CPU/内存、磁盘子任务继续串行，不同服务器批次继续并行；取消、重试、结果文件和历史状态按服务器批次隔离。响应保留首个 `batch_id` 兼容旧调用方，并新增 `batch_ids`、`batches` 及子任务 `batch_id`。现有历史批次不拆分。
+- 修复 `task-20260729-200153-374827`：GPU 依赖安装和 gpu-burn 编译已完成并实际启动，但脚本未输出后端要求的 `[STAGE] stress_start`，历史日志中的 `Missing dependencies detected, installing...` 在 300 秒后触发启动超时并误杀任务。
+- `gpu_stress_report.sh`、`disk_stress_report.sh` 升级为 `2026.07.30`，统一输出 `dependency_check_start`、`dependency_check_done`、`stress_start` 阶段标记；CPU/内存脚本 `2026.07.29` 已具备相同标记，无需修改。
+- 结构化任务诊断新增旧版 GPU 启动标记不一致规则：当日志已出现 `Start gpu-burn`，但任务仍以“依赖安装 300 秒未完成”失败且没有 `stress_start` 时，归因为平台启动阶段识别错误；缓存摘要的 `failure_reason` 使用中文诊断结论，单次任务和批次子任务共用该结果，不再落入未知英文错误兜底。
+- 历史任务的 GPU 模块名称读取已保存的 `gpu_precision` 参数：FP64 显示“GPU压测 · FP64”，FP32 及未记录精度的历史默认任务显示“GPU压测 · FP32”；覆盖单任务卡片、详情及批次子任务。
+- 前端新增统一任务展示模型 `taskPresentation.ts`：单任务卡片、批次折叠子任务和批次详情共用任务分类、GPU 精度、受控套件名称、批次步骤名称与最终状态规则；失败原因的字段优先级和兜底收敛到 `taskError.ts`。页面结构、样式和既有 CPU/内存文案形式保持不变。
+- 兼容性与执行边界：不改变压测参数、负载、报告格式或判定阈值；仅修正后端对依赖安装完成和负载已启动的识别。新增契约测试确保三类 Linux 压测脚本均按顺序输出启动阶段标记。
+
 ### 2026-07-29 — 生产安全配置与管理员密码恢复
 
 - `install_hpcdeploy_service.sh` 升级为 v1.1.0：首次安装交互设置至少 6 位的管理员密码，密码内容由部署人员自行决定；自动生成 JWT 密钥并写入 `/etc/hpcdeploy/hpcdeploy.env`（`root:root 0600`）；重复安装保留现有配置，非交互安装可传入密码或接收仅显示一次的随机密码。
@@ -595,6 +631,7 @@ HPCDeploy 已形成完整闭环，端到端链路全部打通：
 9. 任务历史默认过滤 `hidden_from_history=1`；系统设置删除本机结果文件会软隐藏历史任务
 10. 清理中心页面已删除，本机结果文件清理入口在系统设置
 11. 通用重新执行模块已删除；批次内 FAILED / CANCELED / TIMEOUT 或报告 FAIL 的压测子任务可通过 `POST /api/tasks/{task_id}/retry-in-batch` 追加重跑，其余场景回到任务执行页新建任务
+12. 修复受控环境套件多服务器共用一个批次的问题；`POST /api/tasks/managed-suite` 现在按服务器创建独立批次，并返回 `batch_ids` / `batches`
 
 ---
 

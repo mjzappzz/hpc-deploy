@@ -22,6 +22,9 @@ from app.models.task import Task
 CUDA_TOOLKIT_TASK_TYPE = "cuda_toolkit"
 CUDA_TOOLKIT_FILE_NAME = "cuda-toolkit-install.sh"
 CUDA_TOOLKIT_VERSIONS = ("11.8", "12.0", "12.1", "12.2", "12.3", "12.4", "12.5", "12.6", "12.8", "12.9", "13.0")
+CUDA_RECOVERY_RETRY_DELAY_SECONDS = 60
+_scheduled_cuda_recovery_ids: set[str] = set()
+_scheduled_cuda_recovery_lock = threading.Lock()
 
 
 class CudaToolkitValidationError(ValueError):
@@ -222,7 +225,21 @@ def run_cuda_toolkit_task(task_id: str) -> None:
         db.commit()
         ws_manager.broadcast_done_sync(task_id, "SUCCESS")
     except (CudaToolkitValidationError, SSHExecutorError, RuntimeError) as exc:
-        if task is not None:
+        if (
+            isinstance(exc, SSHExecutorError)
+            and task is not None
+            and bool(locals().get("recovering"))
+            and task.status == "RUNNING"
+        ):
+            _log(
+                db,
+                task_id,
+                "WARNING",
+                f"CUDA Toolkit recovery SSH unavailable; task remains RUNNING and recovery will retry: {exc}",
+            )
+            db.commit()
+            _schedule_cuda_recovery_retry(task_id)
+        elif task is not None:
             task.status = "FAILED"
             task.end_time = datetime.utcnow()
             task.error_message = str(exc)
@@ -232,6 +249,22 @@ def run_cuda_toolkit_task(task_id: str) -> None:
     finally:
         executor.close()
         db.close()
+
+
+def _schedule_cuda_recovery_retry(task_id: str) -> None:
+    with _scheduled_cuda_recovery_lock:
+        if task_id in _scheduled_cuda_recovery_ids:
+            return
+        _scheduled_cuda_recovery_ids.add(task_id)
+
+    def _retry() -> None:
+        with _scheduled_cuda_recovery_lock:
+            _scheduled_cuda_recovery_ids.discard(task_id)
+        run_cuda_toolkit_task(task_id)
+
+    timer = threading.Timer(CUDA_RECOVERY_RETRY_DELAY_SECONDS, _retry)
+    timer.daemon = True
+    timer.start()
 
 
 def resume_cuda_toolkit_tasks_after_startup() -> int:

@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+SCRIPT_VERSION="1.1.0"
 
 # ============================================================
 # OpenMPI 4.1.6 + AOCC 4.1.0 + AOCL 4.1.0 Auto Installer
@@ -74,6 +75,58 @@ AOCL_UBUNTU_PUBLIC_URL="http://171.221.252.54:8573/chfs/shared/1%E7%BC%96%E8%AF%
 
 OPENMPI_PUBLIC_URL="http://171.221.252.54:8573/chfs/shared/1%E7%BC%96%E8%AF%91%E5%99%A8/amd/openmpi/openmpi-4.1.6.tar.gz"
 
+load_amd_environment() {
+    if [ -f "${AOCC_ENV}" ]; then source "${AOCC_ENV}" >/dev/null 2>&1 || true; fi
+    if [ -f "${AOCL_ENV}" ]; then source "${AOCL_ENV}" >/dev/null 2>&1 || true; fi
+    export PATH="${OPENMPI_DIR}/bin:${PATH}"
+    export LD_LIBRARY_PATH="${OPENMPI_DIR}/lib:${LD_LIBRARY_PATH:-}"
+    export OPAL_PREFIX="${OPENMPI_DIR}"
+}
+
+aocc_is_ready() {
+    [ -f "${AOCC_ENV}" ] \
+        && [ -x "${AOCC_DIR}/bin/clang" ] \
+        && [ -x "${AOCC_DIR}/bin/clang++" ] \
+        && [ -x "${AOCC_DIR}/bin/flang" ]
+}
+
+aocl_is_ready() {
+    [ -f "${AOCL_ENV}" ] \
+        && find "${AOCL_DIR}" -type f \( -name 'libblis*' -o -name 'libflame*' -o -name 'libaocl*' \) \
+            -print -quit 2>/dev/null | grep -q .
+}
+
+openmpi_is_ready() {
+    local cmd
+    for cmd in mpicc mpicxx mpif90 mpirun; do
+        [ -x "${OPENMPI_DIR}/bin/${cmd}" ] || return 1
+    done
+    "${OPENMPI_DIR}/bin/mpicc" --showme >/dev/null 2>&1
+}
+
+verify_amd_installation() {
+    load_amd_environment
+    local failed=0
+    local cmd
+    for cmd in clang clang++ flang mpicc mpicxx mpif90 mpirun; do
+        echo "+ which ${cmd}"
+        if ! command -v "${cmd}"; then
+            echo "[ERROR] 未找到必需命令：${cmd}"
+            failed=1
+        fi
+        echo
+    done
+    if ! aocl_is_ready; then
+        echo "[ERROR] AOCL 库或环境文件验证失败：${AOCL_DIR}"
+        failed=1
+    fi
+    if ! "${OPENMPI_DIR}/bin/mpicc" --showme >/dev/null 2>&1; then
+        echo "[ERROR] OpenMPI mpicc wrapper 验证失败"
+        failed=1
+    fi
+    return "${failed}"
+}
+
 echo "============================================================"
 echo " OpenMPI 4.1.6 + AOCC 4.1.0 + AOCL 4.1.0 Installer"
 echo "============================================================"
@@ -129,6 +182,22 @@ echo "[INFO] OS_TYPE：${OS_TYPE}"
 mkdir -p "${DOWNLOAD_DIR}"
 cd "${DOWNLOAD_DIR}"
 
+INSTALL_AOCC=1
+INSTALL_AOCL=1
+INSTALL_OPENMPI=1
+if aocc_is_ready; then
+    INSTALL_AOCC=0
+    echo "[INFO] AOCC 已安装，跳过安装"
+fi
+if aocl_is_ready; then
+    INSTALL_AOCL=0
+    echo "[INFO] AOCL 已安装，跳过安装"
+fi
+if [ "${FORCE_REBUILD}" != "1" ] && openmpi_is_ready; then
+    INSTALL_OPENMPI=0
+    echo "[INFO] OpenMPI 4.1.6 已安装，跳过编译"
+fi
+
 download_file() {
     local name="$1"
     local file="$2"
@@ -183,7 +252,9 @@ echo "============================================================"
 echo "[1/8] 安装系统依赖"
 echo "============================================================"
 
-if [ "${OS_TYPE}" = "ubuntu" ]; then
+if [ "${INSTALL_AOCC}" -eq 0 ] && [ "${INSTALL_AOCL}" -eq 0 ] && [ "${INSTALL_OPENMPI}" -eq 0 ]; then
+    echo "[INFO] 所有目标组件均已安装，跳过系统依赖安装"
+elif [ "${OS_TYPE}" = "ubuntu" ]; then
     apt update
 
     apt install -y \
@@ -240,7 +311,14 @@ echo "============================================================"
 
 echo "[INFO] 检测内网 IP 是否可达：${INNER_IP}"
 
-if ping -c 2 -W 2 "${INNER_IP}" >/dev/null 2>&1; then
+if [ "${INSTALL_AOCC}" -eq 0 ] && [ "${INSTALL_AOCL}" -eq 0 ] && [ "${INSTALL_OPENMPI}" -eq 0 ]; then
+    DOWNLOAD_SOURCE="无需下载（目标组件已安装）"
+    AOCC_CENTOS_URL=""
+    AOCL_CENTOS_URL=""
+    AOCC_UBUNTU_URL=""
+    AOCL_UBUNTU_URL=""
+    OPENMPI_URL=""
+elif ping -c 2 -W 2 "${INNER_IP}" >/dev/null 2>&1; then
     echo "[INFO] 内网可达，使用内网下载地址"
     DOWNLOAD_SOURCE="内网"
 
@@ -283,26 +361,26 @@ echo "============================================================"
 echo "[3/8] 下载 AOCC / AOCL / OpenMPI 安装包"
 echo "============================================================"
 
-download_file "AOCC" "${AOCC_FILE}" "${AOCC_URL}"
-download_file "AOCL" "${AOCL_FILE}" "${AOCL_URL}"
-download_file "OpenMPI" "${OPENMPI_FILE}" "${OPENMPI_URL}"
+if [ "${INSTALL_AOCC}" -eq 1 ]; then download_file "AOCC" "${AOCC_FILE}" "${AOCC_URL}"; fi
+if [ "${INSTALL_AOCL}" -eq 1 ]; then download_file "AOCL" "${AOCL_FILE}" "${AOCL_URL}"; fi
+if [ "${INSTALL_OPENMPI}" -eq 1 ]; then download_file "OpenMPI" "${OPENMPI_FILE}" "${OPENMPI_URL}"; fi
 
 echo
 echo "============================================================"
 echo "[4/8] 检查安装包"
 echo "============================================================"
 
-if [ ! -s "${AOCC_FILE}" ]; then
+if [ "${INSTALL_AOCC}" -eq 1 ] && [ ! -s "${AOCC_FILE}" ]; then
     echo "[ERROR] AOCC 文件不存在或为空：${DOWNLOAD_DIR}/${AOCC_FILE}"
     exit 1
 fi
 
-if [ ! -s "${AOCL_FILE}" ]; then
+if [ "${INSTALL_AOCL}" -eq 1 ] && [ ! -s "${AOCL_FILE}" ]; then
     echo "[ERROR] AOCL 文件不存在或为空：${DOWNLOAD_DIR}/${AOCL_FILE}"
     exit 1
 fi
 
-if [ ! -s "${OPENMPI_FILE}" ]; then
+if [ "${INSTALL_OPENMPI}" -eq 1 ] && [ ! -s "${OPENMPI_FILE}" ]; then
     echo "[ERROR] OpenMPI 文件不存在或为空：${DOWNLOAD_DIR}/${OPENMPI_FILE}"
     exit 1
 fi
@@ -316,17 +394,28 @@ echo "============================================================"
 echo "[5/8] 安装 AOCC 和 AOCL"
 echo "============================================================"
 
-if [ "${OS_TYPE}" = "ubuntu" ]; then
-    echo "[INFO] 安装 AOCC：${AOCC_FILE}"
-    dpkg -i "${AOCC_FILE}" || apt install -f -y \
-        -o Dpkg::Options::="--force-confdef" \
-        -o Dpkg::Options::="--force-confold"
+if [ "${INSTALL_AOCC}" -eq 0 ] && [ "${INSTALL_AOCL}" -eq 0 ]; then
+    echo "[INFO] AOCC 已安装，跳过安装"
+    echo "[INFO] AOCL 已安装，跳过安装"
+elif [ "${OS_TYPE}" = "ubuntu" ]; then
+    if [ "${INSTALL_AOCC}" -eq 1 ]; then
+        echo "[INFO] 安装 AOCC：${AOCC_FILE}"
+        dpkg -i "${AOCC_FILE}" || apt install -f -y \
+            -o Dpkg::Options::="--force-confdef" \
+            -o Dpkg::Options::="--force-confold"
+    else
+        echo "[INFO] AOCC 已安装，跳过安装"
+    fi
 
-    echo
-    echo "[INFO] 安装 AOCL：${AOCL_FILE}"
-    dpkg -i "${AOCL_FILE}" || apt install -f -y \
-        -o Dpkg::Options::="--force-confdef" \
-        -o Dpkg::Options::="--force-confold"
+    if [ "${INSTALL_AOCL}" -eq 1 ]; then
+        echo
+        echo "[INFO] 安装 AOCL：${AOCL_FILE}"
+        dpkg -i "${AOCL_FILE}" || apt install -f -y \
+            -o Dpkg::Options::="--force-confdef" \
+            -o Dpkg::Options::="--force-confold"
+    else
+        echo "[INFO] AOCL 已安装，跳过安装"
+    fi
 else
     if command -v dnf >/dev/null 2>&1; then
         PKG_MGR="dnf"
@@ -334,12 +423,20 @@ else
         PKG_MGR="yum"
     fi
 
-    echo "[INFO] 安装 AOCC：${AOCC_FILE}"
-    ${PKG_MGR} install -y "./${AOCC_FILE}"
+    if [ "${INSTALL_AOCC}" -eq 1 ]; then
+        echo "[INFO] 安装 AOCC：${AOCC_FILE}"
+        ${PKG_MGR} install -y "./${AOCC_FILE}"
+    else
+        echo "[INFO] AOCC 已安装，跳过安装"
+    fi
 
-    echo
-    echo "[INFO] 安装 AOCL：${AOCL_FILE}"
-    ${PKG_MGR} install -y "./${AOCL_FILE}"
+    if [ "${INSTALL_AOCL}" -eq 1 ]; then
+        echo
+        echo "[INFO] 安装 AOCL：${AOCL_FILE}"
+        ${PKG_MGR} install -y "./${AOCL_FILE}"
+    else
+        echo "[INFO] AOCL 已安装，跳过安装"
+    fi
 fi
 
 echo
@@ -377,8 +474,8 @@ if [ "${FORCE_REBUILD}" = "1" ]; then
     rm -rf "${OPENMPI_DIR}"
 fi
 
-if [ -x "${OPENMPI_DIR}/bin/mpicc" ] && [ "${FORCE_REBUILD}" != "1" ]; then
-    echo "[INFO] OpenMPI 已存在，跳过编译：${OPENMPI_DIR}"
+if [ "${INSTALL_OPENMPI}" -eq 0 ]; then
+    echo "[INFO] OpenMPI 4.1.6 已安装，跳过编译：${OPENMPI_DIR}"
 else
     cd "${DOWNLOAD_DIR}"
 
@@ -473,6 +570,11 @@ echo
 echo "============================================================"
 echo "[TEST] which 命令测试"
 echo "============================================================"
+
+if ! verify_amd_installation; then
+    echo "[ERROR] OpenMPI + AOCC + AOCL 最终验证失败"
+    exit 1
+fi
 
 echo "+ which clang"
 which clang || true

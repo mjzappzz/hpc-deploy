@@ -66,6 +66,8 @@ _progress_notice_task_ids: set[str] = set()
 _progress_notice_lock = threading.Lock()
 _scheduled_stress_recovery_task_ids: set[str] = set()
 _scheduled_stress_recovery_lock = threading.Lock()
+_scheduled_command_recovery_task_ids: set[str] = set()
+_scheduled_command_recovery_lock = threading.Lock()
 STRESS_FATAL_LOG_RULES: tuple[tuple[re.Pattern, str], ...] = (
     (re.compile(r"nvidia-smi not found", re.IGNORECASE), "GPU stress failed before start: nvidia-smi not found"),
     (re.compile(r"未检测到 NVIDIA GPU", re.IGNORECASE), "GPU stress failed before start: no NVIDIA GPU detected"),
@@ -1242,10 +1244,35 @@ def _command_recovery_monitor(task_id: str) -> None:
         )
     except SSHExecutorError as exc:
         if 'task' in locals() and task is not None and task.status == "RUNNING":
-            _fail_running_stress_task(db, task, task_id, f"startup recovery: script SSH connect failed: {exc}")
+            _add_log(
+                db,
+                task_id,
+                "WARNING",
+                f"startup recovery: script SSH unavailable; task remains RUNNING and recovery will retry: {exc}",
+            )
+            task.status = "RUNNING"
+            db.commit()
+            _schedule_command_recovery_retry(task_id)
     finally:
         executor.close()
         db.close()
+
+
+def _schedule_command_recovery_retry(task_id: str) -> None:
+    """Retry script monitor attachment without turning a transient SSH failure into FAILED."""
+    with _scheduled_command_recovery_lock:
+        if task_id in _scheduled_command_recovery_task_ids:
+            return
+        _scheduled_command_recovery_task_ids.add(task_id)
+
+    def _retry() -> None:
+        with _scheduled_command_recovery_lock:
+            _scheduled_command_recovery_task_ids.discard(task_id)
+        _command_recovery_monitor(task_id)
+
+    timer = threading.Timer(STRESS_RECOVERY_SSH_RETRY_DELAY_SECONDS, _retry)
+    timer.daemon = True
+    timer.start()
 
 
 def resume_running_script_tasks_after_startup() -> int:

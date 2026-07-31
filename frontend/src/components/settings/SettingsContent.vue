@@ -17,38 +17,46 @@
         <div v-if="runtimePathsLoading" class="runtime-path-loading" role="status" aria-live="polite">
           正在加载运行数据与路径…
         </div>
-        <div v-else class="runtime-path-table-wrap">
-          <table class="runtime-path-table">
-            <thead>
-              <tr>
-                <th>对象</th>
-                <th>路径</th>
-                <th>大小</th>
-                <th>文件数</th>
-                <th>状态</th>
-                <th>说明</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="row in runtimePaths" :key="row.key">
-                <td>
-              <div class="runtime-path-name">
-                <span>{{ row.label }}</span>
-                <el-tag v-if="row.attention" size="small" type="warning" effect="plain">关注</el-tag>
-              </div>
-                </td>
-                <td><code class="runtime-path-code">{{ row.path }}</code></td>
-                <td>{{ formatBytes(row.size_bytes) }}</td>
-                <td>{{ formatCount(row.file_count) }}</td>
-                <td>
-                  <el-tag v-if="row.kind === 'remote'" size="small" type="info" effect="plain">远端</el-tag>
-                  <el-tag v-else-if="row.exists" size="small" type="success" effect="plain">存在</el-tag>
-                  <el-tag v-else size="small" type="danger" effect="plain">缺失</el-tag>
-                </td>
-                <td>{{ row.description }}</td>
-              </tr>
-            </tbody>
-          </table>
+        <div v-else class="runtime-path-groups">
+          <section v-for="group in runtimePathGroups" :key="group.key" class="runtime-path-group">
+            <div class="runtime-path-group__header">
+              <div class="runtime-path-group__title">{{ group.title }}</div>
+              <div class="runtime-path-group__description">{{ group.description }}</div>
+            </div>
+            <div class="runtime-path-table-wrap">
+              <table class="runtime-path-table">
+                <thead>
+                  <tr>
+                    <th>对象</th>
+                    <th>路径</th>
+                    <th>大小</th>
+                    <th>文件数</th>
+                    <th>状态</th>
+                    <th>说明</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="row in group.rows" :key="row.key">
+                    <td>
+                      <div class="runtime-path-name">
+                        <span>{{ row.label }}</span>
+                        <el-tag v-if="row.attention" size="small" type="warning" effect="plain">关注</el-tag>
+                      </div>
+                    </td>
+                    <td><code class="runtime-path-code">{{ row.path }}</code></td>
+                    <td>{{ formatBytes(row.size_bytes) }}</td>
+                    <td>{{ formatCount(row.file_count) }}</td>
+                    <td>
+                      <el-tag v-if="row.kind === 'remote'" size="small" type="info" effect="plain">远端</el-tag>
+                      <el-tag v-else-if="row.exists" size="small" type="success" effect="plain">存在</el-tag>
+                      <el-tag v-else size="small" type="danger" effect="plain">缺失</el-tag>
+                    </td>
+                    <td>{{ row.description }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
         </div>
         <div class="form-note runtime-path-note">
           这些是用户操作会产生或需要维护的关键位置。数据库、keys、artifacts、backups、Apptainer 镜像不进入 Git；迁移或备份环境时需要单独处理。
@@ -376,6 +384,7 @@ import { adminMode, requireAdminConfirm } from '@/composables/useAdminConfirm'
 import { useSettingsStore } from '@/stores/settings'
 import { formatDateTime, parseBackendDate } from '@/utils/time'
 import { formatBytes } from '@/utils/format'
+import { groupRuntimePaths } from '@/utils/runtimePaths'
 
 const settingsStore = useSettingsStore()
 const passwordDialogVisible = ref(false)
@@ -483,6 +492,7 @@ const fallbackRuntimePaths: RuntimePathInfo[] = [
 ]
 const runtimePaths = ref<RuntimePathInfo[]>([])
 const runtimePathsLoading = ref(true)
+const runtimePathGroups = computed(() => groupRuntimePaths(runtimePaths.value))
 
 interface SettingsForm {
   default_ssh_key_name: string
@@ -1209,6 +1219,27 @@ onMounted(async () => {
   overflow-x: auto;
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 4px;
+}
+
+.runtime-path-groups {
+  display: grid;
+  gap: 18px;
+}
+
+.runtime-path-group__header {
+  margin-bottom: 8px;
+}
+
+.runtime-path-group__title {
+  color: var(--el-text-color-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.runtime-path-group__description {
+  margin-top: 2px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
 }
 
 .runtime-path-loading {

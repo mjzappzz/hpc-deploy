@@ -186,9 +186,44 @@ class TaskRecoveryTests(unittest.TestCase):
         db.query.return_value.filter.return_value.first.return_value = task
         db.get.return_value = SimpleNamespace(host="10.0.0.1", port=22, username="root", key_path=None, password=None)
         session_local.return_value = db
-        executor_cls.return_value.connect.side_effect = OSError(1, "Operation not permitted")
+        executor_cls.return_value.connect.side_effect = task_runner.SSHExecutorError("Timeout opening channel")
 
         task_runner._stress_recovery_monitor(task.task_id)
+
+        fail_task.assert_not_called()
+        self.assertEqual(task.status, "RUNNING")
+        schedule_retry.assert_called_once_with(task.task_id)
+        self.assertTrue(any(call.args[2] == "WARNING" for call in add_log.call_args_list))
+
+    @patch("app.core.task_runner._schedule_command_recovery_retry")
+    @patch("app.core.task_runner._fail_running_stress_task")
+    @patch("app.core.task_runner._add_log")
+    @patch("app.core.task_runner.SSHExecutor")
+    @patch("app.core.task_runner.SessionLocal")
+    def test_recovery_ssh_failure_keeps_script_task_running_for_retry(
+        self,
+        session_local: Mock,
+        executor_cls: Mock,
+        add_log: Mock,
+        fail_task: Mock,
+        schedule_retry: Mock,
+    ) -> None:
+        task = SimpleNamespace(
+            task_id="task-script-recovery",
+            task_type="script",
+            server_id=14,
+            status="RUNNING",
+            remote_work_dir="/root/hpcdeploy/tasks/script/example",
+        )
+        db = Mock()
+        db.query.return_value.filter.return_value.first.return_value = task
+        db.get.return_value = SimpleNamespace(
+            host="10.0.0.1", port=22, username="root", key_path=None, password=None,
+        )
+        session_local.return_value = db
+        executor_cls.return_value.connect.side_effect = task_runner.SSHExecutorError("Timeout opening channel")
+
+        task_runner._command_recovery_monitor(task.task_id)
 
         fail_task.assert_not_called()
         self.assertEqual(task.status, "RUNNING")

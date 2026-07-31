@@ -221,7 +221,7 @@ import {
   uploadGpuDriverLibraryFile,
   type GpuDriverLibraryItem,
 } from '@/api/task'
-import { environmentBusinessCategory, environmentBusinessCategoryLabel } from '@/utils/environmentCategory'
+import { environmentBusinessCategory, environmentBusinessCategoryLabel, sortScriptLibraryFiles } from '@/utils/environmentCategory'
 
 type KnowledgeCategory = 'all' | 'base_system' | 'compiler_mpi' | 'stress' | 'apptainer'
 type ScriptUploadCategory = 'mpi' | 'stress' | 'apptainer'
@@ -245,7 +245,7 @@ const uploadingGpuDriver = ref(false)
 
 const filteredFiles = computed(() => {
   if (activeCategory.value === 'all') {
-    return files.value.filter((file) => file.physical_category !== 'windows')
+    return sortScriptLibraryFiles(files.value.filter((file) => file.physical_category !== 'windows'))
   }
   if (activeCategory.value === 'base_system' || activeCategory.value === 'compiler_mpi') {
     return files.value.filter((file) => (

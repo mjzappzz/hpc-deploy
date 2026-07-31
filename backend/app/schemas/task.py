@@ -232,14 +232,24 @@ class BatchTaskCreateRequest(BaseModel):
 class BatchTaskCreateItem(BaseModel):
     server_id: int
     server_name: str
+    batch_id: str = ""
     task_id: str | None = None
     success: bool
     status: str
     reason: str | None = None
 
 
+class BatchServerItem(BaseModel):
+    server_id: int
+    server_name: str
+    batch_id: str
+
+
 class BatchTaskCreateResponse(BaseModel):
     batch_id: str = ""
+    batch_ids: list[str] = Field(default_factory=list)
+    batches: list[BatchServerItem] = Field(default_factory=list)
+    task_ids: list[str] = Field(default_factory=list)
     script_name: str = ""
     total: int
     created: int
@@ -260,16 +270,25 @@ class StressSuiteCreateRequest(BaseModel):
 class StressSuiteCreateItem(BaseModel):
     server_id: int
     server_name: str = ""
+    batch_id: str = ""
     task_id: str = ""
     script_path: str
     task_name: str = ""
     status: str = "PENDING"
 
 
+class StressSuiteBatchItem(BaseModel):
+    server_id: int
+    server_name: str
+    batch_id: str
+
+
 class StressSuiteCreateResponse(BaseModel):
     batch_id: str = ""
+    batch_ids: list[str] = Field(default_factory=list)
+    batches: list[StressSuiteBatchItem] = Field(default_factory=list)
     total: int = 0
-    items: list[StressSuiteCreateItem] = []
+    items: list[StressSuiteCreateItem] = Field(default_factory=list)
 
 
 # ── Batch summary / detail (Phase 26A) ──

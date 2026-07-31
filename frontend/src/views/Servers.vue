@@ -1409,7 +1409,7 @@ onMounted(() => {
 
 .server-table-wrap {
   width: 100%;
-  overflow-x: hidden;
+  min-width: 0;
 }
 
 .server-group + .server-group {

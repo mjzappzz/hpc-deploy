@@ -97,8 +97,10 @@ import { Document, DocumentCopy } from '@element-plus/icons-vue'
 import type { TaskRecord } from '@/api/task'
 import { formatBeijingDateKey, formatDateTime } from '@/utils/time'
 import { calcDurationSeconds, calcEstimatedEndTime, formatSeconds, statusLabel } from '@/composables/useTaskProgress'
-import { formatTaskErrorMessage } from '@/utils/taskError'
-import { formatTaskDisplayName, getTaskActionLabel } from '@/utils/taskDisplay'
+import { getTaskOutcomeDisplayMessage } from '@/utils/taskError'
+import { formatTaskDisplayName } from '@/utils/taskDisplay'
+import { getBatchStepLabel, getTaskDisplayStatus, getTaskModuleLabel, getTaskNameLabel } from '@/utils/taskPresentation'
+import { shouldShowTaskCommandCopyButtons } from '@/utils/taskCommands'
 import StatusTag from './StatusTag.vue'
 
 defineEmits<{
@@ -139,16 +141,7 @@ const displayName = computed(() => {
 })
 
 const taskReadableType = computed(() => {
-  const fileName = (props.task.file_name || props.task.file_path || '').toLowerCase()
-  if (fileName.includes('gpu')) return 'GPU压测'
-  if (fileName.includes('cpu') || fileName.includes('mem')) return 'CPU/内存压测'
-  if (fileName.includes('disk')) return '磁盘压测'
-  if (props.task.task_type === 'gpu_driver') return 'GPU 驱动安装'
-  if (props.task.task_type === 'cuda_toolkit') return 'CUDA 安装'
-  if (props.task.task_type === 'stress') return 'Linux 服务器压测'
-  if (props.task.task_type === 'apptainer') return 'Apptainer 分发'
-  if (props.task.task_type === 'script') return getTaskActionLabel(props.task)
-  return '任务'
+  return getTaskModuleLabel(props.task, { cpuMemorySeparator: 'slash' })
 })
 
 const taskTypeTags = computed(() => {
@@ -163,10 +156,8 @@ const taskTypeTags = computed(() => {
 })
 
 const taskModuleLabel = computed(() => {
-  return taskReadableType.value
+  return getTaskNameLabel(props.task, { cpuMemorySeparator: 'slash' })
 })
-
-const displayErrorMessage = computed(() => formatTaskErrorMessage(props.task.failure_reason || props.task.error_message))
 
 const isStressCompleted = computed(() => {
   // Use final_status for stress tasks, fall back to execution status
@@ -177,8 +168,7 @@ const isStressCompleted = computed(() => {
 })
 
 const showCommandCopyButtons = computed(() => {
-  const status = props.task.status?.toUpperCase() ?? ''
-  return status === 'SUCCESS' && ['script', 'mpi', 'test', 'cuda_toolkit'].includes(props.task.task_type || '')
+  return shouldShowTaskCommandCopyButtons(props.task)
 })
 
 const showCancelButton = computed(() => {
@@ -205,10 +195,7 @@ const runtime = computed(() => {
  * when the stress report actually FAILed.
  */
 const displayStatus = computed(() => {
-  if (props.task.task_type === 'stress' && props.task.final_status && props.task.final_status !== 'UNKNOWN') {
-    return props.task.final_status
-  }
-  return props.task.status
+  return getTaskDisplayStatus(props.task)
 })
 
 const chineseStatus = computed(() => statusLabel(displayStatus.value))
@@ -222,13 +209,11 @@ const statusTagType = computed(() => {
 })
 
 const inlineOutcomeMessage = computed(() => {
-  if (props.task.outcome_message) return formatTaskErrorMessage(props.task.outcome_message)
-  const status = displayStatus.value.toUpperCase()
-  if (status === 'FAILED' || status === 'FAIL' || status === 'TIMEOUT') {
-    return displayErrorMessage.value || '任务执行失败，请查看执行日志。'
-  }
-  if (status === 'CANCELED') return displayErrorMessage.value || '任务已被取消'
-  return ''
+  return getTaskOutcomeDisplayMessage(
+    props.task,
+    displayStatus.value,
+    '任务执行失败，请查看执行日志。',
+  )
 })
 
 const inlineOutcomeClass = computed(() => {
@@ -259,25 +244,8 @@ const estimatedEndTime = computed(() => {
   return calcEstimatedEndTime(props.task.start_time, plannedDurationSeconds.value)
 })
 
-const STRESS_BATCH_STEP_LABELS: Record<number, string> = {
-  1: 'GPU',
-  2: 'CPU/内存',
-  3: '磁盘',
-}
-
 const batchStepLabel = computed(() => {
-  const kind = props.task.params?.__managed_suite_kind
-  const name = (props.task.file_name || props.task.file_path || '').toLowerCase()
-  if (kind === 'base_system') {
-    if (name.includes('disable_linux_lock_sleep')) return '关闭锁屏与休眠'
-    if (name.includes('lock_linux_release')) return '锁定系统版本'
-    return '基础环境配置'
-  }
-  if (kind === 'gpu_software') {
-    if (props.task.task_type === 'gpu_driver') return 'NVIDIA 驱动安装'
-    if (props.task.task_type === 'cuda_toolkit') return 'CUDA Toolkit 安装'
-  }
-  return STRESS_BATCH_STEP_LABELS[props.task.sequence_index ?? 0] ?? ''
+  return getBatchStepLabel(props.task)
 })
 
 function compactTaskDate(value?: string | null): string {

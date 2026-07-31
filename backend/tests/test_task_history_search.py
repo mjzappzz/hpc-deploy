@@ -89,6 +89,42 @@ class TaskHistorySearchTests(unittest.TestCase):
         self.assertEqual([item.batch_id for item in by_host.items], ["batch-zhangyi"])
         self.assertEqual([item.batch_id for item in by_script.items], ["batch-zhangyi"])
 
+    def test_batch_list_can_be_scoped_to_created_batch_ids(self) -> None:
+        result = list_batches(
+            db=self.session,
+            page=1,
+            page_size=20,
+            status=None,
+            keyword=None,
+            batch_ids="batch-zhangyi,batch-running-context",
+        )
+
+        self.assertEqual(
+            {item.batch_id for item in result.items},
+            {"batch-zhangyi", "batch-running-context"},
+        )
+        self.assertEqual(result.total, 2)
+
+    def test_task_list_can_be_scoped_to_created_task_ids(self) -> None:
+        result = list_tasks(
+            db=self.session,
+            task_status=None,
+            task_type=None,
+            task_scope=None,
+            server_id=None,
+            keyword=None,
+            task_ids="task-zhangyi,task-batch-pending",
+            limit=50,
+            offset=0,
+            order="created_desc",
+        )
+
+        self.assertEqual(
+            {item.task_id for item in result.items},
+            {"task-zhangyi", "task-batch-pending"},
+        )
+        self.assertEqual(result.total, 2)
+
     def test_running_filter_can_include_all_tasks_in_matching_batches(self) -> None:
         running_only = list_tasks(
             db=self.session,

@@ -1,3 +1,7 @@
+import { environmentBusinessCategoryLabel } from './environmentCategory.ts'
+import { getTaskNameLabel } from './taskPresentation.ts'
+import { formatBeijingDateKey } from './time.ts'
+
 type TaskLike = {
   task_id: string
   task_type?: string | null
@@ -29,10 +33,7 @@ export function getTaskTypeLabel(taskType?: string | null, fallback = '-'): stri
 }
 
 export function getTaskActionLabel(task: Pick<TaskLike, 'task_type' | 'file_name' | 'file_path'>): string {
-  const fileName = (task.file_name || task.file_path || '').toLowerCase()
-  if (fileName.includes('disable_linux_lock_sleep')) return '关闭锁屏与休眠'
-  if (fileName.includes('lock_linux_release')) return '锁定系统版本'
-  return getTaskTypeLabel(task.task_type, '任务')
+  return getTaskNameLabel(task)
 }
 
 export function getTaskTypeTags(task: TaskLike): string[] {
@@ -42,6 +43,9 @@ export function getTaskTypeTags(task: TaskLike): string[] {
   if (fileName.includes('cpu') || fileName.includes('mem')) return ['CPU/内存']
   if (fileName.includes('disk')) return ['磁盘']
   if (task.task_type === 'stress') return ['压测']
+  if (task.task_type === 'script') {
+    return [environmentBusinessCategoryLabel(fileName.replace(/\\/g, '/').split('/').pop() || fileName)]
+  }
   return [getTaskActionLabel(task)]
 }
 
@@ -49,13 +53,14 @@ export function formatTaskDisplayName(task: TaskLike): string {
   const serverLabel = normalizeServerLabel(task.server_name) || normalizeServerLabel(task.server_host)
   const scriptLabel = extractScriptBaseName(task.file_name) || extractScriptBaseName(task.file_path) || 'unknown-script'
   const dateLabel = formatTaskDate(task.created_at)
+  const sourceFileName = (task.file_name || task.file_path || '').toLowerCase()
 
   if (!serverLabel || !dateLabel) {
     return task.task_id
   }
 
-  const categoryLabel = isBaseSystemTask((task.file_name || task.file_path || '').toLowerCase())
-    ? '基础环境配置'
+  const categoryLabel = task.task_type === 'script'
+    ? environmentBusinessCategoryLabel(sourceFileName.replace(/\\/g, '/').split('/').pop() || sourceFileName)
     : getTaskActionLabel(task)
   return `${serverLabel} · ${categoryLabel} · ${scriptLabel} · ${dateLabel}`
 }
@@ -80,4 +85,3 @@ function extractScriptBaseName(value?: string | null): string {
   const basename = normalized.split('/').pop() || ''
   return basename.replace(/\.(sh|py|txt|md|sif)$/i, '')
 }
-import { formatBeijingDateKey } from './time'

@@ -4,6 +4,24 @@ from app.core.task_diagnosis import diagnose_task_failure
 
 
 class TaskDiagnosisTests(unittest.TestCase):
+    def test_gpu_startup_marker_mismatch_is_attributed_to_platform(self) -> None:
+        diagnosis = diagnose_task_failure(
+            task_status="FAILED",
+            error_message="stress failed before start: dependency installation did not finish within 300s",
+            logs=[
+                "[INFO] Missing dependencies detected, installing...",
+                "[INFO] gpu-burn build success: /opt/software/gpu-burn/gpu_burn",
+                "[INFO] Start gpu-burn (FP64). It will stress all visible NVIDIA GPUs.",
+                "stress async: startup stalled: stress failed before start: dependency installation did not finish within 300s",
+            ],
+            task_type="stress",
+            file_name="gpu_stress_report.sh",
+        )
+
+        self.assertEqual(diagnosis["category"], "stress_startup_marker_mismatch")
+        self.assertEqual(diagnosis["attribution"], "platform")
+        self.assertIn("旧版脚本缺少启动阶段标记", diagnosis["conclusion"])
+
     def test_stress_root_requirement_has_specific_diagnosis(self) -> None:
         diagnosis = diagnose_task_failure(
             task_status="FAILED",
