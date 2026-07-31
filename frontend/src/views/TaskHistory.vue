@@ -1104,6 +1104,7 @@ import {
   getTaskModuleLabel,
 } from '@/utils/taskPresentation'
 import { adminMode, requireAdminConfirm } from '@/composables/useAdminConfirm'
+import { TASK_STATE_REFRESHED_EVENT } from '@/utils/trailingRefresh'
 import StatusTag from '@/components/StatusTag.vue'
 import TaskCard from '@/components/TaskCard.vue'
 import TaskDiagnosisDialog from '@/components/TaskDiagnosisDialog.vue'
@@ -2337,6 +2338,7 @@ async function loadTasks(silent = false) {
     })).data
     tasks.value = resp.items
     total.value = resp.total
+    window.dispatchEvent(new Event(TASK_STATE_REFRESHED_EVENT))
 
     // "Running tasks" is a live entry point, not a permanent empty filter.
     // Once all matching tasks finish, return to normal history automatically.

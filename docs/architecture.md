@@ -422,7 +422,7 @@ GPU 压测 TXT/XLSX 报告分别记录 `nvidia-smi --query-gpu=driver_version` �
 | `.app-topbar` | `position: sticky; top: 0` | `height: 56px; z-index: 20` |
 | `.app-content` | 在 main-area 内 flex: 1 | `padding: 20px 24px` |
 
-侧边栏“历史任务”每 5 秒轻量查询一次活动任务总数（CONNECTING、PREPARING、UPLOADING、WAITING_REBOOT、RUNNING、CANCELING）；存在活动任务时显示绿色状态点和数量，页面不可见时暂停轮询。所有任务创建成功分支以及点击“运行 N”均进入历史任务的运行筛选；运行筛选使用 `active_only` 并保留完整批次上下文，首次查询处于全 PENDING 窗口时等待一次自动刷新后再决定是否退出筛选。单次任务显示单次卡，批次任务在普通历史和运行筛选中均显示完整批次卡。
+侧边栏“历史任务”每 5 秒轻量查询一次活动任务总数（CONNECTING、PREPARING、UPLOADING、WAITING_REBOOT、RUNNING、CANCELING），作为跨页面与异常恢复兜底；历史任务成功刷新、路由切换、任务创建及页面重新可见时会立即同步计数。刷新请求采用 trailing queue，并发期间到达的多个刷新信号合并为一次后续请求，不丢失任务终态同步。页面不可见时暂停轮询。所有任务创建成功分支以及点击“运行 N”均进入历史任务的运行筛选；运行筛选使用 `active_only` 并保留完整批次上下文，首次查询处于全 PENDING 窗口时等待一次自动刷新后再决定是否退出筛选。单次任务显示单次卡，批次任务在普通历史和运行筛选中均显示完整批次卡。
 
 ---
 

@@ -97,11 +97,11 @@ import { Cpu, Document, List, Monitor, Operation, Tickets } from '@element-plus/
 import AppCritters from '@/components/AppCritters.vue'
 import { listTasks } from '@/api/task'
 import { adminMode, adminRemainingSeconds, adminSessionUnlimited, enterAdminMode, exitAdminMode, restoreAdminMode } from '@/composables/useAdminConfirm'
+import { createTrailingRefresh, TASK_STATE_REFRESHED_EVENT } from '@/utils/trailingRefresh'
 
 const route = useRoute()
 const router = useRouter()
 const runningTaskCount = ref(0)
-const runningTaskLoading = ref(false)
 let runningTaskTimer: number | undefined
 
 const routeTitle = computed(() => String(route.meta.title ?? 'HPCDeploy'))
@@ -154,18 +154,15 @@ watch(
   { immediate: true },
 )
 
-async function refreshRunningTaskCount() {
-  if (document.hidden || runningTaskLoading.value) return
-  runningTaskLoading.value = true
+const refreshRunningTaskCount = createTrailingRefresh(async () => {
+  if (document.hidden) return
   try {
     const response = await listTasks({ active_only: true, limit: 1 })
     runningTaskCount.value = response.data.total
   } catch {
     // Keep the last known count; sidebar status must not interrupt normal navigation.
-  } finally {
-    runningTaskLoading.value = false
   }
-}
+})
 
 function handleVisibilityChange() {
   if (!document.hidden) void refreshRunningTaskCount()
@@ -176,18 +173,25 @@ function handleTaskCreated() {
   window.setTimeout(() => void refreshRunningTaskCount(), 500)
 }
 
+watch(
+  () => route.path,
+  () => void refreshRunningTaskCount(),
+)
+
 onMounted(() => {
   void restoreAdminMode()
   void refreshRunningTaskCount()
   runningTaskTimer = window.setInterval(() => void refreshRunningTaskCount(), 5_000)
   document.addEventListener('visibilitychange', handleVisibilityChange)
   window.addEventListener('hpcdeploy:task-created', handleTaskCreated)
+  window.addEventListener(TASK_STATE_REFRESHED_EVENT, refreshRunningTaskCount)
 })
 
 onUnmounted(() => {
   if (runningTaskTimer !== undefined) window.clearInterval(runningTaskTimer)
   document.removeEventListener('visibilitychange', handleVisibilityChange)
   window.removeEventListener('hpcdeploy:task-created', handleTaskCreated)
+  window.removeEventListener(TASK_STATE_REFRESHED_EVENT, refreshRunningTaskCount)
 })
 </script>
 
