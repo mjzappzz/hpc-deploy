@@ -84,7 +84,16 @@
         >复制验证命令</el-button>
       </el-tooltip>
       <el-button v-if="showCancelingButton" size="small" type="warning" plain disabled>正在取消</el-button>
-      <el-button v-if="showCancelButton" size="small" type="danger" plain class="hpc-interactive-pulse" @click="$emit('cancelTask', task)">取消任务</el-button>
+      <el-button
+        v-if="showCancelButton"
+        size="small"
+        type="danger"
+        plain
+        class="hpc-interactive-pulse"
+        :loading="cancelSubmitting"
+        :disabled="cancelSubmitting"
+        @click="$emit('cancelTask', task)"
+      >{{ cancelSubmitting ? '取消中…' : '取消任务' }}</el-button>
       <el-button v-if="task.batch_id" size="small" type="default" plain class="hpc-interactive-pulse" @click="$emit('viewBatch', task)">查看批次</el-button>
       <el-button v-if="showLocalArtifactsCleanup" size="small" type="danger" plain class="task-card__delete-button" @click="$emit('cleanupLocalArtifacts', task)">删除任务</el-button>
     </div>
@@ -120,6 +129,7 @@ const props = defineProps<{
   task: TaskRecord
   envCommandTooltip?: string
   verifyCommandTooltip?: string
+  cancelSubmitting?: boolean
 }>()
 
 const serverLabel = computed(() => {

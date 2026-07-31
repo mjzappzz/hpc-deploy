@@ -60,6 +60,7 @@
             :task="item.task"
             :env-command-tooltip="getEnvTooltip(item.task.task_id)"
             :verify-command-tooltip="getVerifyTooltip(item.task.task_id)"
+            :cancel-submitting="Boolean(taskCancelSubmitting[item.task.task_id])"
             @continue-task="continueTask"
             @download-report="downloadTaskReport"
             @prefetch-env-commands="prefetchEnvCommands"
@@ -849,8 +850,10 @@
                           plain
                           size="small"
                           class="detail-panel__cancel-button"
+                          :loading="Boolean(taskCancelSubmitting[batchDetailSelectedTaskId || ''])"
+                          :disabled="Boolean(taskCancelSubmitting[batchDetailSelectedTaskId || ''])"
                           @click="detailCancelTask"
-                        >取消任务</el-button>
+                        >{{ taskCancelSubmitting[batchDetailSelectedTaskId || ''] ? '取消中…' : '取消任务' }}</el-button>
                       </div>
                     </div>
                     <div class="detail-panel__meta-row">
@@ -1059,8 +1062,6 @@
       title="取消任务"
       width="420px"
       :close-on-click-modal="false"
-      :close-on-press-escape="!cancelSubmitting"
-      :show-close="!cancelSubmitting"
     >
       <div class="cancel-dialog-body">
         <p class="cancel-intro">确认取消当前任务？</p>
@@ -1071,10 +1072,8 @@
         </ul>
       </div>
       <template #footer>
-        <el-button :disabled="cancelSubmitting" @click="cancelDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="cancelSubmitting" @click="confirmCancelTask">
-          {{ cancelSubmitting ? '取消中…' : '确认取消任务' }}
-        </el-button>
+        <el-button @click="cancelDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="confirmCancelTask">确认取消任务</el-button>
       </template>
     </el-dialog>
   </section>
@@ -1105,6 +1104,7 @@ import {
 } from '@/utils/taskPresentation'
 import { adminMode, requireAdminConfirm } from '@/composables/useAdminConfirm'
 import { TASK_STATE_REFRESHED_EVENT } from '@/utils/trailingRefresh'
+import { beginTaskSubmitting, endTaskSubmitting } from '@/utils/taskSubmitting'
 import StatusTag from '@/components/StatusTag.vue'
 import TaskCard from '@/components/TaskCard.vue'
 import TaskDiagnosisDialog from '@/components/TaskDiagnosisDialog.vue'
@@ -3217,7 +3217,7 @@ function continueBatchTask(task: BatchTaskDetailItem) {
 }
 
 const cancelDialogVisible = ref(false)
-const cancelSubmitting = ref(false)
+const taskCancelSubmitting = ref<Record<string, boolean>>({})
 let cancelTargetTask: TaskRecord | null = null
 
 function cancelHistoryTask(task: TaskRecord) {
@@ -3226,10 +3226,13 @@ function cancelHistoryTask(task: TaskRecord) {
 }
 
 async function confirmCancelTask() {
-  if (!cancelTargetTask || cancelSubmitting.value) return
-  cancelSubmitting.value = true
+  if (!cancelTargetTask) return
+  const taskId = cancelTargetTask.task_id
+  if (!beginTaskSubmitting(taskCancelSubmitting.value, taskId)) return
+  cancelDialogVisible.value = false
+  cancelTargetTask = null
   try {
-    const resp = await cancelTask(cancelTargetTask.task_id)
+    const resp = await cancelTask(taskId)
     const message = resp.data.message?.trim()
     if (message && (message.includes('不可达') || message.includes('无法确认'))) {
       ElMessage.warning(message)
@@ -3237,7 +3240,7 @@ async function confirmCancelTask() {
       ElMessage.success(message || '任务已取消')
     }
     await loadTasks()
-    if (drawerSelectedTaskId.value === cancelTargetTask.task_id) {
+    if (drawerSelectedTaskId.value === taskId) {
       await refreshTaskDrawer(true)
     }
   } catch (error) {
@@ -3248,9 +3251,7 @@ async function confirmCancelTask() {
       ElMessage.error(getApiErrorMessage(error) || '取消任务失败')
     }
   } finally {
-    cancelSubmitting.value = false
-    cancelDialogVisible.value = false
-    cancelTargetTask = null
+    endTaskSubmitting(taskCancelSubmitting.value, taskId)
   }
 }
 

@@ -583,8 +583,6 @@
       title="取消任务"
       width="420px"
       :close-on-click-modal="false"
-      :close-on-press-escape="!cancelSubmitting"
-      :show-close="!cancelSubmitting"
     >
       <div class="cancel-dialog-body">
         <p class="cancel-intro">确认取消当前任务？</p>
@@ -595,10 +593,8 @@
         </ul>
       </div>
       <template #footer>
-        <el-button :disabled="cancelSubmitting" @click="cancelDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="cancelSubmitting" @click="confirmCancelCurrentTask">
-          {{ cancelSubmitting ? '取消中…' : '确认取消任务' }}
-        </el-button>
+        <el-button @click="cancelDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="confirmCancelCurrentTask">确认取消任务</el-button>
       </template>
     </el-dialog>
 
@@ -1965,16 +1961,18 @@ function cancelCurrentTask() {
 
 async function confirmCancelCurrentTask() {
   if (!activeTaskId.value || cancelSubmitting.value) return
+  const taskId = activeTaskId.value
   cancelSubmitting.value = true
+  cancelDialogVisible.value = false
   try {
-    const resp = await cancelTask(activeTaskId.value)
+    const resp = await cancelTask(taskId)
     const message = resp.data.message?.trim()
     if (message && (message.includes('不可达') || message.includes('无法确认'))) {
       ElMessage.warning(message)
     } else {
       ElMessage.success(message || '任务已取消')
     }
-    await fetchTaskRuntime(activeTaskId.value)
+    await fetchTaskRuntime(taskId)
   } catch (error) {
     if (isApiRequestTimeout(error)) {
       ElMessage.warning('取消请求处理时间较长，后台可能仍在取消，请稍后刷新任务状态')
@@ -1983,7 +1981,6 @@ async function confirmCancelCurrentTask() {
     }
   } finally {
     cancelSubmitting.value = false
-    cancelDialogVisible.value = false
   }
 }
 
