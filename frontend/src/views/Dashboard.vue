@@ -35,7 +35,7 @@
             </div>
             <div class="stat-line">
               <span class="stat-label">离线</span>
-              <span class="stat-number stat-gray">{{ summary.servers.offline }}</span>
+              <span class="stat-number stat-red">{{ summary.servers.offline }}</span>
             </div>
           </div>
         </el-card>

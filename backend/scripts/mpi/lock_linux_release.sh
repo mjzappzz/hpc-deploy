@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.6.0"
+SCRIPT_VERSION="1.6.1"
 BACKUP_ROOT="/var/backups/hpcdeploy"
 RUN_ID="$(date +%Y%m%d-%H%M%S-%N)-${BASHPID}"
 BACKUP_DIR="${BACKUP_ROOT}/linux-release-lock-${RUN_ID}"
@@ -182,7 +182,9 @@ verify_kernel_versionlocks() {
 }
 
 ubuntu_package_is_installed() {
-    [[ "$(dpkg-query -W -f='${db:Status-Abbrev}' "$1" 2>/dev/null)" == "ii "* ]]
+    local status
+    status="$(dpkg-query -W -f='${db:Status-Abbrev}' "$1" 2>/dev/null)" || return 1
+    [[ "$status" == "ii " || "$status" == "hi " ]]
 }
 
 append_ubuntu_kernel_hold_package() {

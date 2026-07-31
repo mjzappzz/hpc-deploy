@@ -3,8 +3,8 @@
     <el-card shadow="never" class="server-table-card">
       <div class="toolbar">
         <el-button type="primary" @click="openCreate">新增服务器</el-button>
-        <el-button type="warning" plain :loading="isDetectingAll" @click="detectAll">
-          {{ isDetectingAll ? `检测中 ${probeProgress.completed}/${probeProgress.total}` : '检测在线服务器' }}
+        <el-button type="primary" plain :loading="isDetectingAll && !isDetectingOnline && !isDetectingOffline" @click="detectAll">
+          {{ isDetectingAll && !isDetectingOnline && !isDetectingOffline ? `检测中 ${probeProgress.completed}/${probeProgress.total}` : '检测全部服务器' }}
         </el-button>
         <el-badge
           :value="pendingPublicKeyDeployCount"
@@ -35,6 +35,14 @@
           <div class="server-group__header">
             <span class="server-group__title">在线服务器</span>
             <el-tag size="small" type="success" effect="plain">{{ onlineServers.length }}</el-tag>
+            <el-button
+              size="small"
+              type="success"
+              plain
+              :loading="isDetectingOnline"
+              :disabled="isDetectingAll || onlineServers.length === 0"
+              @click="detectOnlineServers"
+            >{{ isDetectingOnline ? `检测中 ${probeProgress.completed}/${probeProgress.total}` : '检测在线服务器' }}</el-button>
           </div>
           <ServerTable
             v-if="loading || onlineServers.length > 0"
@@ -58,6 +66,14 @@
             <span class="server-group__toggle">{{ showOfflineServers ? '▼' : '▶' }}</span>
             <span class="server-group__title">离线服务器</span>
             <el-tag size="small" type="info" effect="plain">{{ offlineServers.length }}</el-tag>
+            <el-button
+              size="small"
+              type="info"
+              plain
+              :loading="isDetectingOffline"
+              :disabled="isDetectingAll || offlineServers.length === 0"
+              @click.stop="detectOfflineServers"
+            >{{ isDetectingOffline ? `检测中 ${probeProgress.completed}/${probeProgress.total}` : '检测全部离线服务器' }}</el-button>
           </div>
           <div v-show="showOfflineServers">
             <ServerTable
@@ -503,6 +519,8 @@ const publicKeyTargetServers = computed(() => servers.value.filter(serverReadyFo
 const pendingPublicKeyDeployCount = computed(() => publicKeyTargetServers.value.filter((server) => server.auth_type === 'password').length)
 const probingIds = ref<number[]>([])
 const isDetectingAll = ref(false)
+const isDetectingOnline = ref(false)
+const isDetectingOffline = ref(false)
 const probeProgress = reactive({ completed: 0, total: 0 })
 const detailVisible = ref(false)
 const activeServer = ref<ServerRecord | null>(null)
@@ -1053,16 +1071,28 @@ async function detectOne(server: ServerRecord) {
   }
 }
 
-/** 全部检测：只并发复检当前在线服务器；离线服务器由单台“检测”手动复检 */
+/** 全部检测：并发复检指定状态的服务器。 */
 async function detectAll() {
-  const targets = servers.value
-    .filter((server) => server.status === 'online')
+  await detectServers(servers.value, '全部')
+}
+
+async function detectOnlineServers() {
+  await detectServers(onlineServers.value, '在线')
+}
+
+async function detectOfflineServers() {
+  await detectServers(offlineServers.value, '离线')
+}
+
+async function detectServers(targets: ServerRecord[], targetLabel: '全部' | '在线' | '离线') {
   if (targets.length === 0) {
-    ElMessage.warning('当前没有在线服务器，请对离线服务器使用单台检测')
+    ElMessage.warning(targetLabel === '全部' ? '当前没有服务器' : `当前没有${targetLabel}服务器`)
     return
   }
 
   isDetectingAll.value = true
+  isDetectingOnline.value = targetLabel === '在线'
+  isDetectingOffline.value = targetLabel === '离线'
   probeProgress.completed = 0
   probeProgress.total = targets.length
   probingIds.value = targets.map((server) => server.id)
@@ -1098,10 +1128,12 @@ async function detectAll() {
       ElMessage.success(`检测完成：${succeeded} 台服务器，耗时 ${elapsedSeconds} 秒`)
     }
   } catch (error) {
-    ElMessage.error(`在线服务器检测失败：${getApiErrorMessage(error)}`)
+    ElMessage.error(`${targetLabel}服务器检测失败：${getApiErrorMessage(error)}`)
   } finally {
     probingIds.value = []
     isDetectingAll.value = false
+    isDetectingOnline.value = false
+    isDetectingOffline.value = false
   }
 }
 

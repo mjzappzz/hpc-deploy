@@ -53,7 +53,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - 批量公钥部署（`/public-key/deploy`）— 仅允许首次探测成功且状态为 online 的服务器；按每台服务器自身认证方式登录，创建 `$HOME/.ssh` + `authorized_keys`，公钥已存在不重复追加。单台失败不影响其他
 - 单台公钥部署（`/{id}/deploy-public-key`）
 - 单台/批量 SSH 测试（`/{id}/test`、`/test-ssh-all`）
-- 探测全部（`/probe-all`），接口未指定 `server_ids` 时默认跳过离线服务器；服务器管理与执行任务页均只逐台并发复检当前在线服务器，离线服务器由服务器管理行内入口手动检测
+- 探测全部（`/probe-all`）支持显式 `server_ids`；服务器管理页可逐台并发复检全部、在线或离线服务器，离线分组默认折叠并提供组内复检入口；执行任务页仍只逐台并发复检当前在线服务器，避免任务提交前等待已知不可达主机超时
 - 标签管理（`/tags` 统计、`tag` 参数筛选）；固定单选值为待压测、测试机、压测完成、故障待处理
 - 标签基于 `tags_json TEXT` 列存储，包含在线/离线计数；旧记录读取时兼容空标签并回退为待压测
 
@@ -67,7 +67,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - 多服务器单动作入口按服务器创建互相独立的单次任务：普通脚本/单项压测/Apptainer（`/batch`）、GPU 驱动（`/gpu-driver/batch`）和 CUDA Toolkit（`/cuda-toolkit/batch`）均返回完整 `task_ids`，每条任务的 `batch_id` 为空；只有同一服务器包含多个有序步骤的受控环境套件和压测套件才创建批次，并按服务器分配独立 `batch_id`
 - Intel oneAPI 2022 安装脚本 v1.1.0 在执行安装器前分别检查 MKL 与编译器/Intel MPI 命令；目标组件已完整安装时跳过对应离线包下载和安装，最终严格验证 `icc`、`icx`、`ifort`、`mpiicc`、`mpiifort`、`mpirun` 及 `MKLROOT`，重复执行不再因 Intel 安装器返回“already installed”而误报失败
 - AOCC/AOCL + OpenMPI 安装脚本 v1.1.0 分别检测 AOCC 编译器、AOCL 库和 OpenMPI wrapper；已完整安装的组件跳过下载、包安装或编译，最终严格验证 `clang`、`clang++`、`flang`、`mpicc`、`mpicxx`、`mpif90`、`mpirun`、AOCL 库及 `mpicc --showme`
-- Linux 当前版本锁定脚本 v1.6.0 接受 x86_64 Rocky 9.x 与 Ubuntu 22.04/24.04。Rocky 读取执行前 `VERSION_ID` 与 `uname -r`，要求当前运行内核存在对应 `kernel-core` RPM，并收集当前内核对应的已安装 `kernel`、`kernel-core`、`kernel-modules*`、`kernel-devel` 及已安装的 `kernel-headers`；随后预检并固定当前小版本仓库，通过 DNF versionlock 锁定 release/repo/GPG 与内核包。每个 Rocky 候选源的隔离 DNF 预检由 coreutils `timeout` 限制为 90 秒，超时后发送 TERM、10 秒后强制结束并切换下一源；所有候选失败时仍处于预检阶段，不修改系统配置。Ubuntu 将 `Prompt` 设置为 `never`，收集当前运行内核对应的 image/modules/headers 包以及已安装的 generic、HWE、virtual、lowlatency、OEM 内核元包，再通过 `apt-mark hold` 锁定并逐项验证。Ubuntu 备份原发行版升级配置与原 hold 清单，保留既有 hold，失败时只撤销本次新增 hold 并恢复配置。Rocky 备份全部 `.repo`、`releasever` 与 `versionlock.list`，失败时完整恢复并校验。脚本不自动补装、升级或切换内核，也不执行跨版本升级、降级或全量更新；内核安全更新需在维护窗口手动解锁、升级并重新验证驱动。
+- Linux 当前版本锁定脚本 v1.6.1 接受 x86_64 Rocky 9.x 与 Ubuntu 22.04/24.04。Rocky 读取执行前 `VERSION_ID` 与 `uname -r`，要求当前运行内核存在对应 `kernel-core` RPM，并收集当前内核对应的已安装 `kernel`、`kernel-core`、`kernel-modules*`、`kernel-devel` 及已安装的 `kernel-headers`；随后预检并固定当前小版本仓库，通过 DNF versionlock 锁定 release/repo/GPG 与内核包。每个 Rocky 候选源的隔离 DNF 预检由 coreutils `timeout` 限制为 90 秒，超时后发送 TERM、10 秒后强制结束并切换下一源；所有候选失败时仍处于预检阶段，不修改系统配置。Ubuntu 将 `Prompt` 设置为 `never`，收集当前运行内核对应的 image/modules/headers 包以及已安装的 generic、HWE、virtual、lowlatency、OEM 内核元包，再通过 `apt-mark hold` 锁定并逐项验证；包状态识别接受 `dpkg` 的普通已安装（`ii`）和已 hold 且已安装（`hi`），仍拒绝残留配置或未安装状态。Ubuntu 备份原发行版升级配置与原 hold 清单，保留既有 hold，失败时只撤销本次新增 hold 并恢复配置。Rocky 备份全部 `.repo`、`releasever` 与 `versionlock.list`，失败时完整恢复并校验。脚本不自动补装、升级或切换内核，也不执行跨版本升级、降级或全量更新；内核安全更新需在维护窗口手动解锁、升级并重新验证驱动。
 - 资产库对所有文本脚本解析内容版本（支持 `SCRIPT_VERSION=...`、`ScriptVersion: ...` 等形式），API 通过 `content_version` 返回，管理表格统一展示“版本”列；未声明版本的文件显示 `-`。
 - 任务执行恢复：普通脚本和 CUDA Toolkit 与压测、NVIDIA 驱动一致，远端进程使用 `nohup + setsid` 脱离 SSH，任务目录保存 `.hpcdeploy.pid`、`task.log` 和 `.hpcdeploy.exit_code`。后端启动时扫描 RUNNING 任务，通过 SSH 重新附着监控、补录日志并按远端退出码收尾；CONNECTING/PREPARING/UPLOADING 阶段任务由启动恢复器重新排队。
 - 重启恢复中的普通脚本与 CUDA Toolkit 遇到 SSH 连接或 channel 临时不可用时保持 RUNNING，并以 60 秒间隔重新附着；NVIDIA 驱动已有同类延迟重试，压测执行多次即时重连后再延迟重试。控制面连接失败不再直接覆盖远端任务真实退出状态。
@@ -80,6 +80,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - 结构化监控（`/{task_id}/monitor` — CPU/内存/磁盘/GPU 5s 轮询）
 - 历史任务统一展示：普通任务按单次任务卡展示；同一 `batch_id` 在前端聚合为批次卡，首页展示批次概览，批次详情弹窗展示完整子任务信息
 - 仪表盘最近任务使用独立任务 ID 列，并与历史任务共用任务类型标签规则；拖选表格文本不触发行跳转
+- 仪表盘服务器概览的离线计数使用红色告警样式；在线、总数等既有统计口径不变
 - 历史任务卡片统一展示模块、文件、远程目录、命令、计划时长、开始/结束/耗时、报告状态和失败原因
 - 重跑链以最新一次尝试计算批次当前状态；旧尝试仅作为历史审计记录保留
 - 结果文件入口先展示 artifact/result 文件列表，再由用户选择具体文件下载

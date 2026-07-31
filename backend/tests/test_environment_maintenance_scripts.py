@@ -1,4 +1,6 @@
 from pathlib import Path
+import os
+import re
 import subprocess
 import unittest
 
@@ -13,6 +15,15 @@ def _script(name: str) -> str:
     assert path.is_file(), f"missing managed script: {path}"
     subprocess.run(["bash", "-n", str(path)], check=True)
     return path.read_text(encoding="utf-8")
+
+
+def _shell_function(content: str, name: str) -> str:
+    match = re.search(
+        rf"(?ms)^{re.escape(name)}\(\) \{{\n.*?^\}}\n",
+        content,
+    )
+    assert match is not None, f"missing shell function: {name}"
+    return match.group(0)
 
 
 class EnvironmentMaintenanceScriptTests(unittest.TestCase):
@@ -41,7 +52,7 @@ class EnvironmentMaintenanceScriptTests(unittest.TestCase):
     def test_lock_linux_release_has_safe_scope(self) -> None:
         content = _script("lock_linux_release.sh")
 
-        self.assertIn('SCRIPT_VERSION="1.6.0"', content)
+        self.assertIn('SCRIPT_VERSION="1.6.1"', content)
         self.assertIn('[[ "$VERSION_ID" =~ ^9\\.[0-9]+$ ]]', content)
         self.assertIn('select_rocky_repo_root', content)
         self.assertIn('"--setopt=reposdir=${probe_root}"', content)
@@ -100,7 +111,51 @@ class EnvironmentMaintenanceScriptTests(unittest.TestCase):
         self.assertNotIn("dnf update", content)
         self.assertNotIn("yum update", content)
         self.assertNotIn("sudo ", content)
-        self.assertEqual(extract_content_version(content), "v1.6.0")
+        self.assertEqual(extract_content_version(content), "v1.6.1")
+
+    def test_lock_linux_release_accepts_held_installed_ubuntu_packages(self) -> None:
+        content = _script("lock_linux_release.sh")
+        function = _shell_function(content, "ubuntu_package_is_installed")
+        command = (
+            f"{function}\n"
+            "dpkg-query() {\n"
+            "    [[ \"$#\" -eq 3 && \"$1\" == \"-W\" "
+            "&& \"$2\" == '-f=${db:Status-Abbrev}' "
+            "&& \"$3\" == \"linux-image-test\" ]] || return 97\n"
+            "    printf '%s' \"$MOCK_DPKG_STATUS\"\n"
+            "    return \"${MOCK_DPKG_EXIT:-0}\"\n"
+            "}\n"
+            'ubuntu_package_is_installed "linux-image-test"\n'
+        )
+
+        for status in ("ii ", "hi "):
+            with self.subTest(status=status):
+                result = subprocess.run(
+                    ["bash", "-c", command],
+                    env={**os.environ, "MOCK_DPKG_STATUS": status},
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0)
+
+        for status in ("rc ", "un ", "pi ", "ri ", "ui ", "iiR", "hiR", "ii rc "):
+            with self.subTest(status=status):
+                result = subprocess.run(
+                    ["bash", "-c", command],
+                    env={**os.environ, "MOCK_DPKG_STATUS": status},
+                    check=False,
+                )
+                self.assertNotEqual(result.returncode, 0)
+
+        query_failure = subprocess.run(
+            ["bash", "-c", command],
+            env={
+                **os.environ,
+                "MOCK_DPKG_STATUS": "ii ",
+                "MOCK_DPKG_EXIT": "1",
+            },
+            check=False,
+        )
+        self.assertNotEqual(query_failure.returncode, 0)
 
     def test_disable_linux_lock_sleep_avoids_session_disruption(self) -> None:
         content = _script("disable_linux_lock_sleep.sh")
