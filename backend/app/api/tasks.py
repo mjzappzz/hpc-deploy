@@ -262,9 +262,6 @@ def list_tasks(
             )
         query = query.filter(Task.task_id.in_(requested_task_ids))
 
-    if active_only is True:
-        query = query.filter(Task.status.in_(EXECUTING_TASK_STATUSES))
-
     if task_type is not None:
         query = query.filter(Task.task_type == task_type)
     if task_scope == "single":
@@ -288,6 +285,29 @@ def list_tasks(
                 Server.host.ilike(like_pattern),
             )
         )
+
+    if active_only is True:
+        matched_active_query = query.filter(Task.status.in_(EXECUTING_TASK_STATUSES))
+        if include_batch_context is True:
+            active_batch_ids = [
+                batch_id
+                for (batch_id,) in matched_active_query
+                .filter(Task.batch_id.isnot(None))
+                .with_entities(Task.batch_id)
+                .distinct()
+                .all()
+            ]
+            if active_batch_ids:
+                query = query.filter(
+                    or_(
+                        Task.status.in_(EXECUTING_TASK_STATUSES),
+                        Task.batch_id.in_(active_batch_ids),
+                    )
+                )
+            else:
+                query = matched_active_query
+        else:
+            query = matched_active_query
 
     if task_status is not None:
         matched_query = query.filter(Task.status == task_status)

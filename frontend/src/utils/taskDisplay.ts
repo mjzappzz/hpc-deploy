@@ -1,6 +1,6 @@
 import { environmentBusinessCategoryLabel } from './environmentCategory.ts'
 import { getTaskNameLabel } from './taskPresentation.ts'
-import { formatBeijingDateKey } from './time.ts'
+import { formatBeijingDateTimeKey } from './time.ts'
 
 type TaskLike = {
   task_id: string
@@ -51,8 +51,7 @@ export function getTaskTypeTags(task: TaskLike): string[] {
 
 export function formatTaskDisplayName(task: TaskLike): string {
   const serverLabel = normalizeServerLabel(task.server_name) || normalizeServerLabel(task.server_host)
-  const scriptLabel = extractScriptBaseName(task.file_name) || extractScriptBaseName(task.file_path) || 'unknown-script'
-  const dateLabel = formatTaskDate(task.created_at)
+  const dateLabel = formatBeijingDateTimeKey(task.created_at)
   const sourceFileName = (task.file_name || task.file_path || '').toLowerCase()
 
   if (!serverLabel || !dateLabel) {
@@ -61,8 +60,18 @@ export function formatTaskDisplayName(task: TaskLike): string {
 
   const categoryLabel = task.task_type === 'script'
     ? environmentBusinessCategoryLabel(sourceFileName.replace(/\\/g, '/').split('/').pop() || sourceFileName)
-    : getTaskActionLabel(task)
-  return `${serverLabel} · ${categoryLabel} · ${scriptLabel} · ${dateLabel}`
+    : getTaskModuleLabel(task.task_type)
+  return `${serverLabel} · ${categoryLabel} · ${dateLabel}`
+}
+
+export function formatHistoryTaskTitle(
+  scopeLabel: '单次' | '批次',
+  serverLabel: string,
+  categoryLabel: string,
+  createdAt: string | null | undefined,
+): string {
+  const dateLabel = formatBeijingDateTimeKey(createdAt)
+  return [scopeLabel, serverLabel, categoryLabel, dateLabel].filter(Boolean).join(' · ')
 }
 
 function isBaseSystemTask(fileName: string): boolean {
@@ -71,17 +80,4 @@ function isBaseSystemTask(fileName: string): boolean {
 
 function normalizeServerLabel(value?: string | null): string {
   return value?.trim() || ''
-}
-
-function formatTaskDate(value?: string | null): string {
-  return formatBeijingDateKey(value)
-}
-
-function extractScriptBaseName(value?: string | null): string {
-  const text = value?.trim()
-  if (!text) return ''
-
-  const normalized = text.replace(/\\/g, '/')
-  const basename = normalized.split('/').pop() || ''
-  return basename.replace(/\.(sh|py|txt|md|sif)$/i, '')
 }

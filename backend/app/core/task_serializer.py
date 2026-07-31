@@ -21,6 +21,38 @@ def normalize_success_skip_message(message: str) -> str | None:
     return None
 
 
+def resolve_success_outcome_message(file_name: str | None, messages: list[str]) -> str | None:
+    normalized_messages = [re.sub(r"^\[[A-Z]+\]\s*", "", message.strip()) for message in messages]
+
+    for message in normalized_messages:
+        normalized = normalize_success_skip_message(message)
+        if normalized:
+            return normalized
+
+    script_name = (file_name or "").rsplit("/", 1)[-1]
+    message_text = "\n".join(normalized_messages)
+    if script_name == "install_oneapi_2022.sh" and all(
+        marker in message_text
+        for marker in (
+            "BaseKit 目标组件已安装，跳过安装",
+            "HPCKit 目标组件已安装，跳过安装",
+        )
+    ):
+        return "Intel oneAPI 2022 目标组件原已安装，本次未重复安装，仅完成验证"
+
+    if script_name == "install_openmpi_4.1.6_aocc_aocl.sh" and all(
+        marker in message_text
+        for marker in (
+            "AOCC 已安装，跳过安装",
+            "AOCL 已安装，跳过安装",
+            "OpenMPI 4.1.6 已安装，跳过编译",
+        )
+    ):
+        return "AOCC、AOCL、OpenMPI 4.1.6 原已安装，本次未重复安装，仅完成验证"
+
+    return None
+
+
 def get_task_outcome_message(task: Task, db: Session, failure_reason: str | None) -> str | None:
     status = (task.status or "").upper()
     if status in {"FAILED", "CANCELED", "TIMEOUT"} or failure_reason:
@@ -35,16 +67,17 @@ def get_task_outcome_message(task: Task, db: Session, failure_reason: str | None
                 TaskLog.message.contains("无需锁定系统版本")
                 | TaskLog.message.contains("skipping NVIDIA driver installation")
                 | TaskLog.message.contains("is already installed; skipping")
+                | TaskLog.message.contains("BaseKit 目标组件已安装，跳过安装")
+                | TaskLog.message.contains("HPCKit 目标组件已安装，跳过安装")
+                | TaskLog.message.contains("AOCC 已安装，跳过安装")
+                | TaskLog.message.contains("AOCL 已安装，跳过安装")
+                | TaskLog.message.contains("OpenMPI 4.1.6 已安装，跳过编译")
             ),
         )
-        .order_by(TaskLog.id.desc())
+        .order_by(TaskLog.id.asc())
         .all()
     )
-    for log in logs:
-        normalized = normalize_success_skip_message(log.message)
-        if normalized:
-            return normalized
-    return None
+    return resolve_success_outcome_message(task.file_name, [log.message for log in logs])
 
 
 def parse_task_duration_seconds(task: Task) -> int | None:

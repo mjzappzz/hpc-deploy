@@ -5,7 +5,7 @@
         <div class="runner-header">
           <div>
             <div class="runner-title">执行任务准备</div>
-            <div class="runner-subtitle">从脚本知识库中选择脚本执行（stress 支持参数化配置）；Apptainer 只做镜像分发上传，不执行。</div>
+            <div class="runner-subtitle">从脚本知识库中选择环境部署或稳定性验证任务执行。</div>
           </div>
         </div>
       </template>
@@ -385,10 +385,13 @@
                   <el-form-item label="压测时长" required>
                     <div class="duration-control">
                       <div class="duration-row">
-                        <el-input-number v-model="durationParts.hours" :min="0" :step="1" controls-position="right" :disabled="isFormDisabled" size="small" style="width:120px" />
+                        <el-input-number v-model="durationParts.hours" :min="0" :max="STRESS_MAX_DURATION_HOURS" :step="1" controls-position="right" :disabled="isFormDisabled" size="small" style="width:120px" />
                         <span class="duration-unit">小时</span>
                         <el-input-number v-model="durationParts.minutes" :min="0" :max="59" :step="1" controls-position="right" :disabled="isFormDisabled" size="small" style="width:120px" />
                         <span class="duration-unit">分钟</span>
+                      </div>
+                      <div :class="['form-help-text', { 'is-error': stressDurationError }]">
+                        {{ stressDurationError || '可设置 1 分钟–72 小时（3 天）；设置 72 小时时，分钟必须为 0。' }}
                       </div>
                     </div>
                   </el-form-item>
@@ -646,9 +649,12 @@ import { getApiErrorMessage as readApiErrorMessage, isApiRequestTimeout } from '
 import { formatBytes } from '@/utils/format'
 import { serverTagType } from '@/constants/serverTags'
 import { environmentBusinessCategory } from '@/utils/environmentCategory'
+import { STRESS_MAX_DURATION_HOURS, validateStressDurationSeconds } from '@/utils/stressParams'
 import {
   getCreatedTaskHistoryQuery,
   getCreatedTaskIds,
+  getManagedSuiteHistoryQuery,
+  getRunningTaskHistoryQuery,
   getStressSuiteBatchIds,
   getStressSuiteHistoryQuery,
 } from '@/utils/stressSuiteResult'
@@ -686,7 +692,6 @@ const taskTypes: Array<{ label: string; value: RunnerTaskCategory }> = [
   { label: 'GPU 驱动安装', value: 'gpu_software' },
   { label: 'MPI 编译环境配置', value: 'compiler_mpi' },
   { label: 'Linux 服务器压测', value: 'stress' },
-  { label: 'Apptainer 镜像', value: 'apptainer' },
 ]
 const taskTypeGroups: Array<{
   label: string
@@ -695,7 +700,6 @@ const taskTypeGroups: Array<{
 }> = [
   { label: '环境部署', description: '初始化系统与软件栈', items: taskTypes.slice(0, 3) },
   { label: '稳定性验证', description: '验证服务器负载稳定性', items: taskTypes.slice(3, 4) },
-  { label: '资产分发', description: '下发容器镜像资产', items: taskTypes.slice(4, 5) },
 ]
 
 function runnerTaskCategoryLabel(value: RunnerTaskCategory): string {
@@ -1217,6 +1221,7 @@ const stressDurationSeconds = computed(() => {
   const normalized = normalizeDurationParts(durationParts)
   return normalized.hours * 3600 + normalized.minutes * 60
 })
+const stressDurationError = computed(() => validateStressDurationSeconds(stressDurationSeconds.value))
 const stressIntervalMax = computed(() => Math.max(1, Math.min(stressDurationSeconds.value, 3600)))
 const hasGpuStressSelected = computed(() =>
   selectedFile.value?.name === 'gpu_stress_report.sh' ||
@@ -1632,8 +1637,8 @@ async function validateRunner() {
 
     // ── Stress suite mode ──
     if (selectedTaskType.value === 'stress' && stressSuiteMode.value) {
-      if (stressDurationSeconds.value <= 0) {
-        ElMessage.error('服务器压测总秒数必须大于 0')
+      if (stressDurationError.value) {
+        ElMessage.error(stressDurationError.value)
         return
       }
       ElMessage.success('参数校验通过，将按 GPU → CPU/内存 → 磁盘顺序执行。')
@@ -1645,8 +1650,8 @@ async function validateRunner() {
       ElMessage.error('必须选择知识库文件')
       return
     }
-    if (selectedFile.value.physical_category === 'stress' && stressDurationSeconds.value <= 0) {
-      ElMessage.error('服务器压测总秒数必须大于 0')
+    if (selectedFile.value.physical_category === 'stress' && stressDurationError.value) {
+      ElMessage.error(stressDurationError.value)
       return
     }
     if (selectedFile.value.physical_category === 'apptainer' && !apptainerTargetDir.value.trim()) {
@@ -1716,7 +1721,7 @@ async function createTask() {
       const result = (await runRockyGpuDriverTask({ server_id: selectedServerIds.value[0], ...driverPayload })).data
       notifyTaskCreated()
       ElMessage.success('GPU 驱动任务已创建，将自动重启一次并继续执行。')
-      await router.push({ path: '/history', query: { view: 'tasks', task_id: result.task_id } })
+      await router.push({ path: '/history', query: getRunningTaskHistoryQuery() })
     } catch (error: unknown) {
       ElMessage.error(getApiErrorMessage(error))
     } finally {
@@ -1749,7 +1754,7 @@ async function createTask() {
       const result = (await runCudaToolkitTask({ server_id: selectedServerIds.value[0], ...cudaPayload })).data
       notifyTaskCreated()
       ElMessage.success(`CUDA Toolkit ${cudaToolkitVersion.value} 任务已创建。`)
-      await router.push({ path: '/history', query: { view: 'tasks', task_id: result.task_id } })
+      await router.push({ path: '/history', query: getRunningTaskHistoryQuery() })
     } catch (error: unknown) {
       ElMessage.error(getApiErrorMessage(error))
     } finally {
@@ -1774,8 +1779,8 @@ async function createTask() {
       ElMessage.error('必须选择服务器压测脚本')
       return
     }
-    if (stressDurationSeconds.value <= 0) {
-      ElMessage.error('服务器压测总秒数必须大于 0')
+    if (stressDurationError.value) {
+      ElMessage.error(stressDurationError.value)
       return
     }
   } else if (selectedTaskType.value === 'apptainer') {
@@ -1820,10 +1825,7 @@ async function createTask() {
     ElMessage.success('任务已创建，正在跳转历史任务。')
     await router.push({
       path: '/history',
-      query: {
-        view: 'tasks',
-        task_id: result.task_id,
-      },
+      query: getRunningTaskHistoryQuery(),
     })
   } catch (error: unknown) {
     // Handle 409 conflict — server already has a running task
@@ -1920,7 +1922,7 @@ async function createManagedSuiteTask() {
     notifyTaskCreated()
     const batchCount = getStressSuiteBatchIds(result).length
     ElMessage.success(`串行安装套件已创建 ${batchCount} 个服务器批次，正在跳转历史任务。`)
-    await router.push({ path: '/history', query: getStressSuiteHistoryQuery(result) })
+    await router.push({ path: '/history', query: getManagedSuiteHistoryQuery(result) })
   } catch (error: unknown) {
     ElMessage.error(getApiErrorMessage(error))
   } finally {
@@ -2207,39 +2209,8 @@ function getApiErrorMessage(error: unknown) {
   return readApiErrorMessage(error, '任务创建失败')
 }
 
-function paramsPreviewString(): string {
-  if (selectedTaskType.value === 'apptainer') {
-    return `覆盖远端文件：${apptainerOverwrite.value ? '是' : '否'}`
-  }
-  if (selectedTaskType.value !== 'stress' || !selectedFile.value) return '无'
-  const dur = stressDurationSeconds.value
-  return `时长 ${dur} 秒`
-}
-
 async function batchCreate() {
   if (!selectedFile.value) return
-  const servers = selectedServers.value
-  const scriptName = selectedFile.value.name
-
-  // Build confirmation message
-  const serverNames = servers.map((s) => `  - ${s.name} (${s.host})`).join('\n')
-  let confirmMsg = `将对以下 ${servers.length} 台服务器执行同一个脚本：\n\n${serverNames}\n\n脚本：\n${scriptName}\n`
-  if (selectedTaskType.value === 'stress') {
-    confirmMsg += `\n参数：\n${paramsPreviewString()}`
-  } else if (selectedTaskType.value === 'apptainer') {
-    confirmMsg += `\n覆盖远端文件：${apptainerOverwrite.value ? '是' : '否'}`
-  }
-  try {
-    await ElMessageBox.confirm(confirmMsg, '批量执行任务', {
-      confirmButtonText: '确认执行',
-      cancelButtonText: '取消',
-      type: 'info',
-      dangerouslyUseHTMLString: false,
-      customClass: 'batch-confirm-dialog',
-    })
-  } catch {
-    return
-  }
 
   submitting.value = true
   try {
@@ -3239,9 +3210,9 @@ onBeforeUnmount(() => {
 
 .duration-control {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
+  flex-direction: column;
   gap: 12px;
-  flex-wrap: wrap;
 }
 
 .duration-unit {
@@ -3873,6 +3844,10 @@ onBeforeUnmount(() => {
   color: #94a3b8;
 }
 
+.form-help-text.is-error {
+  color: var(--el-color-danger);
+}
+
 .gpu-driver-form {
   margin-top: 14px;
 }
@@ -3988,12 +3963,6 @@ onBeforeUnmount(() => {
 .batch-reason {
   font-size: 13px;
   color: var(--el-text-color-secondary);
-}
-
-/* Batch confirm dialog: preserve newlines in message */
-.batch-confirm-dialog .el-message-box__message {
-  white-space: pre-wrap;
-  line-height: 1.7;
 }
 
 @media (max-width: 960px) {

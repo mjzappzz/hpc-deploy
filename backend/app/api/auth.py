@@ -1,12 +1,11 @@
 import logging
 from time import time
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
 from app.core.auth import ADMIN_SESSION_DURATION_MINUTES, create_admin_token, decode_admin_token, require_admin_token, verify_admin_password
-from app.core.config import settings
 from app.db.database import get_db
 
 logger = logging.getLogger(__name__)
@@ -39,8 +38,17 @@ class AdminVerifyResponse(BaseModel):
     expires_in: int | None
 
 
+def should_secure_admin_cookie(request: Request) -> bool:
+    return request.url.scheme.lower() == "https"
+
+
 @router.post("/admin/verify", response_model=AdminVerifyResponse)
-def admin_verify(payload: AdminVerifyRequest, response: Response, db: Session = Depends(get_db)) -> AdminVerifyResponse:
+def admin_verify(
+    payload: AdminVerifyRequest,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> AdminVerifyResponse:
     """Verify password and issue an HttpOnly admin token for one browser tab."""
     if not verify_admin_password(payload.password, db):
         raise HTTPException(
@@ -55,7 +63,7 @@ def admin_verify(payload: AdminVerifyRequest, response: Response, db: Session = 
         "value": token,
         "httponly": True,
         "samesite": "lax",
-        "secure": settings.app_env == "production",
+        "secure": should_secure_admin_cookie(request),
         "path": "/api",
     }
     if expires_in is not None:

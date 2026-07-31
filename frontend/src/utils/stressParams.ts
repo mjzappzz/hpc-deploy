@@ -13,6 +13,15 @@ export interface DurationParts {
   seconds: number
 }
 
+export const STRESS_MAX_DURATION_HOURS = 72
+export const STRESS_MAX_DURATION_SECONDS = STRESS_MAX_DURATION_HOURS * 3600
+
+export function validateStressDurationSeconds(durationSeconds: number): string {
+  if (durationSeconds < 60) return '压测时长最少为 1 分钟'
+  if (durationSeconds > STRESS_MAX_DURATION_SECONDS) return '压测时长最多为 72 小时（3 天）'
+  return ''
+}
+
 export const STRESS_TYPE_OPTIONS = [
   { label: 'GPU', value: 'gpu' },
   { label: 'CPU + Memory', value: 'cpu_memory' },

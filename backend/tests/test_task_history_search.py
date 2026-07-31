@@ -190,3 +190,23 @@ class TaskHistorySearchTests(unittest.TestCase):
             {item.task_id for item in active.items},
             {"task-batch-running"},
         )
+
+    def test_active_only_filter_can_include_complete_batch_context(self) -> None:
+        active = list_tasks(
+            db=self.session,
+            task_status=None,
+            task_type=None,
+            task_scope=None,
+            server_id=None,
+            keyword=None,
+            limit=50,
+            offset=0,
+            order="created_desc",
+            active_only=True,
+            include_batch_context=True,
+        )
+
+        self.assertEqual(
+            {item.task_id for item in active.items},
+            {"task-batch-running", "task-batch-success", "task-batch-pending"},
+        )

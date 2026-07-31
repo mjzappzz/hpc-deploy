@@ -1,14 +1,14 @@
 ﻿#requires -version 5.1
 <#
-NVIDIA GeForce / RTX FurMark2 + y-cruncher + DiskSpd Stability Report v94 Unified Pass Terminology
+NVIDIA GeForce / RTX FurMark2 + y-cruncher + DiskSpd Stability Report v95 Actual Execution Status
 Windows PowerShell 5.1+
 ASCII-safe script body. Chinese text in HTML is encoded as HTML entities where needed.
 
-V94 report wording changes:
-- Project/module status uses: 通过 / 关注 / 不合格 / 未测试.
-- All participating test judgements use: 通过 / 关注 / 不合格 / 未测试 or 未采集.
-- Removed the label 通过; pass results now consistently display 通过.
-- Thresholds, RAID/controller detection and stress-test execution logic are unchanged from v92.
+V95 report status corrections:
+- Module cards now show actual execution state instead of only checking the selected Mode.
+- Missing GPU, disabled stage, skipped disk stage, or failed workload startup are shown as 未测试 with a reason.
+- CPU and disk modules are marked 已测试 only after a real stress workload process starts.
+- Test judgement thresholds and hardware evaluation logic remain unchanged.
 #>
 
 param(
@@ -236,6 +236,15 @@ $script:GpuSkipImmediate = $false
 $script:CpuMemBackendUsed = "NotStarted"
 $script:CpuMemBackendReason = ""
 $script:CpuMemMemoryPolicy = ""
+
+# v95: track whether each workload actually started.
+# Selecting a module in Mode does not mean that the module was really tested.
+$script:CpuModuleAttempted = $false
+$script:CpuModuleExecuted = $false
+$script:CpuModuleReason = "未启用"
+$script:DiskModuleAttempted = $false
+$script:DiskModuleExecuted = $false
+$script:DiskModuleReason = "未启用"
 
 function Log([string]$Msg) {
     $line = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $Msg"
@@ -1024,7 +1033,12 @@ function Resolve-TestDrives {
     return @($targets | Select-Object -Unique)
 }
 function Assert-TestDrives([string[]]$Drives) {
-    if (!$Drives -or $Drives.Count -eq 0) { Log "[WARN] No local fixed disk found. Disk phase will be skipped."; $script:SkipDiskPhase = $true; return }
+    if (!$Drives -or $Drives.Count -eq 0) {
+        Log "[WARN] No local fixed disk found. Disk phase will be skipped."
+        $script:SkipDiskPhase = $true
+        $script:DiskModuleReason = "未检测到可测试的本地固定磁盘"
+        return
+    }
     $need = Convert-SizeToBytes $DiskFileSize
     foreach ($d in $Drives) {
         $ps = Get-PSDrive -Name $d.TrimEnd(':') -ErrorAction SilentlyContinue
@@ -1492,7 +1506,14 @@ function Invoke-DiskThroughputProbeIfNeeded([int]$OverrideSeconds=0) {
     Log "============================================================"
     Log ("[PHASE START] disk-throughput-probe DurationSeconds={0} DISK=True Policy={1}" -f $effectiveSeconds,$DiskBothTimePolicy)
     Log "============================================================"
-    $procs = Start-DiskSpdWorkload $effectiveSeconds "throughput_probe" "throughput"
+    $script:DiskModuleAttempted = $true
+    $procs = @(Start-DiskSpdWorkload $effectiveSeconds "throughput_probe" "throughput")
+    if($procs.Count -gt 0){
+        $script:DiskModuleExecuted = $true
+        $script:DiskModuleReason = ""
+    } elseif(!$script:DiskModuleExecuted) {
+        $script:DiskModuleReason = "DiskSpd 顺序读写测试未成功启动"
+    }
     $end=(Get-Date).AddSeconds($effectiveSeconds)
     while((Get-Date) -lt $end) { Write-MonitorSample "disk-throughput-probe"; Start-Sleep -Seconds $IntervalSeconds }
     Write-MonitorSample "disk-throughput-probe"
@@ -1633,6 +1654,8 @@ function Run-Phase([string]$Phase,[int]$DurationSeconds,[bool]$RunGpu,[bool]$Run
         }
     }
     if ($RunCpu) {
+        $script:CpuModuleAttempted = $true
+        $script:CpuModuleReason = ""
         $script:CpuMemBackendUsed = "Unknown"
         $script:CpuMemBackendReason = ""
         $script:CpuMemMemoryPolicy = "$YCruncherMemoryPercent% RAM policy"
@@ -1711,8 +1734,40 @@ function Run-Phase([string]$Phase,[int]$DurationSeconds,[bool]$RunGpu,[bool]$Run
                 }
             }
         } else { $procs += Start-CpuBurners $DurationSeconds; $procs += Start-MemoryWorkers $DurationSeconds }
+
+        # A CPU module is considered tested only when a real workload process started.
+        $cpuWorkloadProcesses = @($procs | Where-Object {
+            try {
+                $_ -and (
+                    $_.ProcessName -match "powershell|y-cruncher|Komari|Kizuna|ZN[0-9]|SKX|NHM" -or
+                    $script:CpuMemBackendUsed -eq "y-cruncher"
+                )
+            } catch { $false }
+        })
+        if($cpuWorkloadProcesses.Count -gt 0){
+            $script:CpuModuleExecuted = $true
+            $script:CpuModuleReason = ""
+        } else {
+            $script:CpuModuleExecuted = $false
+            $script:CpuModuleReason = "CPU/内存压力程序未成功启动"
+        }
     }
-    if ($RunDisk -and !$script:SkipDiskPhase) { $procs += Start-DiskStress $DurationSeconds $Phase }
+    if ($RunDisk -and !$script:SkipDiskPhase) {
+        $script:DiskModuleAttempted = $true
+        $script:DiskModuleReason = ""
+        $diskPhaseProcs = @(Start-DiskStress $DurationSeconds $Phase)
+        $procs += $diskPhaseProcs
+        if($diskPhaseProcs.Count -gt 0){
+            $script:DiskModuleExecuted = $true
+        } else {
+            $script:DiskModuleExecuted = $false
+            $script:DiskModuleReason = "DiskSpd 未成功启动或没有可测试磁盘"
+        }
+    } elseif($RunDisk -and $script:SkipDiskPhase) {
+        $script:DiskModuleAttempted = $true
+        $script:DiskModuleExecuted = $false
+        $script:DiskModuleReason = "磁盘阶段已跳过：没有满足条件的测试盘或可用空间不足"
+    }
     if ($procs.Count -eq 0 -and !$RunDisk -and !$RunCpu) {
         Log "[PHASE SKIP] $Phase has no runnable workload. Skip monitoring loop immediately."
         return
@@ -2484,12 +2539,54 @@ $diskResultTableRows
         else { "顺序读写测试在稳定性测试后追加" }
     } else { "单项测试" }
     $diskProfileDisplay = if($DiskIoProfile -eq "both"){"随机读写 + 顺序读写"}elseif($DiskIoProfile -eq "stability"){"随机读写"}else{"顺序读写"}
-    $gpuTestEnabled = $Mode -in @("gpu","all","staged")
-    $cpuTestEnabled = $Mode -in @("cpu","all","staged")
-    $diskTestEnabled = $Mode -in @("disk","all","staged")
+    # v95: report actual execution state, not merely whether Mode selected the module.
+    $gpuTestEnabled = $gpuEnabled
+    $cpuTestEnabled = $cpuEnabled
+    $diskTestEnabled = $diskEnabled
 
-    $cpuModuleStatus = if($cpuTestEnabled){"已测试"}else{"未测试"}
-    $diskModuleStatus = if($diskTestEnabled){"已测试"}else{"未测试"}
+    $gpuModuleStatus = if(!$gpuTestEnabled){
+        "未测试（未启用）"
+    } elseif($script:GpuTestStatus -eq "PASS"){
+        "已测试"
+    } elseif($script:GpuTestStatus -eq "Running"){
+        "未测试（测试未正常结束）"
+    } elseif($gpuNotDetected){
+        "未测试（未检测到 NVIDIA GPU）"
+    } else {
+        $reason = if([string]::IsNullOrWhiteSpace($script:GpuTestReason)){"GPU 压力程序未成功启动"}else{$script:GpuTestReason}
+        "未测试（$reason）"
+    }
+
+    $cpuModuleStatus = if(!$cpuTestEnabled){
+        "未测试（未启用）"
+    } elseif($script:CpuModuleExecuted){
+        "已测试"
+    } else {
+        $reason = if([string]::IsNullOrWhiteSpace($script:CpuModuleReason)){"CPU/内存压力程序未成功启动"}else{$script:CpuModuleReason}
+        "未测试（$reason）"
+    }
+
+    $diskModuleStatus = if(!$diskTestEnabled){
+        $reason = if($script:SkipDiskPhase -and ![string]::IsNullOrWhiteSpace($script:DiskModuleReason)){$script:DiskModuleReason}else{"未启用"}
+        "未测试（$reason）"
+    } elseif($script:DiskModuleExecuted){
+        "已测试"
+    } else {
+        $reason = if([string]::IsNullOrWhiteSpace($script:DiskModuleReason)){"DiskSpd 未成功启动或没有有效测试结果"}else{$script:DiskModuleReason}
+        "未测试（$reason）"
+    }
+
+    $cpuBackendDisplay = if($script:CpuModuleExecuted){
+        if($script:CpuMemBackendUsed -and $script:CpuMemBackendUsed -notin @("NotStarted","Unknown")){$script:CpuMemBackendUsed}else{$CpuMemBackend}
+    } else { "未测试" }
+    $cpuModuleReasonDisplay = if($script:CpuModuleExecuted){
+        if([string]::IsNullOrWhiteSpace($script:CpuMemBackendReason)){"-"}else{$script:CpuMemBackendReason}
+    } else {
+        if([string]::IsNullOrWhiteSpace($script:CpuModuleReason)){"未执行 CPU/内存压力测试"}else{$script:CpuModuleReason}
+    }
+    $diskModuleReasonDisplay = if($script:DiskModuleExecuted){"-"}else{
+        if([string]::IsNullOrWhiteSpace($script:DiskModuleReason)){"未执行磁盘压力测试"}else{$script:DiskModuleReason}
+    }
 
     $testInfoCards = @"
 <div class='info-grid'>
@@ -2502,7 +2599,7 @@ $diskResultTableRows
   </div>
   <div class='info-card'>
     <div class='card-title'>GPU 测试模块</div>
-    <div class='info-row'><div class='info-key'>状态</div><div class='info-val'>$(if($gpuTestEnabled){"已测试"}else{"未测试"})</div></div>
+    <div class='info-row'><div class='info-key'>执行状态</div><div class='info-val'>$(Html $gpuModuleStatus)</div></div>
     $(if($gpuTestEnabled){
 @"
     <div class='info-row'><div class='info-key'>阶段时长</div><div class='info-val'>$(Html $gpuPlanDisplay)</div></div>
@@ -2515,24 +2612,38 @@ $diskResultTableRows
   </div>
   <div class='info-card'>
     <div class='card-title'>CPU / 内存测试模块</div>
-    <div class='info-row'><div class='info-key'>状态</div><div class='info-val'>$cpuModuleStatus</div></div>`n    $(if($cpuTestEnabled){"<div class='info-row'><div class='info-key'>阶段时长</div><div class='info-val'>$CpuMinutes $($L.Minutes)</div></div>"})
-    <div class='info-row'><div class='info-key'>后端</div><div class='info-val'>$(Html $CpuMemBackend)</div></div>
+    <div class='info-row'><div class='info-key'>执行状态</div><div class='info-val'>$(Html $cpuModuleStatus)</div></div>
+    $(if($cpuTestEnabled -or $script:CpuModuleAttempted){
+@"
+    <div class='info-row'><div class='info-key'>阶段时长</div><div class='info-val'>$CpuMinutes $($L.Minutes)</div></div>
+    <div class='info-row'><div class='info-key'>实际后端</div><div class='info-val'>$(Html $cpuBackendDisplay)</div></div>
     <div class='info-row'><div class='info-key'>$($L.MemoryTarget)</div><div class='info-val'>y-cruncher policy $YCruncherMemoryPercent% RAM</div></div>
+    <div class='info-row'><div class='info-key'>说明</div><div class='info-val'>$(Html $cpuModuleReasonDisplay)</div></div>
+"@
+    })
   </div>
   <div class='info-card span-2'>
     <div class='card-title'>磁盘测试模块</div>
-    <div class='info-row'><div class='info-key'>状态</div><div class='info-val'>$diskModuleStatus</div></div>`n    $(if($diskTestEnabled){"<div class='info-row'><div class='info-key'>磁盘总时长</div><div class='info-val'>$diskStageDisplay</div></div>"})
+    <div class='info-row'><div class='info-key'>执行状态</div><div class='info-val'>$(Html $diskModuleStatus)</div></div>
+    $(if($diskTestEnabled -or $script:DiskModuleAttempted){
+@"
+    <div class='info-row'><div class='info-key'>磁盘总时长</div><div class='info-val'>$diskStageDisplay</div></div>
     <div class='info-row'><div class='info-key'>$($L.DiskTarget)</div><div class='info-val'>$(Html $diskTargets)</div></div>
     <div class='info-row'><div class='info-key'>测试组合</div><div class='info-val'>$(Html $diskProfileDisplay)</div></div>
     <div class='info-row'><div class='info-key'>时长分配</div><div class='info-val'>$(Html $diskPolicyText)</div></div>
     <div class='info-row'><div class='info-key'>顺序读写测试</div><div class='info-val'>$(Html $diskProbeText)</div></div>
+    <div class='info-row'><div class='info-key'>说明</div><div class='info-val'>$(Html $diskModuleReasonDisplay)</div></div>
+"@
+    })
   </div>
 </div>
 "@
-    $stageRows = ""; if($gpuTestEnabled){$stageRows += Stage-Row "gpu" $gpuRows}; if($cpuTestEnabled){$stageRows += Stage-Row "cpu" $cpuRows}
-    if($diskRows.Count -gt 0){ $stageRows += Stage-Row "disk 总计" $diskRows }
-    if($diskStabilityRows.Count -gt 0){ $stageRows += Stage-Row "disk 稳定性" $diskStabilityRows }
-    if($diskThroughputRows.Count -gt 0){ $stageRows += Stage-Row "disk 速度" $diskThroughputRows }
+    $stageRows = ""
+    if($script:GpuTestStatus -eq "PASS"){$stageRows += Stage-Row "gpu" $gpuRows}
+    if($script:CpuModuleExecuted){$stageRows += Stage-Row "cpu" $cpuRows}
+    if($script:DiskModuleExecuted -and $diskRows.Count -gt 0){ $stageRows += Stage-Row "disk 总计" $diskRows }
+    if($script:DiskModuleExecuted -and $diskStabilityRows.Count -gt 0){ $stageRows += Stage-Row "disk 稳定性" $diskStabilityRows }
+    if($script:DiskModuleExecuted -and $diskThroughputRows.Count -gt 0){ $stageRows += Stage-Row "disk 速度" $diskThroughputRows }
     if([string]::IsNullOrWhiteSpace($stageRows)){ $stageRows = "<tr><td colspan='4'>-</td></tr>" }
     $toolRows=""; foreach($t in $script:ToolInfo){ $module=$t.Module; if([string]::IsNullOrWhiteSpace($module)){ if($t.Tool -match "Disk"){$module=$L.DiskPressure} elseif($t.Tool -match "FurMark"){$module=$L.GpuPressure} elseif($t.Tool -match "y-cruncher"){$module=$L.CpuPressure} else {$module="Runtime"} }; $toolRows += "<tr><td>$module</td><td>$(Html $t.Tool)</td><td>$(Html $t.Source)</td><td>$(Html $t.Path)</td><td>$(Html $t.Args)</td></tr>" }
     if([string]::IsNullOrWhiteSpace($toolRows)){ $toolRows="<tr><td colspan='5'>-</td></tr>" }

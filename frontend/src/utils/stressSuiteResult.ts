@@ -18,7 +18,16 @@ export function getCreatedBatchHistoryQuery(
 }
 
 export const getStressSuiteBatchIds = getCreatedBatchIds
-export const getStressSuiteHistoryQuery = getCreatedBatchHistoryQuery
+
+export function getRunningTaskHistoryQuery(): { status: 'RUNNING' } {
+  return { status: 'RUNNING' }
+}
+
+export function getStressSuiteHistoryQuery(_result: CreatedBatchResult): { status: 'RUNNING' } {
+  return getRunningTaskHistoryQuery()
+}
+
+export const getManagedSuiteHistoryQuery = getStressSuiteHistoryQuery
 
 type CreatedTaskResult = {
   task_ids?: string[]
@@ -33,10 +42,7 @@ export function getCreatedTaskIds(result: CreatedTaskResult): string[] {
 }
 
 export function getCreatedTaskHistoryQuery(
-  result: CreatedTaskResult,
-): { view: 'tasks'; task_id?: string; task_ids?: string } {
-  const taskIds = getCreatedTaskIds(result)
-  return taskIds.length === 1
-    ? { view: 'tasks', task_id: taskIds[0] }
-    : { view: 'tasks', task_ids: taskIds.join(',') }
+  _result: CreatedTaskResult,
+): { status: 'RUNNING' } {
+  return getRunningTaskHistoryQuery()
 }

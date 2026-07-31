@@ -1086,16 +1086,17 @@ import { computed, nextTick, onMounted, onActivated, onUnmounted, reactive, ref,
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
 import { cancelBatch, cancelTask, cleanupBatchLocalArtifacts, cleanupTaskLocalArtifacts, downloadBatchReportZip, downloadTaskLogs, getTask, getTaskLogs, getTaskMonitor, listArtifacts, listBatches, getBatchDetail, listTasks, retryBatchTask, retryTask, type ArtifactFileDetail, type BatchDetailResponse, type BatchQuery, type BatchSummaryItem, type BatchTaskDetailItem, type MonitorType, type TaskLogRecord, type TaskListQuery, type TaskMonitorStructuredResponse, type TaskRecord } from '@/api/task'
-import { formatBeijingDateKey, formatDateTime } from '@/utils/time'
+import { formatDateTime } from '@/utils/time'
 import { getApiErrorMessage as readApiErrorMessage, isApiRequestTimeout } from '@/utils/apiError'
 import {
   extractEnvironmentCommands as extractTaskEnvironmentCommands,
   extractVerifyCommands as extractTaskVerifyCommands,
 } from '@/utils/taskCommands'
 import { formatTaskErrorMessage, getTaskOutcomeDisplayMessage } from '@/utils/taskError'
+import { getTaskHistoryActivityQuery, shouldClearRunningHistoryFilter, shouldGroupHistoryBatchTasks } from '@/utils/taskHistory'
 import { useTaskWebSocket } from '@/composables/useTaskWebSocket'
 import { calcDurationSeconds, calcEstimatedEndTime, calcEstimatedRemaining, calcProgress, formatSeconds, getTaskDuration, statusLabel } from '@/composables/useTaskProgress'
-import { formatTaskDisplayName, getTaskTypeLabel, getTaskTypeTags } from '@/utils/taskDisplay'
+import { formatHistoryTaskTitle, formatTaskDisplayName, getTaskTypeLabel, getTaskTypeTags } from '@/utils/taskDisplay'
 import {
   getBatchStepLabel,
   getBatchSummaryModuleLabels,
@@ -1418,12 +1419,7 @@ function batchGroupDisplayName(tasks: TaskRecord[]): string {
       : tasks.some(task => task.task_type === 'stress')
         ? 'Linux 服务器压测'
         : getTaskTypeLabel(tasks[0]?.task_type, '任务')
-  const dateLabel = compactTaskDate(batchGroupCreatedAt(tasks))
-  return ['批次', serverLabel, typeLabel, dateLabel].filter(Boolean).join(' · ')
-}
-
-function compactTaskDate(value?: string | null): string {
-  return formatBeijingDateKey(value)
+  return formatHistoryTaskTitle('批次', serverLabel, typeLabel, batchGroupCreatedAt(tasks))
 }
 
 function batchStepLabel(task: TaskRecord): string {
@@ -1663,6 +1659,7 @@ const total = ref(0)
 const SEARCH_DEBOUNCE_MS = 300
 let taskSearchTimer: number | undefined
 let batchSearchTimer: number | undefined
+let runningFilterEmptyLoadCount = 0
 
 type HistoryTaskItem = {
   type: 'task'
@@ -1682,10 +1679,11 @@ type HistoryItem = HistoryTaskItem | HistoryBatchItem
 const historyItems = computed<HistoryItem[]>(() => {
   const items: HistoryItem[] = []
   const batchMap = new Map<string, HistoryBatchItem>()
+  const groupBatchTasks = shouldGroupHistoryBatchTasks(filters.status)
 
   for (const task of tasks.value) {
     const batchId = task.batch_id
-    if (!batchId) {
+    if (!batchId || !groupBatchTasks) {
       items.push({
         type: 'task',
         key: `task:${task.task_id}`,
@@ -1821,7 +1819,7 @@ const drawerFailureReason = computed(() => {
 
 const drawerCanRetry = computed(() => {
   const task = drawerTask.value
-  if (!task || task.batch_id) return false
+  if (!task || task.batch_id || task.task_type === 'apptainer') return false
   const status = task.status?.toUpperCase() ?? ''
   return ['FAILED', 'CANCELED', 'TIMEOUT'].includes(status)
     || task.report_status?.toUpperCase() === 'FAIL'
@@ -2330,9 +2328,10 @@ async function loadTasks(silent = false) {
   if (!silent) loading.value = true
   try {
     const wasRunningFilter = filters.status === 'RUNNING'
+    const activityQuery = getTaskHistoryActivityQuery(filters.status)
     const resp = (await listTasks({
       ...filters,
-      include_batch_context: Boolean(filters.status),
+      ...activityQuery,
     })).data
     tasks.value = resp.items
     total.value = resp.total
@@ -2340,6 +2339,12 @@ async function loadTasks(silent = false) {
     // "Running tasks" is a live entry point, not a permanent empty filter.
     // Once all matching tasks finish, return to normal history automatically.
     if (wasRunningFilter && resp.total === 0) {
+      runningFilterEmptyLoadCount += 1
+      if (!shouldClearRunningHistoryFilter(runningFilterEmptyLoadCount)) {
+        checkAutoRefresh()
+        return
+      }
+      runningFilterEmptyLoadCount = 0
       filters.status = undefined
       filters.offset = 0
       const { status: _status, running_filter: _runningFilter, ...query } = route.query
@@ -2350,6 +2355,8 @@ async function loadTasks(silent = false) {
       })).data
       tasks.value = historyResp.items
       total.value = historyResp.total
+    } else {
+      runningFilterEmptyLoadCount = 0
     }
   } finally {
     if (!silent) loading.value = false
@@ -3082,6 +3089,10 @@ function stopAutoRefresh() {
 /** Check if auto-refresh should be active based on current view contents. */
 function checkAutoRefresh() {
   if (viewMode.value === 'tasks') {
+    if (filters.status === 'RUNNING') {
+      startAutoRefresh()
+      return
+    }
     const hasNonTerminal = tasks.value.some(t => !TERMINAL_STATUSES.includes(t.status))
     if (hasNonTerminal) {
       startAutoRefresh()

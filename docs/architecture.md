@@ -62,6 +62,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - GPU 驱动安装（`/gpu-driver/rocky9`、`/gpu-driver/batch`）：按目标服务器 OS 自动选择 Rocky 9 或 Ubuntu 安装脚本，支持 GeForce / Data Center（RTX Enterprise）驱动库与临时 `.run` 上传
 - CUDA Toolkit 安装（`/cuda-toolkit`、`/cuda-toolkit/batch`）：支持 11.8、12.0–12.6、12.8、12.9、13.0，安装前校验 `nvidia-smi`，仅安装 Toolkit，不安装或覆盖驱动
 - 压测套件创建（`/stress-suite`），同服务器内按 GPU → CPU/内存 → 磁盘串行推进
+- 单项压测与压测套件的单个脚本时长范围为 1 分钟–72 小时（后端秒级边界仍为 10–259200 秒）；当前任务页以小时/分钟输入并在 72 小时边界前置限制和提示
 - 受控环境套件创建（`/managed-suite`）：基础环境配置按关闭锁屏/休眠 → 锁定当前系统版本，GPU 驱动安装按 NVIDIA 驱动 → CUDA Toolkit 严格串行；多台服务器各自创建独立批次，前序失败时后序不启动，后端重启后恢复套件 worker
 - 多服务器单动作入口按服务器创建互相独立的单次任务：普通脚本/单项压测/Apptainer（`/batch`）、GPU 驱动（`/gpu-driver/batch`）和 CUDA Toolkit（`/cuda-toolkit/batch`）均返回完整 `task_ids`，每条任务的 `batch_id` 为空；只有同一服务器包含多个有序步骤的受控环境套件和压测套件才创建批次，并按服务器分配独立 `batch_id`
 - Intel oneAPI 2022 安装脚本 v1.1.0 在执行安装器前分别检查 MKL 与编译器/Intel MPI 命令；目标组件已完整安装时跳过对应离线包下载和安装，最终严格验证 `icc`、`icx`、`ifort`、`mpiicc`、`mpiifort`、`mpirun` 及 `MKLROOT`，重复执行不再因 Intel 安装器返回“already installed”而误报失败
@@ -71,7 +72,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - 任务执行恢复：普通脚本和 CUDA Toolkit 与压测、NVIDIA 驱动一致，远端进程使用 `nohup + setsid` 脱离 SSH，任务目录保存 `.hpcdeploy.pid`、`task.log` 和 `.hpcdeploy.exit_code`。后端启动时扫描 RUNNING 任务，通过 SSH 重新附着监控、补录日志并按远端退出码收尾；CONNECTING/PREPARING/UPLOADING 阶段任务由启动恢复器重新排队。
 - 重启恢复中的普通脚本与 CUDA Toolkit 遇到 SSH 连接或 channel 临时不可用时保持 RUNNING，并以 60 秒间隔重新附着；NVIDIA 驱动已有同类延迟重试，压测执行多次即时重连后再延迟重试。控制面连接失败不再直接覆盖远端任务真实退出状态。
 - 批次压测子任务重跑（`/{task_id}/retry-in-batch`）：仅支持白名单压测脚本中执行失败、取消、超时或报告 FAIL 的子任务；重跑任务追加到同批次、同服务器队列末尾，并阻止重复排队
-- 任务列表 `scope=single|batch`：按是否存在 `batch_id` 筛选单次任务或批次子任务，保持分页总数准确；`active_only=true` 统计 CONNECTING、PREPARING、UPLOADING、RUNNING、CANCELING 全部活动任务；`include_batch_context=true` 在状态筛选时保留命中批次的完整子任务
+- 任务列表 `scope=single|batch`：按是否存在 `batch_id` 筛选单次任务或批次子任务，保持分页总数准确；`active_only=true` 统计 CONNECTING、PREPARING、UPLOADING、WAITING_REBOOT、RUNNING、CANCELING 全部活动任务；`active_only=true&include_batch_context=true` 返回活动任务所属批次的完整子任务，供运行入口渲染完整批次卡；状态筛选也支持 `include_batch_context=true`
 - 状态查询、取消；管理员删除本机任务记录（`POST /api/tasks/{task_id}/local-artifacts/cleanup`）和整批记录（`POST /api/tasks/batches/{batch_id}/local-artifacts/cleanup`）
 - 删除仅允许终态任务：清理本地 artifacts、任务日志和数据库任务记录，**不删除远端目录**，审计日志保留
 - 日志查询、日志下载、WebSocket 实时日志（`/api/tasks/{task_id}/logs/ws`）
@@ -88,13 +89,14 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 
 ### scripts API (`/api/scripts`)
 - 脚本知识库文件列表、上传、预览、下载、删除
-- 按类型筛选（mpi/stress/windows/apptainer）
+- 前端当前按类型筛选 mpi/stress/windows；apptainer 资产保留但不开放管理入口
 - Windows 分类仅接受 `.ps1`、`.bat`、`.cmd`，单文件不超过 2 MiB；只供 Windows 压测页面预览、复制和下载，不可创建 Linux 任务
 - Linux NVIDIA 驱动库由 tasks API 独立管理，避免 `.run` 文件进入通用 Linux 脚本执行链路
-- 前端“资产库管理”将 Linux NVIDIA 驱动库置于独立卡片，普通脚本知识库只展示 mpi/stress/apptainer；统一上传入口先选择目标模块，再应用对应扩展名约束。Windows 资料不进入该页面的“全部”列表
+- 前端“资产库管理”将 Linux NVIDIA 驱动库置于独立卡片，普通脚本知识库只展示 mpi/stress；统一上传入口先选择目标模块，再应用对应扩展名约束。Windows 与暂时下线的 Apptainer 资料不进入该页面的“全部”列表
 
 ### cleanup API (`/api/cleanup`)
 - 本地结果文件目录扫描与删除已整合到系统设置页面，旧清理中心页面和 `/cleanup` 前端路由已删除
+- 系统设置的运行路径列表隐藏软下线的本机及远端 Apptainer 目录，后端路径契约仍保留用于兼容历史任务
 - 本地结果文件按真实任务记录聚合：普通任务返回任务名称、任务 ID、任务类型；批次任务按 `batch_id` 聚合并返回所有子任务名称、task_id、目录、文件数和大小
 - 批次结果按“子任务 → 子任务文件”返回；数据库中属于该批次但没有 artifacts 目录的取消、未启动或未回收子任务也会进入 `child_tasks`，文件列表为空
 - 本地结果和数据库任务日志支持同一任务 ID 搜索：匹配单次任务 ID、批次 ID和批次子任务 ID；批次 ID会映射全部子任务日志
@@ -102,7 +104,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - 本地结果删除后默认只软隐藏历史记录：设置 `tasks.hidden_from_history=1`、`hidden_reason`、`hidden_at`，保留数据库记录
 - 本地结果按任务完成时间（无结束时间时开始/创建时间）排序；未匹配数据库任务的遗留目录才使用文件 mtime
 - 本地报告自动清理状态查询（`GET /api/cleanup/auto-cleanup/status`），配置保存走 settings API
-- Apptainer 镜像目录只读查看
+- Apptainer 镜像目录扫描接口保留用于历史兼容，前端当前不展示
 - 远端单台/全部在线服务器临时目录扫描与清理，自动匹配数据库任务记录，返回显示元数据（display_title、server_name、batch_id 等）
 - 远端任务目录按 mtime 降序排列
 - 远端整体目录清理（`POST /api/cleanup/remote/delete`），只允许 `tasks` / `downloads` / `tmp` 三个 target
@@ -341,6 +343,7 @@ $HOME/hpcdeploy/
 ### 管理员密码
 - 生产安装通过 `/etc/hpcdeploy/hpcdeploy.env` 设置 `HPCDEPLOY_ADMIN_PASSWORD`；首次安装交互设置，开发模式才保留 `admin123` fallback
 - JWT `SECRET_KEY` 由安装脚本随机生成并保存在同一 root-only 文件，属于系统内部密钥，用户无需查看或记忆
+- 管理员 JWT 保存在 `HttpOnly`、`SameSite=Lax` Cookie 中；Cookie 的 `Secure` 属性按 nginx 转发的实际请求协议设置，HTTP 内网部署可正常回传，HTTPS 部署自动启用 `Secure`
 - 可通过系统设置页面修改密码，修改后保存到 `system_settings` 表 `admin_password` 键
 - 密码验证优先级：DB 存储密码 → 环境变量 `HPCDEPLOY_ADMIN_PASSWORD`
 - 删除 DB 配置后自动回退到环境变量密码，不会锁死
@@ -377,7 +380,7 @@ GPU 压测 TXT/XLSX 报告分别记录 `nvidia-smi --query-gpu=driver_version` �
 
 任务列表、单任务详情和批次子任务共用缓存摘要中的 `failure_reason`。结构化诊断发现旧版 GPU 脚本已输出 `Start gpu-burn`、却因缺少 `[STAGE] stress_start` 被 300 秒启动超时终止时，归因为平台阶段协议不一致，并将中文诊断结论写入该字段；原始 `Task.error_message` 保留用于日志和审计。
 
-前端任务展示通过 `frontend/src/utils/taskPresentation.ts` 接受单任务与批次详情的结构兼容输入，统一计算模块名称、GPU 精度、受控套件动作、批次步骤名称和最终状态；`taskError.ts` 统一选择 `outcome_message`、`failure_reason`、`error_message` 并格式化详情说明。单次和批次组件只保留布局及各入口已有的兜底文案。
+前端任务展示通过 `frontend/src/utils/taskPresentation.ts` 接受单任务与批次详情的结构兼容输入，统一计算模块名称、GPU 精度、受控套件动作、批次步骤名称和最终状态；`taskError.ts` 统一选择 `outcome_message`、`failure_reason`、`error_message` 并格式化详情说明。后端仅在确认整个安装任务未产生安装动作时返回成功跳过说明：单组件或依赖步骤跳过不计入，oneAPI 与 AOCC/AOCL/OpenMPI 等组合安装必须全部目标组件均已存在。单次和批次组件只保留布局及各入口已有的兜底文案。
 
 ### 压测运行续租与报告回收
 
@@ -419,7 +422,7 @@ GPU 压测 TXT/XLSX 报告分别记录 `nvidia-smi --query-gpu=driver_version` �
 | `.app-topbar` | `position: sticky; top: 0` | `height: 56px; z-index: 20` |
 | `.app-content` | 在 main-area 内 flex: 1 | `padding: 20px 24px` |
 
-侧边栏“历史任务”每 5 秒轻量查询一次活动任务总数（CONNECTING、PREPARING、UPLOADING、RUNNING、CANCELING）；存在活动任务时显示绿色状态点和数量，页面不可见时暂停轮询。创建任务后立即刷新，点击“运行 N”会跳转历史任务并应用 `RUNNING` 状态筛选。
+侧边栏“历史任务”每 5 秒轻量查询一次活动任务总数（CONNECTING、PREPARING、UPLOADING、WAITING_REBOOT、RUNNING、CANCELING）；存在活动任务时显示绿色状态点和数量，页面不可见时暂停轮询。所有任务创建成功分支以及点击“运行 N”均进入历史任务的运行筛选；运行筛选使用 `active_only` 并保留完整批次上下文，首次查询处于全 PENDING 窗口时等待一次自动刷新后再决定是否退出筛选。单次任务显示单次卡，批次任务在普通历史和运行筛选中均显示完整批次卡。
 
 ---
 

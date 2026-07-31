@@ -10,7 +10,7 @@ import {
   getTaskNameLabel,
 } from './taskPresentation.ts'
 import { environmentBusinessCategoryLabel } from './environmentCategory.ts'
-import { formatTaskDisplayName } from './taskDisplay.ts'
+import { formatHistoryTaskTitle, formatTaskDisplayName } from './taskDisplay.ts'
 
 
 test('GPU FP32 is visible in the history label', () => {
@@ -93,8 +93,8 @@ test('compiler and MPI installation scripts are not labeled as base environment 
   assert.equal(getTaskNameLabel(aoccTask), 'AMD OpenMPI 4.1.6')
   assert.equal(getBatchStepLabel(oneapiTask), 'Intel oneAPI 2022')
   assert.equal(getBatchStepLabel(aoccTask), 'AMD OpenMPI 4.1.6')
-  assert.equal(formatTaskDisplayName(oneapiTask), 'node01 · MPI 编译环境配置 · install_oneapi_2022 · 20260730')
-  assert.equal(formatTaskDisplayName(aoccTask), 'node01 · MPI 编译环境配置 · install_openmpi_4.1.6_aocc_aocl · 20260730')
+  assert.equal(formatTaskDisplayName(oneapiTask), 'node01 · MPI 编译环境配置 · 20260730-160000')
+  assert.equal(formatTaskDisplayName(aoccTask), 'node01 · MPI 编译环境配置 · 20260730-160000')
   assert.deepEqual(
     getBatchSummaryModuleLabels(['install_oneapi_2022.sh']),
     ['Intel oneAPI 2022'],
@@ -102,6 +102,13 @@ test('compiler and MPI installation scripts are not labeled as base environment 
   assert.equal(
     getBatchSummaryTypeLabel('script', ['install_oneapi_2022.sh']),
     'MPI 编译环境配置',
+  )
+})
+
+test('single and batch history titles share the compact category format', () => {
+  assert.equal(
+    formatHistoryTaskTitle('批次', 'node01', 'Linux 服务器压测', '2026-07-30T08:00:00Z'),
+    '批次 · node01 · Linux 服务器压测 · 20260730-160000',
   )
 })
 

@@ -1,6 +1,6 @@
 # HPCDeploy
 
-> 面向 Linux / HPC 运维场景的轻量级自动化控制台：统一管理服务器、受控脚本、压测任务、Apptainer 镜像、运行日志、结果文件与审计操作。
+> 面向 Linux / HPC 运维场景的轻量级自动化控制台：统一管理服务器、受控脚本、压测任务、运行日志、结果文件与审计操作。
 
 HPCDeploy 通过 SSH 在远端执行白名单脚本，提供批量任务调度、实时日志与资源监控，以及 GPU、CPU/内存、磁盘压测报告的回收与追踪。
 
@@ -26,8 +26,8 @@ HPCDeploy 通过 SSH 在远端执行白名单脚本，提供批量任务调度�
 | GPU 软件部署 | Linux NVIDIA `.run` 驱动库（GeForce 默认 `580.159.04`、Data Center（RTX Enterprise）默认 `580.173.02`）与 CUDA Toolkit 11.8、12.0–12.6、12.8、12.9、13.0 自动安装 |
 | 压测与结果 | GPU、CPU/内存、磁盘压测；回收 `.log`、`.txt`、`.csv`、`.xlsx`、`.json` |
 | 可观测与恢复 | WebSocket 实时日志、CPU/内存/磁盘/GPU 监控、任务诊断与后端重启后恢复监控 |
-| 资产与治理 | Apptainer `.sif` 分发、任务历史与失败重跑、管理员模式、审计与自动清理 |
-| Windows 脚本库 | Windows 压测脚本上传、预览、复制、下载及 8 组 PowerShell 命令预设（不执行）；当前内置脚本为 v94 |
+| 资产与治理 | 任务历史与失败重跑、管理员模式、审计与自动清理 |
+| Windows 脚本库 | Windows 压测脚本上传、预览、复制、下载及 8 组 PowerShell 命令预设（不执行）；当前内置脚本为 v95 |
 
 ## 快速启动
 
@@ -59,8 +59,10 @@ sudo /path/to/hpc-deploy/deploy/scripts/reset_admin_password.sh
 ## 使用流程
 
 1. 在“服务器管理”新增目标服务器并完成 SSH 探测。
-2. 在“资产库管理”统一上传 Linux NVIDIA 驱动、受控脚本或待分发的 Apptainer `.sif` 镜像；脚本按基础环境配置、MPI 编译环境配置、Linux 服务器压测和 Apptainer 分类展示。低频的“Windows 压测（试验）”位于左侧“资产库管理”上方，仅用于脚本上传、复制或下载。
-3. 在“执行任务”按“环境部署 / 稳定性验证 / 资产分发”选择任务类型；环境部署包含基础环境配置、GPU 驱动安装和 MPI 编译环境配置，稳定性验证用于 Linux 服务器压测，资产分发用于 Apptainer 镜像。基础环境与 GPU 软件支持多选并按固定顺序串行执行。
+2. 在“资产库管理”统一上传 Linux NVIDIA 驱动和受控脚本；脚本按基础环境配置、MPI 编译环境配置和 Linux 服务器压测分类展示。低频的“Windows 压测（试验）”位于左侧“资产库管理”上方，仅用于脚本上传、复制或下载。
+3. 在“执行任务”按“环境部署 / 稳定性验证”选择任务类型；环境部署包含基础环境配置、GPU 驱动安装和 MPI 编译环境配置，稳定性验证用于 Linux 服务器压测。基础环境与 GPU 软件支持多选并按固定顺序串行执行。
+
+> Apptainer 镜像上传和任务创建入口当前暂不开放；后端兼容接口和历史任务数据保留，历史任务仍可查看。本机资料库当前不保留 `.sif` 镜像。
 4. 在“历史任务”直接查看单次及批次子任务状态和详情说明；压测任务可下载结果文件，CUDA 安装任务可复制环境变量与验证命令，管理员可执行任务清理和审计查询。
 5. 仪表盘“最近任务”以独立任务 ID 列区分批次子任务，并显示与历史任务一致的单次/批次及任务类型标签；单击行进入任务历史，拖选文本不会触发跳转。
 
@@ -248,7 +250,7 @@ HPCDeploy 不会把整个项目目录推到目标 HPC 服务器。
 
 - 编译环境/普通脚本：上传选中的 `backend/scripts/mpi/*`
 - 压测任务：上传选中的 `backend/scripts/stress/*`
-- Apptainer 分发：上传选中的 `backend/apptainer/*.sif`
+- Apptainer 分发：后端保留历史兼容能力，前端当前不开放创建入口
 - GPU 驱动安装：上传选择的驱动库 `.run` 文件，或临时上传的自定义 `.run` 文件
 - CUDA 安装：不上传本机安装包；目标服务器从 NVIDIA 官方软件源安装选定 Toolkit 版本
 
@@ -333,9 +335,9 @@ deploy/systemd/hpcdeploy-backend.service
 - 前端不传 `command` / `raw shell` / `remote_path` / `raw_args`
 - 前端不传 `remote_work_dir` — 远端工作目录由后端 `UUID` 生成，不绕过 `task_runner`
 - 后端只执行白名单脚本（文件名白名单 + 目录校验）
-- Apptainer 只上传/分发 `.sif`，不执行 `run` / `exec`
+- Apptainer 历史兼容能力只上传/分发 `.sif`，不执行 `run` / `exec`；前端当前不开放入口
 - Windows 压测页只管理与展示 `.ps1` / `.bat` / `.cmd`；不允许进入 Linux SSH 任务执行链路
-- 当前内置 Windows 压测脚本为 `v94_windows_stress.ps1`。v94 保留 v90 的磁盘稳定性/性能分离、按盘动态门槛、系统盘阈值放宽和 DiskSpd `-si` 吞吐探测，并统一报告状态为“通过 / 关注 / 不合格 / 未测试（或未采集）”；阈值、RAID/控制器识别与压测执行逻辑不因本次术语调整而改变。
+- 当前内置 Windows 压测脚本为 `v95_windows_stress.ps1`。v95 在 v94 统一报告术语的基础上，按压测进程是否实际启动判定模块“已测试”；GPU 缺失、阶段禁用、磁盘跳过或负载启动失败会显示“未测试”及原因，判断阈值与硬件评估逻辑不变。
 - NVIDIA 驱动任务仅接受安全文件名的 `.run` 文件；驱动类型必须为 GeForce 或 Data Center（RTX Enterprise）。临时上传驱动默认 7 天后清理，运行中被引用的文件不清理
 - CUDA 任务仅安装 Toolkit，不安装或覆盖 NVIDIA 驱动；任务先通过 `nvidia-smi` 校验驱动可用，再按目标系统安装对应版本
 - Linux 当前版本锁定脚本 v1.6.0 支持 x86_64 Rocky 9.x 与 Ubuntu 22.04/24.04。Rocky 读取执行前的 `VERSION_ID` 与 `uname -r`，预检固定版本仓库后锁定当前小版本、当前运行内核对应的已安装 RPM 及已安装的 `kernel-headers`；每个候选仓库预检最多运行 90 秒，超时终止 DNF 并自动切换下一源，全部失败时不修改系统配置。Ubuntu 禁止发行版升级，并通过 `apt-mark hold` 锁定当前运行内核对应的 image/modules/headers 包及已安装的 generic、HWE、virtual、lowlatency、OEM 内核元包；保留原有 hold，失败时撤销本次新增 hold。两类系统均不自动安装、升级或切换内核，也不执行全量更新；内核安全更新需在维护窗口手动解锁、升级并重新验证驱动。Rocky 旧小版本可能来自 Vault，不再获得安全更新；EPEL 9 按主版本滚动，不随 Rocky 小版本冻结。

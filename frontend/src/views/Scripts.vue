@@ -10,7 +10,6 @@
           <div class="library-overview__stats">
             <el-tag effect="plain">NVIDIA 驱动 {{ gpuDriverLibrary.length }}</el-tag>
             <el-tag effect="plain" type="success">Linux 脚本 {{ counts.mpi + counts.stress }}</el-tag>
-            <el-tag effect="plain" type="warning">Apptainer 镜像 {{ counts.apptainer }}</el-tag>
           </div>
         </div>
         <div class="library-overview__actions">
@@ -60,7 +59,7 @@
         <div class="knowledge-header">
           <div>
             <div class="knowledge-title">脚本知识库</div>
-            <div class="knowledge-subtitle">管理 Linux 可执行脚本与 Apptainer 镜像；Windows 压测脚本请在“Windows 压测（试验）”页面管理。</div>
+            <div class="knowledge-subtitle">管理 Linux 可执行脚本；Windows 压测脚本请在“Windows 压测（试验）”页面管理。</div>
           </div>
         </div>
       </template>
@@ -70,7 +69,6 @@
         <el-tab-pane :label="`基础环境配置 (${counts.base_system})`" name="base_system" />
         <el-tab-pane :label="`MPI 编译环境配置 (${counts.compiler_mpi})`" name="compiler_mpi" />
         <el-tab-pane :label="`Linux 服务器压测 (${counts.stress})`" name="stress" />
-        <el-tab-pane :label="`Apptainer 镜像 (${counts.apptainer})`" name="apptainer" />
       </el-tabs>
 
       <ScriptTable
@@ -96,10 +94,6 @@
           <span class="asset-upload-option__title">Linux 服务器压测</span>
           <span class="asset-upload-option__hint">.sh / .py / .txt / .md</span>
         </el-radio>
-        <el-radio value="apptainer" border>
-          <span class="asset-upload-option__title">Apptainer 镜像</span>
-          <span class="asset-upload-option__hint">.sif</span>
-        </el-radio>
       </el-radio-group>
       <template #footer>
         <el-button @click="assetUploadVisible = false">取消</el-button>
@@ -107,13 +101,12 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="scriptUploadVisible" title="上传脚本或镜像" width="480px" :close-on-click-modal="false">
+    <el-dialog v-model="scriptUploadVisible" title="上传脚本" width="480px" :close-on-click-modal="false">
       <el-form label-position="top">
         <el-form-item label="上传类型" required>
           <el-select v-model="uploadCategory" class="upload-category-select" @change="clearSelectedUploadFile">
             <el-option label="Linux 环境脚本（基础环境 / MPI 编译环境）" value="mpi" />
             <el-option label="Linux 服务器压测" value="stress" />
-            <el-option label="Apptainer 镜像" value="apptainer" />
           </el-select>
         </el-form-item>
         <el-form-item label="文件" required>
@@ -245,7 +238,9 @@ const uploadingGpuDriver = ref(false)
 
 const filteredFiles = computed(() => {
   if (activeCategory.value === 'all') {
-    return sortScriptLibraryFiles(files.value.filter((file) => file.physical_category !== 'windows'))
+    return sortScriptLibraryFiles(files.value.filter((file) => (
+      file.physical_category !== 'windows' && file.physical_category !== 'apptainer'
+    )))
   }
   if (activeCategory.value === 'base_system' || activeCategory.value === 'compiler_mpi') {
     return files.value.filter((file) => (

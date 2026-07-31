@@ -10,6 +10,7 @@ test('groups runtime paths by operational function and preserves configured orde
     { key: 'mpi_scripts' },
     { key: 'database' },
     { key: 'apptainer' },
+    { key: 'remote_apptainer' },
     { key: 'ssh_keys' },
     { key: 'sqlite_backups' },
   ]
@@ -21,7 +22,7 @@ test('groups runtime paths by operational function and preserves configured orde
     })),
     [
       { key: 'core', rows: ['database', 'ssh_keys'] },
-      { key: 'assets', rows: ['mpi_scripts', 'apptainer'] },
+      { key: 'assets', rows: ['mpi_scripts'] },
       { key: 'results', rows: ['artifacts', 'sqlite_backups'] },
       { key: 'remote', rows: ['remote_tasks'] },
     ],

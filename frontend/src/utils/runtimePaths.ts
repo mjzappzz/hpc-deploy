@@ -2,6 +2,8 @@ type RuntimePathLike = {
   key: string
 }
 
+const HIDDEN_RUNTIME_PATH_KEYS = new Set(['apptainer', 'remote_apptainer'])
+
 const RUNTIME_PATH_GROUPS = [
   {
     key: 'core',
@@ -12,8 +14,8 @@ const RUNTIME_PATH_GROUPS = [
   {
     key: 'assets',
     title: '资产库',
-    description: '环境脚本、压测脚本、驱动和 Apptainer 镜像。',
-    pathKeys: ['mpi_scripts', 'stress_scripts', 'gpu_driver_library', 'gpu_driver_uploads', 'apptainer'],
+    description: '环境脚本、压测脚本和驱动。',
+    pathKeys: ['mpi_scripts', 'stress_scripts', 'gpu_driver_library', 'gpu_driver_uploads'],
   },
   {
     key: 'results',
@@ -24,8 +26,8 @@ const RUNTIME_PATH_GROUPS = [
   {
     key: 'remote',
     title: '远端运行目录',
-    description: '目标服务器上的任务工作目录和镜像分发目录。',
-    pathKeys: ['remote_tasks', 'remote_apptainer'],
+    description: '目标服务器上的任务工作目录。',
+    pathKeys: ['remote_tasks'],
   },
 ] as const
 
@@ -37,7 +39,8 @@ export type RuntimePathGroup<T extends RuntimePathLike> = {
 }
 
 export function groupRuntimePaths<T extends RuntimePathLike>(paths: readonly T[]): RuntimePathGroup<T>[] {
-  const byKey = new Map(paths.map(path => [path.key, path]))
+  const visiblePaths = paths.filter(path => !HIDDEN_RUNTIME_PATH_KEYS.has(path.key))
+  const byKey = new Map(visiblePaths.map(path => [path.key, path]))
   const groups: RuntimePathGroup<T>[] = RUNTIME_PATH_GROUPS
     .map(group => ({
       key: group.key,
@@ -48,7 +51,7 @@ export function groupRuntimePaths<T extends RuntimePathLike>(paths: readonly T[]
     .filter(group => group.rows.length > 0)
 
   const knownKeys = new Set<string>(RUNTIME_PATH_GROUPS.flatMap(group => [...group.pathKeys]))
-  const remaining = paths.filter(path => !knownKeys.has(path.key))
+  const remaining = visiblePaths.filter(path => !knownKeys.has(path.key))
   if (remaining.length > 0) {
     groups.push({
       key: 'other',
