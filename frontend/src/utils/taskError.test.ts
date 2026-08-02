@@ -20,6 +20,22 @@ test('single and batch task shapes prefer the shared outcome message', () => {
 test('failed and canceled tasks use shared source precedence and formatting', () => {
   assert.equal(
     getTaskOutcomeDisplayMessage(
+      { error_message: 'stress preparation deadline exceeded (1800s), no report found' },
+      'FAILED',
+      '任务执行失败，请查看执行日志。',
+    ),
+    '压测准备超时，依赖安装、下载或编译未在准备期限内完成。',
+  )
+  assert.equal(
+    getTaskOutcomeDisplayMessage(
+      { error_message: 'stress runtime deadline exceeded (300s), no report found' },
+      'FAILED',
+      '任务执行失败，请查看执行日志。',
+    ),
+    '压测运行结束后未在报告回收宽限内生成报告。',
+  )
+  assert.equal(
+    getTaskOutcomeDisplayMessage(
       { failure_reason: 'SSH connection timed out' },
       'FAILED',
       '任务执行失败，请查看执行日志。',

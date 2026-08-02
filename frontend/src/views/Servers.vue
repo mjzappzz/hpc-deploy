@@ -32,7 +32,8 @@
 
       <div class="server-table-wrap">
         <div class="server-group">
-          <div class="server-group__header">
+          <div class="server-group__header server-group__header--clickable" @click="showOnlineServers = !showOnlineServers">
+            <span class="server-group__toggle">{{ showOnlineServers ? '▼' : '▶' }}</span>
             <span class="server-group__title">在线服务器</span>
             <el-tag size="small" type="success" effect="plain">{{ onlineServers.length }}</el-tag>
             <el-button
@@ -41,24 +42,26 @@
               plain
               :loading="isDetectingOnline"
               :disabled="isDetectingAll || onlineServers.length === 0"
-              @click="detectOnlineServers"
+              @click.stop="detectOnlineServers"
             >{{ isDetectingOnline ? `检测中 ${probeProgress.completed}/${probeProgress.total}` : '检测在线服务器' }}</el-button>
           </div>
-          <ServerTable
-            v-if="loading || onlineServers.length > 0"
-            :servers="onlineServers"
-            :loading="loading"
-            :probing-ids="probingIds"
-            :is-detecting-all="isDetectingAll"
-            :starred-ids="starredServerIds"
-            @edit="openEdit"
-            @delete="removeServer"
-            @detect="detectOne"
-            @detail="openDetail"
-            @toggle-star="toggleServerStar"
-            @update-tags="updateServerTags"
-          />
-          <el-empty v-else description="一个在线服务器都没有… (•ˋ _ˊ•)" :image-size="60" />
+          <div v-show="showOnlineServers">
+            <ServerTable
+              v-if="loading || onlineServers.length > 0"
+              :servers="onlineServers"
+              :loading="loading"
+              :probing-ids="probingIds"
+              :is-detecting-all="isDetectingAll"
+              :starred-ids="starredServerIds"
+              @edit="openEdit"
+              @delete="removeServer"
+              @detect="detectOne"
+              @detail="openDetail"
+              @toggle-star="toggleServerStar"
+              @update-tags="updateServerTags"
+            />
+            <el-empty v-else description="一个在线服务器都没有… (•ˋ _ˊ•)" :image-size="60" />
+          </div>
         </div>
 
         <div class="server-group server-group--offline">
@@ -98,11 +101,11 @@
 
     <el-dialog v-model="dialogVisible" :title="editingId ? '编辑服务器' : '新增服务器'" width="560px">
       <el-form :model="form" label-width="110px" @submit.prevent="submitServerForm" @keydown.enter.prevent="submitServerForm">
-        <el-form-item label="IP 地址" required>
-          <el-input v-model="form.host" placeholder="例如：47.109.105.242" />
-        </el-form-item>
         <el-form-item label="服务器名称" required>
           <el-input v-model="form.name" placeholder="例如：aliyun-gpu01" />
+        </el-form-item>
+        <el-form-item label="IP 地址" required>
+          <el-input v-model="form.host" placeholder="例如：47.109.105.242" />
         </el-form-item>
         <el-form-item label="SSH 端口" required>
           <el-input-number v-model="form.port" :min="1" :max="65535" />
@@ -513,6 +516,7 @@ const onlineServers = computed(() => servers.value
 const offlineServers = computed(() => servers.value
   .filter((server) => server.status === 'offline')
   .sort((a, b) => sortStarredFirst(a, b) || timestampValue(b.last_check_at) - timestampValue(a.last_check_at)))
+const showOnlineServers = ref(true)
 const showOfflineServers = ref(false)
 const serverReadyForPublicKeyDeploy = (server: ServerRecord) => server.status === 'online' && !!server.last_check_at
 const publicKeyTargetServers = computed(() => servers.value.filter(serverReadyForPublicKeyDeploy))

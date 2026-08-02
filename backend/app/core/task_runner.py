@@ -51,8 +51,9 @@ EXIT_CODE_FILE_NAME = ".hpcdeploy.exit_code"
 COMMAND_LOG_FILE_NAME = "task.log"
 CANCELED_EXIT_CODE = -15
 STRESS_BOOT_ID_PARAM_KEY = "stress_boot_id"
+STRESS_REMOTE_STARTED_PARAM_KEY = "stress_remote_started"
 TASK_LEASE_SECONDS = 600
-STRESS_STARTUP_TIMEOUT_SECONDS = 300
+STRESS_PREPARATION_TIMEOUT_SECONDS = 1800
 STRESS_RECOVERY_SSH_CONNECT_RETRIES = 3
 STRESS_RECOVERY_SSH_RETRY_DELAY_SECONDS = 60
 TASK_LOG_MAX_MESSAGE_BYTES = 4096
@@ -597,7 +598,7 @@ def _extract_stress_exit_reason(log_text: str) -> str:
 
 
 def _classify_stress_startup_stall(log_text: str, elapsed: int) -> str | None:
-    if elapsed < STRESS_STARTUP_TIMEOUT_SECONDS:
+    if elapsed < STRESS_PREPARATION_TIMEOUT_SECONDS:
         return None
     lower_text = log_text.lower()
     if "[stage] stress_start" in lower_text:
@@ -605,17 +606,17 @@ def _classify_stress_startup_stall(log_text: str, elapsed: int) -> str | None:
     if "missing dependencies detected, installing" in lower_text:
         return (
             "stress failed before start: dependency installation did not finish "
-            f"within {STRESS_STARTUP_TIMEOUT_SECONDS}s"
+            f"within {STRESS_PREPARATION_TIMEOUT_SECONDS}s"
         )
     if "[stage] dependency_check_start" in lower_text and "[stage] dependency_check_done" not in lower_text:
         return (
             "stress failed before start: dependency check did not finish "
-            f"within {STRESS_STARTUP_TIMEOUT_SECONDS}s"
+            f"within {STRESS_PREPARATION_TIMEOUT_SECONDS}s"
         )
     if "gpu-burn not found or force rebuild, start building" in lower_text:
         return (
             "GPU stress failed before start: gpu-burn build did not finish "
-            f"within {STRESS_STARTUP_TIMEOUT_SECONDS}s"
+            f"within {STRESS_PREPARATION_TIMEOUT_SECONDS}s"
         )
     return None
 
@@ -762,7 +763,7 @@ def _execute_stress_async(db, executor: SSHExecutor, task: Task, task_id: str, c
     db.commit()
     _ensure_task_not_canceled(db, task)
     _record_stress_boot_id(db, task, executor)
-    _set_status(db, task, "RUNNING")
+    _set_status(db, task, "PREPARING")
 
     pid_file = _build_remote_pid_file_path(task.remote_work_dir)
     log_file = shell_quote(f"{task.remote_work_dir.rstrip('/')}/task.log")
@@ -794,6 +795,10 @@ def _execute_stress_async(db, executor: SSHExecutor, task: Task, task_id: str, c
     except SSHExecutorError:
         raise TaskRunnerError("stress async: failed to verify PID file")
 
+    params = dict(task.params or {})
+    params[STRESS_REMOTE_STARTED_PARAM_KEY] = True
+    task.params = params
+    db.commit()
     _add_log(db, task_id, "SYSTEM", "stress script started in background (async mode)")
 
     # ── 进入轮询循环（委托给共享函数） ──
@@ -818,8 +823,11 @@ def _stress_poll_loop(
 
     params = task.params or {}
     duration_seconds = params.get("duration_seconds", 0) or 0
-    grace = _calculate_stress_grace(duration_seconds)
-    deadline = duration_seconds + grace
+    stress_started = task.status == "RUNNING" or stress_started_in_log(full_log_text)
+    runtime_estimate = stress_poll_deadline_seconds(
+        duration_seconds=duration_seconds,
+        stress_started=True,
+    )
     poll_interval = 10
     pid_file = _build_remote_pid_file_path(task.remote_work_dir)
     log_file = shell_quote(f"{task.remote_work_dir.rstrip('/')}/task.log")
@@ -829,8 +837,9 @@ def _stress_poll_loop(
     _last_pos = last_log_pos
     _ssh_fail_count = 0          # 连续 SSH 失败计数，触发新鲜连接
     expected_boot_id = str((task.params or {}).get(STRESS_BOOT_ID_PARAM_KEY, ""))
+    runtime_overdue_notice_emitted = False
 
-    while elapsed < deadline:
+    while True:
         _poll_sleep(poll_interval)
         elapsed += poll_interval
 
@@ -902,12 +911,29 @@ def _stress_poll_loop(
                 _fail_running_stress_task(db, task, task_id, fatal_reason)
                 return
 
-            startup_stall_reason = _classify_stress_startup_stall(_full_log, elapsed)
-            if startup_stall_reason:
-                _add_log(db, task_id, "ERROR", f"stress async: startup stalled: {startup_stall_reason}")
-                _terminate_remote_pid_group(executor, pid_file)
-                _fail_running_stress_task(db, task, task_id, startup_stall_reason)
-                return
+            if not stress_started and stress_started_in_log(_full_log):
+                stress_started = True
+                elapsed = 0
+                task.start_time = datetime.utcnow()
+                _set_status(db, task, "RUNNING")
+                _add_log(db, task_id, "SYSTEM", "stress workload started; runtime duration timer started")
+
+            if not stress_started:
+                startup_stall_reason = _classify_stress_startup_stall(_full_log, elapsed)
+                if startup_stall_reason is None and stress_elapsed_requires_failure(
+                    duration_seconds=duration_seconds,
+                    stress_started=False,
+                    elapsed_seconds=elapsed,
+                ):
+                    startup_stall_reason = (
+                        f"stress preparation deadline exceeded ({STRESS_PREPARATION_TIMEOUT_SECONDS}s), "
+                        "no stress_start marker found"
+                    )
+                if startup_stall_reason:
+                    _add_log(db, task_id, "ERROR", f"stress async: preparation stalled: {startup_stall_reason}")
+                    _terminate_remote_pid_group(executor, pid_file)
+                    _fail_running_stress_task(db, task, task_id, startup_stall_reason)
+                    return
 
             # 3. 检查报告是否生成（含连接失败自动重连）
             _rx_raw = _exec_with_reconnect(
@@ -926,7 +952,7 @@ def _stress_poll_loop(
                             "SYSTEM",
                             "stress async: xlsx report is not complete locally yet; retrying collection",
                         )
-                        _broadcast_status_safe(task_id, "RUNNING")
+                        _broadcast_status_safe(task_id, task.status)
                         continue
                     db.refresh(task)
                     if task.status not in ("CANCELED", "CANCELING", "SUCCESS"):
@@ -961,8 +987,23 @@ def _stress_poll_loop(
                     _fail_running_stress_task(db, task, task_id, reason)
                 return
 
-            # 4. 保持 RUNNING 广播（前端进度可见）
-            _broadcast_status_safe(task_id, "RUNNING")
+            if (
+                stress_started
+                and not runtime_overdue_notice_emitted
+                and elapsed >= runtime_estimate
+                and pid_alive is True
+            ):
+                runtime_overdue_notice_emitted = True
+                _add_log(
+                    db,
+                    task_id,
+                    "WARNING",
+                    "stress async: runtime estimate exceeded "
+                    f"({runtime_estimate}s), remote process is healthy; continuing monitoring",
+                )
+
+            # 4. 按实际阶段广播，前端仅在 stress_start 后显示运行中。
+            _broadcast_status_safe(task_id, task.status)
 
         except Exception as _poll_exc:
             # ── 轮询异常保护：捕获所有未预期异常，避免守护线程静默死亡 ──
@@ -1034,23 +1075,6 @@ def _stress_poll_loop(
                 _fail_running_stress_task(db, task, task_id, _poll_msg)
             return
 
-    # ── deadline 超时 ──
-    _add_log(db, task_id, "SYSTEM", f"stress async: deadline exceeded ({deadline}s), final check")
-    db.refresh(task)
-    if task.status not in ("CANCELED", "CANCELING", "SUCCESS"):
-        try:
-            collect_artifacts(db, task_id, task.remote_work_dir, executor)
-        except Exception:
-            pass
-        if not _attempt_stress_recovery(db, task_id, task):
-            task.status = "FAILED"
-            task.exit_code = None
-            task.end_time = datetime.utcnow()
-            task.error_message = f"stress deadline exceeded ({deadline}s), no report found"
-            db.commit()
-            _broadcast_done_safe(task_id, "FAILED")
-
-
 def _stress_recovery_monitor(task_id: str) -> None:
     """Backend 重启后重新 attach 到孤立的 RUNNING stress 任务。
 
@@ -1098,7 +1122,6 @@ def _stress_recovery_monitor(task_id: str) -> None:
                 db, task_id, "WARNING",
                 f"recovery: SSH connect unavailable; task remains RUNNING and recovery will retry: {last_connect_error}",
             )
-            task.status = "RUNNING"
             db.commit()
             _schedule_stress_recovery_retry(task_id)
             return
@@ -1110,7 +1133,6 @@ def _stress_recovery_monitor(task_id: str) -> None:
 
         if pid_alive is True:
             _add_log(db, task_id, "SYSTEM", "startup recovery: remote process still alive, resuming monitoring")
-            task.status = "RUNNING"
             db.commit()
             # 计算已过去的时间，作为轮询的起始偏移
             elapsed_baseline = 0
@@ -1173,15 +1195,17 @@ def resume_running_stress_tasks_after_startup() -> int:
     db = SessionLocal()
     resumed = 0
     try:
-        running_tasks = (
+        active_tasks = (
             db.query(Task)
             .filter(
-                Task.status == "RUNNING",
+                Task.status.in_(("RUNNING", "PREPARING")),
                 Task.task_type == "stress",
             )
             .all()
         )
-        for task in running_tasks:
+        for task in active_tasks:
+            if task.status == "PREPARING" and not bool((task.params or {}).get(STRESS_REMOTE_STARTED_PARAM_KEY)):
+                continue
             db.add(TaskLog(
                 task_id=task.task_id, level="SYSTEM",
                 message="startup recovery: spawning recovery monitor for orphaned RUNNING stress task",
@@ -1450,6 +1474,33 @@ def _calculate_stress_grace(duration_seconds: int) -> int:
     if duration_seconds <= 3600:      # ≤ 1 小时
         return 300
     return 600                         # > 1 小时
+
+
+def stress_started_in_log(log_text: str) -> bool:
+    return "[stage] stress_start" in log_text.lower()
+
+
+def stress_poll_deadline_seconds(*, duration_seconds: int, stress_started: bool) -> int:
+    """Return the preparation limit or the expected runtime completion threshold."""
+    if not stress_started:
+        return STRESS_PREPARATION_TIMEOUT_SECONDS
+    return duration_seconds + _calculate_stress_grace(duration_seconds)
+
+
+def stress_elapsed_requires_failure(
+    *,
+    duration_seconds: int,
+    stress_started: bool,
+    elapsed_seconds: int,
+) -> bool:
+    """Only a workload that never started may fail solely because of elapsed time.
+
+    Once the remote workload has entered ``stress_start``, its live PID and SSH
+    health are authoritative.  The duration plus grace is an overdue notice
+    threshold, not a reason to terminate or fail a healthy task.
+    """
+    del duration_seconds
+    return not stress_started and elapsed_seconds >= STRESS_PREPARATION_TIMEOUT_SECONDS
 
 
 def _should_chmod(local_path: Path) -> bool:

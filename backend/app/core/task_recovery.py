@@ -10,6 +10,7 @@ ACTIVE_RECOVERY_STATUSES = ("RUNNING", "CONNECTING", "PREPARING", "UPLOADING", "
 PRE_EXECUTION_STATUSES = ("CONNECTING", "PREPARING", "UPLOADING")
 SCHEDULER_RECOVERED_MARKER = "scheduler recovered"
 DEFAULT_STALE_AFTER_SECONDS = 600
+STRESS_REMOTE_STARTED_PARAM_KEY = "stress_remote_started"
 
 
 @dataclass
@@ -35,6 +36,10 @@ def should_requeue_after_restart(task_status: str, is_stale: bool) -> bool:
     """
     del is_stale
     return task_status in PRE_EXECUTION_STATUSES
+
+
+def is_remotely_started_stress_task(params: object) -> bool:
+    return isinstance(params, dict) and params.get(STRESS_REMOTE_STARTED_PARAM_KEY) is True
 
 
 def _reset_task_to_pending(task: Task, now: datetime, message: str) -> None:
@@ -66,6 +71,12 @@ def recover_stuck_tasks(stale_after_seconds: int = DEFAULT_STALE_AFTER_SECONDS) 
             .all()
         )
         for task in active_tasks:
+            if (
+                task.task_type == "stress"
+                and task.status == "PREPARING"
+                and is_remotely_started_stress_task(task.params)
+            ):
+                continue
             if not should_requeue_after_restart(task.status, _is_stale(task, now, stale_after)):
                 continue
             _reset_task_to_pending(

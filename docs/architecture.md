@@ -54,7 +54,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - 单台公钥部署（`/{id}/deploy-public-key`）
 - 单台/批量 SSH 测试（`/{id}/test`、`/test-ssh-all`）
 - 探测全部（`/probe-all`）支持显式 `server_ids`；服务器管理页可逐台并发复检全部、在线或离线服务器，离线分组默认折叠并提供组内复检入口；执行任务页仍只逐台并发复检当前在线服务器，避免任务提交前等待已知不可达主机超时
-- 标签管理（`/tags` 统计、`tag` 参数筛选）；固定单选值为待压测、测试机、压测完成、故障待处理
+- 标签管理（`/tags` 统计、`tag` 参数筛选）；固定单选值为待压测、测试机、压测完成、故障待处理。任务执行页按标签分组展示在线服务器，每个分组可独立全选/取消全选，跨分组选择会累积。
 - 标签基于 `tags_json TEXT` 列存储，包含在线/离线计数；旧记录读取时兼容空标签并回退为待压测
 
 ### tasks API (`/api/tasks`)
@@ -69,7 +69,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - AOCC/AOCL + OpenMPI 安装脚本 v1.1.0 分别检测 AOCC 编译器、AOCL 库和 OpenMPI wrapper；已完整安装的组件跳过下载、包安装或编译，最终严格验证 `clang`、`clang++`、`flang`、`mpicc`、`mpicxx`、`mpif90`、`mpirun`、AOCL 库及 `mpicc --showme`
 - Linux 当前版本锁定脚本 v1.6.1 接受 x86_64 Rocky 9.x 与 Ubuntu 22.04/24.04。Rocky 读取执行前 `VERSION_ID` 与 `uname -r`，要求当前运行内核存在对应 `kernel-core` RPM，并收集当前内核对应的已安装 `kernel`、`kernel-core`、`kernel-modules*`、`kernel-devel` 及已安装的 `kernel-headers`；随后预检并固定当前小版本仓库，通过 DNF versionlock 锁定 release/repo/GPG 与内核包。每个 Rocky 候选源的隔离 DNF 预检由 coreutils `timeout` 限制为 90 秒，超时后发送 TERM、10 秒后强制结束并切换下一源；所有候选失败时仍处于预检阶段，不修改系统配置。Ubuntu 将 `Prompt` 设置为 `never`，收集当前运行内核对应的 image/modules/headers 包以及已安装的 generic、HWE、virtual、lowlatency、OEM 内核元包，再通过 `apt-mark hold` 锁定并逐项验证；包状态识别接受 `dpkg` 的普通已安装（`ii`）和已 hold 且已安装（`hi`），仍拒绝残留配置或未安装状态。Ubuntu 备份原发行版升级配置与原 hold 清单，保留既有 hold，失败时只撤销本次新增 hold 并恢复配置。Rocky 备份全部 `.repo`、`releasever` 与 `versionlock.list`，失败时完整恢复并校验。脚本不自动补装、升级或切换内核，也不执行跨版本升级、降级或全量更新；内核安全更新需在维护窗口手动解锁、升级并重新验证驱动。
 - 资产库对所有文本脚本解析内容版本（支持 `SCRIPT_VERSION=...`、`ScriptVersion: ...` 等形式），API 通过 `content_version` 返回，管理表格统一展示“版本”列；未声明版本的文件显示 `-`。
-- 任务执行恢复：普通脚本和 CUDA Toolkit 与压测、NVIDIA 驱动一致，远端进程使用 `nohup + setsid` 脱离 SSH，任务目录保存 `.hpcdeploy.pid`、`task.log` 和 `.hpcdeploy.exit_code`。后端启动时扫描 RUNNING 任务，通过 SSH 重新附着监控、补录日志并按远端退出码收尾；CONNECTING/PREPARING/UPLOADING 阶段任务由启动恢复器重新排队。
+- 任务执行恢复：普通脚本和 CUDA Toolkit 与压测、NVIDIA 驱动一致，远端进程使用 `nohup + setsid` 脱离 SSH，任务目录保存 `.hpcdeploy.pid`、`task.log` 和 `.hpcdeploy.exit_code`。后端启动时扫描 RUNNING 任务，通过 SSH 重新附着监控、补录日志并按远端退出码收尾；CONNECTING/PREPARING/UPLOADING 阶段任务由启动恢复器重新排队。已在远端启动的压测任务会保留 `PREPARING` 状态直到负载启动标记出现，重启恢复器按 PID 重新附着而不重复下发。
 - 重启恢复中的普通脚本与 CUDA Toolkit 遇到 SSH 连接或 channel 临时不可用时保持 RUNNING，并以 60 秒间隔重新附着；NVIDIA 驱动已有同类延迟重试，压测执行多次即时重连后再延迟重试。控制面连接失败不再直接覆盖远端任务真实退出状态。
 - 批次压测子任务重跑（`/{task_id}/retry-in-batch`）：仅支持白名单压测脚本中执行失败、取消、超时或报告 FAIL 的子任务；重跑任务追加到同批次、同服务器队列末尾，并阻止重复排队
 - 任务列表 `scope=single|batch`：按是否存在 `batch_id` 筛选单次任务或批次子任务，保持分页总数准确；`active_only=true` 统计 CONNECTING、PREPARING、UPLOADING、WAITING_REBOOT、RUNNING、CANCELING 全部活动任务；`active_only=true&include_batch_context=true` 返回活动任务所属批次的完整子任务，供运行入口渲染完整批次卡；状态筛选也支持 `include_batch_context=true`
@@ -78,7 +78,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - 日志查询、日志下载、WebSocket 实时日志（`/api/tasks/{task_id}/logs/ws`）
 - 失败诊断（`/{task_id}/diagnosis`）
 - 结构化监控（`/{task_id}/monitor` — CPU/内存/磁盘/GPU 5s 轮询）
-- 历史任务统一展示：普通任务按单次任务卡展示；同一 `batch_id` 在前端聚合为批次卡，首页展示批次概览，批次详情弹窗展示完整子任务信息
+- 历史任务统一展示：普通任务按单次任务卡展示；同一 `batch_id` 在前端聚合为批次卡，首页展示批次概览，批次详情弹窗展示完整子任务信息。批次有成功和失败时，全部子任务结束后才显示橙色 `PARTIAL SUCCESS` / “部分成功”及成功、失败计数；仍有子任务运行时只显示运行状态。
 - 仪表盘最近任务使用独立任务 ID 列，并与历史任务共用任务类型标签规则；拖选表格文本不触发行跳转
 - 仪表盘服务器概览的离线计数使用红色告警样式；在线、总数等既有统计口径不变
 - 历史任务卡片统一展示模块、文件、远程目录、命令、计划时长、开始/结束/耗时、报告状态和失败原因
@@ -387,7 +387,7 @@ GPU 压测 TXT/XLSX 报告分别记录 `nvidia-smi --query-gpu=driver_version` �
 
 - 远端脚本先写入临时 XLSX，再原子替换最终文件名；采集端下载到本地 `.part`，完成 ZIP 完整性校验后再原子入库。
 - 运行中的压测任务每次 SSH 健康轮询都会更新 heartbeat/lease；后端重启后通过 SSH 检查远端 PID，并恢复对应监控线程。
-- GPU、CPU/内存和磁盘压测脚本依次输出 `[STAGE] dependency_check_start`、`[STAGE] dependency_check_done`、`[STAGE] stress_start`。后端以 `stress_start` 区分“启动前依赖卡住”和“负载已进入长时间运行”，避免历史依赖安装日志在 300 秒后误触发启动超时。
+- GPU、CPU/内存和磁盘压测脚本依次输出 `[STAGE] dependency_check_start`、`[STAGE] dependency_check_done`、`[STAGE] stress_start`。后端在 `stress_start` 前保持 `PREPARING`，准备期上限为 30 分钟；收到标记才切换 `RUNNING`、重置任务开始时间。用户压测时长加报告回收宽限仅用于标记“预计完成已延后”：远端 PID 和 SSH 健康时持续监控，不因该阈值失败；PID 异常退出、服务器重启、SSH 恢复失败或准备期无启动标记才判失败。依赖安装、下载或编译不再侵占用户设定的压测时长。
 - 压测套件以服务器为批次边界：每台服务器使用独立 `batch_id`，同服务器子任务按 GPU → CPU/内存 → 磁盘串行，不同服务器批次并行。批次取消、重试和结果文件只作用于对应服务器；一次多服务器请求通过响应中的 `batch_ids`/`batches` 关联，不合并为历史页中的单个批次。
 
 ---

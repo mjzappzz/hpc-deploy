@@ -24,6 +24,8 @@ export function formatTaskErrorMessage(message?: string | null): string {
   if (value.includes('stress async: poll loop crashed') && value.includes('SSH degraded')) {
     return '压测期间 SSH 连接连续失败，任务已中止。'
   }
+  if (value.includes('stress preparation deadline exceeded')) return '压测准备超时，依赖安装、下载或编译未在准备期限内完成。'
+  if (value.includes('stress runtime deadline exceeded')) return '压测运行结束后未在报告回收宽限内生成报告。'
   if (value.includes('stress deadline exceeded')) return '压测超时且未生成报告。'
   if (value.includes('failed to start stress async') || value.includes('remote command timed out')) {
     return '远端命令启动或执行超时。'

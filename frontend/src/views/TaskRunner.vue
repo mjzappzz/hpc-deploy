@@ -42,7 +42,7 @@
                       <el-icon v-if="!probingAllServers"><Refresh /></el-icon>
                       {{ probingAllServers ? `检测中 ${probeProgress.completed}/${probeProgress.total}` : '检测在线服务器' }}
                     </el-button>
-                    <el-select v-model="selectedTag" placeholder="全部标签" clearable size="small" style="width:140px" @change="onTagFilterChange">
+                    <el-select v-model="selectedTag" placeholder="全部标签" clearable size="small" style="width:140px">
                       <el-option v-for="t in tags" :key="t.name" :label="t.name" :value="t.name" />
                     </el-select>
                   </div>
@@ -59,6 +59,12 @@
                   <div class="server-group-list">
                     <section v-for="group in groupedOnlineServers" :key="group.name" class="server-group">
                       <div class="server-group-header">
+                        <el-button
+                          class="server-group-select-button"
+                          size="small"
+                          plain
+                          @click.stop="toggleServerGroup(group.servers)"
+                        >{{ isServerGroupFullySelected(group.servers) ? '取消全选' : '全选' }}</el-button>
                         <el-tag :type="group.name === '未标记' ? 'info' : serverTagType(group.name)" effect="plain">{{ group.name }}</el-tag>
                         <span>{{ group.servers.length }} 台服务器</span>
                       </div>
@@ -937,11 +943,6 @@ function sortStarredFirst(a: ServerRecord, b: ServerRecord): number {
   return Number(starredServerIds.value.includes(b.id)) - Number(starredServerIds.value.includes(a.id))
 }
 
-function onTagFilterChange() {
-  const validIds = new Set(filteredOnlineServers.value.map((s) => s.id))
-  selectedServerIds.value = selectedServerIds.value.filter((id) => validIds.has(id))
-}
-
 function toggleServerCard(id: number) {
   const idx = selectedServerIds.value.indexOf(id)
   if (idx >= 0) {
@@ -949,6 +950,26 @@ function toggleServerCard(id: number) {
   } else {
     selectedServerIds.value.push(id)
   }
+}
+
+function isServerGroupFullySelected(groupServers: ServerRecord[]): boolean {
+  return groupServers.length > 0
+    && groupServers.every((server) => selectedServerIds.value.includes(server.id))
+}
+
+function toggleServerGroup(groupServers: ServerRecord[]) {
+  const groupIds = groupServers.map((server) => server.id)
+  if (isServerGroupFullySelected(groupServers)) {
+    const visibleIdSet = new Set(groupIds)
+    selectedServerIds.value = selectedServerIds.value.filter((id) => !visibleIdSet.has(id))
+    return
+  }
+
+  const selectedIdSet = new Set(selectedServerIds.value)
+  selectedServerIds.value = [
+    ...selectedServerIds.value,
+    ...groupIds.filter((id) => !selectedIdSet.has(id)),
+  ]
 }
 
 function isStressCardActive(path: string): boolean {
@@ -2471,6 +2492,10 @@ onBeforeUnmount(() => {
   margin-bottom: 8px;
   color: var(--el-text-color-secondary);
   font-size: 12px;
+}
+
+.server-group-select-button {
+  margin-right: 2px;
 }
 
 .server-card-grid {

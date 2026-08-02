@@ -93,6 +93,7 @@
               <div class="batch-history-card__status-block">
                 <StatusTag :status="batchGroupStatus(item.tasks)" />
                 <span class="task-card__status-label">{{ batchGroupChineseStatus(item.tasks) }}</span>
+                <span v-if="batchGroupOutcomeSummary(item.tasks)" class="task-card__status-label">{{ batchGroupOutcomeSummary(item.tasks) }}</span>
               </div>
             </div>
 
@@ -373,11 +374,12 @@
               <span>{{ getBatchSummaryTypeLabel(row.task_type, row.script_names || []) }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="状态" width="80">
+          <el-table-column label="状态" width="150">
             <template #default="{ row }">
               <el-tag :type="batchStatusTagType(row.status)" size="small">
                 {{ batchStatusLabel(row.status) }}
               </el-tag>
+              <span v-if="batchOutcomeSummary(row)" class="batch-status-summary">{{ batchOutcomeSummary(row) }}</span>
             </template>
           </el-table-column>
           <el-table-column label="操作" width="160">
@@ -746,6 +748,7 @@
               <span class="bd-tag-group">
                 <el-tag size="small">{{ batchSummaryModuleLabels(batchDetailData.tasks).join('、') || '-' }}</el-tag>
                 <el-tag :type="batchStatusTagType(batchDetailData.summary.status)" size="small">{{ batchStatusLabel(batchDetailData.summary.status) }}</el-tag>
+                <span v-if="batchOutcomeSummary(batchDetailData.summary)" class="batch-status-summary">{{ batchOutcomeSummary(batchDetailData.summary) }}</span>
               </span>
             </div>
             <div class="batch-detail-summary-sub">
@@ -1376,7 +1379,14 @@ function batchGroupStatus(tasks: TaskRecord[]): string {
 }
 
 function batchGroupChineseStatus(tasks: TaskRecord[]): string {
-  return statusLabel(batchGroupStatus(tasks))
+  const status = batchGroupStatus(tasks)
+  return status === 'PARTIAL_FAILED' ? '部分成功' : statusLabel(status)
+}
+
+function batchGroupOutcomeSummary(tasks: TaskRecord[]): string {
+  if (batchGroupStatus(tasks) !== 'PARTIAL_FAILED') return ''
+  const stats = batchGroupStats(batchEffectiveTasks(tasks))
+  return `成功 ${stats.success} / 失败 ${stats.failed}`
 }
 
 function batchGroupCreatedAt(tasks: TaskRecord[]): string | null {
@@ -3129,7 +3139,7 @@ function batchStatusLabel(status: string): string {
     RUNNING: '运行中',
     SUCCESS: '成功',
     FAILED: '失败',
-    PARTIAL_FAILED: '部分失败',
+    PARTIAL_FAILED: '部分成功',
     CANCELED: '已取消',
     PARTIAL_CANCELED: '部分取消',
   }
@@ -3142,11 +3152,17 @@ function batchStatusTagType(status: string): string {
     RUNNING: 'warning',
     SUCCESS: 'success',
     FAILED: 'danger',
-    PARTIAL_FAILED: 'danger',
+    PARTIAL_FAILED: 'warning',
     CANCELED: 'info',
     PARTIAL_CANCELED: 'info',
   }
   return types[status] || 'info'
+}
+
+function batchOutcomeSummary(batch: Pick<BatchSummaryItem, 'status' | 'success' | 'failed'>): string {
+  return batch.status === 'PARTIAL_FAILED'
+    ? `成功 ${batch.success} / 失败 ${batch.failed}`
+    : ''
 }
 
 function taskTypeLabel(type: string | null): string {
@@ -3909,6 +3925,13 @@ onUnmounted(() => {
 }
 
 .task-history-page .task-card__status-label {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
+}
+
+.batch-status-summary {
+  margin-left: 6px;
   font-size: 12px;
   color: var(--el-text-color-secondary);
   white-space: nowrap;
