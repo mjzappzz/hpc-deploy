@@ -22,7 +22,18 @@ let tokenExpiry: number | null = null
 let countdownTimer: ReturnType<typeof setInterval> | undefined
 const ADMIN_MODE_DISMISSED_KEY = 'hpcdeploy.admin-mode-dismissed'
 const ADMIN_TAB_ID_KEY = 'hpcdeploy.admin-tab-id'
+
+function hasPendingAdminRestore(): boolean {
+  try {
+    return sessionStorage.getItem(ADMIN_MODE_DISMISSED_KEY) !== '1'
+      && Boolean(sessionStorage.getItem(ADMIN_TAB_ID_KEY))
+  } catch {
+    return false
+  }
+}
+
 export const adminMode = ref(false)
+export const adminModeRestoring = ref(hasPendingAdminRestore())
 export const adminRemainingSeconds = ref(0)
 export const adminSessionUnlimited = ref(false)
 
@@ -89,17 +100,21 @@ export function exitAdminMode(clearServerSession = true): void {
 }
 
 export async function restoreAdminMode(): Promise<void> {
-  if (sessionStorage.getItem(ADMIN_MODE_DISMISSED_KEY) === '1') return
-  const tabId = sessionStorage.getItem(ADMIN_TAB_ID_KEY)
-  if (!tabId) return
-  setAdminTabHeader(tabId)
+  if (!adminModeRestoring.value) return
+
   try {
+    const tabId = sessionStorage.getItem(ADMIN_TAB_ID_KEY)
+    if (!tabId) return
+    setAdminTabHeader(tabId)
+
     const response = await request.get<{ expires_in: number | null }>('/auth/admin/status')
     if (response.data.expires_in !== null && response.data.expires_in <= 0) return
     tokenExpiry = response.data.expires_in === null ? null : Date.now() + (response.data.expires_in * 1000)
     activateAdminMode()
   } catch {
     // No valid browser session: stay in ordinary mode without interrupting page load.
+  } finally {
+    adminModeRestoring.value = false
   }
 }
 
@@ -132,9 +147,6 @@ export async function requireAdminConfirm(actionName: string): Promise<boolean> 
           h('span', { class: 'admin-confirm-ascension__label' }, '权限飞升仪式'),
         ]),
         h('div', { class: 'admin-confirm-hero' }, [
-          h('div', { class: 'admin-confirm-emblem', 'aria-hidden': 'true' }, [
-            h('img', { src: '/assets/hpcdeploy-admin-mascot.png', alt: '' }),
-          ]),
           h('div', { class: 'admin-confirm-heading' }, [
             h('span', { class: 'admin-confirm-eyebrow' }, 'ADMIN ACCESS'),
             h('h2', { class: 'admin-confirm-title' }, '解锁管理员模式'),

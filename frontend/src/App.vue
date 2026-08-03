@@ -1,5 +1,5 @@
 <template>
-  <div class="app-shell" :class="{ 'is-admin-mode': adminMode }">
+  <div class="app-shell" :class="{ 'is-admin-mode': adminThemeActive }">
     <!-- sidebar -->
     <aside class="app-sidebar">
       <div
@@ -7,20 +7,11 @@
         style="cursor: pointer"
         @click="goHome"
       >
-        <img
-          class="brand-mark"
-          :src="brandMascotSrc"
-          :alt="brandMascotAlt"
-          @mouseenter="handleMascotPreviewEnter"
-          @mouseleave="handleMascotPreviewLeave"
-        />
+        <img class="brand-mark" :src="brandMascotSrc" :alt="brandMascotAlt" />
         <div>
           <div class="brand-title">HPCDeploy</div>
           <div class="brand-subtitle">运维自动化控制台</div>
           <div v-if="adminMode" class="brand-admin-status"><span aria-hidden="true" />管理员控制域</div>
-        </div>
-        <div :class="{ 'is-visible': mascotPreviewVisible }" class="brand-mascot-preview" aria-hidden="true">
-          <img :src="brandMascotSrc" alt="" />
         </div>
       </div>
 
@@ -64,7 +55,7 @@
           <el-icon><Document /></el-icon>
           <span>资产库管理</span>
         </el-menu-item>
-        <el-menu-item v-if="adminMode" index="/audit-logs" @click.capture="handleAuditMenuClick">
+        <el-menu-item v-if="adminThemeActive" index="/audit-logs" @click.capture="handleAuditMenuClick">
           <el-icon><List /></el-icon>
           <span class="menu-label-row"><span>审计日志</span><el-tag size="small" class="admin-badge">Admin</el-tag></span>
         </el-menu-item>
@@ -109,22 +100,19 @@ import { useRoute, useRouter } from 'vue-router'
 import { Cpu, Document, List, Monitor, Operation, Tickets } from '@element-plus/icons-vue'
 import AppCritters from '@/components/AppCritters.vue'
 import { listTasks } from '@/api/task'
-import { adminMode, adminRemainingSeconds, adminSessionUnlimited, enterAdminMode, exitAdminMode, restoreAdminMode } from '@/composables/useAdminConfirm'
+import { adminMode, adminModeRestoring, adminRemainingSeconds, adminSessionUnlimited, enterAdminMode, exitAdminMode, restoreAdminMode } from '@/composables/useAdminConfirm'
 import { createTrailingRefresh, TASK_STATE_REFRESHED_EVENT } from '@/utils/trailingRefresh'
 
 const route = useRoute()
 const router = useRouter()
 const runningTaskCount = ref(0)
-const mascotPreviewVisible = ref(false)
-const MASCOT_PREVIEW_MIN_VISIBLE_MS = 520
 let runningTaskTimer: number | undefined
-let mascotPreviewHideTimer: number | undefined
-let mascotPreviewOpenedAt = 0
 
 const ordinaryMascotSrc = '/assets/hpcdeploy-mascot.png'
 const adminMascotSrc = '/assets/hpcdeploy-admin-mascot.png'
-const brandMascotSrc = computed(() => adminMode.value ? adminMascotSrc : ordinaryMascotSrc)
-const brandMascotAlt = computed(() => adminMode.value ? 'HPCDeploy 管理员指挥官标识' : 'HPCDeploy 运维人标识')
+const adminThemeActive = computed(() => adminMode.value || adminModeRestoring.value)
+const brandMascotSrc = computed(() => adminThemeActive.value ? adminMascotSrc : ordinaryMascotSrc)
+const brandMascotAlt = computed(() => adminThemeActive.value ? 'HPCDeploy 管理员指挥官标识' : 'HPCDeploy 运维人标识')
 const routeTitle = computed(() => String(route.meta.title ?? 'HPCDeploy'))
 const adminCountdown = computed(() => {
   const minutes = Math.floor(adminRemainingSeconds.value / 60)
@@ -167,26 +155,6 @@ function goTaskHistory() {
   void router.push({ path: '/history', query: { reset: String(Date.now()) } })
 }
 
-function handleMascotPreviewEnter() {
-  if (mascotPreviewHideTimer !== undefined) {
-    window.clearTimeout(mascotPreviewHideTimer)
-    mascotPreviewHideTimer = undefined
-  }
-  if (!mascotPreviewVisible.value) {
-    mascotPreviewVisible.value = true
-    mascotPreviewOpenedAt = Date.now()
-  }
-}
-
-function handleMascotPreviewLeave() {
-  if (!mascotPreviewVisible.value || mascotPreviewHideTimer !== undefined) return
-  const remaining = Math.max(0, MASCOT_PREVIEW_MIN_VISIBLE_MS - (Date.now() - mascotPreviewOpenedAt))
-  mascotPreviewHideTimer = window.setTimeout(() => {
-    mascotPreviewVisible.value = false
-    mascotPreviewHideTimer = undefined
-  }, remaining)
-}
-
 watch(
   [adminMode, () => route.path],
   ([isAdmin, path]) => {
@@ -195,7 +163,7 @@ watch(
   { immediate: true },
 )
 
-watch(adminMode, (isAdmin) => {
+watch(adminThemeActive, (isAdmin) => {
   const favicon = document.querySelector<HTMLLinkElement>('#app-favicon')
   if (favicon) favicon.href = isAdmin ? adminMascotSrc : ordinaryMascotSrc
 }, { immediate: true })
@@ -211,7 +179,10 @@ const refreshRunningTaskCount = createTrailingRefresh(async () => {
 })
 
 function handleVisibilityChange() {
-  if (!document.hidden) void refreshRunningTaskCount()
+  if (!document.hidden) {
+    void refreshRunningTaskCount()
+    return
+  }
 }
 
 function handleTaskCreated() {
@@ -235,7 +206,6 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (runningTaskTimer !== undefined) window.clearInterval(runningTaskTimer)
-  if (mascotPreviewHideTimer !== undefined) window.clearTimeout(mascotPreviewHideTimer)
   document.removeEventListener('visibilitychange', handleVisibilityChange)
   window.removeEventListener('hpcdeploy:task-created', handleTaskCreated)
   window.removeEventListener(TASK_STATE_REFRESHED_EVENT, refreshRunningTaskCount)
@@ -400,38 +370,6 @@ html, body, #app {
   align-items: center;
   gap: 15px;
   padding-right: 42px;
-}
-
-.admin-confirm-emblem {
-  position: relative;
-  display: grid;
-  width: 52px;
-  height: 52px;
-  flex: 0 0 52px;
-  place-items: center;
-  color: #172033;
-  background: linear-gradient(145deg, #ffe3a1, #d69a32);
-  border: 1px solid rgba(255, 239, 194, 0.78);
-  border-radius: 12px;
-  box-shadow:
-    0 10px 26px rgba(183, 123, 28, 0.24),
-    0 0 18px rgba(241, 189, 91, 0.16);
-}
-
-.admin-confirm-emblem img {
-  position: relative;
-  z-index: 1;
-  width: 46px;
-  height: 46px;
-  object-fit: contain;
-}
-
-.admin-confirm-emblem::after {
-  position: absolute;
-  inset: 5px;
-  content: '';
-  border: 1px solid rgba(58, 39, 12, 0.2);
-  border-radius: 8px;
 }
 
 .admin-confirm-heading {
@@ -687,10 +625,7 @@ html, body, #app {
     animation: none;
   }
 
-  .admin-confirm-ascension__rays,
-  .brand-mascot-preview,
-  .brand-mascot-preview::before,
-  .brand-mascot-preview::after {
+  .admin-confirm-ascension__rays {
     animation: none;
   }
 
@@ -733,67 +668,8 @@ html, body, #app {
   height: 36px;
   border-radius: 8px;
   object-fit: contain;
-  background: #e8edf4;
-  flex-shrink: 0;
-}
-
-.brand-mascot-preview {
-  position: fixed;
-  inset: 0;
-  z-index: 100;
-  display: grid;
-  padding: 36px;
-  place-items: center;
-  pointer-events: none;
   background: transparent;
-  opacity: 0;
-  visibility: hidden;
-  transition: opacity 180ms ease-out, visibility 0s linear 180ms;
-}
-
-.brand-mascot-preview.is-visible {
-  opacity: 1;
-  visibility: visible;
-  transition-delay: 0s;
-}
-
-.brand-mascot-preview::before {
-  position: absolute;
-  width: min(500px, 70vw);
-  aspect-ratio: 1;
-  content: '';
-  background: radial-gradient(circle, rgba(223, 245, 255, 0.38), rgba(87, 169, 245, 0.17) 42%, transparent 72%);
-  filter: blur(12px);
-  animation: mascot-preview-aura 2.4s ease-in-out infinite alternate;
-}
-
-.brand-mascot-preview::after {
-  position: absolute;
-  width: min(560px, 76vw);
-  aspect-ratio: 1;
-  content: '';
-  background: repeating-conic-gradient(from 0deg, rgba(169, 220, 255, 0.34) 0deg 4deg, transparent 4deg 17deg);
-  mask-image: radial-gradient(circle, transparent 0 24%, #000 43%, transparent 72%);
-  opacity: 0.78;
-  animation: mascot-preview-rays 9s linear infinite;
-}
-
-.brand-mascot-preview img {
-  position: relative;
-  display: block;
-  width: min(440px, 64vw);
-  max-height: 72vh;
-  object-fit: contain;
-  filter: drop-shadow(0 18px 30px rgba(5, 12, 24, 0.28)) drop-shadow(0 0 24px rgba(161, 219, 255, 0.56));
-}
-
-@keyframes mascot-preview-aura {
-  from { opacity: 0.52; transform: scale(0.88); }
-  to { opacity: 1; transform: scale(1.08); }
-}
-
-@keyframes mascot-preview-rays {
-  to { transform: rotate(1turn); }
+  flex-shrink: 0;
 }
 
 .brand-title {
@@ -1055,8 +931,8 @@ html, body, #app {
 }
 
 .is-admin-mode .brand-mark {
-  background: rgba(216, 181, 99, 0.12);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28), inset 0 1px rgba(255, 255, 255, 0.4);
+  background: transparent;
+  box-shadow: none;
 }
 
 .is-admin-mode .brand-title {
