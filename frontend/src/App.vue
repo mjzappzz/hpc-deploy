@@ -11,19 +11,17 @@
           class="brand-mark"
           :src="brandMascotSrc"
           :alt="brandMascotAlt"
-          @mouseenter="mascotPreviewVisible = true"
-          @mouseleave="mascotPreviewVisible = false"
+          @mouseenter="handleMascotPreviewEnter"
+          @mouseleave="handleMascotPreviewLeave"
         />
         <div>
           <div class="brand-title">HPCDeploy</div>
           <div class="brand-subtitle">运维自动化控制台</div>
           <div v-if="adminMode" class="brand-admin-status"><span aria-hidden="true" />管理员控制域</div>
         </div>
-        <Transition name="mascot-preview" :duration="{ enter: 360, leave: 360 }">
-          <div v-show="mascotPreviewVisible" class="brand-mascot-preview" aria-hidden="true">
-            <img :src="brandMascotSrc" alt="" />
-          </div>
-        </Transition>
+        <div :class="{ 'is-visible': mascotPreviewVisible }" class="brand-mascot-preview" aria-hidden="true">
+          <img :src="brandMascotSrc" alt="" />
+        </div>
       </div>
 
       <el-menu router :default-active="$route.path" class="nav-menu nav-menu-main">
@@ -118,7 +116,10 @@ const route = useRoute()
 const router = useRouter()
 const runningTaskCount = ref(0)
 const mascotPreviewVisible = ref(false)
+const MASCOT_PREVIEW_MIN_VISIBLE_MS = 520
 let runningTaskTimer: number | undefined
+let mascotPreviewHideTimer: number | undefined
+let mascotPreviewOpenedAt = 0
 
 const ordinaryMascotSrc = '/assets/hpcdeploy-mascot.png'
 const adminMascotSrc = '/assets/hpcdeploy-admin-mascot.png'
@@ -164,6 +165,26 @@ function goRunningTasks() {
 
 function goTaskHistory() {
   void router.push({ path: '/history', query: { reset: String(Date.now()) } })
+}
+
+function handleMascotPreviewEnter() {
+  if (mascotPreviewHideTimer !== undefined) {
+    window.clearTimeout(mascotPreviewHideTimer)
+    mascotPreviewHideTimer = undefined
+  }
+  if (!mascotPreviewVisible.value) {
+    mascotPreviewVisible.value = true
+    mascotPreviewOpenedAt = Date.now()
+  }
+}
+
+function handleMascotPreviewLeave() {
+  if (!mascotPreviewVisible.value || mascotPreviewHideTimer !== undefined) return
+  const remaining = Math.max(0, MASCOT_PREVIEW_MIN_VISIBLE_MS - (Date.now() - mascotPreviewOpenedAt))
+  mascotPreviewHideTimer = window.setTimeout(() => {
+    mascotPreviewVisible.value = false
+    mascotPreviewHideTimer = undefined
+  }, remaining)
 }
 
 watch(
@@ -214,6 +235,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (runningTaskTimer !== undefined) window.clearInterval(runningTaskTimer)
+  if (mascotPreviewHideTimer !== undefined) window.clearTimeout(mascotPreviewHideTimer)
   document.removeEventListener('visibilitychange', handleVisibilityChange)
   window.removeEventListener('hpcdeploy:task-created', handleTaskCreated)
   window.removeEventListener(TASK_STATE_REFRESHED_EVENT, refreshRunningTaskCount)
@@ -668,8 +690,7 @@ html, body, #app {
   .admin-confirm-ascension__rays,
   .brand-mascot-preview,
   .brand-mascot-preview::before,
-  .brand-mascot-preview.mascot-preview-enter-active img,
-  .brand-mascot-preview.mascot-preview-leave-active img {
+  .brand-mascot-preview::after {
     animation: none;
   }
 
@@ -725,6 +746,15 @@ html, body, #app {
   place-items: center;
   pointer-events: none;
   background: transparent;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 180ms ease-out, visibility 0s linear 180ms;
+}
+
+.brand-mascot-preview.is-visible {
+  opacity: 1;
+  visibility: visible;
+  transition-delay: 0s;
 }
 
 .brand-mascot-preview::before {
@@ -732,9 +762,20 @@ html, body, #app {
   width: min(500px, 70vw);
   aspect-ratio: 1;
   content: '';
-  background: radial-gradient(circle, rgba(255, 222, 143, 0.3), rgba(218, 159, 54, 0.11) 38%, transparent 70%);
-  filter: blur(10px);
-  animation: mascot-preview-aura 1.8s ease-in-out infinite alternate;
+  background: radial-gradient(circle, rgba(223, 245, 255, 0.38), rgba(87, 169, 245, 0.17) 42%, transparent 72%);
+  filter: blur(12px);
+  animation: mascot-preview-aura 2.4s ease-in-out infinite alternate;
+}
+
+.brand-mascot-preview::after {
+  position: absolute;
+  width: min(560px, 76vw);
+  aspect-ratio: 1;
+  content: '';
+  background: repeating-conic-gradient(from 0deg, rgba(169, 220, 255, 0.34) 0deg 4deg, transparent 4deg 17deg);
+  mask-image: radial-gradient(circle, transparent 0 24%, #000 43%, transparent 72%);
+  opacity: 0.78;
+  animation: mascot-preview-rays 9s linear infinite;
 }
 
 .brand-mascot-preview img {
@@ -743,31 +784,16 @@ html, body, #app {
   width: min(440px, 64vw);
   max-height: 72vh;
   object-fit: contain;
-  filter: drop-shadow(0 18px 30px rgba(5, 12, 24, 0.28));
-}
-
-.brand-mascot-preview.mascot-preview-enter-active img {
-  animation: mascot-preview-in 360ms cubic-bezier(0.16, 0.9, 0.25, 1) both;
-}
-
-.brand-mascot-preview.mascot-preview-leave-active img {
-  animation: mascot-preview-in 360ms cubic-bezier(0.16, 0.9, 0.25, 1) reverse both;
-}
-
-@keyframes mascot-preview-in {
-  from {
-    opacity: 0;
-    transform: translateY(18px) scale(0.72) rotate(-5deg);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1) rotate(0deg);
-  }
+  filter: drop-shadow(0 18px 30px rgba(5, 12, 24, 0.28)) drop-shadow(0 0 24px rgba(161, 219, 255, 0.56));
 }
 
 @keyframes mascot-preview-aura {
   from { opacity: 0.52; transform: scale(0.88); }
   to { opacity: 1; transform: scale(1.08); }
+}
+
+@keyframes mascot-preview-rays {
+  to { transform: rotate(1turn); }
 }
 
 .brand-title {

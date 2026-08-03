@@ -10,13 +10,18 @@ test('switches the brand and favicon to the administrator mascot in admin mode',
   assert.match(source, /hpcdeploy-admin-mascot\.png/)
 })
 
-test('shows a centered transparent mascot preview only when the small mascot is hovered', async () => {
+test('keeps the mascot preview stable during rapid hover changes', async () => {
   const source = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
 
-  assert.match(source, /class="brand-mark"[\s\S]*?@mouseenter="mascotPreviewVisible = true"[\s\S]*?@mouseleave="mascotPreviewVisible = false"/)
-  assert.match(source, /<Transition name="mascot-preview" :duration="\{ enter: 360, leave: 360 \}">[\s\S]*?v-show="mascotPreviewVisible"/)
+  assert.match(source, /@mouseenter="handleMascotPreviewEnter"[\s\S]*?@mouseleave="handleMascotPreviewLeave"/)
+  assert.match(source, /const MASCOT_PREVIEW_MIN_VISIBLE_MS = 520/)
+  assert.match(source, /let mascotPreviewHideTimer: number \| undefined/)
+  assert.match(source, /function handleMascotPreviewEnter\(\) \{[\s\S]*?window\.clearTimeout\(mascotPreviewHideTimer\)/)
+  assert.match(source, /function handleMascotPreviewLeave\(\) \{[\s\S]*?window\.setTimeout/)
+  assert.doesNotMatch(source, /<Transition name="mascot-preview"/)
   assert.match(source, /class="brand-mascot-preview"/)
+  assert.match(source, /:class="\{ 'is-visible': mascotPreviewVisible \}"/)
   assert.match(source, /\.brand-mascot-preview \{[\s\S]*?position: fixed;[\s\S]*?inset: 0;[\s\S]*?background: transparent;/)
-  assert.match(source, /\.brand-mascot-preview\.mascot-preview-enter-active img \{[\s\S]*?animation: mascot-preview-in 360ms/)
-  assert.match(source, /\.brand-mascot-preview\.mascot-preview-leave-active img \{[\s\S]*?animation: mascot-preview-in 360ms cubic-bezier\(0\.16, 0\.9, 0\.25, 1\) reverse both;/)
+  assert.match(source, /repeating-conic-gradient\(from 0deg, rgba\(169, 220, 255, 0\.34\)/)
+  assert.doesNotMatch(source, /rgba\(255, 222, 143, 0\.3\)/)
 })
