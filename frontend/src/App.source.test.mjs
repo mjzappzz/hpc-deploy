@@ -17,5 +17,5 @@ test('shows a centered transparent mascot preview only when the small mascot is 
   assert.match(source, /<Transition name="mascot-preview">[\s\S]*?v-show="mascotPreviewVisible"/)
   assert.match(source, /class="brand-mascot-preview"/)
   assert.match(source, /\.brand-mascot-preview \{[\s\S]*?position: fixed;[\s\S]*?inset: 0;[\s\S]*?background: transparent;/)
-  assert.match(source, /@keyframes mascot-preview-out/)
+  assert.match(source, /mascot-preview-leave-active \.brand-mascot-preview img \{[\s\S]*?animation: mascot-preview-in 360ms cubic-bezier\(0\.16, 0\.9, 0\.25, 1\) reverse both;/)
 })

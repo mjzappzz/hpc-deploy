@@ -669,7 +669,6 @@ html, body, #app {
   .brand-mascot-preview,
   .brand-mascot-preview::before,
   .mascot-preview-enter-active .brand-mascot-preview img,
-  .mascot-preview-leave-active,
   .mascot-preview-leave-active .brand-mascot-preview img {
     animation: none;
   }
@@ -751,12 +750,8 @@ html, body, #app {
   animation: mascot-preview-in 360ms cubic-bezier(0.16, 0.9, 0.25, 1) both;
 }
 
-.mascot-preview-leave-active {
-  animation: mascot-preview-fade-out 260ms ease-in both;
-}
-
 .mascot-preview-leave-active .brand-mascot-preview img {
-  animation: mascot-preview-out 260ms cubic-bezier(0.42, 0, 0.7, 0.2) both;
+  animation: mascot-preview-in 360ms cubic-bezier(0.16, 0.9, 0.25, 1) reverse both;
 }
 
 @keyframes mascot-preview-in {
@@ -773,21 +768,6 @@ html, body, #app {
 @keyframes mascot-preview-aura {
   from { opacity: 0.52; transform: scale(0.88); }
   to { opacity: 1; transform: scale(1.08); }
-}
-
-@keyframes mascot-preview-out {
-  from {
-    opacity: 1;
-    transform: translateY(0) scale(1) rotate(0deg);
-  }
-  to {
-    opacity: 0;
-    transform: translateY(12px) scale(0.76) rotate(4deg);
-  }
-}
-
-@keyframes mascot-preview-fade-out {
-  to { opacity: 0; }
 }
 
 .brand-title {
