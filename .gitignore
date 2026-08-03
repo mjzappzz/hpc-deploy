@@ -50,6 +50,9 @@ logs/
 .idea/
 *:Zone.Identifier
 
+# Local agent instructions
+AGENTS.md
+
 # Project-specific
 backend/apptainer/*.sif
 backend/keys/*
