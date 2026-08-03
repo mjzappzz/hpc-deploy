@@ -3,7 +3,7 @@
     <!-- sidebar -->
     <aside class="app-sidebar">
       <div class="brand" style="cursor: pointer" @click="goHome">
-        <div class="brand-mark">H</div>
+        <img class="brand-mark" src="/assets/hpcdeploy-mascot.png" alt="HPCDeploy 安全帽服务器标识" />
         <div>
           <div class="brand-title">HPCDeploy</div>
           <div class="brand-subtitle">运维自动化控制台</div>
@@ -619,13 +619,8 @@ html, body, #app {
   width: 36px;
   height: 36px;
   border-radius: 8px;
-  background: linear-gradient(135deg, #1677ff, #409eff);
-  color: #fff;
-  font-size: 18px;
-  font-weight: 700;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  object-fit: contain;
+  background: #e8edf4;
   flex-shrink: 0;
 }
 
@@ -888,8 +883,7 @@ html, body, #app {
 }
 
 .is-admin-mode .brand-mark {
-  background: linear-gradient(145deg, #d9b563, #a8782d);
-  color: #13231e;
+  background: rgba(216, 181, 99, 0.12);
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28), inset 0 1px rgba(255, 255, 255, 0.4);
 }
 
