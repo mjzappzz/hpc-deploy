@@ -6,10 +6,14 @@
         class="brand"
         style="cursor: pointer"
         @click="goHome"
-        @mouseenter="mascotPreviewVisible = true"
-        @mouseleave="mascotPreviewVisible = false"
       >
-        <img class="brand-mark" :src="brandMascotSrc" :alt="brandMascotAlt" />
+        <img
+          class="brand-mark"
+          :src="brandMascotSrc"
+          :alt="brandMascotAlt"
+          @mouseenter="mascotPreviewVisible = true"
+          @mouseleave="mascotPreviewVisible = false"
+        />
         <div>
           <div class="brand-title">HPCDeploy</div>
           <div class="brand-subtitle">运维自动化控制台</div>
@@ -660,7 +664,8 @@ html, body, #app {
   }
 
   .admin-confirm-ascension__rays,
-  .brand-mascot-preview {
+  .brand-mascot-preview,
+  .brand-mascot-preview::before {
     animation: none;
   }
 
@@ -708,35 +713,50 @@ html, body, #app {
 }
 
 .brand-mascot-preview {
-  position: absolute;
-  top: calc(100% + 8px);
-  left: 12px;
-  z-index: 60;
-  width: 220px;
-  padding: 8px;
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  padding: 36px;
+  place-items: center;
   pointer-events: none;
-  background: rgba(12, 21, 34, 0.94);
-  border: 1px solid rgba(176, 192, 213, 0.42);
-  border-radius: 14px;
-  box-shadow: 0 18px 40px rgba(5, 12, 24, 0.34);
-  animation: mascot-preview-in 160ms ease-out both;
+  background: transparent;
+}
+
+.brand-mascot-preview::before {
+  position: absolute;
+  width: min(500px, 70vw);
+  aspect-ratio: 1;
+  content: '';
+  background: radial-gradient(circle, rgba(255, 222, 143, 0.3), rgba(218, 159, 54, 0.11) 38%, transparent 70%);
+  filter: blur(10px);
+  animation: mascot-preview-aura 1.8s ease-in-out infinite alternate;
 }
 
 .brand-mascot-preview img {
+  position: relative;
   display: block;
-  width: 100%;
-  height: auto;
+  width: min(440px, 64vw);
+  max-height: 72vh;
+  object-fit: contain;
+  filter: drop-shadow(0 18px 30px rgba(5, 12, 24, 0.28));
+  animation: mascot-preview-in 360ms cubic-bezier(0.16, 0.9, 0.25, 1) both;
 }
 
 @keyframes mascot-preview-in {
   from {
     opacity: 0;
-    transform: translateY(-4px) scale(0.96);
+    transform: translateY(18px) scale(0.72) rotate(-5deg);
   }
   to {
     opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: translateY(0) scale(1) rotate(0deg);
   }
+}
+
+@keyframes mascot-preview-aura {
+  from { opacity: 0.52; transform: scale(0.88); }
+  to { opacity: 1; transform: scale(1.08); }
 }
 
 .brand-title {

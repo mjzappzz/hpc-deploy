@@ -10,11 +10,11 @@ test('switches the brand and favicon to the administrator mascot in admin mode',
   assert.match(source, /hpcdeploy-admin-mascot\.png/)
 })
 
-test('shows an enlarged mascot preview when the sidebar brand is hovered', async () => {
+test('shows a centered transparent mascot preview only when the small mascot is hovered', async () => {
   const source = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
 
-  assert.match(source, /@mouseenter="mascotPreviewVisible = true"/)
-  assert.match(source, /@mouseleave="mascotPreviewVisible = false"/)
+  assert.match(source, /class="brand-mark"[\s\S]*?@mouseenter="mascotPreviewVisible = true"[\s\S]*?@mouseleave="mascotPreviewVisible = false"/)
   assert.match(source, /v-if="mascotPreviewVisible"/)
   assert.match(source, /class="brand-mascot-preview"/)
+  assert.match(source, /\.brand-mascot-preview \{[\s\S]*?position: fixed;[\s\S]*?inset: 0;[\s\S]*?background: transparent;/)
 })
