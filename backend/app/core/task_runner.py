@@ -666,6 +666,19 @@ def _record_stress_boot_id(db, task: Task, executor: SSHExecutor) -> str:
     return boot_id
 
 
+def _unexpected_stress_reboot_reason(task: Task, executor: SSHExecutor) -> str | None:
+    expected_boot_id = str((task.params or {}).get(STRESS_BOOT_ID_PARAM_KEY, ""))
+    if not expected_boot_id:
+        return None
+    current_boot_id = _read_remote_boot_id(executor)
+    if not _has_unexpected_server_reboot(expected_boot_id, current_boot_id):
+        return None
+    return (
+        "detected unexpected server reboot during stress task: "
+        f"boot ID changed from {expected_boot_id} to {current_boot_id}"
+    )
+
+
 def _cancel_following_stress_batch_tasks(db, task: Task, reason: str) -> None:
     if not task.batch_id or task.sequence_index is None:
         return
@@ -866,12 +879,8 @@ def _stress_poll_loop(
                 return
 
             if _health is not None and expected_boot_id:
-                current_boot_id = _read_remote_boot_id(executor)
-                if _has_unexpected_server_reboot(expected_boot_id, current_boot_id):
-                    reboot_reason = (
-                        "detected unexpected server reboot during stress task: "
-                        f"boot ID changed from {expected_boot_id} to {current_boot_id}"
-                    )
+                reboot_reason = _unexpected_stress_reboot_reason(task, executor)
+                if reboot_reason:
                     _fail_running_stress_task(
                         db,
                         task,
@@ -1127,6 +1136,17 @@ def _stress_recovery_monitor(task_id: str) -> None:
             return
 
         _add_log(db, task_id, "SYSTEM", "startup recovery: SSH connected, checking remote state")
+
+        reboot_reason = _unexpected_stress_reboot_reason(task, executor)
+        if reboot_reason:
+            _fail_running_stress_task(
+                db,
+                task,
+                task_id,
+                reboot_reason,
+                cancel_following_batch_tasks=True,
+            )
+            return
 
         pid_file = _build_remote_pid_file_path(task.remote_work_dir)
         pid_alive = _is_remote_pid_alive(executor, pid_file)

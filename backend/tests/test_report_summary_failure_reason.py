@@ -29,6 +29,36 @@ class ReportSummaryFailureReasonTests(unittest.TestCase):
             "SSH connection timed out",
         )
 
+    def test_interrupted_stress_uses_structured_conclusion(self) -> None:
+        diagnosis = {
+            "category": "stress_interrupted_before_report",
+            "conclusion": "压测已进入实际负载后异常中断，疑似服务器重启或异常中断。",
+        }
+
+        self.assertEqual(
+            resolve_failure_reason(
+                "stress script exited before report generation, no report found",
+                "UNKNOWN",
+                diagnosis,
+            ),
+            diagnosis["conclusion"],
+        )
+
+    def test_uncorrected_memory_error_uses_structured_conclusion(self) -> None:
+        diagnosis = {
+            "category": "uncorrected_memory_hardware_error",
+            "conclusion": "内核日志已检测到不可纠正内存硬件错误。",
+        }
+
+        self.assertEqual(
+            resolve_failure_reason(
+                "stress script exited before report generation, no report found",
+                "UNKNOWN",
+                diagnosis,
+            ),
+            diagnosis["conclusion"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

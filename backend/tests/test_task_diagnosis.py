@@ -35,6 +35,41 @@ class TaskDiagnosisTests(unittest.TestCase):
         self.assertIn("root", diagnosis["conclusion"])
         self.assertTrue(any("SSH 用户" in item for item in diagnosis["possible_causes"]))
 
+    def test_stress_started_then_exited_without_report_is_suspected_server_interruption(self) -> None:
+        diagnosis = diagnose_task_failure(
+            task_status="FAILED",
+            error_message="stress script exited before report generation, no report found",
+            logs=[
+                "[STAGE] monitor_started pids=mon:7549 err:7550",
+                "[STAGE] stress_start",
+                "stress-ng: info: dispatching hogs: 192 cpu, 24 vm",
+                "stress async: remote script exited without report: stress script exited before report generation, no report found",
+            ],
+            task_type="stress",
+            file_name="cpu_mem_stress_report.sh",
+            params={"stress_remote_started": True},
+        )
+
+        self.assertEqual(diagnosis["category"], "stress_interrupted_before_report")
+        self.assertIn("疑似服务器重启或异常中断", diagnosis["conclusion"])
+        self.assertIn("不能视为压测正常完成", diagnosis["conclusion"])
+
+    def test_uncorrected_memory_error_overrides_generic_missing_report_diagnosis(self) -> None:
+        diagnosis = diagnose_task_failure(
+            task_status="FAILED",
+            error_message="stress script exited before report generation, no report found",
+            logs=[
+                "[STAGE] stress_start",
+                "[artifact:cpu_mem_error.log] mce: Uncorrected hardware memory error in user-access at 44aa427300",
+                "[artifact:cpu_mem_error.log] MC21_STATUS[-|UE|MiscV|AddrV|-|-|-|-|Poison|-]",
+            ],
+            task_type="stress",
+            file_name="cpu_mem_stress_report.sh",
+        )
+
+        self.assertEqual(diagnosis["category"], "uncorrected_memory_hardware_error")
+        self.assertIn("不可纠正内存硬件错误", diagnosis["conclusion"])
+
     def test_stress_ssh_degraded_is_not_classified_as_apptainer_failure(self) -> None:
         diagnosis = diagnose_task_failure(
             task_status="FAILED",

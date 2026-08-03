@@ -749,6 +749,112 @@ def _precheck_stress_preflight_failed(
     }
 
 
+def _precheck_stress_interrupted_before_report(
+    task_status: str | None,
+    task_type: str | None,
+    error_message: str | None,
+    logs_joined: str,
+    params: dict | None,
+    **kwargs: Any,
+) -> dict[str, Any] | None:
+    """Distinguish a running stress task that vanished from a preflight failure."""
+    if task_type != "stress" or task_status != "FAILED":
+        return None
+
+    text = "\n".join(filter(None, [error_message, logs_joined])).lower()
+    started = "[stage] stress_start" in text or bool((params or {}).get("stress_remote_started"))
+    exited_without_report = "stress script exited before report generation" in text
+    if not (started and exited_without_report):
+        return None
+
+    return {
+        "level": "error",
+        "category": "stress_interrupted_before_report",
+        "attribution": "server",
+        "title": "压测运行异常中断",
+        "conclusion": (
+            "压测已进入实际负载，但在生成报告前远端进程整体中断；"
+            "疑似服务器重启或异常中断（如掉电、内核异常），不能视为压测正常完成。"
+        ),
+        "summary": (
+            "已检测到 stress_start，但未检测到脚本正常结束或报告生成记录。"
+            "平台发现后台脚本退出后仅回收到了中断前日志和监控文件。"
+        ),
+        "possible_causes": [
+            "服务器在压测期间重启、掉电或被宿主机重置",
+            "内核 panic、watchdog 或硬件故障导致整机进程中断",
+            "内存、供电或散热在高负载下不稳定",
+            "系统 OOM 或人工终止了压测进程组",
+        ],
+        "suggestions": [
+            "登录服务器比较 /proc/sys/kernel/random/boot_id，并执行 last -x reboot",
+            "检查 journalctl -b -1 -k 的上一启动内核日志",
+            "有 BMC/IPMI 时检查 SEL/System Event Log 中的掉电、内存或 watchdog 事件",
+            "确认硬件和系统稳定后，再使用较短时长复测",
+        ],
+        "risk_tips": [
+            "该任务没有完成报告，不能据此判定压测通过或失败",
+            "内存条故障只是可能原因之一；需结合系统或 BMC 日志确认",
+        ],
+        "matched_patterns": [
+            "[STAGE] stress_start",
+            "stress script exited before report generation",
+        ],
+    }
+
+
+def _precheck_uncorrected_memory_hardware_error(
+    task_status: str | None,
+    task_type: str | None,
+    logs_joined: str,
+    **kwargs: Any,
+) -> dict[str, Any] | None:
+    if task_type != "stress" or task_status != "FAILED":
+        return None
+
+    text = logs_joined.lower()
+    if not (
+        "uncorrected hardware memory error" in text
+        or "uncorrectable hardware memory error" in text
+        or "uecc" in text
+    ):
+        return None
+
+    return {
+        "level": "error",
+        "category": "uncorrected_memory_hardware_error",
+        "attribution": "server",
+        "title": "检测到不可纠正内存硬件错误",
+        "conclusion": (
+            "回收的内核日志已检测到不可纠正内存硬件错误；"
+            "压测进程因硬件异常中断，未生成报告。"
+        ),
+        "summary": (
+            "内核 MCE/EDAC 记录出现 UE/UECC 或不可纠正内存错误，"
+            "这不是压测正常结束后的报告缺失。"
+        ),
+        "possible_causes": [
+            "DIMM、内存通道或内存控制器发生不可纠正 ECC 错误",
+            "CPU 侧内存控制器或主板插槽链路异常",
+            "高负载下内存时序、电压或散热稳定性不足",
+        ],
+        "suggestions": [
+            "立即保存 BMC/IPMI SEL/System Event Log，并记录报错地址、CPU 和通道信息",
+            "使用厂商诊断工具或逐条/逐通道内存复测定位故障 DIMM 或通道",
+            "检查 BIOS、BMC 事件和内存配置；必要时更换故障部件后复测",
+            "修复前不要将该服务器作为稳定生产节点继续承载高负载任务",
+        ],
+        "risk_tips": [
+            "不可纠正内存错误可能导致数据损坏、进程崩溃或服务器重启",
+            "本任务未生成完整报告，不能作为压测通过依据",
+        ],
+        "matched_patterns": [
+            "Uncorrected hardware memory error",
+            "UECC",
+        ],
+    }
+
+
 def _precheck_stress_startup_marker_mismatch(
     task_status: str | None,
     task_type: str | None,
@@ -1038,6 +1144,8 @@ _PRE_CHECKS = [
     ("artifact_recovery_failed", _precheck_artifact_recovery_failed),
     ("report_not_finalized", _precheck_report_not_finalized),
     ("timeout_no_report", _precheck_timeout_no_report),
+    ("uncorrected_memory_hardware_error", _precheck_uncorrected_memory_hardware_error),
+    ("stress_interrupted_before_report", _precheck_stress_interrupted_before_report),
     ("stress_startup_marker_mismatch", _precheck_stress_startup_marker_mismatch),
     ("stress_preflight_failed", _precheck_stress_preflight_failed),
     ("stress_stuck", _precheck_stress_stuck),

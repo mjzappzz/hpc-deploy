@@ -27,6 +27,17 @@ class TaskRecoveryTests(unittest.TestCase):
             )
         )
 
+    def test_recovery_reports_target_reboot_before_reattaching_stress_task(self) -> None:
+        task = SimpleNamespace(params={"stress_boot_id": "boot-before"})
+        executor = Mock()
+        executor.exec_simple.return_value = "boot-after"
+
+        reason = task_runner._unexpected_stress_reboot_reason(task, executor)
+
+        self.assertIn("detected unexpected server reboot during stress task", reason)
+        self.assertIn("boot-before", reason)
+        self.assertIn("boot-after", reason)
+
     @patch("app.core.task_runner._broadcast_done_safe")
     @patch("app.core.task_runner.schedule_report_summary_generation")
     @patch("app.core.task_runner._add_log")

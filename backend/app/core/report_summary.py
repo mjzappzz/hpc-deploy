@@ -13,6 +13,7 @@ from app.models.task_log import TaskLog
 from sqlalchemy.orm import Session
 
 REPORT_STATUS_VALUES = {"PASS", "FAIL", "UNKNOWN"}
+DIAGNOSIS_VERSION = 3
 
 _SUMMARY_JOBS: set[str] = set()
 _SUMMARY_JOBS_LOCK = Lock()
@@ -25,7 +26,11 @@ def resolve_failure_reason(
 ) -> str | None:
     if report_status not in {"FAIL", "UNKNOWN"}:
         return None
-    if diagnosis.get("category") == "stress_startup_marker_mismatch":
+    if diagnosis.get("category") in {
+        "stress_startup_marker_mismatch",
+        "stress_interrupted_before_report",
+        "uncorrected_memory_hardware_error",
+    }:
         conclusion = diagnosis.get("conclusion")
         if isinstance(conclusion, str) and conclusion.strip():
             return conclusion.strip()
@@ -54,6 +59,30 @@ def unknown_report_summary(task: Task, *, reason: str = "report summary not gene
 
 def get_cached_report_summary(db: Session, task_id: str) -> TaskReportSummary | None:
     return db.query(TaskReportSummary).filter(TaskReportSummary.task_id == task_id).first()
+
+
+def _read_diagnosis_artifact_logs(task_id: str) -> list[str]:
+    """Read only hardware-error evidence from collected task artifacts."""
+    artifact_dir = ARTIFACTS_DIR / task_id
+    if not artifact_dir.is_dir():
+        return []
+
+    markers = ("hardware error", "machine check", "uncorrected", "uecc", "edac")
+    critical_evidence: list[str] = []
+    other_evidence: list[str] = []
+    for path in sorted(artifact_dir.glob("*error*.log")):
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")[-65536:]
+        except OSError:
+            continue
+        for line in content.splitlines():
+            if any(marker in line.lower() for marker in markers):
+                item = f"[artifact:{path.name}] {line}"
+                if "uncorrected" in line.lower() or "uecc" in line.lower():
+                    critical_evidence.append(item)
+                else:
+                    other_evidence.append(item)
+    return (critical_evidence + other_evidence)[:100]
 
 
 def upsert_report_summary(
@@ -103,6 +132,7 @@ def generate_report_summary(task_id: str) -> TaskReportSummary | None:
             .all()
         )
         log_messages = [row.message for row in log_rows] if log_rows else []
+        log_messages.extend(_read_diagnosis_artifact_logs(task_id))
         if not log_messages and task.error_message:
             log_messages = [task.error_message]
 
@@ -144,6 +174,7 @@ def generate_report_summary(task_id: str) -> TaskReportSummary | None:
         report_status = report_result or "UNKNOWN"
         failure_reason = resolve_failure_reason(task.error_message, report_status, diagnosis)
         summary_json = {
+            "diagnosis_version": DIAGNOSIS_VERSION,
             "report_status": report_status,
             "failure_reason": failure_reason,
             "artifacts_present": artifacts_present,
@@ -181,7 +212,7 @@ def backfill_missing_report_summaries(limit: int = 500) -> int:
     db = SessionLocal()
     try:
         rows = (
-            db.query(Task.task_id)
+            db.query(Task.task_id, TaskReportSummary.summary_json)
             .outerjoin(TaskReportSummary, TaskReportSummary.task_id == Task.task_id)
             .filter(
                 Task.status.in_(("SUCCESS", "FAILED", "CANCELED")),
@@ -191,7 +222,12 @@ def backfill_missing_report_summaries(limit: int = 500) -> int:
             .limit(limit)
             .all()
         )
-        task_ids = [row[0] for row in rows]
+        task_ids = [
+            task_id
+            for task_id, summary_json in rows
+            if not isinstance(summary_json, dict)
+            or int(summary_json.get("diagnosis_version", 0) or 0) < DIAGNOSIS_VERSION
+        ]
     finally:
         db.close()
 
