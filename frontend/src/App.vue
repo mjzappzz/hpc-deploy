@@ -668,8 +668,8 @@ html, body, #app {
   .admin-confirm-ascension__rays,
   .brand-mascot-preview,
   .brand-mascot-preview::before,
-  .mascot-preview-enter-active .brand-mascot-preview img,
-  .mascot-preview-leave-active .brand-mascot-preview img {
+  .brand-mascot-preview.mascot-preview-enter-active img,
+  .brand-mascot-preview.mascot-preview-leave-active img {
     animation: none;
   }
 
@@ -746,11 +746,11 @@ html, body, #app {
   filter: drop-shadow(0 18px 30px rgba(5, 12, 24, 0.28));
 }
 
-.mascot-preview-enter-active .brand-mascot-preview img {
+.brand-mascot-preview.mascot-preview-enter-active img {
   animation: mascot-preview-in 360ms cubic-bezier(0.16, 0.9, 0.25, 1) both;
 }
 
-.mascot-preview-leave-active .brand-mascot-preview img {
+.brand-mascot-preview.mascot-preview-leave-active img {
   animation: mascot-preview-in 360ms cubic-bezier(0.16, 0.9, 0.25, 1) reverse both;
 }
 
