@@ -14,7 +14,8 @@ test('shows a centered transparent mascot preview only when the small mascot is 
   const source = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
 
   assert.match(source, /class="brand-mark"[\s\S]*?@mouseenter="mascotPreviewVisible = true"[\s\S]*?@mouseleave="mascotPreviewVisible = false"/)
-  assert.match(source, /v-if="mascotPreviewVisible"/)
+  assert.match(source, /<Transition name="mascot-preview">[\s\S]*?v-show="mascotPreviewVisible"/)
   assert.match(source, /class="brand-mascot-preview"/)
   assert.match(source, /\.brand-mascot-preview \{[\s\S]*?position: fixed;[\s\S]*?inset: 0;[\s\S]*?background: transparent;/)
+  assert.match(source, /@keyframes mascot-preview-out/)
 })
