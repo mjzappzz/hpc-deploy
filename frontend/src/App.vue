@@ -3,7 +3,7 @@
     <!-- sidebar -->
     <aside class="app-sidebar">
       <div class="brand" style="cursor: pointer" @click="goHome">
-        <img class="brand-mark" src="/assets/hpcdeploy-mascot.png" alt="HPCDeploy 安全帽服务器标识" />
+        <img class="brand-mark" :src="brandMascotSrc" :alt="brandMascotAlt" />
         <div>
           <div class="brand-title">HPCDeploy</div>
           <div class="brand-subtitle">运维自动化控制台</div>
@@ -104,6 +104,10 @@ const router = useRouter()
 const runningTaskCount = ref(0)
 let runningTaskTimer: number | undefined
 
+const ordinaryMascotSrc = '/assets/hpcdeploy-mascot.png'
+const adminMascotSrc = '/assets/hpcdeploy-admin-mascot.png'
+const brandMascotSrc = computed(() => adminMode.value ? adminMascotSrc : ordinaryMascotSrc)
+const brandMascotAlt = computed(() => adminMode.value ? 'HPCDeploy 管理员指挥官标识' : 'HPCDeploy 运维人标识')
 const routeTitle = computed(() => String(route.meta.title ?? 'HPCDeploy'))
 const adminCountdown = computed(() => {
   const minutes = Math.floor(adminRemainingSeconds.value / 60)
@@ -153,6 +157,11 @@ watch(
   },
   { immediate: true },
 )
+
+watch(adminMode, (isAdmin) => {
+  const favicon = document.querySelector<HTMLLinkElement>('#app-favicon')
+  if (favicon) favicon.href = isAdmin ? adminMascotSrc : ordinaryMascotSrc
+}, { immediate: true })
 
 const refreshRunningTaskCount = createTrailingRefresh(async () => {
   if (document.hidden) return
