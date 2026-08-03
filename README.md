@@ -33,12 +33,13 @@ hpc-deploy/
 在一台 Linux 机器上执行。你需要有 `sudo` 权限和网络软件源访问权限。
 
 ```bash
-git clone https://github.com/mjzappzz/hpc-deploy.git hpc-deploy
-cd hpc-deploy
-sudo ./deploy/scripts/install_hpcdeploy_service.sh
+git clone https://github.com/mjzappzz/hpc-deploy.git hpc-deploy && \
+  cd hpc-deploy && \
+  sudo ./deploy/scripts/install_hpcdeploy_service.sh
 ```
 
 安装脚本会自动安装 Python、Node.js、Nginx 等所需依赖，构建前端并启动服务。
+上述命令仅在克隆成功后才会继续执行；若网络中断，请先确认 `hpc-deploy` 目录不存在或内容可丢弃，再重新执行整条命令。
 
 安装时按提示输入两次管理员密码。看到“`HPCDeploy 服务安装完成`”后，在浏览器打开：
 

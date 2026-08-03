@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="1.1.0"
+SCRIPT_VERSION="1.2.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common_runtime.sh"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -163,7 +163,11 @@ install -d -m 755 -o "$SERVICE_USER" -g "$SERVICE_GROUP" \
   "$BACKEND_DIR/keys" \
   "$BACKEND_DIR/apptainer"
 
-if [[ ! -x "$BACKEND_DIR/.deps/bin/python" ]]; then
+if [[ ! -x "$BACKEND_DIR/.deps/bin/python" || ! -x "$BACKEND_DIR/.deps/bin/pip" ]]; then
+  if [[ -e "$BACKEND_DIR/.deps" ]]; then
+    echo "检测到不完整的 Python 虚拟环境，正在重新创建：$BACKEND_DIR/.deps"
+    rm -rf "$BACKEND_DIR/.deps"
+  fi
   run_as_service_user python3 -m venv "$BACKEND_DIR/.deps"
 fi
 run_as_service_user "$BACKEND_DIR/.deps/bin/pip" install -r "$BACKEND_DIR/requirements.txt"

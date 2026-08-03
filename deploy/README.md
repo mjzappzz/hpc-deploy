@@ -19,7 +19,7 @@
 - `nginx/hpcdeploy.conf`
   - Nginx 站点配置，托管 `/var/www/hpcdeploy` 并代理 `/api/` 与 WebSocket
 - `scripts/install_hpcdeploy_service.sh`
-  - v1.1.0；初始化或保留生产安全配置、安装依赖、生成后端 systemd 服务、构建前端并配置 Nginx
+  - v1.2.0；初始化或保留生产安全配置、安装依赖、自动重建缺少 Python 或 pip 的半成品虚拟环境、生成后端 systemd 服务、构建前端并配置 Nginx
 - `scripts/reset_admin_password.sh`
   - v1.0.0；仅限 root 在本机重置管理员密码、备份 SQLite、清除数据库密码覆盖并使旧管理员会话失效
 - `scripts/redeploy_hpcdeploy.sh`
@@ -28,14 +28,14 @@
 ## 首次安装
 
 ```bash
-git clone <repo-url> hpc-deploy
-cd hpc-deploy
-chmod +x deploy/scripts/install_hpcdeploy_service.sh
-sudo deploy/scripts/install_hpcdeploy_service.sh
+git clone <repo-url> hpc-deploy && \
+  cd hpc-deploy && \
+  sudo deploy/scripts/install_hpcdeploy_service.sh
 ```
 
 安装脚本会自动识别当前项目路径和 `SUDO_USER`，不要求固定在 `/home/tjzs/projects/hpc-deploy`。
-脚本会自动安装基础系统依赖、创建后端虚拟环境、安装项目依赖、执行前端生产构建、发布静态文件，并注册后端 systemd 服务与 Nginx。
+脚本会自动安装基础系统依赖、创建后端虚拟环境、安装项目依赖、执行前端生产构建、发布静态文件，并注册后端 systemd 服务与 Nginx。若此前因 `python3-venv` 缺失导致 `.deps` 创建不完整，补齐依赖后直接重跑脚本即可；脚本会重建该虚拟环境，无需手工删除。
+命令使用 `&&`：克隆失败或被中断时不会继续执行后续安装。重试前先确认同名目录不存在或内容可丢弃。
 
 首次安装会交互要求输入两次管理员密码，密码至少 6 位，具体内容由部署人员自行决定。JWT 密钥由脚本自动生成，不显示且无需记忆。安全配置保存到：
 

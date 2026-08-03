@@ -3,6 +3,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 INSTALL_SCRIPT = PROJECT_ROOT / "deploy" / "scripts" / "install_hpcdeploy_service.sh"
+COMMON_RUNTIME_SCRIPT = PROJECT_ROOT / "deploy" / "scripts" / "common_runtime.sh"
 RESET_SCRIPT = PROJECT_ROOT / "deploy" / "scripts" / "reset_admin_password.sh"
 REDEPLOY_SCRIPT = PROJECT_ROOT / "deploy" / "scripts" / "redeploy_hpcdeploy.sh"
 SERVICE_TEMPLATE = PROJECT_ROOT / "deploy" / "systemd" / "hpcdeploy-backend.service"
@@ -23,6 +24,20 @@ def test_install_preserves_existing_security_configuration() -> None:
 
     assert 'if [[ -f "$HPCDEPLOY_ENV_FILE" ]]' in script
     assert "保留现有安全配置" in script
+
+
+def test_install_rebuilds_an_incomplete_python_virtual_environment() -> None:
+    script = INSTALL_SCRIPT.read_text(encoding="utf-8")
+
+    assert '[[ ! -x "$BACKEND_DIR/.deps/bin/python" || ! -x "$BACKEND_DIR/.deps/bin/pip" ]]' in script
+    assert 'rm -rf "$BACKEND_DIR/.deps"' in script
+    assert "检测到不完整的 Python 虚拟环境，正在重新创建" in script
+
+
+def test_backend_health_retries_do_not_print_transient_connection_errors() -> None:
+    script = COMMON_RUNTIME_SCRIPT.read_text(encoding="utf-8")
+
+    assert 'curl --noproxy \'*\' --fail --silent "$health_url" >/dev/null' in script
 
 
 def test_service_template_loads_production_environment_file() -> None:

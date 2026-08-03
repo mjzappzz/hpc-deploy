@@ -30,7 +30,7 @@ wait_for_backend_health() {
   local health_url="${1:-http://127.0.0.1:8000/api/health}"
   local attempt
   for attempt in {1..15}; do
-    if curl --noproxy '*' --fail --silent --show-error "$health_url" >/dev/null; then
+    if curl --noproxy '*' --fail --silent "$health_url" >/dev/null; then
       return 0
     fi
     sleep 1
