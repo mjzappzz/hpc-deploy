@@ -1,6 +1,6 @@
 import { h, nextTick, ref } from 'vue'
 import { ElIcon, ElInput, ElMessageBox, ElMessage, ElRadio, ElRadioButton, ElRadioGroup } from 'element-plus'
-import { Key, Lock, Timer, WarningFilled } from '@element-plus/icons-vue'
+import { Lock, Timer, WarningFilled } from '@element-plus/icons-vue'
 import { request } from '@/api/request'
 import { adminVerify, type AdminSessionDuration } from '@/api/auth'
 
@@ -126,9 +126,14 @@ export async function requireAdminConfirm(actionName: string): Promise<boolean> 
     const durationMinutes = ref<AdminSessionDuration>(5)
     await ElMessageBox({
       message: () => h('div', { class: 'admin-confirm-form' }, [
+        h('div', { class: 'admin-confirm-ascension', 'aria-hidden': 'true' }, [
+          h('span', { class: 'admin-confirm-ascension__rays' }),
+          h('img', { class: 'admin-confirm-ascension__mascot', src: '/assets/hpcdeploy-admin-mascot.png', alt: '' }),
+          h('span', { class: 'admin-confirm-ascension__label' }, '权限飞升仪式'),
+        ]),
         h('div', { class: 'admin-confirm-hero' }, [
           h('div', { class: 'admin-confirm-emblem', 'aria-hidden': 'true' }, [
-            h(ElIcon, { size: 24 }, () => h(Key)),
+            h('img', { src: '/assets/hpcdeploy-admin-mascot.png', alt: '' }),
           ]),
           h('div', { class: 'admin-confirm-heading' }, [
             h('span', { class: 'admin-confirm-eyebrow' }, 'ADMIN ACCESS'),

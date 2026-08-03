@@ -2,12 +2,21 @@
   <div class="app-shell" :class="{ 'is-admin-mode': adminMode }">
     <!-- sidebar -->
     <aside class="app-sidebar">
-      <div class="brand" style="cursor: pointer" @click="goHome">
+      <div
+        class="brand"
+        style="cursor: pointer"
+        @click="goHome"
+        @mouseenter="mascotPreviewVisible = true"
+        @mouseleave="mascotPreviewVisible = false"
+      >
         <img class="brand-mark" :src="brandMascotSrc" :alt="brandMascotAlt" />
         <div>
           <div class="brand-title">HPCDeploy</div>
           <div class="brand-subtitle">运维自动化控制台</div>
           <div v-if="adminMode" class="brand-admin-status"><span aria-hidden="true" />管理员控制域</div>
+        </div>
+        <div v-if="mascotPreviewVisible" class="brand-mascot-preview" aria-hidden="true">
+          <img :src="brandMascotSrc" alt="" />
         </div>
       </div>
 
@@ -102,6 +111,7 @@ import { createTrailingRefresh, TASK_STATE_REFRESHED_EVENT } from '@/utils/trail
 const route = useRoute()
 const router = useRouter()
 const runningTaskCount = ref(0)
+const mascotPreviewVisible = ref(false)
 let runningTaskTimer: number | undefined
 
 const ordinaryMascotSrc = '/assets/hpcdeploy-mascot.png'
@@ -234,6 +244,56 @@ html, body, #app {
   gap: 14px;
 }
 
+.admin-confirm-ascension {
+  position: relative;
+  display: grid;
+  min-height: 116px;
+  place-items: center;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.admin-confirm-ascension::before {
+  position: absolute;
+  inset: 12px 26%;
+  z-index: -2;
+  content: '';
+  background: radial-gradient(ellipse at center, rgba(255, 233, 164, 0.5), rgba(210, 153, 55, 0.12) 48%, transparent 72%);
+  filter: blur(4px);
+}
+
+.admin-confirm-ascension__rays {
+  position: absolute;
+  inset: -52px 26%;
+  z-index: -1;
+  background: repeating-conic-gradient(from 0deg, rgba(246, 206, 119, 0.31) 0deg 6deg, transparent 6deg 18deg);
+  mask-image: radial-gradient(circle, #000 0 28%, transparent 70%);
+  animation: admin-ascension-rays 12s linear infinite;
+}
+
+.admin-confirm-ascension__mascot {
+  width: 94px;
+  height: 94px;
+  object-fit: contain;
+  filter: drop-shadow(0 8px 16px rgba(1, 5, 14, 0.42));
+}
+
+.admin-confirm-ascension__label {
+  position: absolute;
+  bottom: 0;
+  padding: 3px 9px;
+  color: #ffe5a5;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  text-shadow: 0 1px 10px rgba(237, 183, 74, 0.64);
+}
+
+@keyframes admin-ascension-rays {
+  to { transform: rotate(1turn); }
+}
+
 .admin-confirm-overlay {
   background: rgba(8, 15, 28, 0.68) !important;
   backdrop-filter: blur(7px) saturate(0.8);
@@ -328,6 +388,14 @@ html, body, #app {
   box-shadow:
     0 10px 26px rgba(183, 123, 28, 0.24),
     0 0 18px rgba(241, 189, 91, 0.16);
+}
+
+.admin-confirm-emblem img {
+  position: relative;
+  z-index: 1;
+  width: 46px;
+  height: 46px;
+  object-fit: contain;
 }
 
 .admin-confirm-emblem::after {
@@ -591,6 +659,11 @@ html, body, #app {
     animation: none;
   }
 
+  .admin-confirm-ascension__rays,
+  .brand-mascot-preview {
+    animation: none;
+  }
+
   .admin-confirm-dialog .el-message-box__btns .el-button--primary:hover {
     transform: none;
   }
@@ -612,6 +685,7 @@ html, body, #app {
 }
 
 .brand {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -631,6 +705,38 @@ html, body, #app {
   object-fit: contain;
   background: #e8edf4;
   flex-shrink: 0;
+}
+
+.brand-mascot-preview {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 12px;
+  z-index: 60;
+  width: 220px;
+  padding: 8px;
+  pointer-events: none;
+  background: rgba(12, 21, 34, 0.94);
+  border: 1px solid rgba(176, 192, 213, 0.42);
+  border-radius: 14px;
+  box-shadow: 0 18px 40px rgba(5, 12, 24, 0.34);
+  animation: mascot-preview-in 160ms ease-out both;
+}
+
+.brand-mascot-preview img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+@keyframes mascot-preview-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .brand-title {
