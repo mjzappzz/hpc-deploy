@@ -52,9 +52,7 @@
     <!-- 固定单选标签：主表内直接选择，不允许自由输入 -->
     <el-table-column label="标签" min-width="120" class-name="server-tags-column">
       <template #default="{ row }">
-        <el-tag v-if="row.status === 'offline'" type="info" size="small">未知</el-tag>
         <el-select
-          v-else
           :model-value="row.tags?.[0] || '待压测'"
           size="small"
           class="server-tag-select"

@@ -37,10 +37,10 @@
                       size="small"
                       :loading="probingAllServers"
                       :disabled="servers.length === 0"
-                      @click="probeAllManagedServers"
+                      @click="probeTargetServers"
                     >
                       <el-icon v-if="!probingAllServers"><Refresh /></el-icon>
-                      {{ probingAllServers ? `检测中 ${probeProgress.completed}/${probeProgress.total}` : '检测在线服务器' }}
+                      {{ probingAllServers ? `检测中 ${probeProgress.completed}/${probeProgress.total}` : '检测目标服务器' }}
                     </el-button>
                     <el-select v-model="selectedTag" placeholder="全部标签" clearable size="small" style="width:140px">
                       <el-option v-for="t in tags" :key="t.name" :label="t.name" :value="t.name" />
@@ -48,15 +48,79 @@
                   </div>
                 </div>
 
-                <template v-if="allOnlineServers.length === 0">
+                <template v-if="allOnlineServers.length === 0 && starredServers.length === 0">
                   <div class="empty-servers-hint">暂无在线服务器，请先在服务器管理页完成探测。</div>
-                </template>
-                <template v-else-if="filteredOnlineServers.length === 0">
-                  <div class="empty-servers-hint">当前标签下没有在线服务器。</div>
-                  <el-button size="small" class="clear-tag-btn" @click="selectedTag = ''">清除标签筛选</el-button>
                 </template>
                 <template v-else>
                   <div class="server-group-list">
+                    <section v-if="starredServers.length > 0" class="server-group server-group--starred">
+                      <div class="server-group-header">
+                        <el-button
+                          class="server-group-select-button"
+                          size="small"
+                          type="warning"
+                          plain
+                          :disabled="starredOnlineServers.length === 0"
+                          @click.stop="toggleServerGroup(starredOnlineServers)"
+                        >{{ isServerGroupFullySelected(starredOnlineServers) ? '取消全选' : '全选' }}</el-button>
+                        <el-tag type="warning" effect="plain">我的关注</el-tag>
+                        <span>{{ starredServers.length }} 台服务器 · {{ starredOnlineServers.length }} 台在线可执行</span>
+                      </div>
+                      <div class="server-card-grid">
+                        <div
+                          v-for="server in starredServers"
+                          :key="server.id"
+                          :class="['server-select-card', 'hpc-interactive-pulse', { 'is-active': selectedServerIds.includes(server.id), 'is-offline': server.status === 'offline', 'hpc-selected-pulse': selectedServerIds.includes(server.id) }]"
+                          :aria-disabled="server.status !== 'online'"
+                          @click="server.status === 'online' && toggleServerCard(server.id)"
+                        >
+                          <div class="s-card-main">
+                            <div class="s-card-title-row">
+                              <div class="s-card-name-group">
+                                <button
+                                  type="button"
+                                  class="s-card-star"
+                                  :class="{ 'is-starred': starredServerIds.includes(server.id) }"
+                                  :aria-label="starredServerIds.includes(server.id) ? `取消关注 ${server.name}` : `关注 ${server.name}`"
+                                  :title="starredServerIds.includes(server.id) ? '取消关注' : '标记为关注'"
+                                  @click.stop="toggleServerStar(server.id)"
+                                >{{ starredServerIds.includes(server.id) ? '★' : '☆' }}</button>
+                                <span class="s-card-name">{{ server.name }}</span>
+                                <template v-if="server.tags && server.tags.length">
+                                  <el-tag v-for="tag in server.tags.slice(0, 2)" :key="tag" size="small" :type="serverTagType(tag)" class="s-card-tag">{{ tag }}</el-tag>
+                                  <el-tag v-if="server.tags.length > 2" size="small" type="info" class="s-card-tag">+{{ server.tags.length - 2 }}</el-tag>
+                                </template>
+                              </div>
+                              <div class="s-card-state">
+                                <el-tag size="small" :type="server.status === 'online' ? 'success' : 'info'" effect="plain">{{ server.status === 'online' ? '在线' : '离线' }}</el-tag>
+                                <span v-if="selectedServerIds.includes(server.id)" class="s-card-check">✓</span>
+                              </div>
+                            </div>
+                            <div class="s-card-meta-row">
+                              <span class="s-card-host">{{ server.host }}</span>
+                              <span class="s-card-sep">·</span>
+                              <span class="s-card-user">{{ server.username }}</span>
+                            </div>
+                            <div class="s-card-info-grid">
+                              <div v-if="server.os_info" class="s-card-info-item s-card-os-info">
+                                <span class="s-card-info-label">系统</span>
+                                <span class="s-card-info-value" :title="server.os_info">{{ compactOsName(server.os_info) }}</span>
+                              </div>
+                              <template v-if="hasDetectedNvidiaGpu(server)">
+                                <div class="s-card-info-item"><span class="s-card-info-label">GPU 驱动</span><span :class="['s-card-info-value', { 'is-ready': server.gpu_status === 'driver_ok' }]">{{ gpuDriverStatus(server) }}</span></div>
+                                <div class="s-card-info-item"><span class="s-card-info-label">CUDA</span><span :class="['s-card-info-value', { 'is-ready': cudaStatus(server) !== '未安装' }]">{{ cudaStatus(server) }}</span></div>
+                              </template>
+                              <div v-else-if="server.gpu_status === 'none'" class="s-card-info-item s-card-no-gpu"><span class="s-card-info-label">GPU</span><span class="s-card-info-value">无 NVIDIA GPU</span></div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </section>
+
+                    <template v-if="filteredOnlineServers.length === 0">
+                      <div class="empty-servers-hint">当前标签下没有在线服务器。</div>
+                      <el-button size="small" class="clear-tag-btn" @click="selectedTag = ''">清除标签筛选</el-button>
+                    </template>
                     <section v-for="group in groupedOnlineServers" :key="group.name" class="server-group">
                       <div class="server-group-header">
                         <el-button
@@ -887,6 +951,13 @@ const allOnlineServers = computed(() => servers.value
   .filter((s) => s.status === 'online')
   .sort(sortStarredFirst))
 
+const starredServers = computed(() => servers.value
+  .filter((server) => starredServerIds.value.includes(server.id))
+  .sort(sortStarredFirst))
+
+const starredOnlineServers = computed(() => starredServers.value
+  .filter((server) => server.status === 'online'))
+
 const filteredOnlineServers = computed(() => {
   let list = allOnlineServers.value
   if (selectedTag.value) {
@@ -1469,11 +1540,11 @@ async function loadOptions() {
   void loadTags()
 }
 
-async function probeAllManagedServers() {
+async function probeTargetServers() {
   const targets = servers.value
     .filter((server) => server.status === 'online')
   if (targets.length === 0) {
-    ElMessage.warning('当前没有在线服务器，请到服务器管理页对离线服务器使用单台检测')
+    ElMessage.warning('当前没有可作为任务目标的在线服务器，请先检测服务器连接状态')
     return
   }
 
@@ -1515,7 +1586,7 @@ async function probeAllManagedServers() {
       ElMessage.success(`检测完成：${succeeded} 台服务器，耗时 ${elapsedSeconds} 秒`)
     }
   } catch (error) {
-    ElMessage.error(`在线服务器检测失败：${getApiErrorMessage(error)}`)
+    ElMessage.error(`目标服务器检测失败：${getApiErrorMessage(error)}`)
   } finally {
     probingAllServers.value = false
   }
@@ -2527,6 +2598,15 @@ onBeforeUnmount(() => {
 .server-select-card.is-active {
   border-color: var(--el-color-primary);
   background: var(--el-color-primary-light-9);
+}
+
+.server-select-card.is-offline {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.server-select-card.is-offline:hover {
+  border-color: var(--el-border-color-light);
 }
 
 .s-card-main {
