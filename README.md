@@ -2,6 +2,12 @@
 
 HPCDeploy 是一个 Linux / HPC 服务器运维控制台：管理服务器、执行环境配置或压测任务、查看日志与报告。
 
+<p align="center">
+  <img src="frontend/public/assets/hpcdeploy-mascot.png" width="360" alt="HPCDeploy：抱着服务器、精神状态略微超频的运维人" />
+</p>
+
+<p align="center"><sub>压测开始后，运维人的精神状态。</sub></p>
+
 ## 你只需要知道这几件事
 
 - 安装后在浏览器打开：`http://<部署机-IP>:10086/`
