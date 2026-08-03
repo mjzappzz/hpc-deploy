@@ -1,6 +1,7 @@
 from app.api import audit, auth, batch, cleanup, dashboard, scripts, servers, settings as settings_router_mod, ssh_keys, tasks
 from app.api.health import router as health_router
 from app.core.auto_cleanup import start_auto_cleanup_scheduler
+from app.core.client_ip import reset_client_ip, resolve_client_ip, set_client_ip
 from app.core.config import settings
 from app.core.report_summary import schedule_missing_report_summary_backfill
 from app.core.task_recovery import recover_stuck_tasks
@@ -8,11 +9,21 @@ from app.core.task_runner import resume_running_script_tasks_after_startup
 from app.core.gpu_driver_runner import resume_gpu_driver_tasks_after_startup
 from app.core.cuda_toolkit_runner import resume_cuda_toolkit_tasks_after_startup
 from app.db.database import init_db
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 
 def create_app() -> FastAPI:
     app = FastAPI(title=settings.app_name)
+
+    @app.middleware("http")
+    async def capture_client_ip(request: Request, call_next):
+        peer_host = request.client.host if request.client else None
+        token = set_client_ip(resolve_client_ip(request.headers, peer_host))
+        try:
+            return await call_next(request)
+        finally:
+            reset_client_ip(token)
+
     app.include_router(health_router, prefix="/api")
     app.include_router(servers.router, prefix="/api")
     app.include_router(scripts.router, prefix="/api")

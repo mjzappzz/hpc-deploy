@@ -2,6 +2,7 @@ import json
 import logging
 from typing import Any
 
+from app.core.client_ip import get_client_ip
 from app.models.audit_log import AuditLog
 from sqlalchemy.orm import Session
 
@@ -72,7 +73,7 @@ def write_audit_log(
             detail_json=json.dumps(sanitized_detail, ensure_ascii=False)
             if sanitized_detail
             else None,
-            client_ip=client_ip,
+            client_ip=client_ip if client_ip is not None else get_client_ip(),
         )
         db.add(entry)
         db.commit()

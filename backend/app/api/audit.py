@@ -91,6 +91,7 @@ def list_audit_logs(
             AuditLog.target_name.ilike(like)
             | AuditLog.server_name.ilike(like)
             | AuditLog.task_id.ilike(like)
+            | AuditLog.client_ip.ilike(like)
             | AuditLog.message.ilike(like)
             | AuditLog.action.ilike(like)
         )

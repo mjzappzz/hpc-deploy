@@ -27,7 +27,7 @@ HPCDeploy 通过 SSH 在远端执行白名单脚本，提供批量任务调度�
 | 压测与结果 | GPU、CPU/内存、磁盘压测；回收 `.log`、`.txt`、`.csv`、`.xlsx`、`.json` |
 | 可观测与恢复 | WebSocket 实时日志、CPU/内存/磁盘/GPU 监控、任务诊断与后端重启后恢复监控 |
 | 资产与治理 | 任务历史与失败重跑、管理员模式、审计与自动清理 |
-| Windows 脚本库 | Windows 压测脚本上传、预览、复制、下载及 8 组 PowerShell 命令预设（不执行）；当前内置脚本为 v95 |
+| Windows 脚本库 | Windows 压测脚本上传、预览、复制、下载及 8 组 PowerShell 命令预设（不执行）；当前内置脚本为 v96 |
 
 ## 快速启动
 
@@ -123,10 +123,15 @@ sudo nginx -t && sudo systemctl reload nginx
 # 更新依赖、构建前端并重载服务
 sudo deploy/scripts/redeploy_hpcdeploy.sh
 
+# 预览卸载范围（默认不执行）
+sudo deploy/scripts/uninstall_hpcdeploy.sh
+
 # 查看状态
 sudo systemctl status hpcdeploy-backend --no-pager -l
 sudo systemctl status nginx --no-pager -l
 ```
+
+卸载默认只移除本机 systemd 后端服务、HPCDeploy Nginx 站点配置及 `/var/www/hpcdeploy` 已发布前端，保留源码、SQLite、报告、SSH 密钥和生产环境配置。删除运行数据或密钥须显式追加 `--purge-runtime-data`、`--purge-secrets` 与 `--force`；不会删除任何受管服务器远端目录。详见 [deploy/README.md](deploy/README.md)。
 
 > Nginx 从 `/var/www/hpcdeploy` 提供前端静态文件，并将 `/api/`（含 WebSocket）代理到后端。生产访问地址为 `http://<server-ip>:10086/`；Vite 仅用于开发人员本地调试，不注册 systemd 服务。
 
@@ -337,7 +342,7 @@ deploy/systemd/hpcdeploy-backend.service
 - 后端只执行白名单脚本（文件名白名单 + 目录校验）
 - Apptainer 历史兼容能力只上传/分发 `.sif`，不执行 `run` / `exec`；前端当前不开放入口
 - Windows 压测页只管理与展示 `.ps1` / `.bat` / `.cmd`；不允许进入 Linux SSH 任务执行链路
-- 当前内置 Windows 压测脚本为 `v95_windows_stress.ps1`。v95 在 v94 统一报告术语的基础上，按压测进程是否实际启动判定模块“已测试”；GPU 缺失、阶段禁用、磁盘跳过或负载启动失败会显示“未测试”及原因，判断阈值与硬件评估逻辑不变。
+- 当前内置 Windows 压测脚本为 `v96_windows_stress.ps1`，兼容 Windows PowerShell 5.1。v96 保留 v95 按实际负载进程判定模块“已测试”的逻辑，并修复 DiskSpd 重定向输出尚未刷新时读取到空 `ExitCode` 被误记为失败的问题：仅已验证的非零退出码记为错误，空或不可用退出码仅作为诊断信息，仍以有效 DiskSpd 输出进行性能判定；原有阈值与硬件评估逻辑不变。
 - NVIDIA 驱动任务仅接受安全文件名的 `.run` 文件；驱动类型必须为 GeForce 或 Data Center（RTX Enterprise）。临时上传驱动默认 7 天后清理，运行中被引用的文件不清理
 - CUDA 任务仅安装 Toolkit，不安装或覆盖 NVIDIA 驱动；任务先通过 `nvidia-smi` 校验驱动可用，再按目标系统安装对应版本
 - Linux 当前版本锁定脚本 v1.6.1 支持 x86_64 Rocky 9.x 与 Ubuntu 22.04/24.04。Rocky 读取执行前的 `VERSION_ID` 与 `uname -r`，预检固定版本仓库后锁定当前小版本、当前运行内核对应的已安装 RPM 及已安装的 `kernel-headers`；每个候选仓库预检最多运行 90 秒，超时终止 DNF 并自动切换下一源，全部失败时不修改系统配置。Ubuntu 禁止发行版升级，并通过 `apt-mark hold` 锁定当前运行内核对应的 image/modules/headers 包及已安装的 generic、HWE、virtual、lowlatency、OEM 内核元包；已安装且已 hold 的 `dpkg` 状态（`hi`）与普通已安装状态（`ii`）均可重复识别，保留原有 hold，失败时只撤销本次新增 hold。两类系统均不自动安装、升级或切换内核，也不执行全量更新；内核安全更新需在维护窗口手动解锁、升级并重新验证驱动。Rocky 旧小版本可能来自 Vault，不再获得安全更新；EPEL 9 按主版本滚动，不随 Rocky 小版本冻结。

@@ -4,6 +4,16 @@
 
 ## 当前完成度
 
+### 2026-08-03 — 安全的一键卸载脚本
+
+- 新增 `deploy/scripts/uninstall_hpcdeploy.sh` v1.0.0。默认仅 dry-run；以 `--force` 执行时只移除本机后端 systemd 服务、HPCDeploy Nginx 站点配置和已发布前端，保留源码、SQLite、报告、SSH 密钥和生产环境配置。
+- `--purge-runtime-data` 与 `--purge-secrets` 仅在显式配合 `--force` 时生效；前者删除前将 SQLite 备份到项目目录外，后者才删除项目 SSH 密钥和 `/etc/hpcdeploy/hpcdeploy.env`。脚本不删除受管服务器远端目录，也不卸载共享系统依赖。
+
+### 2026-08-03 — 审计来源 IP 与 Windows 压测脚本 v96
+
+- 审计日志在“操作人”后展示来源 IP，后端统一记录受信任本机 Nginx 转发且格式合法的客户端 IP；直连请求仅记录对端 IP，系统后台操作为空。审计关键词搜索同步支持来源 IP，旧记录不回填。
+- Windows 压测资料脚本由 `v95_windows_stress.ps1` 更新为 `v96_windows_stress.ps1`，继续兼容 Windows PowerShell 5.1。v96 保留 v95 的真实负载执行状态判定，修复 DiskSpd 重定向输出未刷新时空 `ExitCode` 被误报失败的问题：只有已验证的非零退出码记为错误，空值仅记录诊断信息，最终性能判定仍以有效 DiskSpd 输出为准；既有阈值、硬件评估和 Linux SSH 执行边界不变。
+
 ### 2026-08-02 — 压测生命周期与批次任务交互
 
 - Linux 压测以 `[STAGE] stress_start` 作为真实负载起点：准备期最长 30 分钟；负载启动后重置开始时间。超过“压测时长 + 报告回收宽限”仅记录延后提示，远端 PID 与 SSH 健康时持续监控；远端异常退出、服务器重启、SSH 恢复失败或准备期未启动才失败。

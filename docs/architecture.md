@@ -121,6 +121,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 ### audit API (`/api/audit-logs`)
 - **需 `require_admin_token()` 保护**（需要管理员密码确认）
 - 审计日志查询与分页（支持 action / target_type / status / keyword 筛选）
+- 审计记录操作人、目标服务器、来源 IP、状态、说明与脱敏后的详情；浏览器请求仅信任本机 Nginx 转发且格式合法的 `X-Real-IP`，其他请求记录直连对端 IP，后台自动任务无来源 IP
 - 支持 `risk_only=true`：仅返回删除、清理、远端访问、公钥部署、设置修改和任务取消等高风险操作；接口默认保留完整流水，前端默认启用该筛选
 - 统一英文 action 命名（`server.create`、`task.cancel` 等），前端中文标签映射
 - 记录任务创建/删除/取消/诊断、压测套件创建、清理、设置保存、服务器增删改/探测/SSH 测试/公钥部署等操作

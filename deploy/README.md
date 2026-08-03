@@ -106,6 +106,32 @@ sudo deploy/scripts/install_hpcdeploy_service.sh
 
 它会创建 `/etc/hpcdeploy/hpcdeploy.env` 并更新 systemd 的 `EnvironmentFile`；以后继续使用 `redeploy_hpcdeploy.sh` 即可。若安全配置已经存在，安装脚本会保留原值。
 
+## 卸载
+
+先预览范围，默认不修改任何文件或服务：
+
+```bash
+sudo deploy/scripts/uninstall_hpcdeploy.sh
+```
+
+确认后执行默认卸载：
+
+```bash
+sudo deploy/scripts/uninstall_hpcdeploy.sh --force
+```
+
+默认卸载会停止并移除 `hpcdeploy-backend`、移除 HPCDeploy Nginx 站点配置和 `/var/www/hpcdeploy` 静态文件；保留项目源码、SQLite、报告、SSH 密钥及 `/etc/hpcdeploy/hpcdeploy.env`，不会删除受管服务器远端目录，也不会卸载共享系统依赖。
+
+若明确弃用运行数据或凭据，才使用以下危险选项（均要求 `--force`）：
+
+```bash
+# 删除 backend/data 运行数据及 Apptainer .sif；先将 SQLite 备份到项目目录外
+sudo deploy/scripts/uninstall_hpcdeploy.sh --purge-runtime-data --force
+
+# 同时删除项目 SSH 密钥和生产环境密钥；不可恢复
+sudo deploy/scripts/uninstall_hpcdeploy.sh --purge-runtime-data --purge-secrets --force
+```
+
 ## 常用命令
 
 ```bash

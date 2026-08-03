@@ -35,7 +35,7 @@
           <el-switch v-model="filters.risk_only" active-text="仅高风险操作" inactive-text="完整流水" @change="handleSearch" />
         </el-form-item>
         <el-form-item label="关键词">
-          <el-input v-model="filters.keyword" placeholder="搜索名称/消息/操作" clearable style="width:220px" />
+          <el-input v-model="filters.keyword" placeholder="搜索名称/IP/消息/操作" clearable style="width:220px" />
         </el-form-item>
         <el-form-item>
           <el-button type="primary" @click="handleSearch">查询</el-button>
@@ -62,6 +62,9 @@
         </el-table-column>
         <el-table-column prop="actor" label="操作人" width="120" show-overflow-tooltip>
           <template #default="{ row }">{{ row.actor || '-' }}</template>
+        </el-table-column>
+        <el-table-column prop="client_ip" label="来源 IP" width="140" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.client_ip || '-' }}</template>
         </el-table-column>
         <el-table-column label="操作" width="150">
           <template #default="{ row }">
