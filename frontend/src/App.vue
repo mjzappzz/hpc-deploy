@@ -19,7 +19,7 @@
           <div class="brand-subtitle">运维自动化控制台</div>
           <div v-if="adminMode" class="brand-admin-status"><span aria-hidden="true" />管理员控制域</div>
         </div>
-        <Transition name="mascot-preview">
+        <Transition name="mascot-preview" :duration="{ enter: 360, leave: 360 }">
           <div v-show="mascotPreviewVisible" class="brand-mascot-preview" aria-hidden="true">
             <img :src="brandMascotSrc" alt="" />
           </div>
