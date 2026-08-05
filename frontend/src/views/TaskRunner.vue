@@ -36,39 +36,44 @@
                       plain
                       size="small"
                       :loading="probingAllServers"
-                      :disabled="servers.length === 0"
+                      :disabled="managedServers.length === 0"
                       @click="probeTargetServers"
                     >
                       <el-icon v-if="!probingAllServers"><Refresh /></el-icon>
                       {{ probingAllServers ? `检测中 ${probeProgress.completed}/${probeProgress.total}` : '检测目标服务器' }}
                     </el-button>
                     <el-select v-model="selectedTag" placeholder="全部标签" clearable size="small" style="width:140px">
-                      <el-option v-for="t in tags" :key="t.name" :label="t.name" :value="t.name" />
+                      <el-option v-for="t in tags" :key="t.name" :label="t.name" :value="t.name">
+                        <el-tag size="small" :type="serverTagType(t.name)">{{ t.name }}</el-tag>
+                      </el-option>
                     </el-select>
                   </div>
                 </div>
 
-                <template v-if="allOnlineServers.length === 0 && starredServers.length === 0">
-                  <div class="empty-servers-hint">暂无在线服务器，请先在服务器管理页完成探测。</div>
+                <template v-if="managedServers.length === 0">
+                  <div class="empty-servers-hint">暂无在管服务器。</div>
                 </template>
                 <template v-else>
                   <div class="server-group-list">
-                    <section v-if="starredServers.length > 0" class="server-group server-group--starred">
+                    <template v-if="filteredManagedServers.length === 0">
+                      <div class="empty-servers-hint">当前标签下没有在管服务器。</div>
+                      <el-button size="small" class="clear-tag-btn" @click="selectedTag = ''">清除标签筛选</el-button>
+                    </template>
+                    <section v-for="group in managedServerGroups" :key="group.key" :class="['server-group', { 'server-group--offline': !group.selectable }]">
                       <div class="server-group-header">
                         <el-button
+                          v-if="group.selectable"
                           class="server-group-select-button"
                           size="small"
-                          type="warning"
                           plain
-                          :disabled="starredOnlineServers.length === 0"
-                          @click.stop="toggleServerGroup(starredOnlineServers)"
-                        >{{ isServerGroupFullySelected(starredOnlineServers) ? '取消全选' : '全选' }}</el-button>
-                        <el-tag type="warning" effect="plain">我的关注</el-tag>
-                        <span>{{ starredServers.length }} 台服务器 · {{ starredOnlineServers.length }} 台在线可执行</span>
+                          @click.stop="toggleServerGroup(group.servers)"
+                        >{{ isServerGroupFullySelected(group.servers) ? '取消全选' : '全选' }}</el-button>
+                        <el-tag v-else size="small" type="info" effect="plain">离线服务器</el-tag>
+                        <span>{{ group.servers.length }} 台{{ group.label }}</span>
                       </div>
                       <div class="server-card-grid">
                         <div
-                          v-for="server in starredServers"
+                          v-for="server in group.servers"
                           :key="server.id"
                           :class="['server-select-card', 'hpc-interactive-pulse', { 'is-active': selectedServerIds.includes(server.id), 'is-offline': server.status === 'offline', 'hpc-selected-pulse': selectedServerIds.includes(server.id) }]"
                           :aria-disabled="server.status !== 'online'"
@@ -93,71 +98,6 @@
                               </div>
                               <div class="s-card-state">
                                 <el-tag size="small" :type="server.status === 'online' ? 'success' : 'info'" effect="plain">{{ server.status === 'online' ? '在线' : '离线' }}</el-tag>
-                                <span v-if="selectedServerIds.includes(server.id)" class="s-card-check">✓</span>
-                              </div>
-                            </div>
-                            <div class="s-card-meta-row">
-                              <span class="s-card-host">{{ server.host }}</span>
-                              <span class="s-card-sep">·</span>
-                              <span class="s-card-user">{{ server.username }}</span>
-                            </div>
-                            <div class="s-card-info-grid">
-                              <div v-if="server.os_info" class="s-card-info-item s-card-os-info">
-                                <span class="s-card-info-label">系统</span>
-                                <span class="s-card-info-value" :title="server.os_info">{{ compactOsName(server.os_info) }}</span>
-                              </div>
-                              <template v-if="hasDetectedNvidiaGpu(server)">
-                                <div class="s-card-info-item"><span class="s-card-info-label">GPU 驱动</span><span :class="['s-card-info-value', { 'is-ready': server.gpu_status === 'driver_ok' }]">{{ gpuDriverStatus(server) }}</span></div>
-                                <div class="s-card-info-item"><span class="s-card-info-label">CUDA</span><span :class="['s-card-info-value', { 'is-ready': cudaStatus(server) !== '未安装' }]">{{ cudaStatus(server) }}</span></div>
-                              </template>
-                              <div v-else-if="server.gpu_status === 'none'" class="s-card-info-item s-card-no-gpu"><span class="s-card-info-label">GPU</span><span class="s-card-info-value">无 NVIDIA GPU</span></div>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </section>
-
-                    <template v-if="filteredOnlineServers.length === 0">
-                      <div class="empty-servers-hint">当前标签下没有在线服务器。</div>
-                      <el-button size="small" class="clear-tag-btn" @click="selectedTag = ''">清除标签筛选</el-button>
-                    </template>
-                    <section v-for="group in groupedOnlineServers" :key="group.name" class="server-group">
-                      <div class="server-group-header">
-                        <el-button
-                          class="server-group-select-button"
-                          size="small"
-                          plain
-                          @click.stop="toggleServerGroup(group.servers)"
-                        >{{ isServerGroupFullySelected(group.servers) ? '取消全选' : '全选' }}</el-button>
-                        <el-tag :type="group.name === '未标记' ? 'info' : serverTagType(group.name)" effect="plain">{{ group.name }}</el-tag>
-                        <span>{{ group.servers.length }} 台服务器</span>
-                      </div>
-                      <div class="server-card-grid">
-                        <div
-                          v-for="server in group.servers"
-                          :key="server.id"
-                          :class="['server-select-card', 'hpc-interactive-pulse', { 'is-active': selectedServerIds.includes(server.id), 'hpc-selected-pulse': selectedServerIds.includes(server.id) }]"
-                          @click="toggleServerCard(server.id)"
-                        >
-                          <div class="s-card-main">
-                            <div class="s-card-title-row">
-                              <div class="s-card-name-group">
-                                <button
-                                  type="button"
-                                  class="s-card-star"
-                                  :class="{ 'is-starred': starredServerIds.includes(server.id) }"
-                                  :aria-label="starredServerIds.includes(server.id) ? `取消关注 ${server.name}` : `关注 ${server.name}`"
-                                  :title="starredServerIds.includes(server.id) ? '取消关注' : '标记为关注'"
-                                  @click.stop="toggleServerStar(server.id)"
-                                >{{ starredServerIds.includes(server.id) ? '★' : '☆' }}</button>
-                                <span class="s-card-name">{{ server.name }}</span>
-                                <template v-if="server.tags && server.tags.length">
-                                  <el-tag v-for="tag in server.tags.slice(0, 2)" :key="tag" size="small" :type="serverTagType(tag)" class="s-card-tag">{{ tag }}</el-tag>
-                                  <el-tag v-if="server.tags.length > 2" size="small" type="info" class="s-card-tag">+{{ server.tags.length - 2 }}</el-tag>
-                                </template>
-                              </div>
-                              <div class="s-card-state">
-                                <el-tag size="small" type="success" effect="plain">在线</el-tag>
                                 <span v-if="selectedServerIds.includes(server.id)" class="s-card-check">✓</span>
                               </div>
                             </div>
@@ -946,59 +886,38 @@ function stopNowTimer() {
   }
 }
 let pollTimer: number | null = null
+const isArchivedServer = (server: ServerRecord) => server.tags?.includes('已归档服务器')
+const TASK_SERVER_TAG_ORDER = ['待压测', '压测完成', '故障待处理', '测试机']
+const TASK_SERVER_TAG_RANK = new Map(TASK_SERVER_TAG_ORDER.map((tag, index) => [tag, index]))
 
-const allOnlineServers = computed(() => servers.value
-  .filter((s) => s.status === 'online')
-  .sort(sortStarredFirst))
+const managedServers = computed(() => servers.value
+  .filter((server) => !isArchivedServer(server))
+  .sort(sortTaskServers))
 
-const starredServers = computed(() => servers.value
-  .filter((server) => starredServerIds.value.includes(server.id))
-  .sort(sortStarredFirst))
+const probeTargetServersList = computed(() => managedServers.value)
 
-const starredOnlineServers = computed(() => starredServers.value
-  .filter((server) => server.status === 'online'))
-
-const probeTargetServersList = computed(() => {
-  const visibleServers = new Map<number, ServerRecord>()
-  for (const server of starredServers.value) visibleServers.set(server.id, server)
-  for (const server of allOnlineServers.value) visibleServers.set(server.id, server)
-  return [...visibleServers.values()]
-})
-
-const filteredOnlineServers = computed(() => {
-  let list = allOnlineServers.value
+const filteredManagedServers = computed(() => {
+  let list = managedServers.value
   if (selectedTag.value) {
     list = list.filter((s) => s.tags?.includes(selectedTag.value))
   }
   return list
 })
 
-const groupedOnlineServers = computed(() => {
-  if (selectedTag.value) {
-    return [{ name: selectedTag.value, servers: filteredOnlineServers.value }]
-  }
-  const groups = new Map<string, ServerRecord[]>()
-  for (const server of filteredOnlineServers.value) {
-    const groupName = server.tags?.[0] || '未标记'
-    const group = groups.get(groupName) ?? []
-    group.push(server)
-    groups.set(groupName, group)
-  }
-  const groupOrder = new Map([
-    ['压测完成', 0],
-    ['故障待处理', 1],
-    ['测试机', 2],
-    ['未标记', 3],
-    ['待压测', 4],
-  ])
-  return [...groups.entries()]
-    .sort(([a], [b]) => {
-      const orderDiff = (groupOrder.get(a) ?? 3) - (groupOrder.get(b) ?? 3)
-      if (orderDiff !== 0) return orderDiff
-      return a.localeCompare(b, 'zh-CN')
-    })
-    .map(([name, servers]) => ({ name, servers: servers.sort(sortStarredFirst) }))
-})
+const managedServerGroups = computed(() => [
+  {
+    key: 'online',
+    label: '在线在管服务器',
+    selectable: true,
+    servers: filteredManagedServers.value.filter((server) => server.status === 'online'),
+  },
+  {
+    key: 'offline',
+    label: '离线服务器',
+    selectable: false,
+    servers: filteredManagedServers.value.filter((server) => server.status !== 'online'),
+  },
+].filter((group) => group.servers.length > 0))
 
 function loadStarredServerIds(): number[] {
   try {
@@ -1017,8 +936,19 @@ function toggleServerStar(serverId: number) {
   localStorage.setItem(STARRED_SERVERS_STORAGE_KEY, JSON.stringify(starredServerIds.value))
 }
 
-function sortStarredFirst(a: ServerRecord, b: ServerRecord): number {
-  return Number(starredServerIds.value.includes(b.id)) - Number(starredServerIds.value.includes(a.id))
+function taskServerTagRank(server: ServerRecord): number {
+  const ranks = (server.tags ?? [])
+    .map((tag) => TASK_SERVER_TAG_RANK.get(tag))
+    .filter((rank): rank is number => rank !== undefined)
+  return ranks.length > 0 ? Math.min(...ranks) : TASK_SERVER_TAG_ORDER.length
+}
+
+function sortTaskServers(a: ServerRecord, b: ServerRecord): number {
+  const starredDiff = Number(starredServerIds.value.includes(b.id)) - Number(starredServerIds.value.includes(a.id))
+  if (starredDiff !== 0) return starredDiff
+  const tagDiff = taskServerTagRank(a) - taskServerTagRank(b)
+  if (tagDiff !== 0) return tagDiff
+  return a.name.localeCompare(b.name, 'zh-CN')
 }
 
 function toggleServerCard(id: number) {
@@ -1142,7 +1072,16 @@ function stressCardDesc(name: string): string {
 async function loadTags() {
   try {
     tags.value = (await listTags()).data.items
+      .filter((tag) => tag.name !== '已归档服务器')
+      .sort(sortTaskTags)
   } catch { /* silent */ }
+}
+
+function sortTaskTags(a: TagSummary, b: TagSummary): number {
+  const rankDiff = (TASK_SERVER_TAG_RANK.get(a.name) ?? TASK_SERVER_TAG_ORDER.length)
+    - (TASK_SERVER_TAG_RANK.get(b.name) ?? TASK_SERVER_TAG_ORDER.length)
+  if (rankDiff !== 0) return rankDiff
+  return a.name.localeCompare(b.name, 'zh-CN')
 }
 
 const STRESS_ORDER: Record<string, number> = {
@@ -1574,7 +1513,9 @@ async function probeTargetServers() {
       }
     }))
     servers.value = (await listServers()).data
-    const onlineIds = new Set(servers.value.filter((server) => server.status === 'online').map((server) => server.id))
+    const onlineIds = new Set(servers.value
+      .filter((server) => server.status === 'online' && !isArchivedServer(server))
+      .map((server) => server.id))
     selectedServerIds.value = selectedServerIds.value.filter((id) => onlineIds.has(id))
     void loadTags()
     const elapsedSeconds = ((performance.now() - startedAt) / 1000).toFixed(1)
@@ -2569,6 +2510,11 @@ onBeforeUnmount(() => {
   margin-bottom: 8px;
   color: var(--el-text-color-secondary);
   font-size: 12px;
+}
+
+.server-group--offline {
+  padding-top: 16px;
+  border-top: 1px solid var(--el-border-color-lighter);
 }
 
 .server-group-select-button {

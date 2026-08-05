@@ -32,6 +32,7 @@ export interface TaskRecord {
   report_status?: string | null
   failure_reason?: string | null
   outcome_message?: string | null
+  outcome_title?: string | null
 }
 
 export interface TaskLogRecord {

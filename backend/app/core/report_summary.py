@@ -13,7 +13,18 @@ from app.models.task_log import TaskLog
 from sqlalchemy.orm import Session
 
 REPORT_STATUS_VALUES = {"PASS", "FAIL", "UNKNOWN"}
-DIAGNOSIS_VERSION = 3
+DIAGNOSIS_VERSION = 8
+
+_VERIFIED_FAILURE_CATEGORIES = {
+    "artifact_recovery_failed",
+    "gpu_burn_source_missing",
+    "gpu_kernel_image_unavailable",
+    "stress_root_required",
+    "stress_startup_marker_mismatch",
+    "uncorrected_memory_hardware_error",
+    "user_canceled",
+    "user_canceled_remote_unreachable",
+}
 
 _SUMMARY_JOBS: set[str] = set()
 _SUMMARY_JOBS_LOCK = Lock()
@@ -26,15 +37,13 @@ def resolve_failure_reason(
 ) -> str | None:
     if report_status not in {"FAIL", "UNKNOWN"}:
         return None
-    if diagnosis.get("category") in {
-        "stress_startup_marker_mismatch",
-        "stress_interrupted_before_report",
-        "uncorrected_memory_hardware_error",
-    }:
+    if diagnosis.get("category") in _VERIFIED_FAILURE_CATEGORIES:
         conclusion = diagnosis.get("conclusion")
         if isinstance(conclusion, str) and conclusion.strip():
             return conclusion.strip()
-    return task_error_message
+    if report_status == "FAIL":
+        return "压测未通过，未能从已回收日志确认具体根因，请查看任务日志与结果文件。"
+    return "任务执行失败，未能从已回收日志确认具体根因，请查看任务日志与结果文件。"
 
 
 def unknown_report_summary(task: Task, *, reason: str = "report summary not generated") -> dict[str, Any]:
@@ -82,7 +91,17 @@ def _read_diagnosis_artifact_logs(task_id: str) -> list[str]:
                     critical_evidence.append(item)
                 else:
                     other_evidence.append(item)
-    return (critical_evidence + other_evidence)[:100]
+    gpu_markers = ("no kernel image", "couldn't init a gpu test", "no clients are alive", "cuda error", "xid")
+    gpu_evidence: list[str] = []
+    for path in sorted(artifact_dir.glob("stress_gpu*.log")):
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")[-65536:]
+        except OSError:
+            continue
+        for line in content.splitlines():
+            if any(marker in line.lower() for marker in gpu_markers):
+                gpu_evidence.append(f"[artifact:{path.name}] {line}")
+    return (critical_evidence + gpu_evidence + other_evidence)[:100]
 
 
 def upsert_report_summary(
@@ -214,10 +233,7 @@ def backfill_missing_report_summaries(limit: int = 500) -> int:
         rows = (
             db.query(Task.task_id, TaskReportSummary.summary_json)
             .outerjoin(TaskReportSummary, TaskReportSummary.task_id == Task.task_id)
-            .filter(
-                Task.status.in_(("SUCCESS", "FAILED", "CANCELED")),
-                TaskReportSummary.task_id.is_(None),
-            )
+            .filter(Task.status.in_(("SUCCESS", "FAILED", "CANCELED")))
             .order_by(Task.end_time.desc().nullslast(), Task.id.desc())
             .limit(limit)
             .all()

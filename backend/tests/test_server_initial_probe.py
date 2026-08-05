@@ -24,6 +24,42 @@ class _FakeSession:
 
 
 class ServerInitialProbeTests(unittest.TestCase):
+    def test_probe_preserves_last_verified_gpu_inventory_while_driver_is_recovering(self) -> None:
+        server = Server(
+            id=3,
+            name="restarting-gpu-server",
+            host="10.0.0.4",
+            port=22,
+            username="root",
+            auth_type="password",
+            password="secret",
+            status="offline",
+            last_check_at=datetime(2026, 8, 5, 8, 46),
+            os_info="Ubuntu 22.04 LTS",
+            gpu_status="driver_ok",
+            gpu_info="NVIDIA GeForce RTX 4090 x8 / Driver 590.48.01 / CUDA 12.8",
+        )
+        db = _FakeSession()
+        raw_result = {
+            "os_release": 'PRETTY_NAME="Ubuntu 24.04 LTS"',
+            "uname": "Linux restarting-gpu-server",
+            "cpu_info": "Model name: CPU\nCPU(s): 16",
+            "memory_info": "Mem: 32Gi 1Gi 31Gi",
+            "disk_info": "Filesystem Size Used Avail Use% Mounted on\n/dev/sda 100G 10G 90G 10% /",
+            "gpu_info": "01:00.0 VGA compatible controller: NVIDIA Corporation AD102 [GeForce RTX 4090] (rev a1)\n---GPU-SPLIT---\n__NVIDIA_SMI_FAILED__\n---CUDA-SPLIT---\n__NVCC_NOT_FOUND__",
+        }
+
+        with patch("app.api.servers.detect_server_info", return_value=(raw_result, {})), \
+             patch("app.api.servers.write_audit_log"):
+            result = _probe_server(db, server)
+
+        self.assertTrue(result.success)
+        self.assertEqual(server.status, "online")
+        self.assertEqual(server.last_check_at, datetime(2026, 8, 5, 8, 46))
+        self.assertEqual(server.os_info, "Ubuntu 22.04 LTS")
+        self.assertEqual(server.gpu_status, "driver_ok")
+        self.assertEqual(server.gpu_info, "NVIDIA GeForce RTX 4090 x8 / Driver 590.48.01 / CUDA 12.8")
+
     def test_probe_deadline_covers_entire_detector_call(self) -> None:
         with patch("app.api.servers.detect_server_info", side_effect=lambda **_kwargs: time.sleep(0.2)):
             with self.assertRaises(ServerDetectTimeout):

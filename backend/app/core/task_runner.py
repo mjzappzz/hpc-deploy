@@ -73,6 +73,8 @@ STRESS_FATAL_LOG_RULES: tuple[tuple[re.Pattern, str], ...] = (
     (re.compile(r"nvidia-smi not found", re.IGNORECASE), "GPU stress failed before start: nvidia-smi not found"),
     (re.compile(r"未检测到 NVIDIA GPU", re.IGNORECASE), "GPU stress failed before start: no NVIDIA GPU detected"),
     (re.compile(r"nvcc not found.*无法编译 gpu-burn|nvcc not found", re.IGNORECASE), "GPU stress failed before start: nvcc not found"),
+    (re.compile(r"gpu-burn source recovery failed", re.IGNORECASE), "GPU stress failed before start: gpu-burn source recovery failed"),
+    (re.compile(r"Local gpu-burn source is unavailable", re.IGNORECASE), "GPU stress failed before start: gpu-burn source missing"),
     (re.compile(r"gpu-burn build failed", re.IGNORECASE), "GPU stress failed before start: gpu-burn build failed"),
     (re.compile(r"GitHub clone failed", re.IGNORECASE), "GPU stress failed before start: gpu-burn source download failed"),
     (re.compile(r"ERROR:\s*stress-ng not found", re.IGNORECASE), "CPU/memory stress failed before start: stress-ng not found"),

@@ -17,7 +17,7 @@ from app.core.auth import require_admin_token
 from app.core.config import BACKEND_ROOT, settings
 from app.core.ssh_executor import SSHExecutor, SSHExecutorError, shell_quote
 from app.db.database import SessionLocal, get_db
-from app.models.server import Server
+from app.models.server import Server, is_server_archived
 from app.models.settings import SystemSetting
 from app.models.task import Task
 from app.models.task_log import TaskLog
@@ -59,6 +59,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/cleanup", tags=["cleanup"])
 
 ARTIFACTS_ROOT = ARTIFACTS_DIR.resolve()
+
+
+def _require_server_not_archived(server: Server) -> None:
+    if is_server_archived(server):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="已归档服务器已冻结，请先恢复管理")
 
 # ── Helpers ──
 
@@ -944,6 +949,7 @@ def scan_remote(
     server = db.get(Server, payload.server_id)
     if server is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="server not found")
+    _require_server_not_archived(server)
 
     logger.info("[cleanup] remote scan start server_id=%d host=%s", server.id, server.host)
 
@@ -1303,7 +1309,7 @@ def scan_all_remote(
     q = db.query(Server).filter(Server.status == "online")
     if tag:
         q = q.filter(Server.tags_json.contains(f'"{tag}"'))
-    servers = q.all()
+    servers = [server for server in q.all() if not is_server_archived(server)]
     total = len(servers)
 
     if total == 0:
@@ -1371,6 +1377,7 @@ def delete_remote(
     server = db.get(Server, payload.server_id)
     if server is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="server not found")
+    _require_server_not_archived(server)
 
     if payload.target not in REMOTE_ALLOWED_TARGETS:
         raise HTTPException(
@@ -1522,6 +1529,7 @@ def delete_remote_task_dir(
     server = db.get(Server, payload.server_id)
     if server is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="server not found")
+    _require_server_not_archived(server)
 
     task_dir_path = _parse_task_dir_delete_key(payload.delete_key, server.id)
     logger.info("[cleanup] remote task-dir delete start server_id=%d host=%s path=%s",

@@ -167,6 +167,7 @@ class TaskRead(BaseModel):
     report_status: str | None = None
     failure_reason: str | None = None
     outcome_message: str | None = None
+    outcome_title: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

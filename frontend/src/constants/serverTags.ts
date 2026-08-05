@@ -3,6 +3,7 @@ export const SERVER_TAG_OPTIONS = [
   { name: '测试机', type: 'primary' },
   { name: '压测完成', type: 'success' },
   { name: '故障待处理', type: 'danger' },
+  { name: '已归档服务器', type: 'info' },
 ] as const
 
 export type ServerTagName = typeof SERVER_TAG_OPTIONS[number]['name']

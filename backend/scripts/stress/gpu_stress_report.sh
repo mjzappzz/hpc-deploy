@@ -3,7 +3,7 @@
 set -u
 set -o pipefail
 
-SCRIPT_VERSION="2026.07.30"
+SCRIPT_VERSION="2026.08.05"
 
 # ============================================================
 # GPU 多卡稳定性压力测试报告脚本
@@ -19,7 +19,7 @@ SCRIPT_VERSION="2026.07.30"
 #   GPU_BURN_PRECISION = fp32（默认）或 fp64；fp64 会向 gpu-burn 传入 -d
 #
 # 特点：
-#   1. gpu-burn 默认压测所有可见 NVIDIA GPU
+#   1. 为本机实际 GPU 架构构建并校验 /opt 缓存 fatbin，再并发运行 gpu-burn
 #   2. nvidia-smi 监控所有 GPU
 #   3. XLSX 按 GPU index 分别统计利用率、温度、功耗、显存
 #   4. 修复原脚本只显示第一张卡、功耗混算的问题
@@ -31,17 +31,17 @@ GPU_BURN_PRECISION="${GPU_BURN_PRECISION:-fp32}"
 TIME_TAG="$(date +%F_%H%M%S)"
 
 WORKDIR="$(pwd)"
+GPU_BURN_REPOSITORY="https://github.com/wilicc/gpu-burn.git"
 GPU_BURN_DIR="/opt/software/gpu-burn"
-GPU_BURN="${GPU_BURN_DIR}/gpu_burn"
+GPU_BURN_REFRESH_DIR="/opt/software/.hpcdeploy-gpu-burn-refresh-$$"
 
 BURN_LOG="${WORKDIR}/stress_gpu_${TIME_TAG}.log"
-BURN_RAW_LOG="${BURN_LOG}.raw"
+GPU_BURN_BUILD_LOCK="/opt/software/.hpcdeploy-gpu-burn.lock"
+GPU_BURN_BUILD_STATE="${GPU_BURN_DIR}/.hpcdeploy-gpu-burn-build-state"
 MON_LOG="${WORKDIR}/gpu_monitor_${TIME_TAG}.csv"
 GPU_META_CSV="${WORKDIR}/gpu_metadata_${TIME_TAG}.csv"
 REPORT="${WORKDIR}/gpu_stress_report_${TIME_TAG}.txt"
 XLSX_REPORT="${WORKDIR}/gpu_stress_report_${TIME_TAG}.xlsx"
-
-FORCE_REBUILD="${FORCE_REBUILD:-0}"
 
 case "$GPU_BURN_PRECISION" in
     fp32|fp64) ;;
@@ -199,96 +199,245 @@ detect_gpu_metadata() {
 build_gpu_burn_if_needed() {
     find_cuda_home || true
 
-    if [ "$FORCE_REBUILD" != "1" ] && [ -x "$GPU_BURN" ]; then
-        echo "[INFO] gpu-burn already exists: $GPU_BURN"
-        return 0
-    fi
-
-    echo "[INFO] gpu-burn not found or force rebuild, start building..."
-
     if ! command -v nvcc >/dev/null 2>&1; then
         echo "[ERROR] nvcc not found，无法编译 gpu-burn"
         echo "[INFO] nvidia-smi 存在说明驱动正常，但缺 CUDA Toolkit / nvcc"
         exit 1
     fi
 
-    if [ -f /etc/redhat-release ]; then
-        yum install -y git gcc gcc-c++ make wget unzip || true
-    elif [ -f /etc/debian_version ]; then
-        apt update
-        apt install -y git build-essential wget unzip
+    ensure_gpu_burn_source || {
+        echo "[ERROR] gpu-burn source recovery failed: $GPU_BURN_DIR"
+        exit 1
+    }
+}
+
+ensure_gpu_burn_source() {
+    local staging_dir="${GPU_BURN_DIR}.hpcdeploy-download-$$"
+    if [ -f "$GPU_BURN_DIR/Makefile" ]; then
+        echo "[INFO] Local gpu-burn source is available: $GPU_BURN_DIR"
+        return 0
     fi
+
+    # This is recovery only: normal tasks never download the source again.
+    echo "[WARN] Local gpu-burn source is missing; restoring it from upstream."
+    rm -rf "$staging_dir"
+    git clone --depth 1 "$GPU_BURN_REPOSITORY" "$staging_dir" || return 1
+    if [ ! -f "$staging_dir/Makefile" ]; then
+        rm -rf "$staging_dir"
+        return 1
+    fi
+    rm -rf "$GPU_BURN_DIR"
+    mv "$staging_dir" "$GPU_BURN_DIR" || return 1
+    echo "[INFO] Local gpu-burn source restored: $GPU_BURN_DIR"
+}
+
+refresh_gpu_burn_source_after_kernel_mismatch() {
+    echo "[WARN] Confirmed gpu-burn kernel-image mismatch; fetching latest source."
+    rm -rf "$GPU_BURN_REFRESH_DIR"
+    git clone --depth 1 "$GPU_BURN_REPOSITORY" "$GPU_BURN_REFRESH_DIR" || return 1
+    [ -f "$GPU_BURN_REFRESH_DIR/Makefile" ] || return 1
+    (
+        flock -x 9
+        rm -rf "$GPU_BURN_DIR"
+        mv "$GPU_BURN_REFRESH_DIR" "$GPU_BURN_DIR"
+    ) 9>"$GPU_BURN_BUILD_LOCK" || return 1
+}
+
+gpu_burn_source_fingerprint() {
+    (
+        cd "$GPU_BURN_DIR" || exit 1
+        sha256sum Makefile compare.cu gpu_burn-drv.cpp 2>/dev/null | sha256sum | awk '{print $1}'
+    )
+}
+
+gpu_burn_cache_matches() {
+    local source_fingerprint="$1" nvcc_fingerprint="$2" target_arches="$3" arch inspected_arches
+    [ -x "$GPU_BURN_DIR/gpu_burn" ] && [ -f "$GPU_BURN_DIR/compare.fatbin" ] && [ -f "$GPU_BURN_BUILD_STATE" ] || return 1
+    grep -Fqx "source=${source_fingerprint}" "$GPU_BURN_BUILD_STATE" || return 1
+    grep -Fqx "nvcc=${nvcc_fingerprint}" "$GPU_BURN_BUILD_STATE" || return 1
+    grep -Fqx "targets=${target_arches}" "$GPU_BURN_BUILD_STATE" || return 1
+    inspected_arches="$(cuobjdump --list-elf "$GPU_BURN_DIR/compare.fatbin" 2>&1)" || return 1
+    for arch in $target_arches; do
+        printf '%s\n' "$inspected_arches" | grep -Eq "sm_${arch}([^0-9]|$)" || return 1
+    done
+}
+
+ensure_gpu_burn_cached_binary() {
+    local source_fingerprint nvcc_fingerprint target_arches arch inspected_arches
+    local -a fatbin_flags=()
+    target_arches="$(printf '%s\n' "$@" | sort -n | xargs)"
+    for arch in $target_arches; do
+        fatbin_flags+=("-gencode=arch=compute_${arch},code=sm_${arch}")
+    done
 
     (
-        mkdir -p /opt/software
-        cd /opt/software || exit 1
-
-        if [ "$FORCE_REBUILD" = "1" ]; then
-            rm -rf gpu-burn gpu-burn-master gpu-burn-master.zip
+        flock -x 9
+        source_fingerprint="$(gpu_burn_source_fingerprint)" || exit 1
+        nvcc_fingerprint="$(nvcc --version | sha256sum | awk '{print $1}')"
+        if gpu_burn_cache_matches "$source_fingerprint" "$nvcc_fingerprint" "$target_arches"; then
+            echo "[INFO] Reuse verified GPU-matched fat binary: $(printf 'sm_%s ' $target_arches)"
+            exit 0
         fi
-
-        if [ ! -d gpu-burn ]; then
-            echo "[INFO] Try download gpu-burn from CHFS..."
-
-            if wget -q -T 30 -O gpu-burn-master.zip \
-                "http://171.221.252.54:8573/chfs/shared/%E5%85%B6%E4%BB%96%E5%B8%B8%E7%94%A8%E8%BD%AF%E4%BB%B6%EF%BC%88%E5%90%AB%E5%8E%8B%E6%B5%8B%E8%84%9A%E6%9C%AC%E7%AD%89%EF%BC%89/Stress%E5%8E%8B%E6%B5%8B%E7%9B%B8%E5%85%B3%E8%84%9A%E6%9C%AC/gpu-burn-master.zip"; then
-
-                echo "[INFO] CHFS download success"
-
-                if unzip -o gpu-burn-master.zip; then
-                    if [ -d gpu-burn-master ]; then
-                        mv gpu-burn-master gpu-burn
-                    fi
-                fi
-            fi
-
-            if [ ! -d gpu-burn ]; then
-                echo "[WARN] CHFS download failed, fallback to GitHub..."
-                git clone https://github.com/wilicc/gpu-burn.git gpu-burn || {
-                    echo "[ERROR] GitHub clone failed"
-                    exit 1
-                }
-            fi
-        else
-            echo "[INFO] gpu-burn source already exists, skip download"
-        fi
-
-        cd gpu-burn || exit 1
-
-        if [ ! -f Makefile ]; then
-            echo "[ERROR] gpu-burn Makefile not found"
-            exit 1
-        fi
-
-        echo "[INFO] building gpu-burn..."
-
-        make clean || true
-
-        COMPUTE_LIST="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader,nounits 2>/dev/null | tr -d ' ' | sed 's/\.//g' | sort -u | xargs || true)"
-        COMPUTE_COUNT="$(echo "$COMPUTE_LIST" | awk '{print NF}')"
-
-        if [ "$COMPUTE_COUNT" = "1" ] && [ -n "$COMPUTE_LIST" ]; then
-            echo "[INFO] Single GPU compute capability detected: ${COMPUTE_LIST}"
-            make COMPUTE="${COMPUTE_LIST}" -j"$(nproc)" || {
-                echo "[ERROR] make COMPUTE=${COMPUTE_LIST} failed"
+        echo "[INFO] Rebuild GPU-matched fat binary cache: ${fatbin_flags[*]}"
+        rm -f "$GPU_BURN_DIR/gpu_burn" "$GPU_BURN_DIR/compare.fatbin" "$GPU_BURN_DIR"/*.o "$GPU_BURN_BUILD_STATE"
+        (
+            cd "$GPU_BURN_DIR" || exit 1
+            make clean || true
+            make COMPUTE= NVCCFLAGS="${fatbin_flags[*]}" -j"$(nproc)"
+        ) || exit 1
+        inspected_arches="$(cuobjdump --list-elf "$GPU_BURN_DIR/compare.fatbin" 2>&1)" || exit 1
+        for arch in $target_arches; do
+            printf '%s\n' "$inspected_arches" | grep -Eq "sm_${arch}([^0-9]|$)" || {
+                echo "[ERROR] compare.fatbin is missing verified sm_${arch} code."
                 exit 1
             }
-        else
-            echo "[WARN] Multiple or unknown compute capabilities: ${COMPUTE_LIST:-unknown}"
-            echo "[WARN] Use gpu-burn default Makefile build."
-            make -j"$(nproc)" || {
-                echo "[ERROR] make failed"
-                exit 1
-            }
-        fi
-    )
+        done
+        printf 'source=%s\nnvcc=%s\ntargets=%s\n' "$source_fingerprint" "$nvcc_fingerprint" "$target_arches" > "$GPU_BURN_BUILD_STATE"
+        echo "[INFO] compare.fatbin verified for: $(printf 'sm_%s ' $target_arches)"
+    ) 9>"$GPU_BURN_BUILD_LOCK"
+}
 
-    if [ ! -x "$GPU_BURN" ]; then
-        echo "[ERROR] gpu-burn build failed: $GPU_BURN"
-        exit 1
+prepare_gpu_burn_matched_binary() {
+    local supported_arches arch capability
+    local inspected_arches
+    local -a target_arches=()
+    declare -A target_seen=()
+
+    if [ -x "$build_dir/gpu_burn" ] && [ -f "$build_dir/compare.fatbin" ]; then return 0; fi
+
+    supported_arches="$(nvcc --list-gpu-arch 2>/dev/null | tr '[:space:]' '\n' | sed -n 's/^compute_//p')"
+    if [ -z "$supported_arches" ]; then
+        echo "[ERROR] nvcc cannot list supported GPU architectures; refuse to build an unverified fat binary."
+        return 1
     fi
 
-    echo "[INFO] gpu-burn build success: $GPU_BURN"
+    # A task-local fatbin must match only the physical GPUs on this server.
+    # Do not reuse source-tree artifacts or compile unrelated architectures.
+    while IFS=, read -r _ capability; do
+        capability="$(echo "$capability" | xargs)"
+        arch="${capability//./}"
+        [ -n "$arch" ] || continue
+        if ! printf '%s\n' "$supported_arches" | grep -Fxq "$arch"; then
+            echo "[ERROR] CUDA Toolkit cannot build sm_${arch} required by a detected GPU."
+            return 1
+        fi
+        if [ -z "${target_seen[$arch]:-}" ]; then
+            target_arches+=("$arch")
+            target_seen[$arch]=1
+        fi
+    done < <(nvidia-smi --query-gpu=index,compute_cap --format=csv,noheader,nounits)
+
+    if [ "${#target_arches[@]}" -eq 0 ]; then
+        echo "[ERROR] No compatible architecture was detected for the GPU fat binary cache."
+        return 1
+    fi
+
+    if ! command -v cuobjdump >/dev/null 2>&1; then
+        echo "[ERROR] cuobjdump is required to verify compare.fatbin target architectures."
+        return 1
+    fi
+    ensure_gpu_burn_cached_binary "${target_arches[@]}"
+}
+
+stream_gpu_burn_output() {
+    local arch="$1" gpu_ids="$2" group_log="$3" build_dir="$GPU_BURN_DIR"
+    (
+        cd "$build_dir" || exit 1
+        CUDA_VISIBLE_DEVICES="$gpu_ids" ./gpu_burn "${BURN_ARGS[@]}" 2>&1 | tr '\r' '\n' | awk '
+            /^[[:space:]]*[0-9]+(\.[0-9]+)?%/ { pct=$1; sub(/%$/, "", pct); bucket=int(pct/10); if (!(bucket in seen)) { print "[PROGRESS SAMPLE] " $0; seen[bucket]=1 }; next }
+            tolower($0) ~ /cuda error|failed|xid|fallen off|couldn.t init|named symbol not found|read.*error|died|no clients are alive|aborting|error in|segmentation fault|illegal memory/ { print "[ERROR] " $0 }
+        '
+        exit "${PIPESTATUS[0]}"
+    ) > "$group_log" 2>&1 &
+    LAST_GPU_BURN_PID=$!
+}
+
+stop_gpu_burn_process_tree() {
+    local pid="$1" child
+    # The background wrapper owns gpu_burn and its output pipeline.  Terminate
+    # descendants first so a failed attempt cannot leave a GPU load behind.
+    for child in $(pgrep -P "$pid" 2>/dev/null || true); do
+        stop_gpu_burn_process_tree "$child"
+    done
+    kill "$pid" >/dev/null 2>&1 || true
+}
+
+run_gpu_burn_per_gpu() {
+    local index capability arch gpu_log i
+    local -a gpu_pids=() gpu_indexes=() gpu_arches=() gpu_logs=()
+    declare -A gpu_arch_by_index=()
+
+    while IFS=, read -r index capability; do
+        index="$(echo "$index" | xargs)"
+        capability="$(echo "$capability" | xargs)"
+        arch="${capability//./}"
+        if [ -z "$index" ] || [ -z "$arch" ]; then
+            continue
+        fi
+        if [ -n "${gpu_arch_by_index[$index]:-}" ]; then
+            continue
+        fi
+        gpu_arch_by_index[$index]="$arch"
+    done < <(nvidia-smi --query-gpu=index,compute_cap --format=csv,noheader,nounits)
+
+    if [ "${#gpu_arch_by_index[@]}" -eq 0 ]; then
+        echo "[ERROR] No GPU compute capability metadata available."
+        return 1
+    fi
+
+    : > "$BURN_LOG"
+    BURN_EXIT=0
+    prepare_gpu_burn_matched_binary || return 1
+
+    while IFS= read -r index; do
+        arch="${gpu_arch_by_index[$index]}"
+        gpu_log="${WORKDIR}/stress_gpu_${TIME_TAG}_gpu${index}_sm${arch}.log"
+        echo "[INFO] Start gpu-burn for GPU ${index}: SM ${arch}"
+        stream_gpu_burn_output "$arch" "$index" "$gpu_log"
+        gpu_pids+=("$LAST_GPU_BURN_PID")
+        gpu_indexes+=("$index")
+        gpu_arches+=("$arch")
+        gpu_logs+=("$gpu_log")
+    done < <(printf '%s\n' "${!gpu_arch_by_index[@]}" | sort -n)
+
+    # fail fast: do not spend the remaining test duration after a confirmed
+    # gpu-burn kernel-image mismatch has already made this attempt invalid.
+    while :; do
+        if grep -qi "no kernel image is available for execution on the device" "${WORKDIR}"/stress_gpu_"${TIME_TAG}"_gpu*.log 2>/dev/null; then
+            for i in "${!gpu_pids[@]}"; do
+                stop_gpu_burn_process_tree "${gpu_pids[$i]}"
+            done
+            for i in "${!gpu_pids[@]}"; do
+                wait "${gpu_pids[$i]}" >/dev/null 2>&1 || true
+            done
+            if [ "${GPU_BURN_REFRESHED:-0}" != "1" ]; then
+                GPU_BURN_REFRESHED=1
+                refresh_gpu_burn_source_after_kernel_mismatch || return 1
+                echo "[INFO] Retrying GPU stress with the refreshed gpu-burn source."
+                run_gpu_burn_per_gpu
+                return
+            fi
+            BURN_EXIT=1
+            return
+        fi
+        local active=0
+        for i in "${!gpu_pids[@]}"; do kill -0 "${gpu_pids[$i]}" >/dev/null 2>&1 && active=1; done
+        [ "$active" -eq 0 ] && break
+        sleep 1
+    done
+
+    for i in "${!gpu_pids[@]}"; do
+        local gpu_exit=0
+        if ! wait "${gpu_pids[$i]}"; then
+            gpu_exit=1
+            BURN_EXIT=1
+        fi
+        printf '[GPU %s SM %s]\n' "${gpu_indexes[$i]}" "${gpu_arches[$i]}" >> "$BURN_LOG"
+        cat "${gpu_logs[$i]}" >> "$BURN_LOG"
+        printf '[SUMMARY] GPU %s SM %s exit=%s\n' \
+            "${gpu_indexes[$i]}" "${gpu_arches[$i]}" "$gpu_exit" >> "$BURN_LOG"
+    done
+
 }
 
 main() {
@@ -340,14 +489,8 @@ main() {
         BURN_ARGS=(-d "$DURATION")
     fi
     echo "[STAGE] stress_start"
-    echo "[INFO] Start gpu-burn (${GPU_BURN_PRECISION^^}). It will stress all visible NVIDIA GPUs."
-    set +e
-    (
-        cd "$GPU_BURN_DIR" || exit 1
-        ./gpu_burn "${BURN_ARGS[@]}"
-    ) > "$BURN_RAW_LOG" 2>&1
-    BURN_EXIT=$?
-    set -e
+    echo "[INFO] Start gpu-burn (${GPU_BURN_PRECISION^^}) with one process per GPU."
+    run_gpu_burn_per_gpu || BURN_EXIT=1
 
     kill "$MON_PID" >/dev/null 2>&1 || true
     wait "$MON_PID" >/dev/null 2>&1 || true
@@ -360,25 +503,11 @@ main() {
     echo "======================================"
     echo
 
-    ERROR_COUNT="$(grep -E "errors:" "$BURN_RAW_LOG" | awk '{for(i=1;i<=NF;i++){if($i=="errors:"){print $(i+1)}}}' | sort -nr | head -1 || true)"
+    ERROR_COUNT="$(grep -E "errors:" "$BURN_LOG" | awk '{for(i=1;i<=NF;i++){if($i=="errors:"){print $(i+1)}}}' | sort -nr | head -1 || true)"
     ERROR_COUNT="${ERROR_COUNT:-0}"
 
-    GPU_ERROR="$(grep -Ei "cuda error|failed|xid|fallen off|couldn't init|named symbol not found|read.*error|died|no clients are alive|aborting|error in|segmentation fault|illegal memory" "$BURN_RAW_LOG" || true)"
-
-    # 保留开始、每 10% 的进度样本、结束和错误；不回收数万行刷新输出。
-    {
-        echo "[INFO] gpu-burn 原始高频进度已精简，仅保留阶段样本和错误。"
-        tr '\r' '\n' < "$BURN_RAW_LOG" | awk '
-            /^[[:space:]]*[0-9]+(\.[0-9]+)?%/ {
-                pct = $1; sub(/%$/, "", pct); bucket = int(pct / 10)
-                if (!(bucket in seen)) { print "[PROGRESS SAMPLE] " $0; seen[bucket] = 1 }
-                next
-            }
-            tolower($0) ~ /cuda error|failed|xid|fallen off|couldn.t init|named symbol not found|read.*error|died|no clients are alive|aborting|error in|segmentation fault|illegal memory/ { print "[ERROR] " $0 }
-        '
-        echo "[SUMMARY] gpu-burn exit=${BURN_EXIT}, max_errors=${ERROR_COUNT}"
-    } > "$BURN_LOG"
-    rm -f "$BURN_RAW_LOG"
+    GPU_ERROR="$(grep -Ei "cuda error|failed|xid|fallen off|couldn't init|named symbol not found|read.*error|died|no clients are alive|aborting|error in|segmentation fault|illegal memory" "$BURN_LOG" || true)"
+    printf '[SUMMARY] gpu-burn exit=%s, max_errors=%s\n' "$BURN_EXIT" "$ERROR_COUNT" >> "$BURN_LOG"
 
     RESULT="PASS"
     REASON="No error detected."

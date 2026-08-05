@@ -208,6 +208,14 @@ export function updateServer(id: number, data: Partial<ServerPayload>) {
   return request.put<ServerRecord>(`/servers/${id}`, data)
 }
 
+export function archiveServer(id: number) {
+  return request.post<ServerRecord>(`/servers/${id}/archive`)
+}
+
+export function restoreServer(id: number) {
+  return request.post<ServerRecord>(`/servers/${id}/restore`)
+}
+
 export function deleteServer(id: number) {
   return request.delete<{ deleted: boolean }>(`/servers/${id}`)
 }

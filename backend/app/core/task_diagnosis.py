@@ -1027,6 +1027,55 @@ def _precheck_success(
     }
 
 
+def _precheck_gpu_kernel_image_unavailable(
+    task_type: str | None,
+    logs_joined: str,
+    report_result: str | None = None,
+    **kwargs: Any,
+) -> dict[str, Any] | None:
+    if task_type != "stress" or report_result != "FAIL":
+        return None
+    if "no kernel image is available for execution on the device" not in logs_joined.lower():
+        return None
+    return {
+        "level": "error",
+        "category": "gpu_kernel_image_unavailable",
+        "attribution": "gpu_runtime",
+        "title": "GPU 内核镜像无法加载",
+        "conclusion": "回收的 gpu-burn 日志显示 ‘no kernel image is available for execution on the device’，对应 GPU 未能启动压力负载，报告结果为 FAIL。",
+        "summary": "gpu-burn 已启动，但 CUDA 驱动无法为至少一张目标 GPU 加载测试内核镜像。",
+        "possible_causes": ["gpu-burn 生成的内核镜像不兼容目标 GPU", "CUDA Toolkit、驱动或 gpu-burn 版本组合不兼容"],
+        "suggestions": ["查看每张 GPU 的独立 gpu-burn 日志确认受影响设备", "更新或替换不兼容的 gpu-burn 实现后复测"],
+        "risk_tips": ["未启动负载的 GPU 不能视为压测通过。"],
+        "matched_patterns": ["no kernel image is available for execution on the device"],
+    }
+
+
+def _precheck_gpu_burn_source_missing(
+    task_type: str | None,
+    logs_joined: str,
+    error_message: str | None = None,
+    **kwargs: Any,
+) -> dict[str, Any] | None:
+    evidence_text = f"{logs_joined}\n{error_message or ''}".lower()
+    if task_type != "stress" or "gpu-burn source" not in evidence_text:
+        return None
+    if not any(marker in evidence_text for marker in ("source is unavailable", "source recovery failed")):
+        return None
+    return {
+        "level": "error",
+        "category": "gpu_burn_source_missing",
+        "attribution": "gpu_tooling",
+        "title": "gpu-burn 源码缺失",
+        "conclusion": "压测启动前未找到服务器上的 gpu-burn 源码，且自动恢复下载未完成，因此未开始 GPU 压测。",
+        "summary": "gpu-burn 本地源码缺失或恢复下载失败。",
+        "possible_causes": ["/opt/software/gpu-burn 被删除或不完整", "服务器无法访问上游 Git 仓库"],
+        "suggestions": ["检查服务器到 GitHub 的网络连通性", "确认后重新提交 GPU 压测，脚本会在源码缺失时自动恢复下载"],
+        "risk_tips": ["未开始 GPU 压测，不能视为任何 GPU 已验证。"],
+        "matched_patterns": ["gpu-burn source"],
+    }
+
+
 def _precheck_pending(
     task_status: str | None,
     artifacts_present: bool,
@@ -1145,10 +1194,12 @@ _PRE_CHECKS = [
     ("report_not_finalized", _precheck_report_not_finalized),
     ("timeout_no_report", _precheck_timeout_no_report),
     ("uncorrected_memory_hardware_error", _precheck_uncorrected_memory_hardware_error),
+    ("gpu_burn_source_missing", _precheck_gpu_burn_source_missing),
     ("stress_interrupted_before_report", _precheck_stress_interrupted_before_report),
     ("stress_startup_marker_mismatch", _precheck_stress_startup_marker_mismatch),
     ("stress_preflight_failed", _precheck_stress_preflight_failed),
     ("stress_stuck", _precheck_stress_stuck),
+    ("gpu_kernel_image_unavailable", _precheck_gpu_kernel_image_unavailable),
     # Priority 6-8: Status-based pre-checks
     ("success", _precheck_success),
     ("pending", _precheck_pending),

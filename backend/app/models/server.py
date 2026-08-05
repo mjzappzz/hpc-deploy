@@ -6,6 +6,8 @@ from sqlalchemy import DateTime, Integer, String, Text
 from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import Mapped, mapped_column
 
+ARCHIVED_SERVER_TAG = "已归档服务器"
+
 
 class Server(Base):
     __tablename__ = "servers"
@@ -50,3 +52,9 @@ class Server(Base):
             return []
         except (json.JSONDecodeError, TypeError):
             return []
+
+
+def is_server_archived(server: Server) -> bool:
+    """Whether server operations must be frozen by the archive tag."""
+    tags = getattr(server, "tags", [])
+    return isinstance(tags, list) and ARCHIVED_SERVER_TAG in tags

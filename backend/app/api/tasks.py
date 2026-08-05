@@ -65,7 +65,7 @@ from app.core.audit import write_audit_log
 from app.core.auth import require_admin_token
 from app.core.ws_manager import ws_manager
 from app.db.database import SessionLocal, get_db
-from app.models.server import Server
+from app.models.server import Server, is_server_archived
 from app.models.task import Task
 from app.models.task_log import TaskLog
 from app.schemas.log import TaskLogRead
@@ -208,6 +208,8 @@ def _get_server_or_400(db: Session, server_id: int) -> Server:
     server = db.get(Server, server_id)
     if server is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="server_id not found")
+    if is_server_archived(server):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="server is archived; restore management before operating it")
     return server
 
 
@@ -671,6 +673,10 @@ def run_gpu_driver_batch(
             items.append(BatchTaskCreateItem(server_id=server_id, server_name="unknown", success=False, status="FAILED", reason="server not found"))
             failed += 1
             continue
+        if is_server_archived(server):
+            items.append(BatchTaskCreateItem(server_id=server_id, server_name=server.name, success=False, status="SKIPPED", reason="server is archived"))
+            skipped += 1
+            continue
         if server.status != "online":
             items.append(BatchTaskCreateItem(server_id=server_id, server_name=server.name, success=False, status="SKIPPED", reason="server is offline"))
             skipped += 1
@@ -820,6 +826,10 @@ def run_cuda_toolkit_batch(
             items.append(BatchTaskCreateItem(server_id=server_id, server_name="unknown", success=False, status="FAILED", reason="server not found"))
             failed += 1
             continue
+        if is_server_archived(server):
+            items.append(BatchTaskCreateItem(server_id=server_id, server_name=server.name, success=False, status="SKIPPED", reason="server is archived"))
+            skipped += 1
+            continue
         if server.status != "online":
             items.append(BatchTaskCreateItem(server_id=server_id, server_name=server.name, success=False, status="SKIPPED", reason="server is offline"))
             skipped += 1
@@ -938,7 +948,7 @@ def create_managed_suite(payload: ManagedSuiteCreateRequest, db: Session = Depen
     runnable_servers: list[int] = []
     for server_id in dict.fromkeys(payload.server_ids):
         server = db.get(Server, server_id)
-        if server is None or server.status != "online":
+        if server is None or is_server_archived(server) or server.status != "online":
             continue
         if db.query(Task).filter(Task.server_id == server_id, Task.status.in_(UNFINISHED_TASK_STATUSES)).first() is not None:
             continue
@@ -1049,6 +1059,8 @@ def _create_task_for_server(
     """Create a single task record for a server. Raises HTTPException on conflict.
     Does NOT start the task runner — caller is responsible for that.
     """
+    if is_server_archived(server):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="server is archived; restore management before operating it")
     running_task = (
         db.query(Task)
         .filter(Task.server_id == server.id, Task.status.in_(UNFINISHED_TASK_STATUSES))
@@ -1160,6 +1172,11 @@ def batch_run_task(
                 )
             )
             failed += 1
+            continue
+
+        if is_server_archived(server):
+            items.append(BatchTaskCreateItem(server_id=sid, server_name=server.name, success=False, status="SKIPPED", reason="server is archived"))
+            skipped += 1
             continue
 
         if server.status != "online":
@@ -1586,6 +1603,15 @@ def create_stress_suite(
                 ))
             continue
 
+        if is_server_archived(server):
+            for s in selected_scripts:
+                items.append(StressSuiteCreateItem(
+                    server_id=sid, server_name=server.name,
+                    script_path=str(s["path"]), task_name=str(s["label"]),
+                    status="SKIPPED",
+                ))
+            continue
+
         if server.status != "online":
             for s in selected_scripts:
                 items.append(StressSuiteCreateItem(
@@ -1831,6 +1857,8 @@ def retry_batch_task(
     server = db.get(Server, original.server_id)
     if server is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="server_id not found")
+    if is_server_archived(server):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="server is archived; restore management before operating it")
     if server.status != "online":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="server is not online")
     other_unfinished = (

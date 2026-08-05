@@ -1591,6 +1591,7 @@ function hasStressDuration(params: Record<string, unknown> | null | undefined): 
 }
 
 function batchTaskInlineReason(task: TaskRecord): string {
+  if (task.outcome_title) return task.outcome_title
   const status = taskDisplayStatus(task).toUpperCase()
   const failedFallback = task.task_type === 'stress'
     ? '报告检测到压测结果为 FAIL，请查看结果文件。'

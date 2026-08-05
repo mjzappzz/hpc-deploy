@@ -19,17 +19,17 @@ class ReportSummaryFailureReasonTests(unittest.TestCase):
             diagnosis["conclusion"],
         )
 
-    def test_other_failures_keep_original_task_error(self) -> None:
+    def test_other_failures_without_verified_root_cause_use_conservative_fallback(self) -> None:
         self.assertEqual(
             resolve_failure_reason(
                 "SSH connection timed out",
                 "UNKNOWN",
                 {"category": "ssh_connection_failed", "conclusion": "任务无法连接到目标服务器。"},
             ),
-            "SSH connection timed out",
+            "任务执行失败，未能从已回收日志确认具体根因，请查看任务日志与结果文件。",
         )
 
-    def test_interrupted_stress_uses_structured_conclusion(self) -> None:
+    def test_interrupted_stress_without_evidence_uses_conservative_fallback(self) -> None:
         diagnosis = {
             "category": "stress_interrupted_before_report",
             "conclusion": "压测已进入实际负载后异常中断，疑似服务器重启或异常中断。",
@@ -41,7 +41,7 @@ class ReportSummaryFailureReasonTests(unittest.TestCase):
                 "UNKNOWN",
                 diagnosis,
             ),
-            diagnosis["conclusion"],
+            "任务执行失败，未能从已回收日志确认具体根因，请查看任务日志与结果文件。",
         )
 
     def test_uncorrected_memory_error_uses_structured_conclusion(self) -> None:
@@ -57,6 +57,32 @@ class ReportSummaryFailureReasonTests(unittest.TestCase):
                 diagnosis,
             ),
             diagnosis["conclusion"],
+        )
+
+    def test_gpu_kernel_image_error_uses_verified_conclusion(self) -> None:
+        diagnosis = {
+            "category": "gpu_kernel_image_unavailable",
+            "conclusion": "日志显示 no kernel image，目标 GPU 未启动负载。",
+        }
+        self.assertEqual(
+            resolve_failure_reason("报告已生成，压测结果为 FAIL", "FAIL", diagnosis),
+            diagnosis["conclusion"],
+        )
+
+    def test_gpu_burn_source_missing_uses_structured_conclusion(self) -> None:
+        diagnosis = {
+            "category": "gpu_burn_source_missing",
+            "conclusion": "压测启动前未找到服务器上的 gpu-burn 源码，且自动恢复下载未完成，因此未开始 GPU 压测。",
+        }
+        self.assertEqual(
+            resolve_failure_reason("gpu-burn source recovery failed", "UNKNOWN", diagnosis),
+            diagnosis["conclusion"],
+        )
+
+    def test_report_failure_without_verified_root_cause_is_conservative(self) -> None:
+        self.assertEqual(
+            resolve_failure_reason("报告已生成，压测结果为 FAIL", "FAIL", {"category": "completed"}),
+            "压测未通过，未能从已回收日志确认具体根因，请查看任务日志与结果文件。",
         )
 
 

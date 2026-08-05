@@ -1,9 +1,12 @@
 import unittest
 
-from app.core.ssh_detector import _summarize_cpu_info, _summarize_gpu_info
+from app.core.ssh_detector import CONSOLIDATED_PROBE_SCRIPT, _summarize_cpu_info, _summarize_gpu_info
 
 
 class SshDetectorTests(unittest.TestCase):
+    def test_probe_retries_nvidia_smi_while_driver_is_starting(self) -> None:
+        self.assertIn("for smi_attempt in 1 2 3", CONSOLIDATED_PROBE_SCRIPT)
+
     def test_summarize_cpu_info_supports_localized_lscpu_output(self) -> None:
         raw = """架构： x86_64
 CPU： 192

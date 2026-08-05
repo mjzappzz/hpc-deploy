@@ -41,3 +41,12 @@ test('keeps batch result paths copyable and makes ZIP download the primary actio
   assert.match(source, /type="primary"\n\s*:icon="Download"/)
   assert.match(source, /下载批次报告（ZIP）/)
 })
+
+test('uses a compact outcome title on task cards while preserving detailed failure reasons', async () => {
+  const taskCard = await readFile(new URL('../components/TaskCard.vue', import.meta.url), 'utf8')
+  const history = await readFile(new URL('./TaskHistory.vue', import.meta.url), 'utf8')
+
+  assert.match(taskCard, /if \(props\.task\.outcome_title\) return props\.task\.outcome_title/)
+  assert.match(history, /if \(task\.outcome_title\) return task\.outcome_title/)
+  assert.match(history, /task\?\.failure_reason \|\| task\?\.error_message \|\| '-'/)
+})

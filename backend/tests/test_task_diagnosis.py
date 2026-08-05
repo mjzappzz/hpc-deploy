@@ -113,6 +113,38 @@ class TaskDiagnosisTests(unittest.TestCase):
 
         self.assertEqual(diagnosis["category"], "ssh_connection_failed")
 
+    def test_gpu_kernel_image_failure_overrides_generic_successful_task_status(self) -> None:
+        diagnosis = diagnose_task_failure(
+            task_status="SUCCESS",
+            error_message="报告已生成，压测结果为 FAIL",
+            logs=[
+                "[artifact:stress_gpu_gpu1_sm120.log] [ERROR] Couldn't init a GPU test: Error in load module: no kernel image is available for execution on the device",
+                "[artifact:stress_gpu_gpu1_sm120.log] [ERROR] No clients are alive! Aborting",
+            ],
+            task_type="stress",
+            file_name="gpu_stress_report.sh",
+            report_result="FAIL",
+        )
+
+        self.assertEqual(diagnosis["category"], "gpu_kernel_image_unavailable")
+        self.assertEqual(diagnosis["title"], "GPU 内核镜像无法加载")
+        self.assertIn("no kernel image", diagnosis["conclusion"])
+
+    def test_gpu_burn_source_missing_has_a_specific_diagnosis(self) -> None:
+        diagnosis = diagnose_task_failure(
+            task_status="FAILED",
+            error_message="stress script exited before report generation: [ERROR] gpu-burn source recovery failed: /opt/software/gpu-burn",
+            logs=[
+                "[STAGE] stress_start",
+                "stress script exited before report generation: [ERROR] Local gpu-burn source is unavailable: /opt/software/gpu-burn",
+            ],
+            task_type="stress",
+            file_name="gpu_stress_report.sh",
+        )
+
+        self.assertEqual(diagnosis["category"], "gpu_burn_source_missing")
+        self.assertEqual(diagnosis["title"], "gpu-burn 源码缺失")
+
 
 if __name__ == "__main__":
     unittest.main()

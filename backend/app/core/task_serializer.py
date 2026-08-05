@@ -53,6 +53,45 @@ def resolve_success_outcome_message(file_name: str | None, messages: list[str]) 
     return None
 
 
+def resolve_card_outcome_title(
+    *,
+    task_type: str | None,
+    report_status: str,
+    diagnosis: dict | None,
+    fallback: str | None,
+) -> str | None:
+    """Return a compact, evidence-backed card label without replacing details."""
+    title = diagnosis.get("title") if isinstance(diagnosis, dict) else None
+    if isinstance(title, str) and title.strip() and title not in {"任务执行成功", "未知失败类型"}:
+        return title.strip()
+    if report_status.upper() == "FAIL":
+        return "GPU 压测报告未通过" if task_type == "stress" else "任务报告未通过"
+    return fallback
+
+
+def get_task_card_outcome_title(
+    task: Task,
+    db: Session,
+    *,
+    failure_reason: str | None,
+    report_status: str,
+) -> str | None:
+    diagnosis: dict | None = None
+    try:
+        cache = get_cached_report_summary(db, task.task_id)
+        if cache and isinstance(cache.summary_json, dict):
+            value = cache.summary_json.get("diagnosis")
+            diagnosis = value if isinstance(value, dict) else None
+    except Exception:
+        diagnosis = None
+    return resolve_card_outcome_title(
+        task_type=task.task_type,
+        report_status=report_status,
+        diagnosis=diagnosis,
+        fallback=failure_reason or task.error_message,
+    )
+
+
 def get_task_outcome_message(task: Task, db: Session, failure_reason: str | None) -> str | None:
     status = (task.status or "").upper()
     if status in {"FAILED", "CANCELED", "TIMEOUT"} or failure_reason:
@@ -148,4 +187,10 @@ def serialize_task_record(task: Task, db: Session) -> dict[str, object]:
         "report_status": report_status,
         "failure_reason": failure_reason,
         "outcome_message": get_task_outcome_message(task, db, failure_reason),
+        "outcome_title": get_task_card_outcome_title(
+            task,
+            db,
+            failure_reason=failure_reason,
+            report_status=report_status,
+        ),
     }

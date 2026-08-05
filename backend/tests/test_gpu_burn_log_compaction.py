@@ -16,11 +16,46 @@ class GpuBurnLogCompactionTests(unittest.TestCase):
         self.assertNotIn('"CUDA Version Driver"', source)
         self.assertNotIn('"CUDA Toolkit nvcc"', source)
 
-    def test_normalizes_carriage_return_progress_before_sampling(self) -> None:
+    def test_streams_carriage_return_progress_without_retaining_a_raw_log(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")
 
-        self.assertIn("tr '\\r' '\\n' < \"$BURN_RAW_LOG\" | awk", source)
-        self.assertNotIn("' \"$BURN_RAW_LOG\"\n        echo \"[SUMMARY]", source)
+        self.assertIn("stream_gpu_burn_output", source)
+        self.assertIn("tr '\\r' '\\n' | awk", source)
+        self.assertNotIn("BURN_RAW_LOG", source)
+        self.assertIn("CUDA_VISIBLE_DEVICES", source)
+        self.assertIn("ensure_gpu_burn_cached_binary", source)
+        self.assertIn("Start gpu-burn for GPU", source)
+
+    def test_builds_and_verifies_a_gpu_matched_sm_fatbin(self) -> None:
+        source = SCRIPT.read_text(encoding="utf-8")
+
+        self.assertNotIn("UNIVERSAL_GPU_ARCHES", source)
+        self.assertNotIn("FORCE_REBUILD", source)
+        self.assertNotIn('GPU_BURN="${GPU_BURN_DIR}/gpu_burn"', source)
+        self.assertIn("only the physical GPUs on this server", source)
+        self.assertIn("-gencode=arch=compute_", source)
+        self.assertIn(",code=sm_", source)
+        self.assertIn("make COMPUTE= NVCCFLAGS=", source)
+        self.assertIn("cuobjdump --list-elf", source)
+        self.assertIn("compare.fatbin is missing verified", source)
+        self.assertIn("GPU_BURN_BUILD_LOCK", source)
+        self.assertIn("flock -x 9", source)
+        self.assertIn("Reuse verified GPU-matched fat binary", source)
+        self.assertNotIn('ARCH_BUILD_ROOT="${WORKDIR}', source)
+
+    def test_refreshes_gpu_burn_source_only_after_confirmed_kernel_mismatch(self) -> None:
+        source = SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("GPU_BURN_REPOSITORY=", source)
+        self.assertIn("git clone --depth 1", source)
+        self.assertIn("ensure_gpu_burn_source", source)
+        self.assertIn("Local gpu-burn source is missing; restoring it from upstream", source)
+        self.assertIn("Local gpu-burn source restored", source)
+        self.assertIn("refresh_gpu_burn_source_after_kernel_mismatch", source)
+        self.assertIn("Confirmed gpu-burn kernel-image mismatch", source)
+        self.assertIn("fail fast", source)
+        self.assertIn("stop_gpu_burn_process_tree", source)
+        self.assertIn("pgrep -P", source)
 
         raw = (
             "0.0% first\r0.1% duplicate\r9.9% duplicate\r"

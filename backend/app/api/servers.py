@@ -13,7 +13,8 @@ from app.models.settings import SystemSetting
 from app.core.ssh_executor import SSHExecutor, SSHExecutorError, shell_quote
 from app.core.ssh_tester import SSHTestError, test_ssh_connection
 from app.db.database import SessionLocal, get_db
-from app.models.server import Server
+from app.models.server import ARCHIVED_SERVER_TAG, Server, is_server_archived
+from app.models.task import Task
 from app.schemas.server import (
     CheckPublicKeyItem,
     CheckPublicKeyRequest,
@@ -65,11 +66,49 @@ def _detect_server_info_with_deadline(*, deadline_seconds: float = CONSOLIDATED_
         executor.shutdown(wait=False, cancel_futures=True)
 
 
+def _apply_probe_summary(server: Server, summary: dict[str, str]) -> None:
+    """Apply a successful probe without discarding a verified GPU inventory mid-restart."""
+    server.status = "online"
+    server.last_error = None
+
+    driver_recovering = (
+        summary["gpu_status"] == "hardware_only"
+        and server.gpu_status == "driver_ok"
+        and bool(server.gpu_info)
+    )
+    if driver_recovering:
+        logger.info(
+            "[probe] preserving last verified GPU inventory while driver recovers server_id=%d name=%s",
+            server.id,
+            server.name,
+        )
+        return
+
+    server.last_check_at = datetime.utcnow()
+    server.os_info = summary["os_info"]
+    server.cpu_info = summary["cpu_info"]
+    server.memory_info = summary["memory_info"]
+    server.disk_info = summary["disk_info"]
+    server.network_info = summary["network_info"]
+    server.gpu_info = summary["gpu_info"]
+    server.gpu_status = summary["gpu_status"]
+
+
 def _get_server_or_404(db: Session, server_id: int) -> Server:
     server = db.get(Server, server_id)
     if server is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="server not found")
     return server
+
+
+def _require_server_not_archived(server: Server) -> None:
+    if is_server_archived(server):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="已归档服务器已冻结，请先恢复管理")
+
+
+def _server_has_unfinished_task(db: Session, server_id: int) -> bool:
+    terminal_statuses = ("SUCCESS", "FAILED", "CANCELED")
+    return db.query(Task).filter(Task.server_id == server_id, ~Task.status.in_(terminal_statuses)).first() is not None
 
 
 def _resolve_server_key_path(key_path: str | None) -> str | None:
@@ -257,16 +296,27 @@ def probe_all_servers(
 
     probe_all_start = monotonic()
 
-    # server_ids requests always probe the explicit current list.
+    archived_servers = [s for s in all_servers if is_server_archived(s)]
+    active_servers = [s for s in all_servers if not is_server_archived(s)]
+    archived_results = [
+        ProbeAllResult(
+            server_id=s.id, name=s.name, host=s.host, status=s.status,
+            last_check_at=s.last_check_at, last_error=s.last_error,
+            skipped=True, reason="server is archived, skipped",
+        )
+        for s in archived_servers
+    ]
+
+    # Explicitly requested archived servers remain frozen too.
     if payload and payload.server_ids:
-        probe_servers = list(all_servers)
-        skipped_results = []
+        probe_servers = active_servers
+        skipped_results = archived_results
     elif include_offline:
-        probe_servers = list(all_servers)
-        skipped_results: list[ProbeAllResult] = []
+        probe_servers = active_servers
+        skipped_results = archived_results
     else:
-        probe_servers = [s for s in all_servers if s.status != "offline"]
-        skipped_results = [
+        probe_servers = [s for s in active_servers if s.status != "offline"]
+        skipped_results = archived_results + [
             ProbeAllResult(
                 server_id=s.id,
                 name=s.name,
@@ -277,7 +327,7 @@ def probe_all_servers(
                 skipped=True,
                 reason="server is offline, skipped by default (include_offline=false)",
             )
-            for s in all_servers
+            for s in active_servers
             if s.status == "offline"
         ]
 
@@ -342,16 +392,7 @@ def probe_all_servers(
                     **_server_auth_kwargs(server),
                 )
                 summary = summarize_detect_result(raw_result)
-                server.status = "online"
-                server.last_check_at = datetime.utcnow()
-                server.last_error = None
-                server.os_info = summary["os_info"]
-                server.cpu_info = summary["cpu_info"]
-                server.memory_info = summary["memory_info"]
-                server.disk_info = summary["disk_info"]
-                server.gpu_info = summary["gpu_info"]
-                server.gpu_status = summary["gpu_status"]
-                server.network_info = summary["network_info"]
+                _apply_probe_summary(server, summary)
                 thread_db.commit()
                 thread_db.refresh(server)
                 elapsed = round(monotonic() - server_start, 3)
@@ -510,6 +551,11 @@ def test_all_server_ssh(
                     status="offline",
                     error="server not found at test time",
                 )
+            if is_server_archived(server):
+                return SSHTestAllResult(
+                    server_id=server.id, name=server.name, host=server.host,
+                    success=False, status=server.status, error="server is archived, skipped",
+                )
             try:
                 result = test_ssh_connection(
                     host=server.host,
@@ -597,7 +643,14 @@ def update_server(
 ) -> Server:
     server = _get_server_or_404(db, server_id)
     old_name = server.name
+    was_archived = is_server_archived(server)
     data = payload.model_dump(exclude_unset=True)
+    requested_tags = data.get("tags")
+    will_be_archived = requested_tags is not None and ARCHIVED_SERVER_TAG in requested_tags
+    if was_archived:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="已归档服务器仅可通过恢复管理操作解除冻结")
+    if will_be_archived:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="请使用归档操作")
     # Handle tags: convert list to json string for db column
     if "tags" in data:
         tags_list = data.pop("tags")
@@ -623,6 +676,40 @@ def update_server(
     return server
 
 
+@router.post("/{server_id}/archive", response_model=ServerRead)
+def archive_server(server_id: int, db: Session = Depends(get_db), _: str = Depends(require_admin_token)) -> Server:
+    server = _get_server_or_404(db, server_id)
+    if is_server_archived(server):
+        return server
+    if _server_has_unfinished_task(db, server.id):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="服务器存在未结束任务，不能归档")
+    server.tags_json = json.dumps([ARCHIVED_SERVER_TAG], ensure_ascii=False)
+    db.commit()
+    db.refresh(server)
+    write_audit_log(
+        db, action="server.archive", target_type="server", status="success", actor="admin",
+        target_id=str(server.id), target_name=server.name, server_id=server.id, server_name=server.name,
+        message=f"archived server {server.name}", detail={"tags": [ARCHIVED_SERVER_TAG]},
+    )
+    return server
+
+
+@router.post("/{server_id}/restore", response_model=ServerRead)
+def restore_server(server_id: int, db: Session = Depends(get_db), _: str = Depends(require_admin_token)) -> Server:
+    server = _get_server_or_404(db, server_id)
+    if not is_server_archived(server):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="服务器未归档，无需恢复")
+    server.tags_json = json.dumps(["待压测"], ensure_ascii=False)
+    db.commit()
+    db.refresh(server)
+    write_audit_log(
+        db, action="server.restore", target_type="server", status="success", actor="admin",
+        target_id=str(server.id), target_name=server.name, server_id=server.id, server_name=server.name,
+        message=f"restored server {server.name}", detail={"tags": ["待压测"]},
+    )
+    return server
+
+
 @router.delete("/{server_id}")
 def delete_server(
     server_id: int,
@@ -630,6 +717,7 @@ def delete_server(
     _: str = Depends(require_admin_token),
 ) -> dict[str, bool]:
     server = _get_server_or_404(db, server_id)
+    _require_server_not_archived(server)
     _name = server.name
     _host = server.host
     db.delete(server)
@@ -648,6 +736,7 @@ def delete_server(
 @router.post("/{server_id}/test", response_model=SSHTestResponse)
 def test_server_ssh(server_id: int, db: Session = Depends(get_db)) -> SSHTestResponse:
     server = _get_server_or_404(db, server_id)
+    _require_server_not_archived(server)
     try:
         result = test_ssh_connection(
             host=server.host,
@@ -713,16 +802,7 @@ def _probe_server(db: Session, server: Server) -> ServerDetectResponse:
             **_server_auth_kwargs(server),
         )
         summary = summarize_detect_result(raw_result)
-        server.status = "online"
-        server.last_check_at = datetime.utcnow()
-        server.last_error = None
-        server.os_info = summary["os_info"]
-        server.cpu_info = summary["cpu_info"]
-        server.memory_info = summary["memory_info"]
-        server.disk_info = summary["disk_info"]
-        server.gpu_info = summary["gpu_info"]
-        server.gpu_status = summary["gpu_status"]
-        server.network_info = summary["network_info"]
+        _apply_probe_summary(server, summary)
         db.commit()
         db.refresh(server)
         write_audit_log(
@@ -765,6 +845,7 @@ def _probe_server(db: Session, server: Server) -> ServerDetectResponse:
 
 def _run_server_probe(server_id: int, db: Session) -> ServerDetectResponse:
     server = _get_server_or_404(db, server_id)
+    _require_server_not_archived(server)
     return _probe_server(db, server)
 
 
@@ -837,6 +918,7 @@ def deploy_public_key(
     db: Session = Depends(get_db),
 ) -> DeployPublicKeyResponse:
     server = _get_server_or_404(db, server_id)
+    _require_server_not_archived(server)
     _require_server_ready_for_public_key_deploy(server)
     private_key_file, public_key = _load_public_key(payload.private_key_path)
     try:
@@ -886,6 +968,8 @@ def deploy_public_key_all(
             server = thread_db.get(Server, sid)
             if server is None:
                 return DeployPublicKeyAllItem(server_id=sid, server_name="(deleted)", success=False, message="server not found")
+            if is_server_archived(server):
+                return DeployPublicKeyAllItem(server_id=server.id, server_name=server.name, success=False, message="服务器已归档，操作已冻结")
             if not server_ready_for_public_key_deploy(server):
                 return DeployPublicKeyAllItem(
                     server_id=server.id,
@@ -979,6 +1063,11 @@ def check_public_key_all(
                     deployed=False,
                     status="CHECK_FAILED",
                     message="server not found",
+                )
+            if is_server_archived(server):
+                return CheckPublicKeyItem(
+                    server_id=server.id, server_name=server.name, host=server.host,
+                    success=False, deployed=False, status="CHECK_FAILED", message="服务器已归档，操作已冻结",
                 )
             try:
                 deployed, message = _check_public_key_on_server(server, public_key)

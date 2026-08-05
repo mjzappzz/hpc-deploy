@@ -9,3 +9,14 @@ test('keeps stored server tags visible and editable when a server is offline', a
   assert.match(source, /:model-value="row\.tags\?\.\[0\] \|\| '待压测'"/)
   assert.match(source, /@change="updateInlineTag\(row, \$event\)"/)
 })
+
+test('puts edit, archive, and delete in the more-actions menu', async () => {
+  const source = await readFile(new URL('./ServerTable.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /<el-dropdown[^>]*@command="handleMoreCommand\(\$event, row\)"/)
+  assert.match(source, /<el-dropdown-item class="server-more-action--edit" command="edit">编辑<\/el-dropdown-item>/)
+  assert.match(source, /<el-dropdown-item class="server-more-action--archive" command="archive">归档<\/el-dropdown-item>/)
+  assert.match(source, /<el-dropdown-item class="server-more-action--delete" command="delete" divided>删除<\/el-dropdown-item>/)
+  assert.doesNotMatch(source, /<el-button link type="danger" @click="\$emit\('delete', row\)">删除<\/el-button>/)
+  assert.match(source, /const selectableTagOptions = SERVER_TAG_OPTIONS\.filter\(\(option\) => option\.name !== '已归档服务器'\)/)
+})

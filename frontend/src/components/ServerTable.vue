@@ -15,6 +15,7 @@
       <template #default="{ row }">
         <div class="server-name-cell">
           <button
+            v-if="!archived"
             type="button"
             class="server-star-button"
             :class="{ 'is-starred': starredIds.includes(row.id) }"
@@ -53,6 +54,7 @@
     <el-table-column label="标签" min-width="120" class-name="server-tags-column">
       <template #default="{ row }">
         <el-select
+          v-if="!archived"
           :model-value="row.tags?.[0] || '待压测'"
           size="small"
           class="server-tag-select"
@@ -61,10 +63,11 @@
           <template #label="{ label }">
             <el-tag :type="serverTagType(label)" size="small">{{ label }}</el-tag>
           </template>
-          <el-option v-for="option in SERVER_TAG_OPTIONS" :key="option.name" :label="option.name" :value="option.name">
+          <el-option v-for="option in selectableTagOptions" :key="option.name" :label="option.name" :value="option.name">
             <el-tag :type="option.type" size="small">{{ option.name }}</el-tag>
           </el-option>
         </el-select>
+        <el-tag v-else type="info" size="small">{{ row.tags?.[0] || '已归档服务器' }}</el-tag>
       </template>
     </el-table-column>
     <el-table-column label="OS" width="130">
@@ -100,7 +103,10 @@
     </el-table-column>
     <el-table-column label="操作" width="200" class-name="server-actions-column">
       <template #default="{ row }">
-        <div class="server-actions">
+        <div v-if="archived" class="server-actions">
+          <el-button link type="primary" @click="$emit('restore', row)">恢复管理</el-button>
+        </div>
+        <div v-else class="server-actions">
           <el-tooltip :content="detectButtonTip(row)" placement="top">
             <el-button
               link
@@ -120,8 +126,16 @@
           >
             服务器详情
           </el-button>
-          <el-button link type="info" @click="$emit('edit', row)">编辑</el-button>
-          <el-button link type="danger" @click="$emit('delete', row)">删除</el-button>
+          <el-dropdown trigger="click" @command="handleMoreCommand($event, row)">
+            <el-button link type="info">更多</el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item class="server-more-action--edit" command="edit">编辑</el-dropdown-item>
+                <el-dropdown-item class="server-more-action--archive" command="archive">归档</el-dropdown-item>
+                <el-dropdown-item class="server-more-action--delete" command="delete" divided>删除</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </div>
       </template>
     </el-table-column>
@@ -140,11 +154,13 @@ const props = withDefaults(defineProps<{
   probingIds?: number[]
   isDetectingAll?: boolean
   starredIds?: number[]
+  archived?: boolean
 }>(), {
   loading: false,
   probingIds: () => [],
   isDetectingAll: false,
   starredIds: () => [],
+  archived: false,
 })
 
 const emit = defineEmits<{
@@ -154,7 +170,17 @@ const emit = defineEmits<{
   detail: [server: ServerRecord]
   'toggle-star': [serverId: number]
   'update-tags': [serverId: number, tags: string[]]
+  archive: [server: ServerRecord]
+  restore: [server: ServerRecord]
 }>()
+
+const selectableTagOptions = SERVER_TAG_OPTIONS.filter((option) => option.name !== '已归档服务器')
+
+function handleMoreCommand(command: string, row: ServerRecord) {
+  if (command === 'edit') emit('edit', row)
+  if (command === 'archive') emit('archive', row)
+  if (command === 'delete') emit('delete', row)
+}
 
 function displayValue(value: string | null | undefined) {
   return value?.trim() || '-'
@@ -355,6 +381,18 @@ function detectButtonTip(row: ServerRecord): string {
 .server-tag-select :deep(.el-select__caret) {
   width: 12px;
   font-size: 12px;
+}
+
+:global(.server-more-action--edit) {
+  color: var(--el-color-primary);
+}
+
+:global(.server-more-action--archive) {
+  color: var(--el-color-warning);
+}
+
+:global(.server-more-action--delete) {
+  color: var(--el-color-danger);
 }
 
 /* ── OS tag column ── */

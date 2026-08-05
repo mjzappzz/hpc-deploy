@@ -219,6 +219,7 @@ const statusTagType = computed(() => {
 })
 
 const inlineOutcomeMessage = computed(() => {
+  if (props.task.outcome_title) return props.task.outcome_title
   return getTaskOutcomeDisplayMessage(
     props.task,
     displayStatus.value,

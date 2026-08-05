@@ -1,6 +1,10 @@
 import unittest
 
-from app.core.task_serializer import normalize_success_skip_message, resolve_success_outcome_message
+from app.core.task_serializer import (
+    normalize_success_skip_message,
+    resolve_card_outcome_title,
+    resolve_success_outcome_message,
+)
 
 
 class TaskOutcomeMessageTests(unittest.TestCase):
@@ -64,6 +68,26 @@ class TaskOutcomeMessageTests(unittest.TestCase):
                     "[INFO] AOCL 已安装，跳过安装",
                 ],
             )
+        )
+
+    def test_uses_specific_diagnosis_title_before_report_failure_fallback(self) -> None:
+        self.assertEqual(
+            resolve_card_outcome_title(
+                task_type="stress",
+                report_status="UNKNOWN",
+                diagnosis={"title": "GPU 压测日志 OOM 且混合架构未全覆盖"},
+                fallback="完整失败原因",
+            ),
+            "GPU 压测日志 OOM 且混合架构未全覆盖",
+        )
+        self.assertEqual(
+            resolve_card_outcome_title(
+                task_type="stress",
+                report_status="FAIL",
+                diagnosis={"title": "GPU 内核镜像无法加载"},
+                fallback="完整失败原因",
+            ),
+            "GPU 内核镜像无法加载",
         )
 
 

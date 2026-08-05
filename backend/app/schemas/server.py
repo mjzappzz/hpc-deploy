@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 # ── Tag validation helpers ──
 TAG_MAX_LENGTH = 30
 TAG_FORBIDDEN_CHARS = set(";&|`$()\n\r")
-SERVER_TAG_OPTIONS = ("待压测", "测试机", "压测完成", "故障待处理")
+SERVER_TAG_OPTIONS = ("待压测", "测试机", "压测完成", "故障待处理", "已归档服务器")
 
 
 def _sanitize_tag(tag: str) -> str:
@@ -49,6 +49,11 @@ class ServerBase(BaseModel):
     disk_info: str | None = None
     network_info: str | None = None
 
+    @field_validator("host", mode="before")
+    @classmethod
+    def _normalize_host(cls, v: Any) -> Any:
+        return v.strip() if isinstance(v, str) else v
+
 
 class ServerCreate(ServerBase):
     password: str | None = Field(default=None, max_length=255)
@@ -82,6 +87,11 @@ class ServerUpdate(BaseModel):
     disk_info: str | None = None
     network_info: str | None = None
     tags: list[str] | None = Field(default=None)
+
+    @field_validator("host", mode="before")
+    @classmethod
+    def _normalize_host(cls, v: Any) -> Any:
+        return v.strip() if isinstance(v, str) else v
 
     @field_validator("tags")
     @classmethod

@@ -4,9 +4,6 @@
     <el-card shadow="never" class="server-table-card">
       <div class="toolbar">
         <el-button type="primary" @click="openCreate">新增服务器</el-button>
-        <el-button type="primary" plain :loading="isDetectingAll && !isDetectingOnline && !isDetectingOffline && !isDetectingStarred" @click="detectAll">
-          {{ isDetectingAll && !isDetectingOnline && !isDetectingOffline && !isDetectingStarred ? `检测中 ${probeProgress.completed}/${probeProgress.total}` : '检测全部服务器' }}
-        </el-button>
         <el-badge
           :value="pendingPublicKeyDeployCount"
           :hidden="pendingPublicKeyDeployCount === 0"
@@ -47,55 +44,22 @@
       </div>
 
       <div v-else class="server-table-wrap">
-        <div v-if="starredServers.length > 0" class="server-group server-group--starred">
-          <div class="server-group__header server-group__header--clickable" @click="showStarredServers = !showStarredServers">
-            <span class="server-group__toggle">{{ showStarredServers ? '▼' : '▶' }}</span>
-            <span class="server-group__title">我的关注</span>
-            <el-tag size="small" type="warning" effect="plain">{{ starredServers.length }}</el-tag>
-            <el-button
-              size="small"
-              type="warning"
-              plain
-              :loading="isDetectingStarred"
-              :disabled="isDetectingAll || starredServers.length === 0"
-              @click.stop="detectStarredServers"
-            >{{ isDetectingStarred ? `检测中 ${probeProgress.completed}/${probeProgress.total}` : '检测关注服务器' }}</el-button>
-          </div>
-          <div v-show="showStarredServers">
-            <ServerTable
-              :servers="starredServers"
-              :loading="loading"
-              :probing-ids="probingIds"
-              :is-detecting-all="isDetectingAll"
-              :starred-ids="starredServerIds"
-              @edit="openEdit"
-              @delete="removeServer"
-              @detect="detectOne"
-              @detail="openDetail"
-              @toggle-star="toggleServerStar"
-              @update-tags="updateServerTags"
-            />
-          </div>
-        </div>
-
         <div class="server-group">
-          <div class="server-group__header server-group__header--clickable" @click="showOnlineServers = !showOnlineServers">
-            <span class="server-group__toggle">{{ showOnlineServers ? '▼' : '▶' }}</span>
-            <span class="server-group__title">在线服务器</span>
-            <el-tag size="small" type="success" effect="plain">{{ onlineServers.length }}</el-tag>
-            <el-button
-              size="small"
-              type="success"
-              plain
-              :loading="isDetectingOnline"
-              :disabled="isDetectingAll || onlineServers.length === 0"
-              @click.stop="detectOnlineServers"
-            >{{ isDetectingOnline ? `检测中 ${probeProgress.completed}/${probeProgress.total}` : '检测在线服务器' }}</el-button>
+          <div class="server-group__header">
+            <button type="button" class="server-group__trigger" :aria-expanded="showManagedServers" @click="showManagedServers = !showManagedServers">
+              <span class="server-group__toggle">{{ showManagedServers ? '▼' : '▶' }}</span>
+              <span class="server-group__title">在管服务器</span>
+            </button>
+            <el-tag size="small" type="success" effect="plain">{{ managedServers.length }}</el-tag>
+            <el-button size="small" type="primary" plain :loading="isDetectingAll" @click="detectAll">
+              <el-icon v-if="!isDetectingAll"><Refresh /></el-icon>
+              {{ isDetectingAll ? `检测中 ${probeProgress.completed}/${probeProgress.total}` : '检测在管服务器' }}
+            </el-button>
           </div>
-          <div v-show="showOnlineServers">
+          <div v-show="showManagedServers">
             <ServerTable
-              v-if="loading || onlineServers.length > 0"
-              :servers="onlineServers"
+              v-if="loading || managedServers.length > 0"
+              :servers="managedServers"
               :loading="loading"
               :probing-ids="probingIds"
               :is-detecting-all="isDetectingAll"
@@ -106,42 +70,31 @@
               @detail="openDetail"
               @toggle-star="toggleServerStar"
               @update-tags="updateServerTags"
+              @archive="archiveManagedServer"
             />
-            <el-empty v-else description="一个在线服务器都没有… (•ˋ _ˊ•)" :image-size="60" />
+            <el-empty v-else description="暂无在管服务器" :image-size="60" />
           </div>
         </div>
+      </div>
+    </el-card>
 
-        <div class="server-group server-group--offline">
-          <div class="server-group__header server-group__header--clickable" @click="showOfflineServers = !showOfflineServers">
-            <span class="server-group__toggle">{{ showOfflineServers ? '▼' : '▶' }}</span>
-            <span class="server-group__title">离线服务器</span>
-            <el-tag size="small" type="info" effect="plain">{{ offlineServers.length }}</el-tag>
-            <el-button
-              size="small"
-              type="info"
-              plain
-              :loading="isDetectingOffline"
-              :disabled="isDetectingAll || offlineServers.length === 0"
-              @click.stop="detectOfflineServers"
-            >{{ isDetectingOffline ? `检测中 ${probeProgress.completed}/${probeProgress.total}` : '检测全部离线服务器' }}</el-button>
-          </div>
-          <div v-if="showOfflineServers">
-            <ServerTable
-              v-if="loading || offlineServers.length > 0"
-              :servers="offlineServers"
-              :loading="loading"
-              :probing-ids="probingIds"
-              :is-detecting-all="isDetectingAll"
-              :starred-ids="starredServerIds"
-              @edit="openEdit"
-              @delete="removeServer"
-              @detect="detectOne"
-              @detail="openDetail"
-              @toggle-star="toggleServerStar"
-              @update-tags="updateServerTags"
-            />
-            <el-empty v-else description="离线服务器都没有… 世界和平 🌍" :image-size="60" />
-          </div>
+    <el-card v-if="archivedServers.length > 0" shadow="never" class="server-archive-card">
+      <div class="server-group server-group--offline">
+        <div class="server-group__header">
+          <button type="button" class="server-group__trigger" :aria-expanded="showArchivedServers" @click="showArchivedServers = !showArchivedServers">
+            <span class="server-group__toggle">{{ showArchivedServers ? '▼' : '▶' }}</span>
+            <span class="server-group__title">已归档服务器</span>
+          </button>
+          <el-tag size="small" type="info" effect="plain">{{ archivedServers.length }}</el-tag>
+        </div>
+        <div v-if="showArchivedServers">
+          <ServerTable
+            :servers="archivedServers"
+            :loading="loading"
+            :starred-ids="starredServerIds"
+            archived
+            @restore="restoreServer"
+          />
         </div>
       </div>
     </el-card>
@@ -503,12 +456,14 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Refresh } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
 import { formatDateTime } from '@/utils/time'
 import { getApiErrorMessage as readApiErrorMessage } from '@/utils/apiError'
 import { getDetectMessage } from '@/composables/useFunMessages'
 import { getTaskCategoryLabel, getTaskNameLabel } from '@/utils/taskPresentation'
 import {
+  archiveServer,
   createServer,
   checkPublicKey,
   deleteServer,
@@ -518,6 +473,7 @@ import {
   listServers,
   listSshKeys,
   listTags,
+  restoreServer as restoreServerApi,
   testServerSsh,
   updateServer,
   type CheckPublicKeyResponse,
@@ -561,27 +517,25 @@ const servers = ref<ServerRecord[]>(cachedServerList?.servers ?? [])
 const initialLoading = ref(!cachedServerList)
 const STARRED_SERVERS_STORAGE_KEY = 'hpcdeploy.starred-server-ids'
 const starredServerIds = ref<number[]>(loadStarredServerIds())
-const starredServers = computed(() => servers.value
-  .filter((server) => starredServerIds.value.includes(server.id))
-  .sort(sortStarredFirst))
-const onlineServers = computed(() => servers.value
-  .filter((server) => server.status !== 'offline')
-  .sort(sortStarredFirst))
-const offlineServers = computed(() => servers.value
-  .filter((server) => server.status === 'offline')
-  .sort((a, b) => sortStarredFirst(a, b) || timestampValue(b.last_check_at) - timestampValue(a.last_check_at)))
-const showOnlineServers = ref(true)
-const showOfflineServers = ref(false)
-const showStarredServers = ref(true)
-const serverReadyForPublicKeyDeploy = (server: ServerRecord) => server.status === 'online' && !!server.last_check_at
+const ARCHIVED_SERVER_TAG = '已归档服务器'
+const MANAGED_SERVER_TAG_ORDER = ['待压测', '压测完成', '故障待处理', '测试机']
+const MANAGED_SERVER_TAG_RANK = new Map(MANAGED_SERVER_TAG_ORDER.map((tag, index) => [tag, index]))
+const isArchivedServer = (server: ServerRecord) => server.tags?.includes(ARCHIVED_SERVER_TAG)
+const archivedServers = computed(() => servers.value
+  .filter(isArchivedServer)
+  .sort((a, b) => timestampValue(b.updated_at) - timestampValue(a.updated_at)))
+const managedServers = computed(() => servers.value
+  .filter((server) => !isArchivedServer(server))
+  .sort(sortServersByStatus))
+const showManagedServers = ref(true)
+const showArchivedServers = ref(false)
+const serverReadyForPublicKeyDeploy = (server: ServerRecord) => !isArchivedServer(server) && server.status === 'online' && !!server.last_check_at
 const publicKeyTargetServers = computed(() => servers.value.filter(serverReadyForPublicKeyDeploy))
 const pendingPublicKeyDeployCount = computed(() => publicKeyTargetServers.value.filter((server) => server.auth_type === 'password').length)
 const probingIds = ref<number[]>([])
 const isDetectingAll = ref(false)
-const isDetectingOnline = ref(false)
-const isDetectingOffline = ref(false)
-const isDetectingStarred = ref(false)
 const probeProgress = reactive({ completed: 0, total: 0 })
+const PROBE_CONCURRENCY = 8
 const detailVisible = ref(false)
 const activeServer = ref<ServerRecord | null>(null)
 const sshKeys = ref<SSHKeyItem[]>([])
@@ -735,6 +689,7 @@ function resetForm() {
  * Sends a PATCH to the server endpoint with only the tags field.
  */
 async function updateServerTags(serverId: number, newTags: string[]) {
+  if (newTags.includes(ARCHIVED_SERVER_TAG)) return
   try {
     await updateServer(serverId, { tags: newTags } as Partial<ServerPayload>)
     // Optimistically update local state
@@ -742,6 +697,32 @@ async function updateServerTags(serverId: number, newTags: string[]) {
     if (srv) srv.tags = newTags
   } catch (error) {
     ElMessage.error(`标签更新失败：${getApiErrorMessage(error)}`)
+  }
+}
+
+async function archiveManagedServer(server: ServerRecord) {
+  const ok = await requireAdminConfirm('归档服务器')
+  if (!ok) return
+  try {
+    await ElMessageBox.confirm(`归档后 ${server.name} 将停止探测，不能执行任务或远端操作；仅可恢复管理。确认归档？`, '归档确认', { type: 'warning' })
+    await archiveServer(server.id)
+    ElMessage.success(`${server.name} 已归档`)
+    await loadServers()
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') ElMessage.error(`归档服务器失败：${getApiErrorMessage(error)}`)
+  }
+}
+
+async function restoreServer(server: ServerRecord) {
+  const ok = await requireAdminConfirm('恢复服务器管理')
+  if (!ok) return
+  try {
+    await ElMessageBox.confirm(`确认恢复 ${server.name} 为可操作状态？恢复后标签将设为“待压测”。`, '恢复管理', { type: 'warning' })
+    await restoreServerApi(server.id)
+    ElMessage.success(`${server.name} 已恢复管理`)
+    await loadServers()
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') ElMessage.error(`恢复服务器失败：${getApiErrorMessage(error)}`)
   }
 }
 
@@ -763,13 +744,22 @@ async function loadServers() {
   }
 }
 
-function sortServersByStatus(a: { status?: string | null }, b: { status?: string | null }): number {
-  const rank = (s: string | null | undefined): number => {
-    if (s === 'online') return 0
-    if (s === 'unknown' || !s) return 1
-    return 2 // offline
-  }
-  return rank(a.status) - rank(b.status)
+function sortServersByStatus(a: ServerRecord, b: ServerRecord): number {
+  const aStarred = starredServerIds.value.includes(a.id)
+  const bStarred = starredServerIds.value.includes(b.id)
+  if (aStarred !== bStarred) return aStarred ? -1 : 1
+  const tagDiff = managedServerTagRank(a) - managedServerTagRank(b)
+  if (tagDiff !== 0) return tagDiff
+  const createdAtDiff = timestampValue(a.created_at) - timestampValue(b.created_at)
+  if (createdAtDiff !== 0) return createdAtDiff
+  return a.id - b.id
+}
+
+function managedServerTagRank(server: ServerRecord): number {
+  const ranks = (server.tags ?? [])
+    .map((tag) => MANAGED_SERVER_TAG_RANK.get(tag))
+    .filter((rank): rank is number => rank !== undefined)
+  return ranks.length > 0 ? Math.min(...ranks) : MANAGED_SERVER_TAG_ORDER.length
 }
 
 function timestampValue(value: string | null | undefined): number {
@@ -856,7 +846,7 @@ async function saveServer() {
   try {
     const payload: Partial<ServerPayload> = {
       name: form.name,
-      host: form.host,
+      host: form.host.trim(),
       port: form.port,
       username: form.username,
       auth_type: form.auth_type,
@@ -1160,50 +1150,43 @@ async function detectOne(server: ServerRecord) {
 
 /** 全部检测：并发复检指定状态的服务器。 */
 async function detectAll() {
-  await detectServers(servers.value, '全部')
+  await detectServers(managedServers.value)
 }
 
-async function detectOnlineServers() {
-  await detectServers(onlineServers.value, '在线')
-}
-
-async function detectOfflineServers() {
-  await detectServers(offlineServers.value, '离线')
-}
-
-async function detectStarredServers() {
-  await detectServers(starredServers.value, '关注')
-}
-
-async function detectServers(targets: ServerRecord[], targetLabel: '全部' | '在线' | '离线' | '关注') {
+async function detectServers(targets: ServerRecord[]) {
   if (targets.length === 0) {
-    ElMessage.warning(targetLabel === '全部' ? '当前没有服务器' : targetLabel === '关注' ? '当前没有关注服务器' : `当前没有${targetLabel}服务器`)
+    ElMessage.warning('当前没有在管服务器')
     return
   }
 
   isDetectingAll.value = true
-  isDetectingOnline.value = targetLabel === '在线'
-  isDetectingOffline.value = targetLabel === '离线'
-  isDetectingStarred.value = targetLabel === '关注'
   probeProgress.completed = 0
   probeProgress.total = targets.length
   probingIds.value = targets.map((server) => server.id)
   const startedAt = performance.now()
   try {
-    const results = await Promise.all(targets.map(async (server) => {
-      try {
-        return (await detectServer(server.id)).data
-      } catch (error) {
-        return {
-          success: false,
-          name: server.name,
-          status: server.status,
-          error: getApiErrorMessage(error),
-        } as ServerDetectResult
-      } finally {
-        probeProgress.completed += 1
+    const results: ServerDetectResult[] = []
+    let nextIndex = 0
+    const workerCount = Math.min(PROBE_CONCURRENCY, targets.length)
+    const worker = async () => {
+      while (nextIndex < targets.length) {
+        const index = nextIndex++
+        const server = targets[index]
+        try {
+          results[index] = (await detectServer(server.id)).data
+        } catch (error) {
+          results[index] = {
+            success: false,
+            name: server.name,
+            status: server.status,
+            error: getApiErrorMessage(error),
+          } as ServerDetectResult
+        } finally {
+          probeProgress.completed += 1
+        }
       }
-    }))
+    }
+    await Promise.all(Array.from({ length: workerCount }, worker))
     await loadServers()
     const elapsedSeconds = ((performance.now() - startedAt) / 1000).toFixed(1)
     const succeeded = results.filter((result) => result.success).length
@@ -1220,13 +1203,10 @@ async function detectServers(targets: ServerRecord[], targetLabel: '全部' | '�
       ElMessage.success(`检测完成：${succeeded} 台服务器，耗时 ${elapsedSeconds} 秒`)
     }
   } catch (error) {
-    ElMessage.error(`${targetLabel}服务器检测失败：${getApiErrorMessage(error)}`)
+    ElMessage.error(`在管服务器检测失败：${getApiErrorMessage(error)}`)
   } finally {
     probingIds.value = []
     isDetectingAll.value = false
-    isDetectingOnline.value = false
-    isDetectingOffline.value = false
-    isDetectingStarred.value = false
   }
 }
 
@@ -1498,6 +1478,11 @@ onMounted(() => {
   width: 100%;
 }
 
+.server-archive-card {
+  width: 100%;
+  margin-top: 16px;
+}
+
 .page-deploy-key-badge {
   margin-left: 0;
 }
@@ -1558,12 +1543,25 @@ onMounted(() => {
   gap: 8px;
   margin-bottom: 8px;
 }
-.server-group__header--clickable {
+.server-group__trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
   cursor: pointer;
   user-select: none;
 }
-.server-group__header--clickable:hover .server-group__title {
+.server-group__trigger:hover .server-group__title {
   color: var(--el-color-primary);
+}
+.server-group__trigger:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 2px;
+  border-radius: 2px;
 }
 .server-group__toggle {
   width: 12px;
