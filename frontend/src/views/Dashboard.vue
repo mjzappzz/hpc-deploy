@@ -5,6 +5,9 @@
       <el-button :loading="loading" @click="loadDashboard">
         刷新
       </el-button>
+      <el-tag type="info" size="small" effect="plain" class="auto-refresh-tag" :class="{ 'is-paused': !isAutoRefreshing }" role="status" aria-live="polite">
+        <span class="auto-refresh-label">{{ isAutoRefreshing ? '自动刷新中 (5s)' : '自动刷新已暂停' }}</span>
+      </el-tag>
     </div>
 
     <!-- error alert -->
@@ -84,15 +87,15 @@
       </el-col>
     </el-row>
 
-    <!-- recent tasks -->
+    <!-- active tasks -->
     <el-card shadow="never" class="section-card">
-      <template #header>最近任务</template>
+      <template #header>运行中任务</template>
       <el-table
         :data="summary.recent_tasks"
         border
         stripe
         v-loading="loading"
-        empty-text="任务列表比我的脸还干净"
+        empty-text="当前没有运行中的任务"
         highlight-current-row
         :row-style="{ cursor: 'pointer' }"
         @row-click="goToTask"
@@ -138,7 +141,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   getDashboardSummary,
@@ -150,9 +153,13 @@ import { getTaskCategoryLabel } from '@/utils/taskPresentation'
 import { formatDateTime } from '@/utils/time'
 
 const router = useRouter()
+const DASHBOARD_REFRESH_INTERVAL_MS = 5_000
 
 const loading = ref(false)
 const loadError = ref(false)
+const isAutoRefreshing = ref(false)
+let dashboardRefreshTimer: number | undefined
+let dashboardRequestInFlight = false
 
 const summary = reactive<DashboardSummary>({
   servers: { total: 0, online: 0, offline: 0 },
@@ -170,29 +177,106 @@ function goToTask(row: { task_id: string; batch_id?: string | null }) {
   router.push({ path: '/history', query: { task_id: row.task_id } })
 }
 
-async function loadDashboard() {
-  loading.value = true
-  loadError.value = false
+async function loadDashboard(silent = false) {
+  if (dashboardRequestInFlight) return
+
+  dashboardRequestInFlight = true
+  if (!silent) {
+    loading.value = true
+    loadError.value = false
+  }
   try {
     const resp = await getDashboardSummary()
     summary.servers = resp.data.servers
     summary.tasks = resp.data.tasks
     summary.recent_tasks = resp.data.recent_tasks
   } catch {
-    loadError.value = true
+    if (!silent) loadError.value = true
   } finally {
-    loading.value = false
+    dashboardRequestInFlight = false
+    if (!silent) loading.value = false
   }
 }
 
-onMounted(loadDashboard)
+function startDashboardAutoRefresh() {
+  if (dashboardRefreshTimer !== undefined) return
+  dashboardRefreshTimer = window.setInterval(() => void loadDashboard(true), DASHBOARD_REFRESH_INTERVAL_MS)
+  isAutoRefreshing.value = true
+}
+
+function stopDashboardAutoRefresh() {
+  if (dashboardRefreshTimer !== undefined) {
+    window.clearInterval(dashboardRefreshTimer)
+    dashboardRefreshTimer = undefined
+  }
+  isAutoRefreshing.value = false
+}
+
+function handleVisibilityChange() {
+  if (document.hidden) {
+    stopDashboardAutoRefresh()
+    return
+  }
+  void loadDashboard(true)
+  startDashboardAutoRefresh()
+}
+
+onMounted(() => {
+  void loadDashboard()
+  document.addEventListener('visibilitychange', handleVisibilityChange)
+  if (!document.hidden) startDashboardAutoRefresh()
+})
+
+onUnmounted(() => {
+  stopDashboardAutoRefresh()
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
+})
 </script>
 
 <style scoped>
 .dashboard-toolbar {
   display: flex;
-  justify-content: flex-start;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   margin-bottom: 16px;
+}
+
+.auto-refresh-tag {
+  display: inline-flex;
+  align-items: center;
+  margin-left: auto;
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.auto-refresh-tag::before {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  background: rgba(64, 158, 255, 0.22);
+  content: '';
+  pointer-events: none;
+  transform: scaleX(0);
+  transform-origin: left center;
+  animation: auto-refresh-progress 5s linear infinite;
+}
+
+.auto-refresh-label {
+  position: relative;
+  z-index: 1;
+}
+
+.auto-refresh-tag.is-paused::before {
+  background: rgba(144, 147, 153, 0.16);
+  animation: none;
+  transform: scaleX(1);
+}
+
+@keyframes auto-refresh-progress {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
 }
 
 .recent-task-name {

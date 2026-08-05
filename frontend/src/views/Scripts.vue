@@ -196,7 +196,7 @@ import { getApiErrorMessage as readApiErrorMessage } from '@/utils/apiError'
 import { formatBytes } from '@/utils/format'
 import { copyText } from '@/utils/clipboard'
 import { getTaskTypeLabel } from '@/utils/taskDisplay'
-import { adminMode, requireAdminConfirm } from '@/composables/useAdminConfirm'
+import { requireAdminConfirm } from '@/composables/useAdminConfirm'
 import ScriptTable from '@/components/ScriptTable.vue'
 import {
   deleteScriptFile,
@@ -374,10 +374,6 @@ async function onGpuDriverSelected(file: { raw?: File }) {
 }
 
 async function removeGpuDriver(driver: GpuDriverLibraryItem) {
-  if (!adminMode.value) {
-    ElMessage.warning('管理员模式才可删除驱动')
-    return
-  }
   const ok = await requireAdminConfirm('删除 Linux NVIDIA 驱动')
   if (!ok) return
   await ElMessageBox.confirm(`确认删除驱动文件 ${driver.filename}？`, '删除确认', { type: 'warning' })
@@ -421,10 +417,6 @@ async function copyPreviewContent() {
 }
 
 async function removeFile(file: ScriptFileRecord) {
-  if (!adminMode.value) {
-    ElMessage.warning('这个脚本先别删，管理员模式才有这把剪刀～')
-    return
-  }
   const ok = await requireAdminConfirm('删除脚本')
   if (!ok) return
   await ElMessageBox.confirm(`确认删除文件 ${file.name}？`, '删除确认', { type: 'warning' })

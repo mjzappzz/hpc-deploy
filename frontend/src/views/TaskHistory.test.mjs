@@ -22,3 +22,12 @@ test('presents mixed batch results as an amber partial success with counts', asy
   assert.match(statusTag, /normalized\.value === 'PARTIAL_FAILED'\) return 'PARTIAL SUCCESS'/)
   assert.match(statusTag, /'PARTIAL_FAILED', 'PARTIAL_CANCELED'\].*'warning'/)
 })
+
+test('uses the five-second fill progress tag in both history views', async () => {
+  const source = await readFile(new URL('./TaskHistory.vue', import.meta.url), 'utf8')
+
+  assert.equal((source.match(/class="auto-refresh-label"/g) || []).length, 2)
+  assert.doesNotMatch(source, /auto-refresh-indicator/)
+  assert.match(source, /@keyframes auto-refresh-progress/)
+  assert.match(source, /animation: auto-refresh-progress 5s linear infinite/)
+})

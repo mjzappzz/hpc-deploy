@@ -536,7 +536,7 @@ import ServerTable from '@/components/ServerTable.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import LogViewer from '@/components/LogViewer.vue'
 import TaskDiagnosisDialog from '@/components/TaskDiagnosisDialog.vue'
-import { adminMode, requireAdminConfirm } from '@/composables/useAdminConfirm'
+import { requireAdminConfirm } from '@/composables/useAdminConfirm'
 import { useSettingsStore } from '@/stores/settings'
 import { SERVER_TAG_OPTIONS, serverTagType } from '@/constants/serverTags'
 
@@ -1118,10 +1118,6 @@ function publicKeyStatusType(status: PublicKeyStatus) {
 }
 
 async function removeServer(server: ServerRecord) {
-  if (!adminMode.value) {
-    ElMessage.warning('哎哟，这台服务器还没办离职手续～切到管理员模式再删。')
-    return
-  }
   const ok = await requireAdminConfirm('删除服务器')
   if (!ok) return
   await ElMessageBox.confirm(`确认删除服务器 ${server.name}？`, '删除确认', { type: 'warning' })

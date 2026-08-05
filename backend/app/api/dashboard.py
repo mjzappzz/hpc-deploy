@@ -19,6 +19,11 @@ from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
+ACTIVE_TASK_STATUSES = (
+    "PENDING", "CONNECTING", "PREPARING", "UPLOADING",
+    "WAITING_REBOOT", "RUNNING", "CANCELING",
+)
+
 
 @router.get("/summary", response_model=DashboardSummary)
 def get_dashboard_summary(db: Session = Depends(get_db)) -> DashboardSummary:
@@ -38,9 +43,12 @@ def get_dashboard_summary(db: Session = Depends(get_db)) -> DashboardSummary:
         Task.status.in_(["PENDING", "CONNECTING", "PREPARING", "UPLOADING"])
     ).count()
 
-    # --- recent tasks (last 10) ---
+    # --- active tasks (unlimited; dashboard is an operations view) ---
     recent_tasks_db = (
-        db.query(Task).order_by(Task.id.desc()).limit(10).all()
+        db.query(Task)
+        .filter(Task.status.in_(ACTIVE_TASK_STATUSES))
+        .order_by(Task.id.desc())
+        .all()
     )
     recent_tasks = []
     for t in recent_tasks_db:

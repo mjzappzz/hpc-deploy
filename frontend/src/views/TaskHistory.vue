@@ -48,7 +48,7 @@
 
         <el-button @click="resetFilters">重置</el-button>
         <el-tag v-if="isAutoRefreshing" type="info" size="small" effect="plain" class="auto-refresh-tag">
-          自动刷新中 (5s)
+          <span class="auto-refresh-label">自动刷新中 (5s)</span>
         </el-tag>
       </div>
 
@@ -245,7 +245,7 @@
         />
         <el-button @click="resetBatchFilters">重置</el-button>
         <el-tag v-if="isAutoRefreshing" type="info" size="small" effect="plain" class="auto-refresh-tag">
-          自动刷新中 (5s)
+          <span class="auto-refresh-label">自动刷新中 (5s)</span>
         </el-tag>
       </div>
 
@@ -1105,7 +1105,7 @@ import {
   getTaskDisplayStatus,
   getTaskModuleLabel,
 } from '@/utils/taskPresentation'
-import { adminMode, requireAdminConfirm } from '@/composables/useAdminConfirm'
+import { requireAdminConfirm } from '@/composables/useAdminConfirm'
 import { TASK_STATE_REFRESHED_EVENT } from '@/utils/trailingRefresh'
 import { beginTaskSubmitting, endTaskSubmitting } from '@/utils/taskSubmitting'
 import StatusTag from '@/components/StatusTag.vue'
@@ -2282,10 +2282,7 @@ function openDrawerDiagnosis() {
 }
 
 async function cleanupTaskLocalArtifactsFor(task: TaskRecord) {
-  if (!adminMode.value) {
-    ElMessage.warning('管理员模式是删档小能手，先去右上角把它叫醒～')
-    return
-  }
+  if (!await requireAdminConfirm('删除任务')) return
   try {
     await ElMessageBox.confirm(
       '将删除本机日志、报告、下载产物，以及该任务的历史记录；不会删除远端目录。此操作不可恢复。',
@@ -2295,8 +2292,6 @@ async function cleanupTaskLocalArtifactsFor(task: TaskRecord) {
   } catch {
     return
   }
-  if (!await requireAdminConfirm('删除任务')) return
-
   localArtifactsCleaning.value = true
   try {
     const result = (await cleanupTaskLocalArtifacts(task.task_id)).data
@@ -2313,10 +2308,7 @@ async function cleanupTaskLocalArtifactsFor(task: TaskRecord) {
 }
 
 async function cleanupBatchLocalArtifactsFor(batchId: string, taskCount: number) {
-  if (!adminMode.value) {
-    ElMessage.warning('这批任务还在排队等你点头，先切到管理员模式再送它们下班～')
-    return
-  }
+  if (!await requireAdminConfirm('删除批次任务')) return
   try {
     await ElMessageBox.confirm(
       `将删除该批次 ${taskCount} 个子任务的本机产物、任务日志和历史记录；不会删除远端目录。此操作不可恢复。`,
@@ -2326,7 +2318,6 @@ async function cleanupBatchLocalArtifactsFor(batchId: string, taskCount: number)
   } catch {
     return
   }
-  if (!await requireAdminConfirm('删除批次任务')) return
   try {
     const result = (await cleanupBatchLocalArtifacts(batchId)).data
     ElMessage.success(`已删除 ${result.deleted_tasks} 个批次任务，远端目录和审计日志已保留`)
@@ -4913,13 +4904,34 @@ onUnmounted(() => {
 
 /* ── Auto-refresh tag ── */
 .auto-refresh-tag {
-  animation: pulse-tag 2s ease-in-out infinite;
+  display: inline-flex;
+  align-items: center;
   margin-left: auto;
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
 }
 
-@keyframes pulse-tag {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.6; }
+.auto-refresh-tag::before {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  background: rgba(64, 158, 255, 0.22);
+  content: '';
+  pointer-events: none;
+  transform: scaleX(0);
+  transform-origin: left center;
+  animation: auto-refresh-progress 5s linear infinite;
+}
+
+.auto-refresh-label {
+  position: relative;
+  z-index: 1;
+}
+
+@keyframes auto-refresh-progress {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
 }
 
 /* ── Batch expand content ── */

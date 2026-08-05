@@ -522,10 +522,8 @@ function formatCount(value: number | null | undefined) {
   return String(value)
 }
 
-function requireSettingsAdmin(action: string): boolean {
-  if (adminMode.value) return true
-  ElMessage.warning(`${action}先放一放，管理员模式才有这把扳手～`)
-  return false
+async function requireSettingsAdmin(action: string): Promise<boolean> {
+  return requireAdminConfirm(action)
 }
 
 async function handleChangePassword() {
@@ -604,15 +602,13 @@ async function loadAutoCleanupSettings() {
 }
 
 async function openAutoCleanupDialog() {
-  if (!requireSettingsAdmin('自动清理设置')) return
+  if (!await requireSettingsAdmin('自动清理设置')) return
   await loadAutoCleanupSettings()
   autoCleanupDialogVisible.value = true
 }
 
 async function saveAutoCleanupSettings() {
-  if (!requireSettingsAdmin('保存自动清理设置')) return
-  const ok = await requireAdminConfirm('保存自动清理设置')
-  if (!ok) return
+  if (!await requireSettingsAdmin('保存自动清理设置')) return
   autoCleanupSaving.value = true
   try {
     await updateSettings({
@@ -905,9 +901,7 @@ function onArtifactDirSelection(selection: LocalArtifactDirectory[]) {
 }
 
 async function doDeleteArtifactDir(dir: LocalArtifactDirectory) {
-  if (!requireSettingsAdmin('删除本机结果')) return
-  const ok = await requireAdminConfirm('删除任务结果')
-  if (!ok) return
+  if (!await requireSettingsAdmin('删除任务结果')) return
   deletingArtifactDir.value = dir.relative_path
   try {
     await ElMessageBox.confirm(
@@ -932,9 +926,7 @@ async function doDeleteArtifactDir(dir: LocalArtifactDirectory) {
 }
 
 async function doDeleteSelectedArtifacts() {
-  if (!requireSettingsAdmin('批量删除本机结果')) return
-  const ok = await requireAdminConfirm('批量删除任务结果')
-  if (!ok) return
+  if (!await requireSettingsAdmin('批量删除任务结果')) return
   if (selectedArtifactDirPaths.value.length === 0) return
   try {
     await ElMessageBox.confirm(

@@ -23,6 +23,14 @@ test('labels the target-area probe action as detecting target servers', async ()
   assert.doesNotMatch(source, /检测在线服务器/)
 })
 
+test('probes the displayed online and starred servers without duplicates', async () => {
+  const source = await readFile(new URL('./TaskRunner.vue', import.meta.url), 'utf8')
+
+  const probeFunction = source.match(/async function probeTargetServers\(\) \{([\s\S]*?)\n\}/)?.[1] ?? ''
+  assert.match(source, /const probeTargetServersList = computed\(\(\) => \{[\s\S]*?starredServers\.value[\s\S]*?allOnlineServers\.value/)
+  assert.match(probeFunction, /const targets = probeTargetServersList\.value/)
+})
+
 test('shows all starred servers in the focus group while keeping offline servers unselectable', async () => {
   const source = await readFile(new URL('./TaskRunner.vue', import.meta.url), 'utf8')
 

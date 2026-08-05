@@ -958,6 +958,13 @@ const starredServers = computed(() => servers.value
 const starredOnlineServers = computed(() => starredServers.value
   .filter((server) => server.status === 'online'))
 
+const probeTargetServersList = computed(() => {
+  const visibleServers = new Map<number, ServerRecord>()
+  for (const server of starredServers.value) visibleServers.set(server.id, server)
+  for (const server of allOnlineServers.value) visibleServers.set(server.id, server)
+  return [...visibleServers.values()]
+})
+
 const filteredOnlineServers = computed(() => {
   let list = allOnlineServers.value
   if (selectedTag.value) {
@@ -1541,10 +1548,9 @@ async function loadOptions() {
 }
 
 async function probeTargetServers() {
-  const targets = servers.value
-    .filter((server) => server.status === 'online')
+  const targets = probeTargetServersList.value
   if (targets.length === 0) {
-    ElMessage.warning('当前没有可作为任务目标的在线服务器，请先检测服务器连接状态')
+    ElMessage.warning('当前没有可检测的目标服务器')
     return
   }
 

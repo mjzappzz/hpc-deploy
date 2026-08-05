@@ -42,5 +42,5 @@ test('reserves the audit log menu item while an administrator session is restore
   const source = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
 
   assert.match(source, /<el-menu-item v-if="adminThemeActive" index="\/audit-logs"/)
-  assert.match(source, /if \(!adminMode\.value\) \{[\s\S]*?审计日志是管理员的小本本/)
+  assert.match(source, /async function handleAuditMenuClick[\s\S]*?await requireAdminConfirm\('查看审计日志'\)/)
 })

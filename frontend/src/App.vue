@@ -100,7 +100,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { Cpu, Document, List, Monitor, Operation, Tickets } from '@element-plus/icons-vue'
 import AppCritters from '@/components/AppCritters.vue'
 import { listTasks } from '@/api/task'
-import { adminMode, adminModeRestoring, adminRemainingSeconds, adminSessionUnlimited, enterAdminMode, exitAdminMode, restoreAdminMode } from '@/composables/useAdminConfirm'
+import { adminMode, adminModeRestoring, adminRemainingSeconds, adminSessionUnlimited, enterAdminMode, exitAdminMode, requireAdminConfirm, restoreAdminMode } from '@/composables/useAdminConfirm'
 import { createTrailingRefresh, TASK_STATE_REFRESHED_EVENT } from '@/utils/trailingRefresh'
 
 const route = useRoute()
@@ -129,13 +129,10 @@ async function handleAdminModeChange(enabled: boolean | string | number) {
   exitAdminMode()
 }
 
-function handleAuditMenuClick(event: MouseEvent) {
+async function handleAuditMenuClick(event: MouseEvent) {
   event.stopImmediatePropagation()
-  if (!adminMode.value) {
-    ElMessage.warning('审计日志是管理员的小本本，普通模式先看看任务就好～')
-    return
-  }
-  void router.push('/audit-logs')
+  if (!await requireAdminConfirm('查看审计日志')) return
+  await router.push('/audit-logs')
 }
 
 function handleAdminMenuSelect(index: string) {
