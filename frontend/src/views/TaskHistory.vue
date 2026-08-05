@@ -439,11 +439,12 @@
           <span>{{ activeArtBatchSummary.batch_id }} / {{ activeArtBatchSummary.servers.join(', ') }}</span>
           <el-button
             size="small"
-            plain
+            type="primary"
+            :icon="Download"
             :disabled="!canDownloadBatchReport(activeArtBatchSummary)"
             :loading="batchReportDownloading[activeArtBatchSummary.batch_id]"
             @click="downloadBatchReports(activeArtBatchSummary)"
-          >下载批次报告</el-button>
+          >下载批次报告（ZIP）</el-button>
         </div>
         <!-- 远端服务器目录 -->
         <div v-if="artDir && batchArtifactGroups.length === 0" class="art-dir-bar">
@@ -470,7 +471,11 @@
                     <span>{{ item.label }} · {{ item.serverLabel }}</span>
                     <span class="art-size">{{ formatFileSize(item.file.size) }}</span>
                     <el-tag size="small">{{ item.file.type }}</el-tag>
-                    <span class="art-local-path" :title="item.file.local_relative_path">{{ item.file.local_relative_path }}</span>
+                  </div>
+                  <div class="art-item-remote-dir">
+                    <span class="art-dir-label">远端目录：</span>
+                    <code class="art-dir-path" :title="item.remoteDir || '-'">{{ item.remoteDir || '-' }}</code>
+                    <el-button size="small" text :disabled="!item.remoteDir" @click="copyPath(item.remoteDir)">复制路径</el-button>
                   </div>
                 </div>
                 <el-button size="small" type="primary" @click="downloadArtifact(item.file.name, item.taskId)">下载</el-button>
@@ -492,7 +497,11 @@
                     <span>{{ item.label }} · {{ item.serverLabel }}</span>
                     <span class="art-size">{{ formatFileSize(item.file.size) }}</span>
                     <el-tag size="small">{{ item.file.type }}</el-tag>
-                    <span class="art-local-path" :title="item.file.local_relative_path">{{ item.file.local_relative_path }}</span>
+                  </div>
+                  <div class="art-item-remote-dir">
+                    <span class="art-dir-label">远端目录：</span>
+                    <code class="art-dir-path" :title="item.remoteDir || '-'">{{ item.remoteDir || '-' }}</code>
+                    <el-button size="small" text :disabled="!item.remoteDir" @click="copyPath(item.remoteDir)">复制路径</el-button>
                   </div>
                 </div>
                 <el-button size="small" @click="downloadArtifact(item.file.name, item.taskId)">下载</el-button>
@@ -1112,7 +1121,7 @@ import StatusTag from '@/components/StatusTag.vue'
 import TaskCard from '@/components/TaskCard.vue'
 import TaskDiagnosisDialog from '@/components/TaskDiagnosisDialog.vue'
 import TaskExecutionLogPanel from '@/components/TaskExecutionLogPanel.vue'
-import { Document, DocumentCopy, Files, FolderOpened, Loading } from '@element-plus/icons-vue'
+import { Document, DocumentCopy, Download, Files, FolderOpened, Loading } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -1138,7 +1147,7 @@ type BatchArtifactGroup = {
 
 const batchArtifactGroups = ref<BatchArtifactGroup[]>([])
 
-type BatchArtifactFile = Omit<BatchArtifactGroup, 'files' | 'remoteDir'> & {
+type BatchArtifactFile = Omit<BatchArtifactGroup, 'files'> & {
   file: ArtifactFileDetail
 }
 
@@ -1167,6 +1176,7 @@ const batchArtifactFiles = computed(() => {
         taskId: group.taskId,
         label: group.label,
         serverLabel: group.serverLabel,
+        remoteDir: group.remoteDir,
         file,
       }
       if (isXlsxArtifact(file)) reports.push(item)
@@ -3761,6 +3771,23 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   margin-top: 4px;
+}
+
+.art-item-remote-dir {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.art-item-remote-dir .art-dir-path {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+
+.art-item-remote-dir .el-button {
+  flex-shrink: 0;
 }
 
 .art-size {

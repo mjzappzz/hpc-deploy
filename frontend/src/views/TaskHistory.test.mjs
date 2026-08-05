@@ -31,3 +31,13 @@ test('uses the five-second fill progress tag in both history views', async () =>
   assert.match(source, /@keyframes auto-refresh-progress/)
   assert.match(source, /animation: auto-refresh-progress 5s linear infinite/)
 })
+
+test('keeps batch result paths copyable and makes ZIP download the primary action', async () => {
+  const source = await readFile(new URL('./TaskHistory.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /remoteDir: group\.remoteDir/)
+  assert.equal((source.match(/class="art-item-remote-dir"/g) || []).length, 2)
+  assert.equal((source.match(/@click="copyPath\(item\.remoteDir\)"/g) || []).length, 2)
+  assert.match(source, /type="primary"\n\s*:icon="Download"/)
+  assert.match(source, /下载批次报告（ZIP）/)
+})

@@ -1,7 +1,7 @@
 #!/bin/bash
 #set -e  # 不使用 set -e，手工控制每个关键步骤的退出处理
 
-SCRIPT_VERSION="2026.07.29"
+SCRIPT_VERSION="2026.08.05"
 
 # ===== 自动检测系统并安装依赖 =====
 echo "[STAGE] dependency_check_start"
@@ -145,6 +145,81 @@ CPU_MODEL=$(lscpu | awk -F: '/Model name/ {gsub(/^ +/,"",$2); print $2; exit}')
 MEM_TOTAL=$(free -h | awk '/Mem:/ {print $2}')
 OS_INFO=$(cat /etc/os-release 2>/dev/null | awk -F= '/^PRETTY_NAME=/ {gsub(/"/,"",$2); print $2}')
 
+# 优先读取 CPU 封装温度（Intel Package id、AMD Tctl/Tdie）；若平台未暴露该类传感器，
+# 再退回 CPU Core。多路 CPU/CCD 时取同优先级传感器中的最高温，避免掩盖热点。
+read_cpu_temperature() {
+    if command -v sensors >/dev/null 2>&1; then
+        LC_ALL=C sensors -j 2>/dev/null
+    fi | python3 -c '
+import json
+import sys
+from pathlib import Path
+
+try:
+    sensors = json.load(sys.stdin)
+except (json.JSONDecodeError, ValueError):
+    sensors = {}
+
+priorities = (
+    (0, ("package id",)),
+    (1, ("tctl/tdie",)),
+    (2, ("tctl", "tdie")),
+    (3, ("cpu temp", "cpu temperature")),
+    (4, ("core ",)),
+)
+candidates = []
+for chip_name, chip in sensors.items():
+    if not isinstance(chip, dict):
+        continue
+    for label, values in chip.items():
+        if not isinstance(values, dict):
+            continue
+        raw = values.get(f"{label}_input")
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        lowered = label.lower()
+        for priority, markers in priorities:
+            if any(marker in lowered for marker in markers):
+                candidates.append((priority, value, f"{chip_name}: {label}"))
+                break
+
+if not candidates:
+    for hwmon in Path("/sys/class/hwmon").glob("hwmon*"):
+        try:
+            chip_name = (hwmon / "name").read_text().strip()
+        except OSError:
+            continue
+        if chip_name not in {"coretemp", "k10temp", "zenpower", "cpu_thermal"}:
+            continue
+        for input_path in hwmon.glob("temp*_input"):
+            stem = input_path.name[:-len("_input")]
+            try:
+                value = float(input_path.read_text().strip()) / 1000
+                label = (hwmon / f"{stem}_label").read_text().strip()
+            except (OSError, ValueError):
+                continue
+            lowered = label.lower()
+            for priority, markers in priorities:
+                if any(marker in lowered for marker in markers):
+                    candidates.append((priority, value, f"{chip_name}: {label}"))
+                    break
+
+if candidates:
+    best_priority = min(item[0] for item in candidates)
+    selected = [item for item in candidates if item[0] == best_priority]
+    sources = "; ".join(item[2] for item in selected)
+    print(f"{max(item[1] for item in selected):.1f}|{sources}")
+'
+}
+
+CPU_TEMP_INITIAL=$(read_cpu_temperature || true)
+CPU_TEMP_SOURCE=${CPU_TEMP_INITIAL#*|}
+if [ -z "$CPU_TEMP_INITIAL" ] || [ "$CPU_TEMP_SOURCE" = "$CPU_TEMP_INITIAL" ]; then
+    CPU_TEMP_SOURCE="未检测到可用 CPU 温度传感器"
+fi
+
 # Swap 阈值：默认 1024 MB，swap 占用过多视为系统异常
 SWAP_FAIL_MB=${SWAP_FAIL_MB:-1024}
 SWAP_TOTAL=$(free -m | awk '/Swap:/ {print $2}')
@@ -257,7 +332,7 @@ DMESG_LINES_BEFORE=$(dmesg | wc -l)
 
 
 (
-echo "timestamp,load1,load5,load15,mem_total_MB,mem_used_MB,mem_free_MB,mem_available_MB,swap_total_MB,swap_used_MB"
+echo "timestamp,load1,load5,load15,mem_total_MB,mem_used_MB,mem_free_MB,mem_available_MB,swap_total_MB,swap_used_MB,cpu_temp_max_C"
 while [ ! -f "$STOP_FILE" ]; do
     TS=$(date '+%F %T')
     LOAD=$(uptime | awk -F'load average:' '{print $2}' | sed 's/,//g')
@@ -266,7 +341,10 @@ while [ ! -f "$STOP_FILE" ]; do
     LOAD15=$(echo "$LOAD" | awk '{print $3}')
     MEM_LINE=$(free -m | awk '/Mem:/ {print $2","$3","$4","$7}')
     SWAP_LINE=$(free -m | awk '/Swap:/ {print $2","$3}')
-    echo "$TS,$LOAD1,$LOAD5,$LOAD15,$MEM_LINE,$SWAP_LINE"
+    CPU_TEMP_READING=$(read_cpu_temperature || true)
+    CPU_TEMP_VALUE=${CPU_TEMP_READING%%|*}
+    [ "$CPU_TEMP_VALUE" = "$CPU_TEMP_READING" ] && CPU_TEMP_VALUE=""
+    echo "$TS,$LOAD1,$LOAD5,$LOAD15,$MEM_LINE,$SWAP_LINE,$CPU_TEMP_VALUE"
     sleep "$INTERVAL" || true
 done
 ) > "$MON_LOG" &
@@ -434,6 +512,9 @@ MEM_USED_AVG=$(awk -F',' 'NR>1 {sum+=$6; n++} END{if(n>0) printf "%.2f",sum/n; e
 MEM_USED_MAX=$(awk -F',' 'NR>1 {if($6>max)max=$6} END{printf "%.0f",max+0}' "$MON_LOG")
 MEM_AVAIL_MIN=$(awk -F',' 'NR>1 {if(NR==2 || $8<min)min=$8} END{printf "%.0f",min+0}' "$MON_LOG")
 SWAP_USED_MAX=$(awk -F',' 'NR>1 {if($10>max)max=$10} END{printf "%.0f",max+0}' "$MON_LOG")
+CPU_TEMP_SAMPLES=$(awk -F',' 'NR>1 && $11 != "" {n++} END{print n+0}' "$MON_LOG")
+CPU_TEMP_AVG=$(awk -F',' 'NR>1 && $11 != "" {sum+=$11; n++} END{if(n>0) printf "%.1f",sum/n; else print "-"}' "$MON_LOG")
+CPU_TEMP_MAX=$(awk -F',' 'NR>1 && $11 != "" {if(!found || $11>max){max=$11; found=1}} END{if(found) printf "%.1f",max; else print "-"}' "$MON_LOG")
 
 # Swap 判定策略：短暂超过阈值不判失败；只有“持续超阈值 + 可用内存很低”才 FAIL
 SWAP_SUSTAIN_SECONDS=${SWAP_SUSTAIN_SECONDS:-300}
@@ -512,7 +593,13 @@ Swap持续失败时间阈值  : ${SWAP_SUSTAIN_SECONDS} 秒
 平均5分钟负载          : ${LOAD5_AVG}
 平均15分钟负载         : ${LOAD15_AVG}
 
-2. 内存表现
+2. CPU温度
+温度传感器             : ${CPU_TEMP_SOURCE}
+有效温度采样数         : ${CPU_TEMP_SAMPLES}
+CPU温度平均            : ${CPU_TEMP_AVG} °C
+CPU温度最高            : ${CPU_TEMP_MAX} °C
+
+3. 内存表现
 平均已用内存          : ${MEM_USED_AVG} MB
 最高已用内存          : ${MEM_USED_MAX} MB
 最低可用内存          : ${MEM_AVAIL_MIN} MB
@@ -521,7 +608,7 @@ Swap超阈采样数        : ${SWAP_OVER_THRESHOLD_SAMPLES}
 Swap连续超阈最长时长  : ${SWAP_OVER_MAX_SECONDS} 秒
 Swap+低可用内存连续最长时长 : ${SWAP_LOW_MEM_MAX_SECONDS} 秒
 
-3. 异常检查
+4. 异常检查
 stress-ng退出码        : ${STRESS_EXIT}
 重大内核异常数量      : ${ERROR_COUNT}
 stress-ng严重错误      : $( [ -z "$STRESS_ERROR" ] && echo "未发现" || echo "发现严重错误，请查看 ${STRESS_LOG}" )
@@ -685,6 +772,10 @@ rows_data = [
     ("CPU负载", "最高1分钟负载", "${LOAD1_MAX}"),
     ("CPU负载", "平均5分钟负载", "${LOAD5_AVG}"),
     ("CPU负载", "平均15分钟负载", "${LOAD15_AVG}"),
+    ("CPU温度", "温度传感器", "${CPU_TEMP_SOURCE}"),
+    ("CPU温度", "有效温度采样数", "${CPU_TEMP_SAMPLES}"),
+    ("CPU温度", "CPU温度平均", "${CPU_TEMP_AVG} °C"),
+    ("CPU温度", "CPU温度最高", "${CPU_TEMP_MAX} °C"),
     ("内存表现", "平均已用内存", "${MEM_USED_AVG} MB"),
     ("内存表现", "最高已用内存", "${MEM_USED_MAX} MB"),
     ("内存表现", "最低可用内存", "${MEM_AVAIL_MIN} MB"),
@@ -799,6 +890,7 @@ if mon.max_row > 2 and mon.max_column >= 10:
     add_chart("Memory Used(MB)", 6, "J48")
     add_chart("Memory Available(MB)", 8, "J63")
     add_chart("Swap Used(MB)", 10, "J78")
+    add_chart("CPU Temperature(°C)", 11, "J93")
 else:
     chart_data.append(["No monitor data available for charts."])
 
@@ -937,6 +1029,10 @@ rows_data = [
     ("CPU负载", "最高1分钟负载", "${LOAD1_MAX}"),
     ("CPU负载", "平均5分钟负载", "${LOAD5_AVG}"),
     ("CPU负载", "平均15分钟负载", "${LOAD15_AVG}"),
+    ("CPU温度", "温度传感器", "${CPU_TEMP_SOURCE}"),
+    ("CPU温度", "有效温度采样数", "${CPU_TEMP_SAMPLES}"),
+    ("CPU温度", "CPU温度平均", "${CPU_TEMP_AVG} °C"),
+    ("CPU温度", "CPU温度最高", "${CPU_TEMP_MAX} °C"),
     ("内存表现", "平均已用内存", "${MEM_USED_AVG} MB"),
     ("内存表现", "最高已用内存", "${MEM_USED_MAX} MB"),
     ("内存表现", "最低可用内存", "${MEM_AVAIL_MIN} MB"),
@@ -1050,6 +1146,7 @@ if mon.max_row > 2 and mon.max_column >= 10:
     add_chart("Memory Used(MB)", 6, "J48")
     add_chart("Memory Available(MB)", 8, "J63")
     add_chart("Swap Used(MB)", 10, "J78")
+    add_chart("CPU Temperature(°C)", 11, "J93")
 else:
     chart_data.append(["No monitor data available for charts."])
 

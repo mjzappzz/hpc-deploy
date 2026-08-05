@@ -63,6 +63,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - CUDA Toolkit 安装（`/cuda-toolkit`、`/cuda-toolkit/batch`）：支持 11.8、12.0–12.6、12.8、12.9、13.0，安装前校验 `nvidia-smi`，仅安装 Toolkit，不安装或覆盖驱动
 - 压测套件创建（`/stress-suite`），同服务器内按 GPU → CPU/内存 → 磁盘串行推进
 - 单项压测与压测套件的单个脚本时长范围为 1 分钟–72 小时（后端秒级边界仍为 10–259200 秒）；当前任务页以小时/分钟输入并在 72 小时边界前置限制和提示
+- CPU/内存压测脚本 `v2026.08.05` 会在最终 CSV、TXT 和 XLSX 报告中记录 CPU 温度：优先读取 Intel `Package id`、AMD `Tctl/Tdie`，`sensors -j` 不可用时回退 Linux `hwmon`；同优先级多路温度取最高值。未发现可用传感器时报告会显示“未检测到可用 CPU 温度传感器”。温度当前仅用于结果报告，不参与 PASS/FAIL 判定，也尚未进入任务实时监控接口。
 - 受控环境套件创建（`/managed-suite`）：基础环境配置按关闭锁屏/休眠 → 锁定当前系统版本，GPU 驱动安装按 NVIDIA 驱动 → CUDA Toolkit 严格串行；多台服务器各自创建独立批次，前序失败时后序不启动，后端重启后恢复套件 worker
 - 多服务器单动作入口按服务器创建互相独立的单次任务：普通脚本/单项压测/Apptainer（`/batch`）、GPU 驱动（`/gpu-driver/batch`）和 CUDA Toolkit（`/cuda-toolkit/batch`）均返回完整 `task_ids`，每条任务的 `batch_id` 为空；只有同一服务器包含多个有序步骤的受控环境套件和压测套件才创建批次，并按服务器分配独立 `batch_id`
 - Intel oneAPI 2022 安装脚本 v1.1.0 在执行安装器前分别检查 MKL 与编译器/Intel MPI 命令；目标组件已完整安装时跳过对应离线包下载和安装，最终严格验证 `icc`、`icx`、`ifort`、`mpiicc`、`mpiifort`、`mpirun` 及 `MKLROOT`，重复执行不再因 Intel 安装器返回“already installed”而误报失败
@@ -85,6 +86,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - 重跑链以最新一次尝试计算批次当前状态；旧尝试仅作为历史审计记录保留
 - 结果文件入口先展示 artifact/result 文件列表，再由用户选择具体文件下载
 - 批次报告下载：单服务器批次生成 `服务器名称_压测报告_日期.zip`，多服务器批次生成 `batch_id.zip` 并按服务器目录拆分
+- 批次结果文件弹窗与单任务结果卡保持一致：每个子任务展示可换行、可复制的远端目录；聚合下载以主操作“下载批次报告（ZIP）”呈现
 - 任务历史查询默认过滤 `hidden_from_history=1` 的软隐藏记录；keyword 支持匹配任务 ID、批次 ID、脚本名、服务器名称与主机地址
 - 驱动与 CUDA 批量任务按服务器独立执行；混合 Rocky 9 / Ubuntu 目标允许并行，各任务记录实际识别到的 OS profile
 
