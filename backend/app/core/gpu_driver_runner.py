@@ -243,7 +243,7 @@ test -s "$driver_file"
 chmod +x "$driver_file"
 echo '========== 安装 NVIDIA 驱动 =========='
 sudo "./{GPU_DRIVER_FILE_NAME}" \\
-  --no-opengl-files --dkms --no-questions --accept-license \\
+  --no-opengl-files --dkms --no-questions --accept-license --ui=none \\
   --kernel-source-path=/lib/modules/$(uname -r)/build
 echo '========== 验证 NVIDIA 驱动 =========='
 nvidia-smi

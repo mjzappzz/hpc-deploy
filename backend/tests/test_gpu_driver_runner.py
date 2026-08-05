@@ -124,6 +124,7 @@ class GpuDriverRunnerTests(unittest.TestCase):
         self.assertIn("linux-headers-$(uname -r)", preparation)
         self.assertIn("update-initramfs -u", preparation)
         self.assertIn("--kernel-source-path=/lib/modules/$(uname -r)/build", installer)
+        self.assertIn("--no-questions --accept-license --ui=none", installer)
         self.assertIn("nvidia-smi", installer)
         self.assertNotIn("lsmod | grep nvidia", installer)
         self.assertNotIn("compute_cap", installer)
