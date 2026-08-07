@@ -42,6 +42,7 @@ class GpuBurnLogCompactionTests(unittest.TestCase):
         self.assertIn("flock -x 9", source)
         self.assertIn("Reuse verified GPU-matched fat binary", source)
         self.assertNotIn('ARCH_BUILD_ROOT="${WORKDIR}', source)
+        self.assertNotIn('"$build_dir/gpu_burn"', source)
 
     def test_refreshes_gpu_burn_source_only_after_confirmed_kernel_mismatch(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")

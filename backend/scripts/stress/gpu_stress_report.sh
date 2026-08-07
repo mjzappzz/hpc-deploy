@@ -3,7 +3,7 @@
 set -u
 set -o pipefail
 
-SCRIPT_VERSION="2026.08.05"
+SCRIPT_VERSION="2026.08.06"
 
 # ============================================================
 # GPU 多卡稳定性压力测试报告脚本
@@ -302,8 +302,6 @@ prepare_gpu_burn_matched_binary() {
     local inspected_arches
     local -a target_arches=()
     declare -A target_seen=()
-
-    if [ -x "$build_dir/gpu_burn" ] && [ -f "$build_dir/compare.fatbin" ]; then return 0; fi
 
     supported_arches="$(nvcc --list-gpu-arch 2>/dev/null | tr '[:space:]' '\n' | sed -n 's/^compute_//p')"
     if [ -z "$supported_arches" ]; then

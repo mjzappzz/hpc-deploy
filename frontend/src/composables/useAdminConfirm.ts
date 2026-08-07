@@ -2,7 +2,7 @@ import { h, nextTick, ref } from 'vue'
 import { ElIcon, ElInput, ElMessageBox, ElMessage, ElRadio, ElRadioButton, ElRadioGroup } from 'element-plus'
 import { Lock, Timer, WarningFilled } from '@element-plus/icons-vue'
 import { request } from '@/api/request'
-import { adminVerify, type AdminSessionDuration } from '@/api/auth'
+import { adminTemporarySession, adminTemporarySessionAvailable, adminVerify, type AdminSessionDuration } from '@/api/auth'
 
 /**
  * Admin confirm composable.
@@ -81,6 +81,11 @@ function activateAdminMode(): void {
   startAdminCountdown()
 }
 
+function acceptAdminSession(expiresIn: number | null): void {
+  tokenExpiry = expiresIn === null ? null : Date.now() + (expiresIn * 1000)
+  activateAdminMode()
+}
+
 export async function enterAdminMode(): Promise<boolean> {
   const ok = await requireAdminConfirm('进入管理员模式')
   if (!ok) adminMode.value = false
@@ -135,15 +140,27 @@ export async function requireAdminConfirm(actionName: string): Promise<boolean> 
   // Expired — clear stale state
   exitAdminMode(false)
 
+  let temporarySessionEnabled = false
+  let temporarySessionRequested = false
   try {
+    temporarySessionEnabled = await adminTemporarySessionAvailable().catch(() => false)
     const password = ref('')
     const passwordInput = ref<{ focus: () => void } | null>(null)
     const durationMinutes = ref<AdminSessionDuration>(5)
     await ElMessageBox({
-      message: () => h('div', { class: 'admin-confirm-form' }, [
+      message: ({ close }) => h('div', { class: 'admin-confirm-form' }, [
         h('div', { class: 'admin-confirm-ascension', 'aria-hidden': 'true' }, [
           h('span', { class: 'admin-confirm-ascension__rays' }),
-          h('img', { class: 'admin-confirm-ascension__mascot', src: '/assets/hpcdeploy-admin-mascot.png', alt: '' }),
+          h('img', {
+            class: 'admin-confirm-ascension__mascot',
+            src: '/assets/hpcdeploy-admin-mascot.png',
+            alt: '',
+            onClick: (event: MouseEvent) => {
+              if (!temporarySessionEnabled || event.detail !== 3) return
+              temporarySessionRequested = true
+              close()
+            },
+          }),
           h('span', { class: 'admin-confirm-ascension__label' }, '权限飞升仪式'),
         ]),
         h('div', { class: 'admin-confirm-hero' }, [
@@ -210,8 +227,9 @@ export async function requireAdminConfirm(actionName: string): Promise<boolean> 
         ]),
       ]),
       confirmButtonText: '解锁管理员模式',
-      cancelButtonText: '取消',
+      showCancelButton: false,
       closeOnClickModal: false,
+      distinguishCancelAndClose: true,
       autofocus: false,
       customClass: 'admin-confirm-dialog',
       modalClass: 'admin-confirm-overlay',
@@ -227,13 +245,24 @@ export async function requireAdminConfirm(actionName: string): Promise<boolean> 
     const tabId = getOrCreateAdminTabId()
     const res = await adminVerify(password.value, durationMinutes.value, tabId)
     setAdminTabHeader(tabId)
-    tokenExpiry = res.data.expires_in === null ? null : Date.now() + (res.data.expires_in * 1000)
-    activateAdminMode()
+    acceptAdminSession(res.data.expires_in)
 
     return true
   } catch (error: any) {
-    // User clicked Cancel — ElMessageBox.prompt throws with 'cancel'
-    if (error === 'cancel') {
+    if (temporarySessionRequested && temporarySessionEnabled) {
+      try {
+        const tabId = getOrCreateAdminTabId()
+        const res = await adminTemporarySession(tabId)
+        setAdminTabHeader(tabId)
+        acceptAdminSession(res.data.expires_in)
+        ElMessage.warning('临时管理员模式将在 1 分钟后自动退出')
+        return true
+      } catch (devError: any) {
+        ElMessage.warning(devError?.response?.data?.detail || '临时管理员模式未启用')
+        return false
+      }
+    }
+    if (error === 'cancel' || error === 'close') {
       return false
     }
     // API error (403 = wrong password, network error, etc.)

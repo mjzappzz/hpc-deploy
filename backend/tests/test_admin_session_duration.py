@@ -1,13 +1,33 @@
 import unittest
+from unittest.mock import patch
 
 from fastapi import HTTPException
 from pydantic import ValidationError
 
-from app.api.auth import AdminVerifyRequest
+from app.api.auth import AdminVerifyRequest, issue_temporary_admin_session, settings
 from app.core.auth import create_admin_token, decode_admin_token, require_admin_token
 
 
 class AdminSessionDurationTests(unittest.TestCase):
+    def test_development_session_is_fixed_to_one_minute(self) -> None:
+        response = issue_temporary_admin_session(tab_id="tab-development")
+        payload = decode_admin_token(response.token)
+
+        self.assertEqual(response.expires_in, 60)
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["tab_id"], "tab-development")
+        self.assertIn("exp", payload)
+
+    def test_development_session_is_not_available_outside_development(self) -> None:
+        with patch.object(settings, "app_env", "production"):
+            with self.assertRaises(HTTPException) as denied:
+                issue_temporary_admin_session(tab_id="tab-production")
+        self.assertEqual(denied.exception.status_code, 404)
+
+    def test_production_session_requires_the_explicit_temporary_mode_switch(self) -> None:
+        with patch.object(settings, "app_env", "production"), patch.object(settings, "hpcdeploy_temporary_admin_mode_enabled", True):
+            response = issue_temporary_admin_session(tab_id="tab-production-enabled")
+        self.assertEqual(response.expires_in, 60)
     def test_unlimited_session_has_no_expiry_and_requires_its_tab_id(self) -> None:
         token = create_admin_token(duration_minutes=None, tab_id="tab-current")
         payload = decode_admin_token(token)
@@ -40,6 +60,8 @@ class AdminSessionDurationTests(unittest.TestCase):
             30,
         )
         self.assertIsNone(AdminVerifyRequest(password="test", duration_minutes=None, tab_id="tab-open").duration_minutes)
+        with self.assertRaises(ValidationError):
+            AdminVerifyRequest(password="test", duration_minutes=1, tab_id="tab-development")
         with self.assertRaises(ValidationError):
             AdminVerifyRequest(password="test", duration_minutes=120, tab_id="tab-invalid")
 

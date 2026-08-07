@@ -36,6 +36,7 @@ def verify_admin_password(password: str, db: Session | None = None) -> bool:
 ALGORITHM = "HS256"
 ADMIN_TOKEN_EXPIRE_MINUTES = 5
 ADMIN_SESSION_DURATION_MINUTES = frozenset({5, 15, 30, 60})
+ADMIN_TOKEN_DURATION_MINUTES = ADMIN_SESSION_DURATION_MINUTES | {1}
 
 
 def create_admin_token(*, duration_minutes: int | None, tab_id: str) -> str:
@@ -44,7 +45,7 @@ def create_admin_token(*, duration_minutes: int | None, tab_id: str) -> str:
     ``duration_minutes=None`` creates a session that remains valid until the
     tab marker disappears or the user explicitly exits admin mode.
     """
-    if duration_minutes is not None and duration_minutes not in ADMIN_SESSION_DURATION_MINUTES:
+    if duration_minutes is not None and duration_minutes not in ADMIN_TOKEN_DURATION_MINUTES:
         raise ValueError("unsupported admin session duration")
     if not tab_id:
         raise ValueError("admin tab id is required")

@@ -4,6 +4,33 @@ from app.core.report_summary import resolve_failure_reason
 
 
 class ReportSummaryFailureReasonTests(unittest.TestCase):
+    def test_successful_task_without_report_has_no_failure_reason(self) -> None:
+        self.assertIsNone(
+            resolve_failure_reason(
+                None,
+                "UNKNOWN",
+                {
+                    "category": "completed",
+                    "conclusion": "任务已成功完成。",
+                },
+            )
+        )
+
+    def test_shell_unbound_variable_uses_verified_conclusion(self) -> None:
+        diagnosis = {
+            "category": "shell_unbound_variable",
+            "conclusion": "GPU 压测脚本引用了未初始化变量 build_dir，脚本在启动负载后立即退出，未生成报告。",
+        }
+
+        self.assertEqual(
+            resolve_failure_reason(
+                "stress script exited before report generation, no report found",
+                "UNKNOWN",
+                diagnosis,
+            ),
+            diagnosis["conclusion"],
+        )
+
     def test_platform_marker_mismatch_uses_structured_conclusion(self) -> None:
         diagnosis = {
             "category": "stress_startup_marker_mismatch",

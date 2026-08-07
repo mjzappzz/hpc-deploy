@@ -10,3 +10,20 @@ test('uses the administrator mascot and ascension ceremony in the shared admin c
   assert.match(source, /hpcdeploy-admin-mascot\.png/)
   assert.doesNotMatch(source, /\bKey\b/)
 })
+
+test('hides the temporary session button and activates it only after three mascot clicks', async () => {
+  const [confirmSource, authSource] = await Promise.all([
+    readFile(new URL('./useAdminConfirm.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../api/auth.ts', import.meta.url), 'utf8'),
+  ])
+
+  assert.match(confirmSource, /temporarySessionEnabled = await adminTemporarySessionAvailable\(\)\.catch\(\(\) => false\)/)
+  assert.match(confirmSource, /let temporarySessionRequested = false/)
+  assert.match(confirmSource, /message: \(\{ close \}\) => h\('div'/)
+  assert.match(confirmSource, /admin-confirm-ascension__mascot[\s\S]*?onClick: \(event: MouseEvent\) => \{[\s\S]*?event\.detail !== 3/)
+  assert.match(confirmSource, /temporarySessionRequested = true[\s\S]*?close\(\)/)
+  assert.match(confirmSource, /showCancelButton: false/)
+  assert.match(confirmSource, /if \(temporarySessionRequested && temporarySessionEnabled\)[\s\S]*?adminTemporarySession\(tabId\)/)
+  assert.match(authSource, /request\.get<AdminTemporarySessionAvailability>\('\/auth\/admin\/temporary-session-available'\)/)
+  assert.match(authSource, /request\.post<AdminSessionResponse>\('\/auth\/admin\/temporary-session', \{ tab_id: tabId \}\)/)
+})

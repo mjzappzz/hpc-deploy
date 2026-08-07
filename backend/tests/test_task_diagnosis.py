@@ -4,6 +4,25 @@ from app.core.task_diagnosis import diagnose_task_failure
 
 
 class TaskDiagnosisTests(unittest.TestCase):
+    def test_bash_unbound_variable_after_stress_start_is_reported_as_script_bug(self) -> None:
+        diagnosis = diagnose_task_failure(
+            task_status="FAILED",
+            error_message="stress script exited before report generation, no report found",
+            logs=[
+                "[STAGE] stress_start",
+                "[INFO] Start gpu-burn (FP32) with one process per GPU.",
+                "./gpu_stress_report.sh: line 306: build_dir: unbound variable",
+                "stress async: remote script exited without report: stress script exited before report generation, no report found",
+            ],
+            task_type="stress",
+            file_name="gpu_stress_report.sh",
+            params={"stress_remote_started": True},
+        )
+
+        self.assertEqual(diagnosis["category"], "shell_unbound_variable")
+        self.assertEqual(diagnosis["attribution"], "platform")
+        self.assertIn("build_dir", diagnosis["conclusion"])
+
     def test_gpu_startup_marker_mismatch_is_attributed_to_platform(self) -> None:
         diagnosis = diagnose_task_failure(
             task_status="FAILED",

@@ -385,7 +385,7 @@ PENDING → CONNECTING → PREPARING → UPLOADING → RUNNING → SUCCESS
 
 GPU 压测 TXT/XLSX 报告分别记录 `nvidia-smi --query-gpu=driver_version` 检出的 NVIDIA 驱动版本和 `nvcc --version` 检出的 CUDA Toolkit 版本，不使用 `nvidia-smi` 顶部 CUDA Version（驱动最高兼容版本）替代实际安装版本。
 
-`gpu_stress_report.sh`（v2026.08.05）为 gpu-burn 实际加载的 `compare.fatbin` 维护服务器级、按本机匹配的编译缓存：只取 `nvidia-smi` 检出的物理 GPU `compute_cap`，并要求当前 CUDA Toolkit 支持每一种架构。首次或缓存不匹配时，在 `/opt/software/gpu-burn` 用 `make COMPUTE= NVCCFLAGS='-gencode=arch=compute_XX,code=sm_XX …'` 禁用 Makefile 的单一 PTX 默认值并重编译；每次启动均以 `cuobjdump --list-elf` 验证 fatbin 确有本机所需 SM。缓存状态同时记录源码指纹、CUDA Toolkit 版本和目标 SM，任一变化或校验失败都会清理旧二进制、fatbin、对象文件后重建；匹配时直接复用。构建锁避免同一服务器并发任务同时清理或编译。每张卡仍以独立 `CUDA_VISIBLE_DEVICES` 实例并发运行，因此 RTX 4090（SM89）与 RTX 5090（SM120）等混合服务器均会参与同一次压测。gpu-burn 的 CR 高频进度在管道中实时拆分，只保留每 10% 的进度样本、错误和每卡汇总，不再写入或回读多 GB 原始日志；任一设备编译或运行失败会使最终报告为 FAIL。
+`gpu_stress_report.sh`（v2026.08.06）为 gpu-burn 实际加载的 `compare.fatbin` 维护服务器级、按本机匹配的编译缓存：只取 `nvidia-smi` 检出的物理 GPU `compute_cap`，并要求当前 CUDA Toolkit 支持每一种架构。首次或缓存不匹配时，在 `/opt/software/gpu-burn` 用 `make COMPUTE= NVCCFLAGS='-gencode=arch=compute_XX,code=sm_XX …'` 禁用 Makefile 的单一 PTX 默认值并重编译；每次启动均以 `cuobjdump --list-elf` 验证 fatbin 确有本机所需 SM。缓存状态同时记录源码指纹、CUDA Toolkit 版本和目标 SM，任一变化或校验失败都会清理旧二进制、fatbin、对象文件后重建；匹配时直接复用。构建锁避免同一服务器并发任务同时清理或编译。每张卡仍以独立 `CUDA_VISIBLE_DEVICES` 实例并发运行，因此 RTX 4090（SM89）与 RTX 5090（SM120）等混合服务器均会参与同一次压测。gpu-burn 的 CR 高频进度在管道中实时拆分，只保留每 10% 的进度样本、错误和每卡汇总，不再写入或回读多 GB 原始日志；任一设备编译或运行失败会使最终报告为 FAIL。
 
 为避免 gpu-burn 多卡实例把部分设备初始化失败掩盖为整体运行，GPU 压测以每张 GPU 一个受限 `CUDA_VISIBLE_DEVICES` 实例执行；同一算力仅复用已编译的原生 SM 二进制，不复用运行进程。每卡日志和退出码写入汇总日志，报告及任务诊断据此定位具体受影响设备。诊断摘要会读取回收的 `stress_gpu*.log`；出现 `no kernel image is available for execution on the device` 时，明确归因为“GPU 内核镜像无法加载”，而不是笼统的报告 FAIL。
 
@@ -397,7 +397,7 @@ GPU 压测默认使用服务器已验证可用的 `/opt/software/gpu-burn` 源�
 
 任务卡的“详情说明”使用缓存诊断中的 `outcome_title`，只展示基于已验证日志/报告证据的短结论；任务详情继续展示完整 `failure_reason`。若压测报告为 FAIL 但无更具体证据，卡片保守显示“GPU 压测报告未通过”，不会将“任务执行成功”误作压测通过；证据、原始错误和处理建议仍只在详情/诊断中展开。
 
-失败原因遵循“先取证，再归因”：只有命中回收日志、报告、退出码或状态机中的明确证据时，才在详情展示具体根因；不能确认时统一显示“未能从已回收日志确认具体根因，请查看任务日志与结果文件”。“疑似重启”等推测不作为失败原因写入详情，仍可在诊断建议中提示核查方向。
+失败原因遵循“先取证，再归因”：只有命中回收日志、报告、退出码或状态机中的明确证据时，才在详情展示具体根因；例如 Bash `unbound variable` 会自动提取变量名并明确归因为脚本实现错误。执行状态为 `SUCCESS`、报告状态为 `UNKNOWN` 且诊断已确认完成的非压测报告型任务不写失败原因，前端显示“无报告”。其余无法确认的失败场景才显示“未能从已回收日志确认具体根因，请查看任务日志与结果文件”。“疑似重启”等推测不作为失败原因写入详情，仍可在诊断建议中提示核查方向。
 
 前端任务展示通过 `frontend/src/utils/taskPresentation.ts` 接受单任务与批次详情的结构兼容输入，统一计算功能分类、模块名称、GPU 精度、受控套件动作、批次步骤名称和最终状态；仪表盘、服务器详情与历史任务均传入完整任务对象，`script` 只有缺少文件上下文时才回退显示为“服务器环境”，避免把 MPI 编译环境误标为基础环境。`taskError.ts` 统一选择 `outcome_message`、`failure_reason`、`error_message` 并格式化详情说明。后端仅在确认整个安装任务未产生安装动作时返回成功跳过说明：单组件或依赖步骤跳过不计入，oneAPI 与 AOCC/AOCL/OpenMPI 等组合安装必须全部目标组件均已存在。单次和批次组件只保留布局及各入口已有的兜底文案。
 

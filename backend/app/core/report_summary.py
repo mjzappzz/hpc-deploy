@@ -13,11 +13,12 @@ from app.models.task_log import TaskLog
 from sqlalchemy.orm import Session
 
 REPORT_STATUS_VALUES = {"PASS", "FAIL", "UNKNOWN"}
-DIAGNOSIS_VERSION = 8
+DIAGNOSIS_VERSION = 10
 
 _VERIFIED_FAILURE_CATEGORIES = {
     "artifact_recovery_failed",
     "gpu_burn_source_missing",
+    "shell_unbound_variable",
     "gpu_kernel_image_unavailable",
     "stress_root_required",
     "stress_startup_marker_mismatch",
@@ -36,6 +37,8 @@ def resolve_failure_reason(
     diagnosis: dict[str, Any],
 ) -> str | None:
     if report_status not in {"FAIL", "UNKNOWN"}:
+        return None
+    if report_status == "UNKNOWN" and diagnosis.get("category") == "completed":
         return None
     if diagnosis.get("category") in _VERIFIED_FAILURE_CATEGORIES:
         conclusion = diagnosis.get("conclusion")

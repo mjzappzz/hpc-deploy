@@ -803,6 +803,45 @@ def _precheck_stress_interrupted_before_report(
     }
 
 
+def _precheck_shell_unbound_variable(
+    task_status: str | None,
+    logs_joined: str,
+    **kwargs: Any,
+) -> dict[str, Any] | None:
+    """Recognize Bash ``set -u`` failures before generic stress interruption."""
+    if task_status != "FAILED":
+        return None
+
+    match = re.search(r"(?:line\s+\d+:\s+)?([A-Za-z_][A-Za-z0-9_]*):\s+unbound variable", logs_joined)
+    if not match:
+        return None
+
+    variable_name = match.group(1)
+    return {
+        "level": "error",
+        "category": "shell_unbound_variable",
+        "attribution": "platform",
+        "title": "脚本引用未初始化变量",
+        "conclusion": (
+            f"任务脚本引用了未初始化变量 {variable_name}，Bash 在执行该行时立即退出，"
+            "未能生成完整报告。"
+        ),
+        "summary": "已回收日志包含 Bash ‘unbound variable’ 明确错误，属于脚本实现错误。",
+        "possible_causes": [
+            "脚本启用了 set -u，但变量在引用前未赋值",
+            "脚本重构后遗留了旧变量名或旧目录逻辑",
+        ],
+        "suggestions": [
+            "修复脚本中该变量的初始化或移除失效引用后重新执行任务",
+            "为对应脚本路径补充静态和回归测试，防止相同错误再次发布",
+        ],
+        "risk_tips": [
+            "本次压测未完成，不能作为硬件稳定性结论。",
+        ],
+        "matched_patterns": ["unbound variable"],
+    }
+
+
 def _precheck_uncorrected_memory_hardware_error(
     task_status: str | None,
     task_type: str | None,
@@ -1195,6 +1234,7 @@ _PRE_CHECKS = [
     ("timeout_no_report", _precheck_timeout_no_report),
     ("uncorrected_memory_hardware_error", _precheck_uncorrected_memory_hardware_error),
     ("gpu_burn_source_missing", _precheck_gpu_burn_source_missing),
+    ("shell_unbound_variable", _precheck_shell_unbound_variable),
     ("stress_interrupted_before_report", _precheck_stress_interrupted_before_report),
     ("stress_startup_marker_mismatch", _precheck_stress_startup_marker_mismatch),
     ("stress_preflight_failed", _precheck_stress_preflight_failed),
