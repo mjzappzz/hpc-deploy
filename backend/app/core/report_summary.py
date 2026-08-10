@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from threading import Lock, Thread
 from typing import Any
@@ -14,6 +15,7 @@ from sqlalchemy.orm import Session
 
 REPORT_STATUS_VALUES = {"PASS", "FAIL", "UNKNOWN"}
 DIAGNOSIS_VERSION = 10
+_REPORT_FAILURE_REASON_PATTERN = re.compile(r"^\s*(?:Reason|判定原因)\s*:\s*(.+?)\s*$", re.IGNORECASE)
 
 _VERIFIED_FAILURE_CATEGORIES = {
     "artifact_recovery_failed",
@@ -35,6 +37,8 @@ def resolve_failure_reason(
     task_error_message: str | None,
     report_status: str,
     diagnosis: dict[str, Any],
+    *,
+    log_messages: list[str] | None = None,
 ) -> str | None:
     if report_status not in {"FAIL", "UNKNOWN"}:
         return None
@@ -44,6 +48,19 @@ def resolve_failure_reason(
         conclusion = diagnosis.get("conclusion")
         if isinstance(conclusion, str) and conclusion.strip():
             return conclusion.strip()
+    conclusion = diagnosis.get("conclusion")
+    if (
+        isinstance(task_error_message, str)
+        and isinstance(conclusion, str)
+        and task_error_message.strip()
+        and conclusion.strip() == task_error_message.strip()
+    ):
+        return task_error_message.strip()
+    if report_status == "FAIL" and log_messages:
+        for message in reversed(log_messages):
+            match = _REPORT_FAILURE_REASON_PATTERN.match(message)
+            if match:
+                return match.group(1).strip()
     if report_status == "FAIL":
         return "压测未通过，未能从已回收日志确认具体根因，请查看任务日志与结果文件。"
     return "任务执行失败，未能从已回收日志确认具体根因，请查看任务日志与结果文件。"
@@ -194,7 +211,12 @@ def generate_report_summary(task_id: str) -> TaskReportSummary | None:
             report_result=report_result,
         )
         report_status = report_result or "UNKNOWN"
-        failure_reason = resolve_failure_reason(task.error_message, report_status, diagnosis)
+        failure_reason = resolve_failure_reason(
+            task.error_message,
+            report_status,
+            diagnosis,
+            log_messages=log_messages,
+        )
         summary_json = {
             "diagnosis_version": DIAGNOSIS_VERSION,
             "report_status": report_status,

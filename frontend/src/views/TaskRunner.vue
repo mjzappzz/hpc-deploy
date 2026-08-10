@@ -109,7 +109,7 @@
                             <div class="s-card-info-grid">
                               <div v-if="server.os_info" class="s-card-info-item s-card-os-info">
                                 <span class="s-card-info-label">系统</span>
-                                <span class="s-card-info-value" :title="server.os_info">{{ compactOsName(server.os_info) }}</span>
+                                <OsLabel class="s-card-info-value" :value="server.os_info" compact />
                               </div>
                               <template v-if="hasDetectedNvidiaGpu(server)">
                                 <div class="s-card-info-item"><span class="s-card-info-label">GPU 驱动</span><span :class="['s-card-info-value', { 'is-ready': server.gpu_status === 'driver_ok' }]">{{ gpuDriverStatus(server) }}</span></div>
@@ -646,6 +646,7 @@ import {
   type TaskType as ApiTaskType,
   type CudaToolkitVersion
 } from '@/api/task'
+import OsLabel from '@/components/OsLabel.vue'
 import { downloadTaskLogs } from '@/api/task'
 import { useTaskWebSocket } from '@/composables/useTaskWebSocket'
 import { formatDateTime, formatScriptUpdatedAt } from '@/utils/time'
@@ -772,14 +773,6 @@ function environmentScriptInfo(fileName: string): { vendor: string; tagType: 'pr
 function gpuDriverStatus(server: ServerRecord): string {
   if (server.gpu_status !== 'driver_ok') return '未安装'
   return server.gpu_info?.match(/Driver\s+([0-9.]+)/i)?.[1] ?? '已安装'
-}
-
-function compactOsName(osInfo: string): string {
-  const rocky = osInfo.match(/rocky(?:\s+linux)?\s+([0-9]+(?:\.[0-9]+)?)/i)
-  if (rocky) return `Rocky ${rocky[1]}`
-  const ubuntu = osInfo.match(/ubuntu\s+([0-9]+\.[0-9]+)/i)
-  if (ubuntu) return `Ubuntu ${ubuntu[1]}`
-  return osInfo
 }
 
 function hasDetectedNvidiaGpu(server: ServerRecord): boolean {

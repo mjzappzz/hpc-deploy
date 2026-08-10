@@ -33,6 +33,12 @@ export function formatTaskErrorMessage(message?: string | null): string {
   if (value.includes('NVIDIA driver installer exited with code')) {
     return 'NVIDIA 驱动安装程序异常退出，请查看任务日志。'
   }
+  if (value.includes('Critical kernel error detected')) {
+    return '检测到严重内核异常，压测未通过。'
+  }
+  if (value.includes('module verification failed') && value.includes('tainting kernel')) {
+    return 'NVIDIA 内核模块签名或验证失败，内核已被标记为受污染。'
+  }
   if (value.includes('GPU stress failed before start')) return 'GPU 压测启动失败，请检查 NVIDIA 驱动、CUDA 与依赖环境。'
   if (value.includes('CPU/memory stress failed before start')) return 'CPU/内存压测启动失败，请检查 stress-ng 与依赖环境。'
   if (value.includes('task preparation failed')) return '任务准备失败，请查看任务日志。'

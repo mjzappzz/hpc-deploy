@@ -72,12 +72,9 @@
     </el-table-column>
     <el-table-column label="OS" width="130">
       <template #default="{ row }">
-        <el-tag
-          v-if="row.os_info"
-          size="small"
-          type="primary"
-          class="table-os-tag"
-        >{{ osSummary(row.os_info) }}</el-tag>
+        <el-tag v-if="row.os_info" size="small" type="primary" class="table-os-tag">
+          <OsLabel :value="row.os_info" compact />
+        </el-tag>
         <span v-else class="table-ellipsis">-</span>
       </template>
     </el-table-column>
@@ -147,6 +144,7 @@ import type { ServerRecord } from '@/api/server'
 import { SERVER_TAG_OPTIONS, serverTagType } from '@/constants/serverTags'
 import { formatDateTime } from '@/utils/time'
 import StatusTag from './StatusTag.vue'
+import OsLabel from './OsLabel.vue'
 
 const props = withDefaults(defineProps<{
   servers: ServerRecord[]
@@ -184,25 +182,6 @@ function handleMoreCommand(command: string, row: ServerRecord) {
 
 function displayValue(value: string | null | undefined) {
   return value?.trim() || '-'
-}
-
-function osSummary(value: string | null | undefined) {
-  const text = displayValue(value)
-  if (text === '-') return text
-
-  const ubuntu = text.match(/Ubuntu\s+(\d+\.\d+)/i)
-  if (ubuntu) return `Ubuntu ${ubuntu[1]}`
-
-  const rocky = text.match(/Rocky(?: Linux)?\s+(\d+(?:\.\d+)?)/i)
-  if (rocky) return `Rocky ${rocky[1]}`
-
-  const centos = text.match(/CentOS(?: Linux)?\s+(\d+(?:\.\d+)?)/i)
-  if (centos) return `CentOS ${centos[1]}`
-
-  const redHat = text.match(/Red Hat Enterprise Linux\s+(\d+(?:\.\d+)?)/i)
-  if (redHat) return `RHEL ${redHat[1]}`
-
-  return text
 }
 
 function gpuSummary(value: string | null | undefined, status: string | null | undefined) {

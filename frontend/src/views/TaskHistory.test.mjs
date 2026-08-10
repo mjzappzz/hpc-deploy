@@ -48,5 +48,7 @@ test('uses a compact outcome title on task cards while preserving detailed failu
 
   assert.match(taskCard, /if \(props\.task\.outcome_title\) return props\.task\.outcome_title/)
   assert.match(history, /if \(task\.outcome_title\) return task\.outcome_title/)
-  assert.match(history, /task\?\.failure_reason \|\| task\?\.error_message \|\| '-'/)
+  assert.match(history, /formatTaskErrorMessage\(task\?\.failure_reason \|\| task\?\.error_message\)/)
+  assert.match(history, /const displayError = formatTaskErrorMessage\(rawError\)/)
+  assert.match(history, /if \(hasExplicitError\) return displayError/)
 })

@@ -1501,11 +1501,12 @@ function batchDetailFailureReason(task: BatchTaskDetailItem): string {
   const reportStatus = (task.report_status || '').toUpperCase()
   const status = (task.status || '').toUpperCase()
   const rawError = task.failure_reason || task.error_summary || ''
+  const displayError = formatTaskErrorMessage(rawError)
   const hasExplicitError = Boolean(rawError)
   if (reportStatus === 'PASS') return ''
-  if (status === 'CANCELED') return rawError || '任务已被取消'
-  if (reportStatus === 'FAIL') return rawError || '报告结果为 FAIL，请查看结果文件确认失败指标。'
-  if (hasExplicitError) return rawError
+  if (status === 'CANCELED') return displayError || '任务已被取消'
+  if (reportStatus === 'FAIL') return displayError || '报告结果为 FAIL，请查看结果文件确认失败指标。'
+  if (hasExplicitError) return displayError
   if (!isBatchTaskTerminal(status)) return ''
   if (status === 'SUCCESS') {
     return task.has_artifacts ? '已有结果文件，但摘要缓存未解析出 PASS/FAIL；请打开结果文件查看。' : ''
@@ -1838,7 +1839,7 @@ const drawerReportTagType = computed<'' | 'success' | 'danger' | 'info'>(() => {
 
 const drawerFailureReason = computed(() => {
   const task = drawerTask.value
-  return task?.failure_reason || task?.error_message || '-'
+  return formatTaskErrorMessage(task?.failure_reason || task?.error_message) || '-'
 })
 
 const drawerCanRetry = computed(() => {

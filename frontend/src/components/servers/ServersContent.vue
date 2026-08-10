@@ -327,7 +327,7 @@
             <template v-if="activeServer.os_info || activeServer.cpu_info || activeServer.memory_info || activeServer.gpu_info || activeServer.disk_info">
               <el-descriptions :column="1" border size="small">
                 <el-descriptions-item v-if="activeServer.os_info" label="OS">
-                  <pre class="detail-hw-text">{{ activeServer.os_info }}</pre>
+                  <OsLabel class="detail-hw-text detail-os-text" :value="activeServer.os_info" />
                 </el-descriptions-item>
                 <el-descriptions-item v-if="activeServer.cpu_info" label="CPU">
                   <pre class="detail-hw-text">{{ activeServer.cpu_info }}</pre>
@@ -490,6 +490,7 @@ import { scanRemote, type RemoteScanResult } from '@/api/cleanup'
 import { generateDefaultSshKey } from '@/api/settings'
 import ServerTable from '@/components/ServerTable.vue'
 import StatusTag from '@/components/StatusTag.vue'
+import OsLabel from '@/components/OsLabel.vue'
 import LogViewer from '@/components/LogViewer.vue'
 import TaskDiagnosisDialog from '@/components/TaskDiagnosisDialog.vue'
 import { requireAdminConfirm } from '@/composables/useAdminConfirm'
@@ -1619,6 +1620,8 @@ onMounted(() => {
   max-height: 80px;
   overflow-y: auto;
 }
+
+.detail-os-text { display: inline-flex; }
 
 .detail-gpu-row {
   display: flex;

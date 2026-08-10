@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { getTaskOutcomeDisplayMessage } from './taskError.ts'
+import { formatTaskErrorMessage, getTaskOutcomeDisplayMessage } from './taskError.ts'
 
 
 test('single and batch task shapes prefer the shared outcome message', () => {
@@ -49,5 +49,16 @@ test('failed and canceled tasks use shared source precedence and formatting', ()
       '任务执行失败，请查看执行日志。',
     ),
     '任务已由用户取消。',
+  )
+})
+
+test('translates collected report failure reasons for task detail views', () => {
+  assert.equal(
+    formatTaskErrorMessage('Critical kernel error detected.'),
+    '检测到严重内核异常，压测未通过。',
+  )
+  assert.equal(
+    formatTaskErrorMessage('nvidia: module verification failed: signature and/or required key missing - tainting kernel'),
+    'NVIDIA 内核模块签名或验证失败，内核已被标记为受污染。',
   )
 })

@@ -46,14 +46,17 @@ class ReportSummaryFailureReasonTests(unittest.TestCase):
             diagnosis["conclusion"],
         )
 
-    def test_other_failures_without_verified_root_cause_use_conservative_fallback(self) -> None:
+    def test_stress_preflight_error_message_is_shown_when_diagnosis_has_no_allowlisted_category(self) -> None:
         self.assertEqual(
             resolve_failure_reason(
-                "SSH connection timed out",
+                "GPU stress failed before start: nvidia-smi not found",
                 "UNKNOWN",
-                {"category": "ssh_connection_failed", "conclusion": "任务无法连接到目标服务器。"},
+                {
+                    "category": "stress_preflight_failed",
+                    "conclusion": "GPU stress failed before start: nvidia-smi not found",
+                },
             ),
-            "任务执行失败，未能从已回收日志确认具体根因，请查看任务日志与结果文件。",
+            "GPU stress failed before start: nvidia-smi not found",
         )
 
     def test_interrupted_stress_without_evidence_uses_conservative_fallback(self) -> None:
@@ -110,6 +113,20 @@ class ReportSummaryFailureReasonTests(unittest.TestCase):
         self.assertEqual(
             resolve_failure_reason("报告已生成，压测结果为 FAIL", "FAIL", {"category": "completed"}),
             "压测未通过，未能从已回收日志确认具体根因，请查看任务日志与结果文件。",
+        )
+
+    def test_report_failure_uses_reason_from_collected_log(self) -> None:
+        self.assertEqual(
+            resolve_failure_reason(
+                "报告已生成，压测结果为 FAIL",
+                "FAIL",
+                {"category": "completed"},
+                log_messages=[
+                    "Result       : FAIL",
+                    "Reason       : Critical kernel error detected.",
+                ],
+            ),
+            "Critical kernel error detected.",
         )
 
 
