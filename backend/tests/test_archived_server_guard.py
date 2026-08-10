@@ -22,6 +22,17 @@ class ArchivedServerGuardTests(unittest.TestCase):
         self.assertIn('def archive_server(server_id: int, db: Session = Depends(get_db), _: str = Depends(require_admin_token))', source)
         self.assertIn('def restore_server(server_id: int, db: Session = Depends(get_db), _: str = Depends(require_admin_token))', source)
 
+    def test_archiving_resets_display_status_to_unknown(self) -> None:
+        source = Path("backend/app/api/servers.py").read_text(encoding="utf-8")
+
+        self.assertIn('server.status = "unknown"', source)
+        self.assertIn('status="unknown",', source)
+
+    def test_archived_table_forces_unknown_status_for_legacy_records(self) -> None:
+        source = Path("frontend/src/components/ServerTable.vue").read_text(encoding="utf-8")
+
+        self.assertIn('<StatusTag :status="archived ? \'unknown\' : row.status" />', source)
+
     def test_general_server_update_cannot_switch_archive_tag(self) -> None:
         source = Path("backend/app/api/servers.py").read_text(encoding="utf-8")
 

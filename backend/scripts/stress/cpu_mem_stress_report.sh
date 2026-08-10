@@ -1,7 +1,7 @@
 #!/bin/bash
 #set -e  # 不使用 set -e，手工控制每个关键步骤的退出处理
 
-SCRIPT_VERSION="2026.08.05"
+SCRIPT_VERSION="2026.08.10"
 
 # ===== 自动检测系统并安装依赖 =====
 echo "[STAGE] dependency_check_start"
@@ -129,7 +129,13 @@ VM_BYTES="${VM_BYTES_MB}M"
 # 内存测试方法：默认使用 write64，规避旧版 stress-ng 的 prime-* 方法误报
 VM_METHOD=${VM_METHOD:-write64}
 
-CRITICAL_ERR_PATTERN="out of memory|oom-killer|killed process|hardware error|machine check error|machine check exception|mce:.*error|edac.*error|ecc.*uncorrected|uncorrected error|thermal thrott|throttling|verification failed"
+# UE/UECC 是不可纠正 ECC 内存错误，必须单独识别并在报告中明确标注。
+# 保留独立模式，避免仅依赖泛化的 EDAC/MCE 文本导致漏检。
+UE_ERROR_PATTERN="(^|[^[:alnum:]_])(ue|uecc)([^[:alnum:]_]|$)|uncorrected hardware memory error|uncorrectable hardware memory error|edac.*(ue|uncorrect)|ras.*(ue|uecc|uncorrect)"
+# 仅匹配压测期间应判失败的内存/硬件严重事件。
+# `verification failed` 是 NVIDIA 等驱动常见的签名提示，不属于内存或硬件运行错误；
+# stress-ng 自身校验失败由 STRESS_ERROR 单独识别。
+CRITICAL_ERR_PATTERN="out of memory|oom-killer|killed process|hardware error|machine check error|machine check exception|mce:.*error|edac.*error|ecc.*uncorrected|uncorrected error|${UE_ERROR_PATTERN}|thermal thrott|throttling"
 
 command -v stress-ng >/dev/null || { echo "ERROR: stress-ng not found"; exit 1; }
 command -v python3 >/dev/null || { echo "ERROR: python3 not found"; exit 1; }
@@ -327,8 +333,9 @@ trap _cleanup EXIT
 # ===== 启动后台监控 =====
 echo "[STAGE] monitor_start"
 
-# 记录测试开始前已有的内核日志数量，避免历史错误误判
-DMESG_LINES_BEFORE=$(dmesg | wc -l)
+# 结束后二次核验 journal 时只读取本次压测开始后的内核日志。
+KERNEL_LOG_START_AT=$(date '+%Y-%m-%d %H:%M:%S')
+: > "$ERR_LOG"
 
 
 (
@@ -350,34 +357,37 @@ done
 ) > "$MON_LOG" &
 MON_PID=$!
 
-# dmesg -w 可能在没有新消息时阻塞；放到独立进程组，便于完整清理管道
-# dmesg增量监控，只捕获本次测试产生的新内核日志
+# 仅监听测试开始后的内核消息；`dmesg -w` 会先输出历史 ring buffer，不能使用。
 DMESG_MONITOR_TIMEOUT=$((DURATION + 300))
 
+if dmesg --help 2>&1 | grep -q -- '--follow-new'; then
 if command -v setsid >/dev/null 2>&1; then
   CRITICAL_ERR_PATTERN="$CRITICAL_ERR_PATTERN" \
   ERR_LOG="$ERR_LOG" \
   DMESG_MONITOR_TIMEOUT="$DMESG_MONITOR_TIMEOUT" \
-  DMESG_LINES_BEFORE="$DMESG_LINES_BEFORE" \
     setsid bash -c '
-      timeout "$DMESG_MONITOR_TIMEOUT" dmesg -w 2>/dev/null \
-      | tail -n +$((DMESG_LINES_BEFORE+1)) \
-      | grep -Ei "$CRITICAL_ERR_PATTERN" > "$ERR_LOG"
+      timeout "$DMESG_MONITOR_TIMEOUT" dmesg -W 2>/dev/null \
+      | grep --line-buffered -Ei "$CRITICAL_ERR_PATTERN" >> "$ERR_LOG"
     ' &
 else
   CRITICAL_ERR_PATTERN="$CRITICAL_ERR_PATTERN" \
   ERR_LOG="$ERR_LOG" \
   DMESG_MONITOR_TIMEOUT="$DMESG_MONITOR_TIMEOUT" \
-  DMESG_LINES_BEFORE="$DMESG_LINES_BEFORE" \
     bash -c '
-      timeout "$DMESG_MONITOR_TIMEOUT" dmesg -w 2>/dev/null \
-      | tail -n +$((DMESG_LINES_BEFORE+1)) \
-      | grep -Ei "$CRITICAL_ERR_PATTERN" > "$ERR_LOG"
+      timeout "$DMESG_MONITOR_TIMEOUT" dmesg -W 2>/dev/null \
+      | grep --line-buffered -Ei "$CRITICAL_ERR_PATTERN" >> "$ERR_LOG"
     ' &
 fi
 
 ERR_PID=$!
 ERR_PGID=$(ps -o pgid= "$ERR_PID" 2>/dev/null | tr -d ' ')
+else
+    # 没有 follow-new 时不读取无时间边界的 ring buffer，避免历史告警误判；
+    # 结束时由本次时间窗口的 journalctl -k 兜底。
+    ERR_PID=""
+    ERR_PGID=""
+    echo "[WARN] dmesg --follow-new unavailable; realtime kernel monitor disabled, journalctl post-check remains enabled."
+fi
 
 echo "[STAGE] monitor_started pids=mon:$MON_PID err:$ERR_PID err_pgid:${ERR_PGID:-N/A}"
 
@@ -493,9 +503,18 @@ elif [ -n "${ERR_PID:-}" ]; then
 fi
 [ -n "${ERR_PID:-}" ] && _wait_pid_with_timeout "$ERR_PID" 5
 
-# 4. 只清理当前脚本子进程，避免误杀系统里其他任务的 dmesg -w
+# 4. 只清理当前脚本子进程，避免误杀系统里其他任务的 dmesg follow
 pkill -P $$ dmesg 2>/dev/null || true
 pkill -P $$ grep 2>/dev/null || true
+
+# 实时监听异常退出或日志延迟落盘时，使用本次时间窗口的 kernel journal 兜底。
+if command -v journalctl >/dev/null 2>&1; then
+    timeout 15 journalctl -k --no-pager --since "$KERNEL_LOG_START_AT" 2>/dev/null \
+        | grep -Ei "$CRITICAL_ERR_PATTERN" >> "$ERR_LOG" || true
+fi
+if [ -s "$ERR_LOG" ]; then
+    sort -u "$ERR_LOG" -o "$ERR_LOG"
+fi
 
 sleep 1
 echo "[STAGE] monitor_stop_done"
@@ -531,6 +550,7 @@ SWAP_OVER_MAX_SECONDS=$(( SWAP_OVER_MAX_CONSECUTIVE_SAMPLES * INTERVAL ))
 SWAP_LOW_MEM_MAX_SECONDS=$(( SWAP_LOW_MEM_MAX_CONSECUTIVE_SAMPLES * INTERVAL ))
 
 ERROR_COUNT=$(grep -Ei "$CRITICAL_ERR_PATTERN" "$ERR_LOG" 2>/dev/null | wc -l)
+UE_ERROR_COUNT=$(grep -Ei "$UE_ERROR_PATTERN" "$ERR_LOG" 2>/dev/null | wc -l)
 STRESS_ERROR=$(grep -Ei "verification failed|aborted|segmentation fault|bus error|out of memory|oom-killer|killed process|stress-ng: fail:" "$STRESS_LOG" 2>/dev/null || true)
 
 RESULT="PASS"
@@ -548,7 +568,10 @@ elif [ "$RESULT" = "PASS" ] && [ "$SWAP_USED_MAX" -gt "$SWAP_FAIL_MB" ]; then
     REASON="No critical error detected. Swap exceeded threshold briefly or without low available memory; treated as PASS."
 fi
 
-if [ "$ERROR_COUNT" != "0" ]; then
+if [ "$UE_ERROR_COUNT" != "0" ]; then
+    RESULT="FAIL"
+    REASON="Uncorrectable memory hardware error detected (UE/UECC)."
+elif [ "$ERROR_COUNT" != "0" ]; then
     RESULT="FAIL"
     REASON="Critical kernel error detected."
 fi
@@ -611,12 +634,14 @@ Swap+低可用内存连续最长时长 : ${SWAP_LOW_MEM_MAX_SECONDS} 秒
 4. 异常检查
 stress-ng退出码        : ${STRESS_EXIT}
 重大内核异常数量      : ${ERROR_COUNT}
+UE / UECC 错误数量    : ${UE_ERROR_COUNT}
 stress-ng严重错误      : $( [ -z "$STRESS_ERROR" ] && echo "未发现" || echo "发现严重错误，请查看 ${STRESS_LOG}" )
 OOM / MCE / ECC / Thermal Throttling : $( [ "$ERROR_COUNT" = "0" ] && echo "未发现重大异常" || echo "发现重大异常，请查看 ${ERR_LOG}" )
 
 说明：
 EDAC模块加载、MCE功能启用、thermal governor注册等系统初始化信息不作为失败依据。
 stress-ng普通提示中的 failed 字样不作为失败依据。
+出现 UE/UECC、Uncorrected/Uncorrectable hardware memory error 或 EDAC UE 时，直接判定为不通过。
 仅当出现 OOM、Killed process、ECC uncorrected error、Machine Check Error、Hardware Error、Thermal Throttling、verification failed、segmentation fault 等重大异常时，才判定为不通过。
 Swap 短暂超过 ${SWAP_FAIL_MB} MB 不判失败；只有 Swap 持续超阈且可用内存持续低于 ${MEM_AVAIL_FAIL_MB} MB 达到 ${SWAP_SUSTAIN_SECONDS} 秒，才判定为失败。
 
@@ -782,6 +807,7 @@ rows_data = [
     ("内存表现", "最大Swap使用", "${SWAP_USED_MAX} MB"),
     ("异常检查", "stress-ng退出码", "${STRESS_EXIT}"),
     ("异常检查", "重大内核异常数量", "${ERROR_COUNT}"),
+    ("异常检查", "UE / UECC 错误数量", "${UE_ERROR_COUNT}"),
 ]
 
 for row_data in rows_data:
@@ -1039,6 +1065,7 @@ rows_data = [
     ("内存表现", "最大Swap使用", "${SWAP_USED_MAX} MB"),
     ("异常检查", "stress-ng退出码", "${STRESS_EXIT}"),
     ("异常检查", "重大内核异常数量", "${ERROR_COUNT}"),
+    ("异常检查", "UE / UECC 错误数量", "${UE_ERROR_COUNT}"),
 ]
 
 for row_data in rows_data:

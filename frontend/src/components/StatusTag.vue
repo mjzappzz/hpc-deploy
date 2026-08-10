@@ -17,7 +17,7 @@ const label = computed(() => {
   }
   if (normalized.value === 'ONLINE') return '在线'
   if (normalized.value === 'OFFLINE') return '离线'
-  if (normalized.value === 'UNKNOWN') return '未探测'
+  if (normalized.value === 'UNKNOWN') return '未知'
   if (normalized.value === 'PARTIAL_FAILED') return 'PARTIAL SUCCESS'
   if (normalized.value === 'PARTIAL_CANCELED') return 'PARTIAL CANCELED'
   if (normalized.value === 'WAITING_REBOOT') return '等待重启完成'

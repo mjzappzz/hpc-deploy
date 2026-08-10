@@ -42,10 +42,10 @@
         <el-tooltip
           :content="displayValue(row.last_error)"
           placement="top"
-          :disabled="!(row.status === 'offline' && row.last_error)"
+          :disabled="archived || !(row.status === 'offline' && row.last_error)"
         >
           <span>
-            <StatusTag :status="row.status" />
+            <StatusTag :status="archived ? 'unknown' : row.status" />
           </span>
         </el-tooltip>
       </template>

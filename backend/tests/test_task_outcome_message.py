@@ -90,6 +90,28 @@ class TaskOutcomeMessageTests(unittest.TestCase):
             "GPU 内核镜像无法加载",
         )
 
+    def test_report_failure_title_uses_the_actual_stress_script_module(self) -> None:
+        self.assertEqual(
+            resolve_card_outcome_title(
+                task_type="stress",
+                file_name="cpu_mem_stress_report.sh",
+                report_status="FAIL",
+                diagnosis={"title": "任务执行成功"},
+                fallback="报告失败原因",
+            ),
+            "CPU/内存压测报告未通过",
+        )
+        self.assertEqual(
+            resolve_card_outcome_title(
+                task_type="stress",
+                file_name="gpu_stress_report.sh",
+                report_status="FAIL",
+                diagnosis=None,
+                fallback="报告失败原因",
+            ),
+            "GPU 压测报告未通过",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

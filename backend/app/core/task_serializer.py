@@ -59,13 +59,21 @@ def resolve_card_outcome_title(
     report_status: str,
     diagnosis: dict | None,
     fallback: str | None,
+    file_name: str | None = None,
 ) -> str | None:
     """Return a compact, evidence-backed card label without replacing details."""
     title = diagnosis.get("title") if isinstance(diagnosis, dict) else None
     if isinstance(title, str) and title.strip() and title not in {"任务执行成功", "未知失败类型"}:
         return title.strip()
     if report_status.upper() == "FAIL":
-        return "GPU 压测报告未通过" if task_type == "stress" else "任务报告未通过"
+        script_name = (file_name or "").rsplit("/", 1)[-1].lower()
+        if script_name == "gpu_stress_report.sh":
+            return "GPU 压测报告未通过"
+        if script_name == "cpu_mem_stress_report.sh":
+            return "CPU/内存压测报告未通过"
+        if script_name == "disk_stress_report.sh":
+            return "磁盘压测报告未通过"
+        return "压测报告未通过" if task_type == "stress" else "任务报告未通过"
     return fallback
 
 
@@ -86,6 +94,7 @@ def get_task_card_outcome_title(
         diagnosis = None
     return resolve_card_outcome_title(
         task_type=task.task_type,
+        file_name=task.file_name,
         report_status=report_status,
         diagnosis=diagnosis,
         fallback=failure_reason or task.error_message,

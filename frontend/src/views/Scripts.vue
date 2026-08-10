@@ -316,9 +316,7 @@ function onScriptUploadSelected(file: { raw?: File }) {
   const raw = file.raw
   if (!raw) return
   const suffix = raw.name.includes('.') ? `.${raw.name.split('.').pop()?.toLowerCase()}` : ''
-  const allowed = uploadCategory.value === 'apptainer'
-    ? ['.sif']
-    : ['.sh', '.py', '.txt', '.md']
+  const allowed = uploadCategory.value === 'apptainer' ? ['.sif'] : ['.sh', '.py', '.txt', '.md']
   if (!allowed.includes(suffix)) {
     selectedUploadFile.value = null
     ElMessage.error(`${categoryLabel(uploadCategory.value)}仅允许 ${allowed.join('、')} 文件`)
@@ -624,6 +622,7 @@ onMounted(loadFiles)
   word-break: break-word;
   margin: 0;
 }
+
 
 .upload-category-select {
   width: 100%;

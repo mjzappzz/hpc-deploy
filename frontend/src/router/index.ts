@@ -7,6 +7,7 @@ import TaskRunner from '@/views/TaskRunner.vue'
 import TaskHistory from '@/views/TaskHistory.vue'
 import WindowsStress from '@/views/WindowsStress.vue'
 import Scripts from '@/views/Scripts.vue'
+import OpsCommands from '@/views/OpsCommands.vue'
 import Settings from '@/views/Settings.vue'
 
 const router = createRouter({
@@ -19,6 +20,7 @@ const router = createRouter({
     { path: '/windows-stress', component: WindowsStress, meta: { title: 'Windows 压测（试验）' } },
     { path: '/audit-logs', component: AuditLog, meta: { title: '审计日志' } },
     { path: '/scripts', component: Scripts, meta: { title: '资产库管理' } },
+    { path: '/ops-commands', component: OpsCommands, meta: { title: '常用运维命令' } },
     { path: '/settings', component: Settings, meta: { title: '系统设置' } },
   ],
 })

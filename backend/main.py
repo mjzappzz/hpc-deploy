@@ -1,4 +1,4 @@
-from app.api import audit, auth, batch, cleanup, dashboard, scripts, servers, settings as settings_router_mod, ssh_keys, tasks
+from app.api import audit, auth, batch, cleanup, dashboard, ops_commands, scripts, servers, settings as settings_router_mod, ssh_keys, tasks
 from app.api.health import router as health_router
 from app.core.auto_cleanup import start_auto_cleanup_scheduler
 from app.core.client_ip import reset_client_ip, resolve_client_ip, set_client_ip
@@ -27,6 +27,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router, prefix="/api")
     app.include_router(servers.router, prefix="/api")
     app.include_router(scripts.router, prefix="/api")
+    app.include_router(ops_commands.router, prefix="/api")
     app.include_router(tasks.router, prefix="/api")
     app.include_router(batch.router, prefix="/api")
     app.include_router(dashboard.router, prefix="/api")

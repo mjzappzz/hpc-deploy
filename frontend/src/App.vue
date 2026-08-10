@@ -55,6 +55,10 @@
           <el-icon><Document /></el-icon>
           <span>资产库管理</span>
         </el-menu-item>
+        <el-menu-item index="/ops-commands">
+          <el-icon><Document /></el-icon>
+          <span>常用运维命令</span>
+        </el-menu-item>
         <el-menu-item v-if="adminThemeActive" index="/audit-logs" @click.capture="handleAuditMenuClick">
           <el-icon><List /></el-icon>
           <span class="menu-label-row"><span>审计日志</span><el-tag size="small" class="admin-badge">Admin</el-tag></span>

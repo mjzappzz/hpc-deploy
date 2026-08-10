@@ -63,7 +63,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - CUDA Toolkit 安装（`/cuda-toolkit`、`/cuda-toolkit/batch`）：支持 11.8、12.0–12.6、12.8、12.9、13.0，安装前校验 `nvidia-smi`，仅安装 Toolkit，不安装或覆盖驱动
 - 压测套件创建（`/stress-suite`），同服务器内按 GPU → CPU/内存 → 磁盘串行推进
 - 单项压测与压测套件的单个脚本时长范围为 1 分钟–72 小时（后端秒级边界仍为 10–259200 秒）；当前任务页以小时/分钟输入并在 72 小时边界前置限制和提示
-- CPU/内存压测脚本 `v2026.08.05` 会在最终 CSV、TXT 和 XLSX 报告中记录 CPU 温度：优先读取 Intel `Package id`、AMD `Tctl/Tdie`，`sensors -j` 不可用时回退 Linux `hwmon`；同优先级多路温度取最高值。未发现可用传感器时报告会显示“未检测到可用 CPU 温度传感器”。温度当前仅用于结果报告，不参与 PASS/FAIL 判定，也尚未进入任务实时监控接口。
+- CPU/内存压测脚本 `v2026.08.10` 会在最终 CSV、TXT 和 XLSX 报告中记录 CPU 温度：优先读取 Intel `Package id`、AMD `Tctl/Tdie`，`sensors -j` 不可用时回退 Linux `hwmon`；同优先级多路温度取最高值。未发现可用传感器时报告会显示“未检测到可用 CPU 温度传感器”。温度当前仅用于结果报告，不参与 PASS/FAIL 判定，也尚未进入任务实时监控接口。脚本以 `dmesg --follow-new` 监听本次新增的内核日志，并在结束时按压测开始时间二次核验 `journalctl -k`；识别到 `UE`/`UECC`、不可纠正内存硬件错误或 EDAC UE 时，报告直接判定 FAIL 并记录 UE 错误数量。驱动签名、内核 taint 和其他历史初始化消息不参与判定。
 - 受控环境套件创建（`/managed-suite`）：基础环境配置按关闭锁屏/休眠 → 锁定当前系统版本，GPU 驱动安装按 NVIDIA 驱动 → CUDA Toolkit 严格串行；多台服务器各自创建独立批次，前序失败时后序不启动，后端重启后恢复套件 worker
 - 多服务器单动作入口按服务器创建互相独立的单次任务：普通脚本/单项压测/Apptainer（`/batch`）、GPU 驱动（`/gpu-driver/batch`）和 CUDA Toolkit（`/cuda-toolkit/batch`）均返回完整 `task_ids`，每条任务的 `batch_id` 为空；只有同一服务器包含多个有序步骤的受控环境套件和压测套件才创建批次，并按服务器分配独立 `batch_id`
 - Intel oneAPI 2022 安装脚本 v1.1.0 在执行安装器前分别检查 MKL 与编译器/Intel MPI 命令；目标组件已完整安装时跳过对应离线包下载和安装，最终严格验证 `icc`、`icx`、`ifort`、`mpiicc`、`mpiifort`、`mpirun` 及 `MKLROOT`，重复执行不再因 Intel 安装器返回“already installed”而误报失败
@@ -92,8 +92,9 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 
 ### scripts API (`/api/scripts`)
 - 脚本知识库文件列表、上传、预览、下载、删除
+- 常用运维命令位于资产库管理下的独立页面，数据保存在 SQLite `ops_commands` 表；左侧选择标题，右侧默认按安全富文本展示正文，点击编辑后才进入编辑态，支持选中文字加粗、新增、保存、复制和删除。正文仅允许段落、换行及加粗标签，服务端在写入与读取时均清理其他 HTML，审计不记录命令正文；该模块不关联文件上传、脚本白名单或远程任务执行。
 - 前端当前按类型筛选 mpi/stress/windows；apptainer 资产保留但不开放管理入口
-- Windows 分类仅接受 `.ps1`、`.bat`、`.cmd`，单文件不超过 2 MiB；只供 Windows 压测页面预览、复制和下载，不可创建 Linux 任务
+- Windows 分类仅接受 `.ps1`、`.bat`、`.cmd`，单文件不超过 2 MiB；只供 Windows 压测页面预览、复制和下载，不可创建 Linux 任务。当前 `v97_windows_stress.ps1` 在管理员 PowerShell、PawnIO 未安装且 `AutoConfirmPawIoInstall=true` 时，会从 PawnIO 官方 GitHub Release 下载 Authenticode 有效签名的安装器并以 `-install -silent` 安装；仅接受退出码 0 或 3010，且会轮询复核安装状态。非管理员、签名校验失败或超时只记录告警并降级采集。报告的核心指标和 CPU/GPU 分项指标均展示 CPU 最高、平均温度，以及 GPU 最高、平均最高温度和最大、平均总功耗；GPU 优先按驱动的 `power.limit`、`GPU Slowdown Temp` 动态评定，热降频点不可用时按现有 GPU 温度阈值评定。CPU 优先使用 LHM PPT/Power Limit 百分比反推平台上限，未读取到时可回退到本地精确型号的官方 TDP；达到基准显示通过，低于基准显示 `-`。客户报告的参考标准面板只展示已成功读取的动态限制值。
 - Linux NVIDIA 驱动库由 tasks API 独立管理，避免 `.run` 文件进入通用 Linux 脚本执行链路
 - 前端“资产库管理”将 Linux NVIDIA 驱动库置于独立卡片，普通脚本知识库只展示 mpi/stress；统一上传入口先选择目标模块，再应用对应扩展名约束。Windows 与暂时下线的 Apptainer 资料不进入该页面的“全部”列表
 

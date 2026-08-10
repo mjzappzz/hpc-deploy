@@ -300,7 +300,7 @@ def probe_all_servers(
     active_servers = [s for s in all_servers if not is_server_archived(s)]
     archived_results = [
         ProbeAllResult(
-            server_id=s.id, name=s.name, host=s.host, status=s.status,
+            server_id=s.id, name=s.name, host=s.host, status="unknown",
             last_check_at=s.last_check_at, last_error=s.last_error,
             skipped=True, reason="server is archived, skipped",
         )
@@ -684,6 +684,7 @@ def archive_server(server_id: int, db: Session = Depends(get_db), _: str = Depen
     if _server_has_unfinished_task(db, server.id):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="服务器存在未结束任务，不能归档")
     server.tags_json = json.dumps([ARCHIVED_SERVER_TAG], ensure_ascii=False)
+    server.status = "unknown"
     db.commit()
     db.refresh(server)
     write_audit_log(
