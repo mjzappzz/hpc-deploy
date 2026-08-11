@@ -16,7 +16,7 @@
       <el-card shadow="never" class="ops-list-card">
         <template #header>
           <div class="ops-card-header">
-            <span>命令标题</span>
+            <span>命令列表</span>
             <el-tag size="small" effect="plain">{{ commands.length }}</el-tag>
           </div>
         </template>
@@ -91,6 +91,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { requireAdminConfirm } from '@/composables/useAdminConfirm'
 import { copyText } from '@/utils/clipboard'
 import { getApiErrorMessage } from '@/utils/apiError'
+import { opsCommandRichTextToPlainText } from '@/utils/richText'
 import { formatScriptUpdatedAt } from '@/utils/time'
 import {
   createOpsCommand,
@@ -225,7 +226,8 @@ async function removeSelected() {
 async function copyContent() {
   if (!draft.content) return
   try {
-    if (!await copyText(draft.content)) throw new Error('clipboard unavailable')
+    const plainText = opsCommandRichTextToPlainText(draft.content)
+    if (!await copyText(plainText)) throw new Error('clipboard unavailable')
     ElMessage.success('命令内容已复制')
   } catch {
     ElMessage.error('复制失败：浏览器未授予剪贴板权限')
@@ -256,7 +258,7 @@ onMounted(loadCommands)
 .ops-command-item small { color: var(--el-text-color-secondary); font-size: 12px; }
 .ops-editor-form { max-width: none; }
 .ops-command-detail h2 { margin: 0 0 16px; font-size: 18px; }
-.ops-rich-editor { overflow: hidden; border: 1px solid var(--el-border-color); border-radius: 12px; background: var(--el-bg-color); }
+.ops-rich-editor { width: 100%; overflow: hidden; border: 1px solid var(--el-border-color); border-radius: 12px; background: var(--el-bg-color); }
 .ops-rich-editor:focus-within { border-color: var(--el-color-primary); box-shadow: 0 0 0 1px var(--el-color-primary-light-7); }
 .ops-rich-editor__toolbar { display: flex; align-items: center; gap: 12px; padding: 8px 10px; border-bottom: 1px solid var(--el-border-color-lighter); background: var(--el-fill-color-light); }
 .ops-rich-editor__toolbar span { color: var(--el-text-color-secondary); font-size: 12px; }

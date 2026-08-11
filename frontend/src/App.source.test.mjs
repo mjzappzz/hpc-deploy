@@ -44,3 +44,12 @@ test('reserves the audit log menu item while an administrator session is restore
   assert.match(source, /<el-menu-item v-if="adminThemeActive" index="\/audit-logs"/)
   assert.match(source, /async function handleAuditMenuClick[\s\S]*?await requireAdminConfirm\('查看审计日志'\)/)
 })
+
+test('places asset library below common operations commands', async () => {
+  const source = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+
+  const commandsIndex = source.indexOf('<el-menu-item index="/ops-commands">')
+  const scriptsIndex = source.indexOf('<el-menu-item index="/scripts">')
+  assert.ok(commandsIndex >= 0)
+  assert.ok(scriptsIndex > commandsIndex)
+})

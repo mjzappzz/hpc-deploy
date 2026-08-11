@@ -80,7 +80,7 @@
     </el-table-column>
     <el-table-column label="CPU" min-width="185" class-name="server-cpu-column">
       <template #default="{ row }">
-        <span class="server-wrap-cell">{{ cpuSummary(row.cpu_info) }}</span>
+        <ServerHardwareCell :hardware="formatCpuHardware(row.cpu_info)" />
       </template>
     </el-table-column>
     <el-table-column label="内存" width="75" show-overflow-tooltip>
@@ -90,7 +90,7 @@
     </el-table-column>
     <el-table-column label="GPU" min-width="185" class-name="server-gpu-column">
       <template #default="{ row }">
-        <span class="server-wrap-cell" :class="gpuStatusClass(row.gpu_status)">{{ gpuSummary(row.gpu_info, row.gpu_status) }}</span>
+        <ServerHardwareCell :hardware="formatGpuHardware(row.gpu_info, row.gpu_status)" />
       </template>
     </el-table-column>
     <el-table-column label="最后探测" width="150" show-overflow-tooltip>
@@ -142,7 +142,9 @@
 <script setup lang="ts">
 import type { ServerRecord } from '@/api/server'
 import { SERVER_TAG_OPTIONS, serverTagType } from '@/constants/serverTags'
+import { formatCpuHardware, formatGpuHardware } from '@/utils/serverHardware'
 import { formatDateTime } from '@/utils/time'
+import ServerHardwareCell from './ServerHardwareCell.vue'
 import StatusTag from './StatusTag.vue'
 import OsLabel from './OsLabel.vue'
 
@@ -182,44 +184,6 @@ function handleMoreCommand(command: string, row: ServerRecord) {
 
 function displayValue(value: string | null | undefined) {
   return value?.trim() || '-'
-}
-
-function gpuSummary(value: string | null | undefined, status: string | null | undefined) {
-  const text = displayValue(value)
-  if (status === 'none') return '无 NVIDIA GPU'
-  if (status === 'hardware_only') return text
-  if (status === 'unknown') return '-'
-  if (status === 'driver_ok') return text.split(',')[0].trim() || text
-  if (text === '-' || /not detected/i.test(text)) return '无 NVIDIA GPU'
-  if (text.includes('驱动不可用')) return text
-  return text.split(',')[0].trim() || text
-}
-
-function gpuStatusClass(status: string | null | undefined) {
-  if (status === 'hardware_only') return 'gpu-status-warning'
-  if (status === 'none' || status === 'unknown') return 'gpu-status-none'
-  return ''
-}
-
-function cpuSummary(value: string | null | undefined) {
-  const text = displayValue(value)
-  if (text === '-') return text
-
-  const localizedModel = text.match(/(?:Model name|型号名称)\s*[：:]\s*(.+?)(?=\s+(?:BIOS Model name|CPU 系列|CPU family|型号\s*[：:]|Model\s*[：:])|$)/i)?.[1]?.trim()
-  const localizedCores = text.match(/(?:^|\s)(?:CPU\(s\)|CPU)\s*[：:]\s*(\d+)(?=\s|$)/i)?.[1]
-  if (localizedModel) {
-    return localizedCores ? `${localizedModel} / ${localizedCores}C` : localizedModel
-  }
-
-  const cores = text.match(/(\d+)\s+cores?/i)?.[1]
-  const model = text
-    .replace(/\s*\/\s*\d+\s+cores?.*$/i, '')
-    .replace(/\bCPU\b/gi, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-
-  if (!cores) return model || text
-  return `${model || 'CPU'} / ${cores}C`
 }
 
 function updateInlineTag(row: ServerRecord, tag: string) {
@@ -296,20 +260,8 @@ function detectButtonTip(row: ServerRecord): string {
 
 .server-table :deep(.server-cpu-column .cell),
 .server-table :deep(.server-gpu-column .cell) {
-  overflow: visible;
-  text-overflow: clip;
+  overflow: hidden;
   white-space: normal;
-  word-break: break-word;
-  overflow-wrap: anywhere;
-  line-height: 1.45;
-}
-
-.server-wrap-cell {
-  display: inline;
-  white-space: normal;
-  word-break: break-word;
-  overflow-wrap: anywhere;
-  line-height: 1.45;
 }
 
 .server-actions {
@@ -336,13 +288,6 @@ function detectButtonTip(row: ServerRecord): string {
   50% {
     opacity: 0.45;
   }
-}
-
-.gpu-status-warning {
-  color: var(--el-color-warning);
-}
-.gpu-status-none {
-  color: var(--el-text-color-placeholder);
 }
 
 .server-tag-select {

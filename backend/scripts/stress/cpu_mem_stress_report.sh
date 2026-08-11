@@ -1,7 +1,7 @@
 #!/bin/bash
 #set -e  # 不使用 set -e，手工控制每个关键步骤的退出处理
 
-SCRIPT_VERSION="2026.08.10"
+SCRIPT_VERSION="2026.08.11.1"
 
 # ===== 自动检测系统并安装依赖 =====
 echo "[STAGE] dependency_check_start"
@@ -32,16 +32,7 @@ install_deps() {
         NEED_INSTALL=1
     fi
 
-    if ! command -v python3 >/dev/null 2>&1; then
-        NEED_INSTALL=1
-    else
-        if ! python3 - << 'PYCHK' >/dev/null 2>&1
-import openpyxl
-PYCHK
-        then
-            NEED_INSTALL=1
-        fi
-    fi
+    command -v python3 >/dev/null 2>&1 || NEED_INSTALL=1
 
     if [ "$NEED_INSTALL" -eq 0 ]; then
         echo "[INFO] Dependencies already installed, skip install."
@@ -54,27 +45,13 @@ PYCHK
         echo "[INFO] Detected RHEL/CentOS/Rocky/Alma"
 
         ensure_epel_repo
-        yum install -y stress-ng python3 python3-pip python3-openpyxl || true
-
-        if ! python3 - << 'PYCHK' >/dev/null 2>&1
-import openpyxl
-PYCHK
-        then
-            python3 -m pip install openpyxl
-        fi
+        yum install -y stress-ng python3 python3-pip || true
 
     elif [ -f /etc/debian_version ]; then
         echo "[INFO] Detected Debian/Ubuntu"
 
         apt update
-        apt install -y stress-ng python3 python3-pip python3-openpyxl
-
-        if ! python3 - << 'PYCHK' >/dev/null 2>&1
-import openpyxl
-PYCHK
-        then
-            python3 -m pip install openpyxl
-        fi
+        apt install -y stress-ng python3 python3-pip
 
     else
         echo "[ERROR] Unsupported OS"
@@ -94,7 +71,8 @@ INTERVAL=${2:-2}
 TIME_TAG=$(date +%F_%H%M%S)
 WORKDIR=$(pwd)
 STOP_FILE="${WORKDIR}/.monitor.stop"
-rm -f "$STOP_FILE"
+MEMORY_SAFETY_FILE="${WORKDIR}/.memory-safety.stop"
+rm -f "$STOP_FILE" "$MEMORY_SAFETY_FILE"
 
 STRESS_LOG="${WORKDIR}/stress_cpu_mem_${TIME_TAG}.log"
 MON_LOG="${WORKDIR}/cpu_mem_monitor_${TIME_TAG}.csv"
@@ -107,12 +85,31 @@ CPU_CORES=$(nproc)
 
 # 当前可用内存(MB)
 MEM_AVAILABLE_MB=$(free -m | awk '/Mem:/ {print $7}')
+MEM_USED_BASELINE_MB=$(free -m | awk '/Mem:/ {print $3}')
+MEM_TOTAL_PHYSICAL_MB=$(free -m | awk '/Mem:/ {print $2}')
 
 # 默认占当前 available 内存 85%
 MEMORY_PERCENT=${MEMORY_PERCENT:-85}
+MEMORY_SAFETY_RESERVE_PERCENT=${MEMORY_SAFETY_RESERVE_PERCENT:-10}
+MEMORY_SAFETY_RESERVE_SMALL_PERCENT=${MEMORY_SAFETY_RESERVE_SMALL_PERCENT:-25}
+MEMORY_SAFETY_RESERVE_CAP_MB=${MEMORY_SAFETY_RESERVE_CAP_MB:-4096}
+MEMORY_SAFETY_MARGIN_PERCENT=${MEMORY_SAFETY_MARGIN_PERCENT:-2}
+MEMORY_SAFETY_MARGIN_MIN_MB=${MEMORY_SAFETY_MARGIN_MIN_MB:-128}
+MEMORY_SAFETY_MARGIN_CAP_MB=${MEMORY_SAFETY_MARGIN_CAP_MB:-512}
+MEMORY_SAFETY_CONSECUTIVE_SAMPLES=${MEMORY_SAFETY_CONSECUTIVE_SAMPLES:-3}
+MEMORY_SAFETY_RESERVE_MB=$(( MEM_TOTAL_PHYSICAL_MB * MEMORY_SAFETY_RESERVE_PERCENT / 100 ))
+MEMORY_SAFETY_SMALL_RESERVE_MB=$(( MEM_TOTAL_PHYSICAL_MB * MEMORY_SAFETY_RESERVE_SMALL_PERCENT / 100 ))
+[ "$MEMORY_SAFETY_SMALL_RESERVE_MB" -gt "$MEMORY_SAFETY_RESERVE_CAP_MB" ] && MEMORY_SAFETY_SMALL_RESERVE_MB=$MEMORY_SAFETY_RESERVE_CAP_MB
+[ "$MEMORY_SAFETY_RESERVE_MB" -lt "$MEMORY_SAFETY_SMALL_RESERVE_MB" ] && MEMORY_SAFETY_RESERVE_MB=$MEMORY_SAFETY_SMALL_RESERVE_MB
+MEMORY_SAFETY_MARGIN_MB=$(( MEM_TOTAL_PHYSICAL_MB * MEMORY_SAFETY_MARGIN_PERCENT / 100 ))
+[ "$MEMORY_SAFETY_MARGIN_MB" -lt "$MEMORY_SAFETY_MARGIN_MIN_MB" ] && MEMORY_SAFETY_MARGIN_MB=$MEMORY_SAFETY_MARGIN_MIN_MB
+[ "$MEMORY_SAFETY_MARGIN_MB" -gt "$MEMORY_SAFETY_MARGIN_CAP_MB" ] && MEMORY_SAFETY_MARGIN_MB=$MEMORY_SAFETY_MARGIN_CAP_MB
 
 # 目标总压力内存
 VM_TOTAL_MB=$(( MEM_AVAILABLE_MB * MEMORY_PERCENT / 100 ))
+VM_SAFE_LIMIT_MB=$(( MEM_AVAILABLE_MB - MEMORY_SAFETY_RESERVE_MB - MEMORY_SAFETY_MARGIN_MB ))
+[ "$VM_TOTAL_MB" -gt "$VM_SAFE_LIMIT_MB" ] && VM_TOTAL_MB=$VM_SAFE_LIMIT_MB
+[ "$VM_TOTAL_MB" -lt 256 ] && { echo "ERROR: insufficient available memory after reserving ${MEMORY_SAFETY_RESERVE_MB} MB"; exit 1; }
 
 # VM worker数量
 VM_WORKERS=$(( CPU_WORKERS / 8 ))
@@ -140,12 +137,12 @@ CRITICAL_ERR_PATTERN="out of memory|oom-killer|killed process|hardware error|mac
 command -v stress-ng >/dev/null || { echo "ERROR: stress-ng not found"; exit 1; }
 command -v python3 >/dev/null || { echo "ERROR: python3 not found"; exit 1; }
 
-python3 - << 'PYCHK'
-try:
-    import openpyxl
-except Exception:
-    raise SystemExit("ERROR: python3-openpyxl not found. Install: apt install -y python3-openpyxl 或 yum install -y python3-openpyxl")
-PYCHK
+XLSX_AVAILABLE=0
+if python3 -c 'import openpyxl' >/dev/null 2>&1; then
+    XLSX_AVAILABLE=1
+else
+    echo "[WARN] XLSX skipped: python3-openpyxl is unavailable; TXT and CSV reports remain available."
+fi
 
 CPU_MODEL=$(lscpu | awk -F: '/Model name/ {gsub(/^ +/,"",$2); print $2; exit}')
 MEM_TOTAL=$(free -h | awk '/Mem:/ {print $2}')
@@ -339,8 +336,15 @@ KERNEL_LOG_START_AT=$(date '+%Y-%m-%d %H:%M:%S')
 
 
 (
-echo "timestamp,load1,load5,load15,mem_total_MB,mem_used_MB,mem_free_MB,mem_available_MB,swap_total_MB,swap_used_MB,cpu_temp_max_C"
+echo "timestamp,load1,load5,load15,mem_total_MB,mem_used_MB,mem_free_MB,mem_available_MB,swap_total_MB,swap_used_MB,cpu_temp_max_C,cpu_busy_percent,cpu_iowait_percent,cpu_steal_percent,memory_target_achieved_percent,memory_safety_breach"
+read -r _cpu _user _nice _system _idle _iowait _irq _softirq _steal _rest < /proc/stat
+PREV_TOTAL=$(( _user + _nice + _system + _idle + _iowait + _irq + _softirq + _steal ))
+PREV_IDLE=$(( _idle + _iowait ))
+PREV_IOWAIT=$_iowait
+PREV_STEAL=$_steal
+MEMORY_SAFETY_LOW_COUNT=0
 while [ ! -f "$STOP_FILE" ]; do
+    sleep "$INTERVAL" || true
     TS=$(date '+%F %T')
     LOAD=$(uptime | awk -F'load average:' '{print $2}' | sed 's/,//g')
     LOAD1=$(echo "$LOAD" | awk '{print $1}')
@@ -351,8 +355,44 @@ while [ ! -f "$STOP_FILE" ]; do
     CPU_TEMP_READING=$(read_cpu_temperature || true)
     CPU_TEMP_VALUE=${CPU_TEMP_READING%%|*}
     [ "$CPU_TEMP_VALUE" = "$CPU_TEMP_READING" ] && CPU_TEMP_VALUE=""
-    echo "$TS,$LOAD1,$LOAD5,$LOAD15,$MEM_LINE,$SWAP_LINE,$CPU_TEMP_VALUE"
-    sleep "$INTERVAL" || true
+    read -r _cpu _user _nice _system _idle _iowait _irq _softirq _steal _rest < /proc/stat
+    CPU_TOTAL=$(( _user + _nice + _system + _idle + _iowait + _irq + _softirq + _steal ))
+    CPU_IDLE=$(( _idle + _iowait ))
+    CPU_DELTA_TOTAL=$(( CPU_TOTAL - PREV_TOTAL ))
+    CPU_DELTA_IDLE=$(( CPU_IDLE - PREV_IDLE ))
+    CPU_DELTA_IOWAIT=$(( _iowait - PREV_IOWAIT ))
+    CPU_DELTA_STEAL=$(( _steal - PREV_STEAL ))
+    if [ "$CPU_DELTA_TOTAL" -gt 0 ]; then
+        CPU_BUSY_PERCENT=$(awk -v total="$CPU_DELTA_TOTAL" -v idle="$CPU_DELTA_IDLE" 'BEGIN {printf "%.2f", (total-idle)*100/total}')
+        CPU_IOWAIT_PERCENT=$(awk -v total="$CPU_DELTA_TOTAL" -v value="$CPU_DELTA_IOWAIT" 'BEGIN {printf "%.2f", value*100/total}')
+        CPU_STEAL_PERCENT=$(awk -v total="$CPU_DELTA_TOTAL" -v value="$CPU_DELTA_STEAL" 'BEGIN {printf "%.2f", value*100/total}')
+    else
+        CPU_BUSY_PERCENT=""
+        CPU_IOWAIT_PERCENT=""
+        CPU_STEAL_PERCENT=""
+    fi
+    PREV_TOTAL=$CPU_TOTAL
+    PREV_IDLE=$CPU_IDLE
+    PREV_IOWAIT=$_iowait
+    PREV_STEAL=$_steal
+
+    MEM_USED_CURRENT_MB=$(echo "$MEM_LINE" | awk -F',' '{print $2}')
+    MEM_AVAILABLE_CURRENT_MB=$(echo "$MEM_LINE" | awk -F',' '{print $4}')
+    MEMORY_PRESSURE_MB=$(( MEM_USED_CURRENT_MB - MEM_USED_BASELINE_MB ))
+    [ "$MEMORY_PRESSURE_MB" -lt 0 ] && MEMORY_PRESSURE_MB=0
+    MEMORY_TARGET_ACHIEVED_PERCENT=$(awk -v used="$MEMORY_PRESSURE_MB" -v target="$VM_TOTAL_MB" 'BEGIN {if(target>0) printf "%.2f", used*100/target; else print "0.00"}')
+
+    MEMORY_SAFETY_BREACH=0
+    if [ "$MEM_AVAILABLE_CURRENT_MB" -lt "$MEMORY_SAFETY_RESERVE_MB" ]; then
+        MEMORY_SAFETY_LOW_COUNT=$(( MEMORY_SAFETY_LOW_COUNT + 1 ))
+    else
+        MEMORY_SAFETY_LOW_COUNT=0
+    fi
+    if [ "$MEMORY_SAFETY_LOW_COUNT" -ge "$MEMORY_SAFETY_CONSECUTIVE_SAMPLES" ]; then
+        MEMORY_SAFETY_BREACH=1
+        touch "$MEMORY_SAFETY_FILE"
+    fi
+    echo "$TS,$LOAD1,$LOAD5,$LOAD15,$MEM_LINE,$SWAP_LINE,$CPU_TEMP_VALUE,$CPU_BUSY_PERCENT,$CPU_IOWAIT_PERCENT,$CPU_STEAL_PERCENT,$MEMORY_TARGET_ACHIEVED_PERCENT,$MEMORY_SAFETY_BREACH"
 done
 ) > "$MON_LOG" &
 MON_PID=$!
@@ -443,9 +483,21 @@ TAIL_PID=$!
 # 不依赖 stress-ng 内部 --timeout 能否正常退出
 # DURATION + 30s 宽限后强制结束
 WAITED=0
+MEMORY_SAFETY_TRIGGERED=0
 while kill -0 "$STRESS_PID" 2>/dev/null; do
   sleep 10
   WAITED=$((WAITED + 10))
+
+  if [ -f "$MEMORY_SAFETY_FILE" ]; then
+    MEMORY_SAFETY_TRIGGERED=1
+    echo "[ERROR] Memory safety reserve breached for ${MEMORY_SAFETY_CONSECUTIVE_SAMPLES} consecutive samples; stopping stress-ng."
+    if [ -n "${STRESS_PGID:-}" ] && [ "${STRESS_PGID:-}" != "0" ] && [ "${STRESS_PGID:-}" != "$$" ]; then
+      kill -TERM "-${STRESS_PGID}" 2>/dev/null || true
+    else
+      _kill_tree "$STRESS_PID" TERM
+    fi
+    break
+  fi
 
   # 预期 DURATION 已过 + STRESS_GRACE_SECONDS 宽限，强制结束
   if [ "$WAITED" -ge "$STRESS_FORCE_KILL_AFTER" ]; then
@@ -534,6 +586,15 @@ SWAP_USED_MAX=$(awk -F',' 'NR>1 {if($10>max)max=$10} END{printf "%.0f",max+0}' "
 CPU_TEMP_SAMPLES=$(awk -F',' 'NR>1 && $11 != "" {n++} END{print n+0}' "$MON_LOG")
 CPU_TEMP_AVG=$(awk -F',' 'NR>1 && $11 != "" {sum+=$11; n++} END{if(n>0) printf "%.1f",sum/n; else print "-"}' "$MON_LOG")
 CPU_TEMP_MAX=$(awk -F',' 'NR>1 && $11 != "" {if(!found || $11>max){max=$11; found=1}} END{if(found) printf "%.1f",max; else print "-"}' "$MON_LOG")
+CPU_BUSY_AVG=$(awk -F',' 'NR>1 && $12 != "" {sum+=$12; n++} END{if(n>0) printf "%.2f",sum/n; else print "0.00"}' "$MON_LOG")
+CPU_BUSY_MAX=$(awk -F',' 'NR>1 && $12 != "" {if(!found || $12>max){max=$12; found=1}} END{if(found) printf "%.2f",max; else print "0.00"}' "$MON_LOG")
+CPU_IOWAIT_AVG=$(awk -F',' 'NR>1 && $13 != "" {sum+=$13; n++} END{if(n>0) printf "%.2f",sum/n; else print "0.00"}' "$MON_LOG")
+CPU_STEAL_AVG=$(awk -F',' 'NR>1 && $14 != "" {sum+=$14; n++} END{if(n>0) printf "%.2f",sum/n; else print "0.00"}' "$MON_LOG")
+MEM_TARGET_ACHIEVED_AVG=$(awk -F',' 'NR>1 && $15 != "" {sum+=$15; n++} END{if(n>0) printf "%.2f",sum/n; else print "0.00"}' "$MON_LOG")
+MEM_TARGET_ACHIEVED_MAX=$(awk -F',' 'NR>1 && $15 != "" {if(!found || $15>max){max=$15; found=1}} END{if(found) printf "%.2f",max; else print "0.00"}' "$MON_LOG")
+
+CPU_BUSY_FAIL_PERCENT=${CPU_BUSY_FAIL_PERCENT:-80}
+MEMORY_TARGET_FAIL_PERCENT=${MEMORY_TARGET_FAIL_PERCENT:-75}
 
 # Swap 判定策略：短暂超过阈值不判失败；只有“持续超阈值 + 可用内存很低”才 FAIL
 SWAP_SUSTAIN_SECONDS=${SWAP_SUSTAIN_SECONDS:-300}
@@ -559,6 +620,17 @@ REASON="No critical error detected."
 if [ "$STRESS_EXIT" != "0" ]; then
     RESULT="FAIL"
     REASON="stress-ng exited abnormally. Exit code: ${STRESS_EXIT}"
+fi
+
+if [ "$MEMORY_SAFETY_TRIGGERED" = "1" ] || [ -f "$MEMORY_SAFETY_FILE" ]; then
+    RESULT="FAIL"
+    REASON="Memory safety reserve breached; stress-ng was stopped to protect the operating system."
+elif [ "$RESULT" = "PASS" ] && awk -v actual="$CPU_BUSY_AVG" -v threshold="$CPU_BUSY_FAIL_PERCENT" 'BEGIN {exit !(actual < threshold)}'; then
+    RESULT="FAIL"
+    REASON="CPU pressure target was not reached. Average CPU busy: ${CPU_BUSY_AVG}%, required: ${CPU_BUSY_FAIL_PERCENT}%."
+elif [ "$RESULT" = "PASS" ] && awk -v actual="$MEM_TARGET_ACHIEVED_MAX" -v threshold="$MEMORY_TARGET_FAIL_PERCENT" 'BEGIN {exit !(actual < threshold)}'; then
+    RESULT="FAIL"
+    REASON="Memory pressure target was not reached. Maximum achieved: ${MEM_TARGET_ACHIEVED_MAX}%, required: ${MEMORY_TARGET_FAIL_PERCENT}%."
 fi
 
 if [ "$SWAP_LOW_MEM_MAX_SECONDS" -ge "$SWAP_SUSTAIN_SECONDS" ]; then
@@ -607,6 +679,10 @@ CPU测试方法           : all
 Swap瞬时阈值          : ${SWAP_FAIL_MB} MB
 Swap持续失败时间阈值  : ${SWAP_SUSTAIN_SECONDS} 秒
 可用内存低阈值        : ${MEM_AVAIL_FAIL_MB} MB (${MEM_AVAIL_FAIL_PERCENT}%)
+运行时内存安全余量    : ${MEMORY_SAFETY_RESERVE_MB} MB
+压力目标缓冲          : ${MEMORY_SAFETY_MARGIN_MB} MB
+CPU Busy失败阈值      : ${CPU_BUSY_FAIL_PERCENT}%
+内存目标达成失败阈值  : ${MEMORY_TARGET_FAIL_PERCENT}%
 
 四、测试结果汇总
 
@@ -615,6 +691,10 @@ Swap持续失败时间阈值  : ${SWAP_SUSTAIN_SECONDS} 秒
 最高1分钟负载          : ${LOAD1_MAX}
 平均5分钟负载          : ${LOAD5_AVG}
 平均15分钟负载         : ${LOAD15_AVG}
+CPU Busy平均           : ${CPU_BUSY_AVG}%
+CPU Busy最高           : ${CPU_BUSY_MAX}%
+CPU I/O Wait平均       : ${CPU_IOWAIT_AVG}%
+CPU Steal平均          : ${CPU_STEAL_AVG}%
 
 2. CPU温度
 温度传感器             : ${CPU_TEMP_SOURCE}
@@ -626,6 +706,11 @@ CPU温度最高            : ${CPU_TEMP_MAX} °C
 平均已用内存          : ${MEM_USED_AVG} MB
 最高已用内存          : ${MEM_USED_MAX} MB
 最低可用内存          : ${MEM_AVAIL_MIN} MB
+内存压力目标          : ${VM_TOTAL_MB} MB
+内存目标平均达成率    : ${MEM_TARGET_ACHIEVED_AVG}%
+内存目标最高达成率    : ${MEM_TARGET_ACHIEVED_MAX}%
+运行时安全余量        : ${MEMORY_SAFETY_RESERVE_MB} MB
+安全线额外缓冲        : ${MEMORY_SAFETY_MARGIN_MB} MB
 最大Swap使用          : ${SWAP_USED_MAX} MB
 Swap超阈采样数        : ${SWAP_OVER_THRESHOLD_SAMPLES}
 Swap连续超阈最长时长  : ${SWAP_OVER_MAX_SECONDS} 秒
@@ -684,6 +769,7 @@ XLSX_DURATION=0
 XLSX_TIMEOUT=600
 XLSX_PY="/tmp/gen_xlsx_${TIME_TAG}.py"
 
+if [ "$XLSX_AVAILABLE" = "1" ]; then
 if command -v timeout >/dev/null 2>&1; then
 XLSX_START_TS=$(date +%s)
 
@@ -797,6 +883,10 @@ rows_data = [
     ("CPU负载", "最高1分钟负载", "${LOAD1_MAX}"),
     ("CPU负载", "平均5分钟负载", "${LOAD5_AVG}"),
     ("CPU负载", "平均15分钟负载", "${LOAD15_AVG}"),
+    ("CPU负载", "CPU Busy平均", "${CPU_BUSY_AVG}%"),
+    ("CPU负载", "CPU Busy最高", "${CPU_BUSY_MAX}%"),
+    ("CPU负载", "CPU I/O Wait平均", "${CPU_IOWAIT_AVG}%"),
+    ("CPU负载", "CPU Steal平均", "${CPU_STEAL_AVG}%"),
     ("CPU温度", "温度传感器", "${CPU_TEMP_SOURCE}"),
     ("CPU温度", "有效温度采样数", "${CPU_TEMP_SAMPLES}"),
     ("CPU温度", "CPU温度平均", "${CPU_TEMP_AVG} °C"),
@@ -804,6 +894,10 @@ rows_data = [
     ("内存表现", "平均已用内存", "${MEM_USED_AVG} MB"),
     ("内存表现", "最高已用内存", "${MEM_USED_MAX} MB"),
     ("内存表现", "最低可用内存", "${MEM_AVAIL_MIN} MB"),
+    ("内存表现", "压力目标", "${VM_TOTAL_MB} MB"),
+    ("内存表现", "目标平均达成率", "${MEM_TARGET_ACHIEVED_AVG}%"),
+    ("内存表现", "目标最高达成率", "${MEM_TARGET_ACHIEVED_MAX}%"),
+    ("内存表现", "运行时安全余量", "${MEMORY_SAFETY_RESERVE_MB} MB"),
     ("内存表现", "最大Swap使用", "${SWAP_USED_MAX} MB"),
     ("异常检查", "stress-ng退出码", "${STRESS_EXIT}"),
     ("异常检查", "重大内核异常数量", "${ERROR_COUNT}"),
@@ -917,6 +1011,9 @@ if mon.max_row > 2 and mon.max_column >= 10:
     add_chart("Memory Available(MB)", 8, "J63")
     add_chart("Swap Used(MB)", 10, "J78")
     add_chart("CPU Temperature(°C)", 11, "J93")
+    add_chart("CPU Busy(%)", 12, "J108")
+    add_chart("CPU I/O Wait(%)", 13, "J123")
+    add_chart("Memory Target Achieved(%)", 15, "J138")
 else:
     chart_data.append(["No monitor data available for charts."])
 
@@ -1055,6 +1152,10 @@ rows_data = [
     ("CPU负载", "最高1分钟负载", "${LOAD1_MAX}"),
     ("CPU负载", "平均5分钟负载", "${LOAD5_AVG}"),
     ("CPU负载", "平均15分钟负载", "${LOAD15_AVG}"),
+    ("CPU负载", "CPU Busy平均", "${CPU_BUSY_AVG}%"),
+    ("CPU负载", "CPU Busy最高", "${CPU_BUSY_MAX}%"),
+    ("CPU负载", "CPU I/O Wait平均", "${CPU_IOWAIT_AVG}%"),
+    ("CPU负载", "CPU Steal平均", "${CPU_STEAL_AVG}%"),
     ("CPU温度", "温度传感器", "${CPU_TEMP_SOURCE}"),
     ("CPU温度", "有效温度采样数", "${CPU_TEMP_SAMPLES}"),
     ("CPU温度", "CPU温度平均", "${CPU_TEMP_AVG} °C"),
@@ -1062,6 +1163,10 @@ rows_data = [
     ("内存表现", "平均已用内存", "${MEM_USED_AVG} MB"),
     ("内存表现", "最高已用内存", "${MEM_USED_MAX} MB"),
     ("内存表现", "最低可用内存", "${MEM_AVAIL_MIN} MB"),
+    ("内存表现", "压力目标", "${VM_TOTAL_MB} MB"),
+    ("内存表现", "目标平均达成率", "${MEM_TARGET_ACHIEVED_AVG}%"),
+    ("内存表现", "目标最高达成率", "${MEM_TARGET_ACHIEVED_MAX}%"),
+    ("内存表现", "运行时安全余量", "${MEMORY_SAFETY_RESERVE_MB} MB"),
     ("内存表现", "最大Swap使用", "${SWAP_USED_MAX} MB"),
     ("异常检查", "stress-ng退出码", "${STRESS_EXIT}"),
     ("异常检查", "重大内核异常数量", "${ERROR_COUNT}"),
@@ -1174,6 +1279,9 @@ if mon.max_row > 2 and mon.max_column >= 10:
     add_chart("Memory Available(MB)", 8, "J63")
     add_chart("Swap Used(MB)", 10, "J78")
     add_chart("CPU Temperature(°C)", 11, "J93")
+    add_chart("CPU Busy(%)", 12, "J108")
+    add_chart("CPU I/O Wait(%)", 13, "J123")
+    add_chart("Memory Target Achieved(%)", 15, "J138")
 else:
     chart_data.append(["No monitor data available for charts."])
 
@@ -1195,6 +1303,9 @@ if [ "$XLSX_EXIT_CODE" = "0" ]; then
     XLSX_OK=1
 fi
 echo "[STAGE] report_xlsx_done (no-timeout mode) exit_code=${XLSX_EXIT_CODE}"
+fi
+else
+echo "[STAGE] report_xlsx_skipped reason=openpyxl_unavailable"
 fi
 
 # 最终输出

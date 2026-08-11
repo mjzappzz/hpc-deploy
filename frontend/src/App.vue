@@ -51,13 +51,13 @@
           <el-icon><Monitor /></el-icon>
           <span>Windows 压测（试验）</span>
         </el-menu-item>
-        <el-menu-item index="/scripts">
-          <el-icon><Document /></el-icon>
-          <span>资产库管理</span>
-        </el-menu-item>
         <el-menu-item index="/ops-commands">
           <el-icon><Document /></el-icon>
           <span>常用运维命令</span>
+        </el-menu-item>
+        <el-menu-item index="/scripts">
+          <el-icon><Document /></el-icon>
+          <span>资产库管理</span>
         </el-menu-item>
         <el-menu-item v-if="adminThemeActive" index="/audit-logs" @click.capture="handleAuditMenuClick">
           <el-icon><List /></el-icon>
