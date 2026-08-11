@@ -35,15 +35,16 @@
   text-overflow: clip;
 }
 
-/* ── Hover glow (matches server-table hover from global.css) ── */
+/* ── Row hover: static neutral cue without glow or outline ── */
 
 .hpc-table.el-table__body tbody > tr:hover {
-  outline: 1px solid rgba(90, 169, 255, 0.62);
-  outline-offset: -1px;
+  outline: none;
+  animation: none;
 }
 
 .hpc-table.el-table__body tbody > tr:hover > td {
-  background-color: rgba(64, 158, 255, 0.045) !important;
+  background-color: var(--el-fill-color-light) !important;
+  box-shadow: none;
 }
 
 /* ── Operation column layout ── */

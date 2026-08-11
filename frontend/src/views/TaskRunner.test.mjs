@@ -29,6 +29,17 @@ test('labels the target-area probe action as detecting target servers', async ()
   assert.doesNotMatch(source, /检测在线服务器/)
 })
 
+test('uses vector stars for target server favorites', async () => {
+  const source = await readFile(new URL('./TaskRunner.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /import \{ Refresh, Star, StarFilled \} from '@element-plus\/icons-vue'/)
+  assert.match(source, /<StarFilled v-if="starredServerIds\.includes\(server\.id\)" \/>/)
+  assert.match(source, /<Star v-else \/>/)
+  assert.match(source, /'is-starred': starredServerIds\.includes\(server\.id\)/)
+  assert.match(source, /\.server-select-card\.is-starred/)
+  assert.doesNotMatch(source, /\? '★' : '☆'/)
+})
+
 test('probes every managed server before refreshing the target list', async () => {
   const source = await readFile(new URL('./TaskRunner.vue', import.meta.url), 'utf8')
 

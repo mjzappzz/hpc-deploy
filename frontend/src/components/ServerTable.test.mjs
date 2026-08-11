@@ -35,3 +35,17 @@ test('renders CPU and GPU as primary hardware text with separate metadata', asyn
   assert.match(cellSource, /class="hardware-cell__meta"/)
   assert.match(cellSource, /:title="hardware\.fullText"/)
 })
+
+test('uses the shared vector star treatment for server favorites', async () => {
+  const source = await readFile(new URL('./ServerTable.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /import \{ Star, StarFilled \} from '@element-plus\/icons-vue'/)
+  assert.match(source, /<StarFilled v-if="starredIds\.includes\(row\.id\)" \/>/)
+  assert.match(source, /<Star v-else \/>/)
+  assert.match(source, /:row-class-name="serverRowClassName"/)
+  assert.match(source, /tr\.is-starred-server > td\.el-table__cell/)
+  assert.match(source, /tr\.is-starred-server:hover[\s\S]*?outline: none;[\s\S]*?animation: none;/)
+  assert.match(source, /background: var\(--el-color-warning-light-9\) !important;/)
+  assert.match(source, /box-shadow: none !important;/)
+  assert.doesNotMatch(source, /\? '★' : '☆'/)
+})

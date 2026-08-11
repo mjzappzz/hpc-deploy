@@ -16,23 +16,39 @@
       <el-card shadow="never" class="ops-list-card">
         <template #header>
           <div class="ops-card-header">
-            <span>命令列表</span>
+            <span>命令标题</span>
             <el-tag size="small" effect="plain">{{ commands.length }}</el-tag>
           </div>
         </template>
         <el-input v-model="keyword" clearable placeholder="搜索标题" aria-label="搜索命令标题" />
         <el-scrollbar class="ops-command-list">
-          <button
+          <div
             v-for="command in filteredCommands"
             :key="command.id"
-            type="button"
             class="ops-command-item"
-            :class="{ 'is-active': selectedId === command.id }"
-            @click="selectCommand(command)"
+            :class="{
+              'is-active': selectedId === command.id,
+              'is-starred': starredCommandIds.includes(command.id),
+            }"
           >
-            <span>{{ command.title }}</span>
-            <small>{{ formatScriptUpdatedAt(command.updated_at) }}</small>
-          </button>
+            <button
+              type="button"
+              class="ops-command-item__star"
+              :class="{ 'is-starred': starredCommandIds.includes(command.id) }"
+              :aria-label="starredCommandIds.includes(command.id) ? `取消置顶${command.title}` : `置顶${command.title}`"
+              :title="starredCommandIds.includes(command.id) ? '取消置顶' : '置顶'"
+              @click="toggleCommandStar(command.id)"
+            >
+              <el-icon aria-hidden="true">
+                <StarFilled v-if="starredCommandIds.includes(command.id)" />
+                <Star v-else />
+              </el-icon>
+            </button>
+            <button type="button" class="ops-command-item__select" @click="selectCommand(command)">
+              <span class="ops-command-item__title">{{ command.title }}</span>
+              <small>{{ formatScriptUpdatedAt(command.updated_at) }}</small>
+            </button>
+          </div>
           <el-empty v-if="!loading && filteredCommands.length === 0" :description="keyword ? '没有匹配的命令' : '还没有常用运维命令'" :image-size="72" />
         </el-scrollbar>
       </el-card>
@@ -88,6 +104,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Star, StarFilled } from '@element-plus/icons-vue'
 import { requireAdminConfirm } from '@/composables/useAdminConfirm'
 import { copyText } from '@/utils/clipboard'
 import { getApiErrorMessage } from '@/utils/apiError'
@@ -105,6 +122,8 @@ const commands = ref<OpsCommand[]>([])
 const keyword = ref('')
 const loading = ref(false)
 const saving = ref(false)
+const STARRED_COMMANDS_STORAGE_KEY = 'hpcdeploy.starred-ops-command-ids'
+const starredCommandIds = ref<number[]>(loadStarredCommandIds())
 const selectedId = ref<number | null | undefined>(undefined)
 const isEditing = ref(false)
 const draft = reactive({ title: '', content: '' })
@@ -112,8 +131,22 @@ const editorRef = ref<HTMLDivElement>()
 
 const filteredCommands = computed(() => {
   const search = keyword.value.trim().toLowerCase()
-  return search ? commands.value.filter((item) => item.title.toLowerCase().includes(search)) : commands.value
+  const matching = search
+    ? commands.value.filter((item) => item.title.toLowerCase().includes(search))
+    : commands.value
+  return [...matching].sort((a, b) => (
+    Number(starredCommandIds.value.includes(b.id)) - Number(starredCommandIds.value.includes(a.id))
+  ))
 })
+
+function loadStarredCommandIds(): number[] {
+  try {
+    const value = JSON.parse(localStorage.getItem(STARRED_COMMANDS_STORAGE_KEY) ?? '[]')
+    return Array.isArray(value) ? value.filter((id): id is number => Number.isInteger(id)) : []
+  } catch {
+    return []
+  }
+}
 
 async function loadCommands() {
   loading.value = true
@@ -131,6 +164,17 @@ function selectCommand(command: OpsCommand) {
   isEditing.value = false
   draft.title = command.title
   draft.content = command.content
+}
+
+function toggleCommandStar(commandId: number) {
+  starredCommandIds.value = starredCommandIds.value.includes(commandId)
+    ? starredCommandIds.value.filter((id) => id !== commandId)
+    : [...starredCommandIds.value, commandId]
+  try {
+    localStorage.setItem(STARRED_COMMANDS_STORAGE_KEY, JSON.stringify(starredCommandIds.value))
+  } catch {
+    // 浏览器禁用本地存储时，当前页面内仍可正常置顶。
+  }
 }
 
 function createDraft() {
@@ -251,10 +295,19 @@ onMounted(loadCommands)
 .ops-card-header { justify-content: space-between; gap: 12px; }
 .ops-editor-actions { gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .ops-command-list { height: 520px; margin-top: 12px; }
-.ops-command-item { display: flex; width: 100%; flex-direction: column; gap: 6px; padding: 12px; border: 0; border-bottom: 1px solid var(--el-border-color-lighter); background: transparent; color: var(--el-text-color-primary); text-align: left; cursor: pointer; }
-.ops-command-item:hover, .ops-command-item.is-active { background: var(--el-fill-color-light); }
-.ops-command-item.is-active { box-shadow: inset 3px 0 0 var(--el-color-primary); }
-.ops-command-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.ops-command-item { display: flex; width: 100%; min-height: 54px; align-items: center; border-bottom: 1px solid var(--el-border-color-lighter); background: transparent; color: var(--el-text-color-primary); transition: background-color 160ms ease, box-shadow 160ms ease; }
+.ops-command-item:hover { background: var(--el-fill-color-light); }
+.ops-command-item.is-starred { background: var(--el-color-warning-light-9); }
+.ops-command-item.is-starred:hover { background: var(--el-color-warning-light-8); }
+.ops-command-item.is-active { background: var(--el-color-primary-light-9); box-shadow: inset 3px 0 0 var(--el-color-primary); }
+.ops-command-item.is-active:hover { background: var(--el-color-primary-light-8); }
+.ops-command-item__star { display: inline-flex; width: 40px; min-height: 44px; flex: 0 0 40px; align-items: center; justify-content: center; padding: 0; border: 0; background: transparent; color: var(--el-text-color-placeholder); cursor: pointer; }
+.ops-command-item__star .el-icon { font-size: 18px; transition: color 160ms ease, transform 160ms ease; }
+.ops-command-item__star:hover .el-icon { color: var(--el-color-warning); transform: scale(1.08); }
+.ops-command-item__star.is-starred .el-icon { color: var(--el-color-warning-dark-2); }
+.ops-command-item__star:focus-visible, .ops-command-item__select:focus-visible { outline: 2px solid var(--el-color-primary-light-5); outline-offset: -3px; }
+.ops-command-item__select { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 6px; padding: 12px; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.ops-command-item__title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .ops-command-item small { color: var(--el-text-color-secondary); font-size: 12px; }
 .ops-editor-form { max-width: none; }
 .ops-command-detail h2 { margin: 0 0 16px; font-size: 18px; }
@@ -268,4 +321,5 @@ onMounted(loadCommands)
 .ops-command-rich-detail :deep(p:last-child), .ops-command-rich-detail :deep(div:last-child) { margin-bottom: 0; }
 @media (max-width: 920px) { .ops-workspace { grid-template-columns: 1fr; } .ops-command-list { height: 260px; } }
 @media (max-width: 640px) { .ops-overview, .ops-card-header { align-items: flex-start; flex-direction: column; } .ops-editor-actions { width: 100%; justify-content: flex-start; } }
+@media (prefers-reduced-motion: reduce) { .ops-command-item, .ops-command-item__star .el-icon { transition: none; } }
 </style>

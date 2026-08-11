@@ -75,7 +75,7 @@
                         <div
                           v-for="server in group.servers"
                           :key="server.id"
-                          :class="['server-select-card', 'hpc-interactive-pulse', { 'is-active': selectedServerIds.includes(server.id), 'is-offline': server.status === 'offline', 'hpc-selected-pulse': selectedServerIds.includes(server.id) }]"
+                          :class="['server-select-card', 'hpc-interactive-pulse', { 'is-active': selectedServerIds.includes(server.id), 'is-starred': starredServerIds.includes(server.id), 'is-offline': server.status === 'offline', 'hpc-selected-pulse': selectedServerIds.includes(server.id) }]"
                           :aria-disabled="server.status !== 'online'"
                           @click="server.status === 'online' && toggleServerCard(server.id)"
                         >
@@ -89,7 +89,12 @@
                                   :aria-label="starredServerIds.includes(server.id) ? `取消关注 ${server.name}` : `关注 ${server.name}`"
                                   :title="starredServerIds.includes(server.id) ? '取消关注' : '标记为关注'"
                                   @click.stop="toggleServerStar(server.id)"
-                                >{{ starredServerIds.includes(server.id) ? '★' : '☆' }}</button>
+                                >
+                                  <el-icon aria-hidden="true">
+                                    <StarFilled v-if="starredServerIds.includes(server.id)" />
+                                    <Star v-else />
+                                  </el-icon>
+                                </button>
                                 <span class="s-card-name">{{ server.name }}</span>
                                 <template v-if="server.tags && server.tags.length">
                                   <el-tag v-for="tag in server.tags.slice(0, 2)" :key="tag" size="small" :type="serverTagType(tag)" class="s-card-tag">{{ tag }}</el-tag>
@@ -676,7 +681,7 @@ import {
 import LogViewer from '@/components/LogViewer.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import TaskDiagnosisDialog from '@/components/TaskDiagnosisDialog.vue'
-import { Refresh } from '@element-plus/icons-vue'
+import { Refresh, Star, StarFilled } from '@element-plus/icons-vue'
 import { useRoute, useRouter } from 'vue-router'
 
 type DurationParts = {
@@ -2540,9 +2545,24 @@ onBeforeUnmount(() => {
   border-color: var(--el-color-primary);
 }
 
+.server-select-card.is-starred {
+  border-color: var(--el-color-warning-light-7);
+  background: var(--el-color-warning-light-9);
+}
+
+.server-select-card.is-starred:hover {
+  border-color: var(--el-color-warning-light-5);
+  background: var(--el-color-warning-light-8);
+}
+
 .server-select-card.is-active {
   border-color: var(--el-color-primary);
   background: var(--el-color-primary-light-9);
+}
+
+.server-select-card.is-active:hover {
+  border-color: var(--el-color-primary);
+  background: var(--el-color-primary-light-8);
 }
 
 .server-select-card.is-offline {
@@ -2570,25 +2590,40 @@ onBeforeUnmount(() => {
 }
 
 .s-card-star {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
   flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
   padding: 0;
   border: 0;
   color: var(--el-text-color-placeholder);
   background: transparent;
   cursor: pointer;
-  font-size: 18px;
-  line-height: 1;
 }
 
-.s-card-star:hover,
-.s-card-star:focus-visible,
-.s-card-star.is-starred {
+.s-card-star .el-icon {
+  font-size: 18px;
+  transition: color 160ms ease, transform 160ms ease;
+}
+
+.s-card-star:hover .el-icon {
   color: var(--el-color-warning);
+  transform: scale(1.08);
+}
+
+.s-card-star.is-starred .el-icon {
+  color: var(--el-color-warning-dark-2);
 }
 
 .s-card-star:focus-visible {
   outline: 2px solid var(--el-color-primary-light-5);
   outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .s-card-star .el-icon { transition: none; }
 }
 
 .s-card-name {

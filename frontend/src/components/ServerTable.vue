@@ -10,6 +10,7 @@
     class="server-table glow-table"
     header-cell-class-name="server-table-header"
     cell-class-name="server-table-cell"
+    :row-class-name="serverRowClassName"
   >
     <el-table-column label="服务器名称" width="140">
       <template #default="{ row }">
@@ -22,7 +23,12 @@
             :aria-label="starredIds.includes(row.id) ? `取消关注 ${row.name}` : `关注 ${row.name}`"
             :title="starredIds.includes(row.id) ? '取消关注' : '标记为关注'"
             @click="$emit('toggle-star', row.id)"
-          >{{ starredIds.includes(row.id) ? '★' : '☆' }}</button>
+          >
+            <el-icon aria-hidden="true">
+              <StarFilled v-if="starredIds.includes(row.id)" />
+              <Star v-else />
+            </el-icon>
+          </button>
           <span class="table-ellipsis" :title="row.name">{{ row.name }}</span>
         </div>
       </template>
@@ -141,6 +147,7 @@
 
 <script setup lang="ts">
 import type { ServerRecord } from '@/api/server'
+import { Star, StarFilled } from '@element-plus/icons-vue'
 import { SERVER_TAG_OPTIONS, serverTagType } from '@/constants/serverTags'
 import { formatCpuHardware, formatGpuHardware } from '@/utils/serverHardware'
 import { formatDateTime } from '@/utils/time'
@@ -175,6 +182,10 @@ const emit = defineEmits<{
 }>()
 
 const selectableTagOptions = SERVER_TAG_OPTIONS.filter((option) => option.name !== '已归档服务器')
+
+function serverRowClassName({ row }: { row: ServerRecord }): string {
+  return props.starredIds.includes(row.id) ? 'is-starred-server' : ''
+}
 
 function handleMoreCommand(command: string, row: ServerRecord) {
   if (command === 'edit') emit('edit', row)
@@ -212,25 +223,40 @@ function detectButtonTip(row: ServerRecord): string {
 }
 
 .server-star-button {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
   flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
   padding: 0;
   border: 0;
   color: var(--el-text-color-placeholder);
   background: transparent;
   cursor: pointer;
-  font-size: 17px;
-  line-height: 1;
 }
 
-.server-star-button:hover,
-.server-star-button:focus-visible,
-.server-star-button.is-starred {
+.server-star-button .el-icon {
+  font-size: 17px;
+  transition: color 160ms ease, transform 160ms ease;
+}
+
+.server-star-button:hover .el-icon {
   color: var(--el-color-warning);
+  transform: scale(1.08);
+}
+
+.server-star-button.is-starred .el-icon {
+  color: var(--el-color-warning-dark-2);
 }
 
 .server-star-button:focus-visible {
   outline: 2px solid var(--el-color-primary-light-5);
   outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .server-star-button .el-icon { transition: none; }
 }
 
 .server-table {
@@ -246,6 +272,27 @@ function detectButtonTip(row: ServerRecord): string {
 .server-table :deep(.el-table__body td.el-table__cell) {
   height: 44px;
   padding: 6px 0;
+}
+
+.server-table :deep(.el-table__body tr.is-starred-server > td.el-table__cell) {
+  background: var(--el-color-warning-light-9);
+}
+
+.server-table :deep(.el-table__body tr.is-starred-server:hover > td.el-table__cell) {
+  background: var(--el-color-warning-light-9) !important;
+  border-top-color: var(--el-border-color-lighter);
+  border-bottom-color: var(--el-border-color-lighter);
+  box-shadow: none !important;
+}
+
+.server-table :deep(.el-table__body tr.is-starred-server:hover) {
+  outline: none;
+  animation: none;
+}
+
+.server-table :deep(.el-table__body tr.is-starred-server:hover > td:first-child),
+.server-table :deep(.el-table__body tr.is-starred-server:hover > td:last-child) {
+  box-shadow: none !important;
 }
 
 .server-table :deep(.el-table__cell .cell) {
