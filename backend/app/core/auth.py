@@ -1,6 +1,9 @@
 import logging
 import os
+import threading
+import time
 from datetime import datetime, timedelta
+from uuid import uuid4
 
 import jwt
 from fastapi import Cookie, Depends, HTTPException, Header, status
@@ -36,7 +39,9 @@ def verify_admin_password(password: str, db: Session | None = None) -> bool:
 ALGORITHM = "HS256"
 ADMIN_TOKEN_EXPIRE_MINUTES = 5
 ADMIN_SESSION_DURATION_MINUTES = frozenset({5, 15, 30, 60})
-ADMIN_TOKEN_DURATION_MINUTES = ADMIN_SESSION_DURATION_MINUTES | {1}
+ONE_TIME_ADMIN_TOKEN_SECONDS = 30
+_consumed_one_time_tokens: dict[str, float] = {}
+_one_time_token_lock = threading.Lock()
 
 
 def create_admin_token(*, duration_minutes: int | None, tab_id: str) -> str:
@@ -45,7 +50,7 @@ def create_admin_token(*, duration_minutes: int | None, tab_id: str) -> str:
     ``duration_minutes=None`` creates a session that remains valid until the
     tab marker disappears or the user explicitly exits admin mode.
     """
-    if duration_minutes is not None and duration_minutes not in ADMIN_TOKEN_DURATION_MINUTES:
+    if duration_minutes is not None and duration_minutes not in ADMIN_SESSION_DURATION_MINUTES:
         raise ValueError("unsupported admin session duration")
     if not tab_id:
         raise ValueError("admin tab id is required")
@@ -56,11 +61,24 @@ def create_admin_token(*, duration_minutes: int | None, tab_id: str) -> str:
     return jwt.encode(payload, settings.secret_key, algorithm=ALGORITHM)
 
 
+def create_one_time_admin_token(*, tab_id: str) -> str:
+    """Create a short-lived administrator grant that can authorize one request."""
+    if not tab_id:
+        raise ValueError("admin tab id is required")
+    payload = {
+        "scope": "admin_once",
+        "tab_id": tab_id,
+        "jti": str(uuid4()),
+        "exp": datetime.utcnow() + timedelta(seconds=ONE_TIME_ADMIN_TOKEN_SECONDS),
+    }
+    return jwt.encode(payload, settings.secret_key, algorithm=ALGORITHM)
+
+
 def decode_admin_token(token: str) -> dict | None:
     """Decode and validate an admin token. Returns payload or None."""
     try:
         payload = jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])
-        if payload.get("scope") != "admin":
+        if payload.get("scope") not in {"admin", "admin_once"}:
             logger.warning("[auth] admin token missing scope")
             return None
         return payload
@@ -72,6 +90,23 @@ def decode_admin_token(token: str) -> dict | None:
         return None
 
 
+def _consume_one_time_admin_token(payload: dict) -> bool:
+    token_id = payload.get("jti")
+    expires_at = payload.get("exp")
+    if not isinstance(token_id, str) or not token_id or not isinstance(expires_at, (int, float)):
+        return False
+
+    now = time.time()
+    with _one_time_token_lock:
+        expired = [item for item, expiry in _consumed_one_time_tokens.items() if expiry <= now]
+        for item in expired:
+            _consumed_one_time_tokens.pop(item, None)
+        if token_id in _consumed_one_time_tokens:
+            return False
+        _consumed_one_time_tokens[token_id] = float(expires_at)
+    return True
+
+
 # ── Dependency: require admin token via header or HttpOnly cookie ──
 
 
@@ -79,9 +114,10 @@ def require_admin_token(
     x_admin_token: str | None = Header(None, alias="X-Admin-Token"),
     x_admin_tab_id: str | None = Header(None, alias="X-Admin-Tab-Id"),
     admin_token: str | None = Cookie(None),
+    admin_once_token: str | None = Cookie(None),
 ) -> str:
     """Require a valid admin token. Raises 403 if missing or invalid."""
-    token = x_admin_token or admin_token
+    token = x_admin_token or admin_token or admin_once_token
     if token is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -97,5 +133,10 @@ def require_admin_token(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="管理员会话仅在当前浏览器标签页有效",
+        )
+    if payload.get("scope") == "admin_once" and not _consume_one_time_admin_token(payload):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="本次管理员授权已使用，请重新确认",
         )
     return token

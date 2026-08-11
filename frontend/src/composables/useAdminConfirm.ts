@@ -252,13 +252,12 @@ export async function requireAdminConfirm(actionName: string): Promise<boolean> 
     if (temporarySessionRequested && temporarySessionEnabled) {
       try {
         const tabId = getOrCreateAdminTabId()
-        const res = await adminTemporarySession(tabId)
+        await adminTemporarySession(tabId)
         setAdminTabHeader(tabId)
-        acceptAdminSession(res.data.expires_in)
-        ElMessage.warning('临时管理员模式将在 1 分钟后自动退出')
+        ElMessage.success('已授权当前操作')
         return true
       } catch (devError: any) {
-        ElMessage.warning(devError?.response?.data?.detail || '临时管理员模式未启用')
+        ElMessage.warning(devError?.response?.data?.detail || '当前操作的快速授权未启用')
         return false
       }
     }

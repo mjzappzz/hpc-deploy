@@ -5,7 +5,15 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
-from app.core.auth import ADMIN_SESSION_DURATION_MINUTES, create_admin_token, decode_admin_token, require_admin_token, verify_admin_password
+from app.core.auth import (
+    ADMIN_SESSION_DURATION_MINUTES,
+    ONE_TIME_ADMIN_TOKEN_SECONDS,
+    create_admin_token,
+    create_one_time_admin_token,
+    decode_admin_token,
+    require_admin_token,
+    verify_admin_password,
+)
 from app.core.config import settings
 from app.db.database import get_db
 
@@ -55,9 +63,6 @@ class AdminSessionGrant(AdminVerifyResponse):
     token: str
 
 
-TEMPORARY_ADMIN_SESSION_MINUTES = 1
-
-
 def should_secure_admin_cookie(request: Request) -> bool:
     return request.url.scheme.lower() == "https"
 
@@ -71,8 +76,8 @@ def issue_temporary_admin_session(tab_id: str) -> AdminSessionGrant:
     if not temporary_admin_session_enabled():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
     return AdminSessionGrant(
-        expires_in=TEMPORARY_ADMIN_SESSION_MINUTES * 60,
-        token=create_admin_token(duration_minutes=TEMPORARY_ADMIN_SESSION_MINUTES, tab_id=tab_id),
+        expires_in=ONE_TIME_ADMIN_TOKEN_SECONDS,
+        token=create_one_time_admin_token(tab_id=tab_id),
     )
 
 
@@ -88,6 +93,18 @@ def set_admin_session_cookie(response: Response, *, token: str, expires_in: int 
     if expires_in is not None:
         cookie_kwargs["max_age"] = expires_in
     response.set_cookie(**cookie_kwargs)
+
+
+def set_one_time_admin_cookie(response: Response, *, token: str, request: Request) -> None:
+    response.set_cookie(
+        key="admin_once_token",
+        value=token,
+        max_age=ONE_TIME_ADMIN_TOKEN_SECONDS,
+        httponly=True,
+        samesite="lax",
+        secure=should_secure_admin_cookie(request),
+        path="/api",
+    )
 
 
 @router.post("/admin/verify", response_model=AdminVerifyResponse)
@@ -122,10 +139,10 @@ def admin_temporary_session(
     request: Request,
     response: Response,
 ) -> AdminVerifyResponse:
-    """Create the fixed one-minute passwordless administrator grant when enabled."""
+    """Create a short-lived, single-use passwordless administrator grant when enabled."""
     grant = issue_temporary_admin_session(payload.tab_id)
-    set_admin_session_cookie(response, token=grant.token, expires_in=grant.expires_in, request=request)
-    logger.warning("[auth] temporary passwordless admin token issued, expires_in=%s", grant.expires_in)
+    set_one_time_admin_cookie(response, token=grant.token, request=request)
+    logger.warning("[auth] one-time passwordless admin grant issued, expires_in=%s", grant.expires_in)
     return AdminVerifyResponse(expires_in=grant.expires_in)
 
 
@@ -137,7 +154,7 @@ class AdminStatusResponse(BaseModel):
 def admin_status(token: str = Depends(require_admin_token)) -> AdminStatusResponse:
     """Return remaining time for a valid admin browser session."""
     payload = decode_admin_token(token)
-    if payload is None:
+    if payload is None or payload.get("scope") != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="需要管理员权限")
     expire = payload.get("exp")
     return AdminStatusResponse(expires_in=max(0, int(expire - time())) if expire is not None else None)
@@ -147,4 +164,5 @@ def admin_status(token: str = Depends(require_admin_token)) -> AdminStatusRespon
 def admin_logout(response: Response) -> Response:
     """Clear the browser's admin session cookie."""
     response.delete_cookie(key="admin_token", path="/api")
+    response.delete_cookie(key="admin_once_token", path="/api")
     return response

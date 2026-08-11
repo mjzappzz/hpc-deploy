@@ -11,7 +11,7 @@ test('uses the administrator mascot and ascension ceremony in the shared admin c
   assert.doesNotMatch(source, /\bKey\b/)
 })
 
-test('hides the temporary session button and activates it only after three mascot clicks', async () => {
+test('uses three mascot clicks for one protected request without activating admin mode', async () => {
   const [confirmSource, authSource] = await Promise.all([
     readFile(new URL('./useAdminConfirm.ts', import.meta.url), 'utf8'),
     readFile(new URL('../api/auth.ts', import.meta.url), 'utf8'),
@@ -23,7 +23,11 @@ test('hides the temporary session button and activates it only after three masco
   assert.match(confirmSource, /admin-confirm-ascension__mascot[\s\S]*?onClick: \(event: MouseEvent\) => \{[\s\S]*?event\.detail !== 3/)
   assert.match(confirmSource, /temporarySessionRequested = true[\s\S]*?close\(\)/)
   assert.match(confirmSource, /showCancelButton: false/)
-  assert.match(confirmSource, /if \(temporarySessionRequested && temporarySessionEnabled\)[\s\S]*?adminTemporarySession\(tabId\)/)
+  const temporaryGrantBranch = confirmSource.match(/if \(temporarySessionRequested && temporarySessionEnabled\) \{([\s\S]*?)\n    \}/)?.[1] ?? ''
+  assert.match(temporaryGrantBranch, /adminTemporarySession\(tabId\)/)
+  assert.doesNotMatch(temporaryGrantBranch, /acceptAdminSession/)
+  assert.doesNotMatch(temporaryGrantBranch, /activateAdminMode/)
+  assert.doesNotMatch(temporaryGrantBranch, /X-Admin-Token/)
   assert.match(authSource, /request\.get<AdminTemporarySessionAvailability>\('\/auth\/admin\/temporary-session-available'\)/)
   assert.match(authSource, /request\.post<AdminSessionResponse>\('\/auth\/admin\/temporary-session', \{ tab_id: tabId \}\)/)
 })

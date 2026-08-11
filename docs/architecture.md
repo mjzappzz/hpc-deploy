@@ -335,6 +335,7 @@ $HOME/hpcdeploy/
 任务记录与本机 artifacts 的清理以单任务或整批为原子范围：任务同时关联批次、执行日志和报告摘要时，不应仅按空目录删除单条子任务，以免保留不完整的批次历史。
 
 所有前端高风险入口（删除服务器、脚本、驱动、任务/批次记录和本机结果、保存自动清理设置、查看审计日志）均先调用统一的 `requireAdminConfirm()`：普通用户点击即弹出右上角同一管理员登录弹窗；管理员会话有效时直接进入后续确认或操作。
+弹窗中的隐藏头像三击入口仅在显式启用时可用：后端签发绑定当前 `tab_id`、30 秒有效且只能成功消费一次的 `scope=admin_once` JWT，并写入独立的 HttpOnly `admin_once_token` Cookie；它只能用于紧接着的当前高风险请求，不暴露给前端 JavaScript、不激活管理员主题/倒计时，也不开放后续操作。
 
 ### 认证流程
 
@@ -346,6 +347,11 @@ $HOME/hpcdeploy/
   → 高风险 API 由 require_admin_token() 验证 JWT 签名 + scope=admin，并要求 `X-Admin-Tab-Id` 与 JWT 内 `tab_id` 一致
   → 手动退出 POST /auth/admin/logout 清除 Cookie；超时或关闭标签页后切回普通模式
   → 通过后执行操作，审计日志 actor="admin"
+
+普通模式下在高风险操作弹窗三击头像（仅显式启用时）
+  → POST /auth/admin/temporary-session 签发 30 秒、绑定 tab_id 的 scope=admin_once JWT，写入独立 HttpOnly Cookie
+  → 紧接着的一个高风险 API 自动携带 Cookie，后端原子标记 jti 已消费
+  → 当前操作继续，前端保持普通模式；后续高风险操作必须重新授权
 ```
 
 ### 管理员密码
@@ -362,7 +368,7 @@ $HOME/hpcdeploy/
 ### 文件说明
 | 文件 | 说明 |
 |------|------|
-| `backend/app/core/auth.py` | `verify_admin_password()`、`create_admin_token()`（可选时长/标签页绑定 JWT）、`require_admin_token()` 依赖 |
+| `backend/app/core/auth.py` | `verify_admin_password()`、`create_admin_token()`（可选时长/标签页绑定 JWT）、`create_one_time_admin_token()`（单次授权）、`require_admin_token()` 依赖 |
 | `backend/app/api/auth.py` | 管理员验证、会话状态与退出端点 |
 | `frontend/src/composables/useAdminConfirm.ts` | 管理员模式、倒计时、会话恢复与退出 |
 | `deploy/scripts/reset_admin_password.sh` | root-only 管理员密码恢复、SQLite 备份和会话失效 |
