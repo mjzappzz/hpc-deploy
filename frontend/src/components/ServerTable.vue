@@ -10,7 +10,6 @@
     class="server-table glow-table"
     header-cell-class-name="server-table-header"
     cell-class-name="server-table-cell"
-    :row-class-name="serverRowClassName"
   >
     <el-table-column label="服务器名称" width="140">
       <template #default="{ row }">
@@ -183,10 +182,6 @@ const emit = defineEmits<{
 
 const selectableTagOptions = SERVER_TAG_OPTIONS.filter((option) => option.name !== '已归档服务器')
 
-function serverRowClassName({ row }: { row: ServerRecord }): string {
-  return props.starredIds.includes(row.id) ? 'is-starred-server' : ''
-}
-
 function handleMoreCommand(command: string, row: ServerRecord) {
   if (command === 'edit') emit('edit', row)
   if (command === 'archive') emit('archive', row)
@@ -272,27 +267,6 @@ function detectButtonTip(row: ServerRecord): string {
 .server-table :deep(.el-table__body td.el-table__cell) {
   height: 44px;
   padding: 6px 0;
-}
-
-.server-table :deep(.el-table__body tr.is-starred-server > td.el-table__cell) {
-  background: var(--el-color-warning-light-9);
-}
-
-.server-table :deep(.el-table__body tr.is-starred-server:hover > td.el-table__cell) {
-  background: var(--el-color-warning-light-9) !important;
-  border-top-color: var(--el-border-color-lighter);
-  border-bottom-color: var(--el-border-color-lighter);
-  box-shadow: none !important;
-}
-
-.server-table :deep(.el-table__body tr.is-starred-server:hover) {
-  outline: none;
-  animation: none;
-}
-
-.server-table :deep(.el-table__body tr.is-starred-server:hover > td:first-child),
-.server-table :deep(.el-table__body tr.is-starred-server:hover > td:last-child) {
-  box-shadow: none !important;
 }
 
 .server-table :deep(.el-table__cell .cell) {

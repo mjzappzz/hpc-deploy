@@ -877,6 +877,7 @@ html, body, #app {
   flex-direction: column;
   background: #f5f7fa;
   overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 
 /* === topbar (sticky inside scroll container) === */

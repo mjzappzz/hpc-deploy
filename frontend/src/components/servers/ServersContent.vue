@@ -746,6 +746,8 @@ async function loadServers() {
 }
 
 function sortServersByStatus(a: ServerRecord, b: ServerRecord): number {
+  const statusDiff = managedServerStatusRank(a) - managedServerStatusRank(b)
+  if (statusDiff !== 0) return statusDiff
   const aStarred = starredServerIds.value.includes(a.id)
   const bStarred = starredServerIds.value.includes(b.id)
   if (aStarred !== bStarred) return aStarred ? -1 : 1
@@ -754,6 +756,10 @@ function sortServersByStatus(a: ServerRecord, b: ServerRecord): number {
   const createdAtDiff = timestampValue(a.created_at) - timestampValue(b.created_at)
   if (createdAtDiff !== 0) return createdAtDiff
   return a.id - b.id
+}
+
+function managedServerStatusRank(server: ServerRecord): number {
+  return server.status === 'offline' ? 1 : 0
 }
 
 function managedServerTagRank(server: ServerRecord): number {

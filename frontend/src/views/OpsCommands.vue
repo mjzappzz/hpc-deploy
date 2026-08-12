@@ -28,7 +28,6 @@
             class="ops-command-item"
             :class="{
               'is-active': selectedId === command.id,
-              'is-starred': starredCommandIds.includes(command.id),
             }"
           >
             <button
@@ -152,6 +151,10 @@ async function loadCommands() {
   loading.value = true
   try {
     commands.value = (await listOpsCommands()).data
+    if (selectedId.value === undefined) {
+      const firstCommand = filteredCommands.value[0]
+      if (firstCommand) selectCommand(firstCommand)
+    }
   } catch (error) {
     ElMessage.error(getApiErrorMessage(error, '加载常用运维命令失败'))
   } finally {
@@ -257,10 +260,9 @@ async function removeSelected() {
   await ElMessageBox.confirm(`确认删除“${title}”吗？`, '删除确认', { type: 'warning' })
   try {
     await deleteOpsCommand(selectedId.value)
-    createDraft()
-    await loadCommands()
     selectedId.value = undefined
     isEditing.value = false
+    await loadCommands()
     ElMessage.success('常用运维命令已删除')
   } catch (error) {
     ElMessage.error(getApiErrorMessage(error, '删除常用运维命令失败'))
@@ -297,8 +299,6 @@ onMounted(loadCommands)
 .ops-command-list { height: 520px; margin-top: 12px; }
 .ops-command-item { display: flex; width: 100%; min-height: 54px; align-items: center; border-bottom: 1px solid var(--el-border-color-lighter); background: transparent; color: var(--el-text-color-primary); transition: background-color 160ms ease, box-shadow 160ms ease; }
 .ops-command-item:hover { background: var(--el-fill-color-light); }
-.ops-command-item.is-starred { background: var(--el-color-warning-light-9); }
-.ops-command-item.is-starred:hover { background: var(--el-color-warning-light-8); }
 .ops-command-item.is-active { background: var(--el-color-primary-light-9); box-shadow: inset 3px 0 0 var(--el-color-primary); }
 .ops-command-item.is-active:hover { background: var(--el-color-primary-light-8); }
 .ops-command-item__star { display: inline-flex; width: 40px; min-height: 44px; flex: 0 0 40px; align-items: center; justify-content: center; padding: 0; border: 0; background: transparent; color: var(--el-text-color-placeholder); cursor: pointer; }

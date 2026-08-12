@@ -29,14 +29,16 @@ test('labels the target-area probe action as detecting target servers', async ()
   assert.doesNotMatch(source, /检测在线服务器/)
 })
 
-test('uses vector stars for target server favorites', async () => {
+test('lets target server favorites be changed with vector stars without a warning background', async () => {
   const source = await readFile(new URL('./TaskRunner.vue', import.meta.url), 'utf8')
 
   assert.match(source, /import \{ Refresh, Star, StarFilled \} from '@element-plus\/icons-vue'/)
-  assert.match(source, /<StarFilled v-if="starredServerIds\.includes\(server\.id\)" \/>/)
-  assert.match(source, /<Star v-else \/>/)
-  assert.match(source, /'is-starred': starredServerIds\.includes\(server\.id\)/)
-  assert.match(source, /\.server-select-card\.is-starred/)
+  assert.match(source, /<button\s+type="button"\s+class="s-card-star"\s+:class="\{ 'is-starred': starredServerIds\.includes\(server\.id\) \}"[\s\S]*?<StarFilled v-if="starredServerIds\.includes\(server\.id\)" \/>\s+<Star v-else \/>/)
+  assert.match(source, /@click\.stop="toggleServerStar\(server\.id\)"/)
+  assert.match(source, /function toggleServerStar\(serverId: number\)/)
+  assert.match(source, /\['server-select-card', 'hpc-interactive-pulse', \{ 'is-active': selectedServerIds\.includes\(server\.id\), 'is-offline': server\.status === 'offline'/)
+  assert.doesNotMatch(source, /\.server-select-card\.is-starred/)
+  assert.doesNotMatch(source, /warning-light-[89]/)
   assert.doesNotMatch(source, /\? '★' : '☆'/)
 })
 
@@ -57,4 +59,15 @@ test('excludes archived servers from every task target group', async () => {
   assert.match(source, /<el-tag size="small" :type="serverTagType\(t\.name\)">{{ t\.name }}<\/el-tag>/)
   assert.match(source, /sortTaskTags/)
   assert.match(source, /tags\.value = \(await listTags\(\)\)\.data\.items[\s\S]*?filter\(\(tag\) => tag\.name !== '已归档服务器'\)[\s\S]*?sort\(sortTaskTags\)/)
+})
+
+test('serializes structured monitor polling and waits for one response before scheduling the next', async () => {
+  const source = await readFile(new URL('./TaskRunner.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /let monitorRequestInFlight = false/)
+  assert.match(source, /if \(monitorRequestInFlight\) return/)
+  assert.match(source, /monitorRequestInFlight = true/)
+  assert.match(source, /monitorRequestInFlight = false/)
+  assert.match(source, /monitorPollTimer = setTimeout\(\(\) => \{\s*void fetchMonitorData\(\)\s*\}, 5000\)/)
+  assert.doesNotMatch(source, /monitorPollTimer = setInterval/)
 })

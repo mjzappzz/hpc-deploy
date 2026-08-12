@@ -53,3 +53,9 @@ test('places asset library below common operations commands', async () => {
   assert.ok(commandsIndex >= 0)
   assert.ok(scriptsIndex > commandsIndex)
 })
+
+test('keeps the content width stable when a page becomes vertically scrollable', async () => {
+  const source = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /\.app-main-area \{[\s\S]*?scrollbar-gutter: stable;/)
+})

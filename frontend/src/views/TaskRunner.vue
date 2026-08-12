@@ -75,7 +75,7 @@
                         <div
                           v-for="server in group.servers"
                           :key="server.id"
-                          :class="['server-select-card', 'hpc-interactive-pulse', { 'is-active': selectedServerIds.includes(server.id), 'is-starred': starredServerIds.includes(server.id), 'is-offline': server.status === 'offline', 'hpc-selected-pulse': selectedServerIds.includes(server.id) }]"
+                          :class="['server-select-card', 'hpc-interactive-pulse', { 'is-active': selectedServerIds.includes(server.id), 'is-offline': server.status === 'offline', 'hpc-selected-pulse': selectedServerIds.includes(server.id) }]"
                           :aria-disabled="server.status !== 'online'"
                           @click="server.status === 'online' && toggleServerCard(server.id)"
                         >
@@ -2187,16 +2187,17 @@ async function fetchMonitorSnapshot(type: MonitorType) {
 
 // ── Structured monitor polling ──
 let monitorPollTimer: ReturnType<typeof setInterval> | null = null
+let monitorPollingEnabled = false
+let monitorRequestInFlight = false
 
 function startMonitorPolling() {
   stopMonitorPolling()
+  monitorPollingEnabled = true
   void fetchMonitorData()
-  monitorPollTimer = setInterval(() => {
-    void fetchMonitorData()
-  }, 5000)
 }
 
 function stopMonitorPolling() {
+  monitorPollingEnabled = false
   if (monitorPollTimer !== null) {
     clearInterval(monitorPollTimer)
     monitorPollTimer = null
@@ -2206,6 +2207,8 @@ function stopMonitorPolling() {
 async function fetchMonitorData() {
   if (!activeTaskId.value) return
   if (!['cpu_mem', 'disk', 'gpu'].includes(activePanel.value)) return
+  if (monitorRequestInFlight) return
+  monitorRequestInFlight = true
   monitorLoading.value = true
   try {
     const res = await getTaskMonitor(activeTaskId.value)
@@ -2213,7 +2216,13 @@ async function fetchMonitorData() {
   } catch {
     // Silent fail — keep previous data
   } finally {
+    monitorRequestInFlight = false
     monitorLoading.value = false
+    if (monitorPollingEnabled && activeTaskId.value && ['cpu_mem', 'disk', 'gpu'].includes(activePanel.value)) {
+      monitorPollTimer = setTimeout(() => {
+        void fetchMonitorData()
+      }, 5000)
+    }
   }
 }
 
@@ -2545,16 +2554,6 @@ onBeforeUnmount(() => {
   border-color: var(--el-color-primary);
 }
 
-.server-select-card.is-starred {
-  border-color: var(--el-color-warning-light-7);
-  background: var(--el-color-warning-light-9);
-}
-
-.server-select-card.is-starred:hover {
-  border-color: var(--el-color-warning-light-5);
-  background: var(--el-color-warning-light-8);
-}
-
 .server-select-card.is-active {
   border-color: var(--el-color-primary);
   background: var(--el-color-primary-light-9);
@@ -2598,14 +2597,17 @@ onBeforeUnmount(() => {
   justify-content: center;
   padding: 0;
   border: 0;
-  color: var(--el-text-color-placeholder);
   background: transparent;
   cursor: pointer;
+  color: var(--el-text-color-placeholder);
 }
 
 .s-card-star .el-icon {
   font-size: 18px;
-  transition: color 160ms ease, transform 160ms ease;
+}
+
+.s-card-star.is-starred {
+  color: var(--el-color-warning-dark-2);
 }
 
 .s-card-star:hover .el-icon {
@@ -2613,8 +2615,8 @@ onBeforeUnmount(() => {
   transform: scale(1.08);
 }
 
-.s-card-star.is-starred .el-icon {
-  color: var(--el-color-warning-dark-2);
+.s-card-star .el-icon {
+  transition: color 160ms ease, transform 160ms ease;
 }
 
 .s-card-star:focus-visible {

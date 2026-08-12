@@ -2,6 +2,7 @@ import asyncio
 import shutil
 import re
 import threading
+from _thread import LockType
 from datetime import datetime
 from pathlib import Path
 from secrets import token_hex
@@ -111,11 +112,34 @@ from app.schemas.task import (
     TaskRunRequest,
     TaskRunResponse,
 )
+
+
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
+
+
+_task_monitor_locks: dict[str, LockType] = {}
+_task_monitor_locks_guard = threading.Lock()
+
+
+def _try_acquire_task_monitor_lock(task_id: str) -> LockType | None:
+    """Allow only one expensive SSH monitor sample per task at a time."""
+    with _task_monitor_locks_guard:
+        lock = _task_monitor_locks.setdefault(task_id, threading.Lock())
+    if lock.acquire(blocking=False):
+        return lock
+    return None
+
+
+def _release_task_monitor_lock(task_id: str, lock: LockType) -> None:
+    lock.release()
+    with _task_monitor_locks_guard:
+        if _task_monitor_locks.get(task_id) is lock and not lock.locked():
+            _task_monitor_locks.pop(task_id, None)
+
 
 WS_DB_POLL_INTERVAL_SECONDS = 1.0
 
@@ -3490,50 +3514,62 @@ def task_monitor_structured(
     task_id: str,
     db: Session = Depends(get_db),
 ) -> TaskMonitorResponseStructured:
-    task = _get_task_or_404(db, task_id)
-    server = _get_server_or_400(db, task.server_id)
-
-    executor = SSHExecutor(timeout=15)
+    monitor_lock = _try_acquire_task_monitor_lock(task_id)
+    if monitor_lock is None:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="a monitor sample for this task is already in progress",
+        )
     try:
-        executor.connect(
-            host=server.host,
-            port=server.port,
-            username=server.username,
-            key_path=server.key_path,
-        )
-        cpu_memory = _parse_cpu_memory(executor)
-        disk = _parse_disk(executor)
-        gpu = _parse_gpu(executor)
+        task = _get_task_or_404(db, task_id)
+        server = _get_server_or_400(db, task.server_id)
+        task_status = task.status
+        ssh_kwargs = {
+            "host": server.host,
+            "port": server.port,
+            "username": server.username,
+            "key_path": server.key_path,
+        }
+        db.close()
 
-        return TaskMonitorResponseStructured(
-            task_id=task.task_id,
-            status=task.status,
-            sampled_at=datetime.utcnow(),
-            cpu_memory=cpu_memory,
-            disk=disk,
-            gpu=gpu,
-        )
-    except SSHCommandTimeoutError:
-        return TaskMonitorResponseStructured(
-            task_id=task.task_id,
-            status=task.status,
-            sampled_at=datetime.utcnow(),
-            cpu_memory={"available": False, "message": "SSH 连接超时"},
-            disk={"available": False, "message": "SSH 连接超时"},
-            gpu={"available": False, "message": "SSH 连接超时"},
-        )
-    except SSHExecutorError as exc:
-        msg = str(exc)
-        return TaskMonitorResponseStructured(
-            task_id=task.task_id,
-            status=task.status,
-            sampled_at=datetime.utcnow(),
-            cpu_memory={"available": False, "message": msg},
-            disk={"available": False, "message": msg},
-            gpu={"available": False, "message": msg},
-        )
+        executor = SSHExecutor(timeout=15)
+        try:
+            executor.connect(**ssh_kwargs)
+            cpu_memory = _parse_cpu_memory(executor)
+            disk = _parse_disk(executor)
+            gpu = _parse_gpu(executor)
+
+            return TaskMonitorResponseStructured(
+                task_id=task_id,
+                status=task_status,
+                sampled_at=datetime.utcnow(),
+                cpu_memory=cpu_memory,
+                disk=disk,
+                gpu=gpu,
+            )
+        except SSHCommandTimeoutError:
+            return TaskMonitorResponseStructured(
+                task_id=task_id,
+                status=task_status,
+                sampled_at=datetime.utcnow(),
+                cpu_memory={"available": False, "message": "SSH 连接超时"},
+                disk={"available": False, "message": "SSH 连接超时"},
+                gpu={"available": False, "message": "SSH 连接超时"},
+            )
+        except SSHExecutorError as exc:
+            msg = str(exc)
+            return TaskMonitorResponseStructured(
+                task_id=task_id,
+                status=task_status,
+                sampled_at=datetime.utcnow(),
+                cpu_memory={"available": False, "message": msg},
+                disk={"available": False, "message": msg},
+                gpu={"available": False, "message": msg},
+            )
+        finally:
+            executor.close()
     finally:
-        executor.close()
+        _release_task_monitor_lock(task_id, monitor_lock)
 
 
 @router.get("/{task_id}/artifacts", response_model=ArtifactListResponse)
