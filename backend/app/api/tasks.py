@@ -3674,9 +3674,14 @@ def _build_command_preview(
                 env_parts.append(f"CUDA_VISIBLE_DEVICES={gid}")
 
         env_prefix = " ".join(env_parts)
+        disk_target_arg = ""
+        if script_name == "disk_stress_report.sh":
+            disk_test_dir = p.get("disk_test_dir")
+            if isinstance(disk_test_dir, str) and disk_test_dir:
+                disk_target_arg = f" {disk_test_dir}"
         if env_prefix:
-            return f"{env_prefix} ./{script_name} {dur} {interval}"
-        return f"./{script_name} {dur} {interval}"
+            return f"{env_prefix} ./{script_name} {dur} {interval}{disk_target_arg}"
+        return f"./{script_name} {dur} {interval}{disk_target_arg}"
 
     if task_type == "apptainer":
         return f"复制容器到远程目录：{remote_work_dir}"

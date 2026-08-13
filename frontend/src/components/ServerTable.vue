@@ -85,7 +85,7 @@
     </el-table-column>
     <el-table-column label="CPU" min-width="185" class-name="server-cpu-column">
       <template #default="{ row }">
-        <ServerHardwareCell :hardware="formatCpuHardware(row.cpu_info)" />
+        <ServerHardwareCell :hardware="formatCpuHardware(row.cpu_info, row.cpu_sockets, row.cpu_physical_cores, row.cpu_logical_threads)" />
       </template>
     </el-table-column>
     <el-table-column label="内存" width="75" show-overflow-tooltip>

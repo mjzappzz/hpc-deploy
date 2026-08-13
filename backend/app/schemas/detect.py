@@ -21,8 +21,12 @@ class ServerDetectResponse(BaseModel):
     last_error: str | None = None
     os_info: str | None = None
     cpu_info: str | None = None
+    cpu_sockets: int | None = None
+    cpu_physical_cores: int | None = None
+    cpu_logical_threads: int | None = None
     memory_info: str | None = None
     disk_info: str | None = None
+    disk_inventory: dict[str, list[dict[str, str]]] | None = None
     gpu_info: str | None = None
     gpu_status: str | None = None
     network_info: str | None = None

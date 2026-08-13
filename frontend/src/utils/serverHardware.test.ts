@@ -8,7 +8,7 @@ test('formats CPU model and core count as separate hierarchy levels', () => {
     formatCpuHardware('Intel(R) Xeon(R) Gold 6430 / 64C'),
     {
       title: 'Intel(R) Xeon(R) Gold 6430',
-      meta: ['64 核'],
+      meta: ['64 线程'],
       fullText: 'Intel(R) Xeon(R) Gold 6430 / 64C',
       tone: 'default',
     },
@@ -20,8 +20,20 @@ test('keeps legacy localized CPU probe values readable', () => {
     formatCpuHardware('Model name: AMD EPYC 9654 CPU(s): 192'),
     {
       title: 'AMD EPYC 9654',
-      meta: ['192 核'],
+      meta: ['192 线程'],
       fullText: 'Model name: AMD EPYC 9654 CPU(s): 192',
+      tone: 'default',
+    },
+  )
+})
+
+test('distinguishes CPU sockets, physical cores, and logical threads', () => {
+  assert.deepEqual(
+    formatCpuHardware('Intel(R) Xeon(R) Platinum 8457C / 192C', 2, 96, 192),
+    {
+      title: 'Intel(R) Xeon(R) Platinum 8457C',
+      meta: ['2 颗 CPU · 96 物理核 · 192 线程'],
+      fullText: 'Intel(R) Xeon(R) Platinum 8457C / 192C',
       tone: 'default',
     },
   )
@@ -34,6 +46,19 @@ test('formats GPU models separately from driver and CUDA metadata', () => {
       title: 'NVIDIA GeForce RTX 4090 × 8',
       meta: ['驱动 590.48.01', 'CUDA 12.8'],
       fullText: 'NVIDIA GeForce RTX 4090 x8 / Driver 590.48.01 / CUDA 12.8',
+      tone: 'default',
+    },
+  )
+})
+
+test('marks a missing CUDA Toolkit as danger metadata when the driver is available', () => {
+  assert.deepEqual(
+    formatGpuHardware('NVIDIA GeForce RTX 5090 x4 / Driver 595.84', 'driver_ok'),
+    {
+      title: 'NVIDIA GeForce RTX 5090 × 4',
+      meta: ['驱动 595.84', 'CUDA 未安装'],
+      dangerMeta: ['CUDA 未安装'],
+      fullText: 'NVIDIA GeForce RTX 5090 x4 / Driver 595.84',
       tone: 'default',
     },
   )

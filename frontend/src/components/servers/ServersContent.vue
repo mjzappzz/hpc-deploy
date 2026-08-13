@@ -20,14 +20,6 @@
         <el-button class="page-refresh-button" :loading="manualRefreshing" @click="refreshServers">刷新</el-button>
       </div>
 
-      <div class="filter-bar">
-        <el-select v-model="filterTag" placeholder="按标签筛选" clearable size="small" style="width:140px" @change="loadServers" @clear="loadServers">
-          <el-option v-for="option in SERVER_TAG_OPTIONS" :key="option.name" :label="option.name" :value="option.name" />
-        </el-select>
-        <el-input v-model="filterKeyword" placeholder="搜索名称/主机" clearable size="small" style="width:200px" @clear="loadServers" @keyup.enter="loadServers" />
-        <el-button size="small" @click="clearFilters">清除筛选</el-button>
-      </div>
-
       <el-alert
         v-if="manualRefreshing && loading && servers.length > 0"
         class="server-sync-alert"
@@ -46,15 +38,24 @@
       <div v-else class="server-table-wrap">
         <div class="server-group">
           <div class="server-group__header">
-            <button type="button" class="server-group__trigger" :aria-expanded="showManagedServers" @click="showManagedServers = !showManagedServers">
-              <span class="server-group__toggle">{{ showManagedServers ? '▼' : '▶' }}</span>
-              <span class="server-group__title">在管服务器</span>
-            </button>
-            <el-tag size="small" type="success" effect="plain">{{ managedServers.length }}</el-tag>
-            <el-button size="small" type="primary" plain :loading="isDetectingAll" @click="detectAll">
-              <el-icon v-if="!isDetectingAll"><Refresh /></el-icon>
-              {{ isDetectingAll ? `检测中 ${probeProgress.completed}/${probeProgress.total}` : '检测在管服务器' }}
-            </el-button>
+            <div class="server-group__header-main">
+              <button type="button" class="server-group__trigger" :aria-expanded="showManagedServers" @click="showManagedServers = !showManagedServers">
+                <span class="server-group__toggle">{{ showManagedServers ? '▼' : '▶' }}</span>
+                <span class="server-group__title">在管服务器</span>
+              </button>
+              <el-tag size="small" type="success" effect="plain">{{ managedServers.length }}</el-tag>
+              <el-button size="small" type="primary" plain :loading="isDetectingAll" @click="detectAll">
+                <el-icon v-if="!isDetectingAll"><Refresh /></el-icon>
+                {{ isDetectingAll ? `检测中 ${probeProgress.completed}/${probeProgress.total}` : '检测在管服务器' }}
+              </el-button>
+            </div>
+            <div class="filter-bar">
+              <el-select v-model="filterTag" placeholder="按标签筛选" clearable size="small" style="width:140px" @change="loadServers" @clear="loadServers">
+                <el-option v-for="option in SERVER_TAG_OPTIONS" :key="option.name" :label="option.name" :value="option.name" />
+              </el-select>
+              <el-input v-model="filterKeyword" placeholder="搜索名称/主机" clearable size="small" style="width:200px" @clear="loadServers" @keyup.enter="loadServers" />
+              <el-button size="small" @click="clearFilters">清除筛选</el-button>
+            </div>
           </div>
           <div v-show="showManagedServers">
             <ServerTable
@@ -324,7 +325,7 @@
           <!-- Section 4: Hardware Info -->
           <div class="detail-section">
             <div class="detail-section__title">硬件信息</div>
-            <template v-if="activeServer.os_info || activeServer.cpu_info || activeServer.memory_info || activeServer.gpu_info || activeServer.disk_info">
+            <template v-if="activeServer.os_info || activeServer.cpu_info || activeServer.memory_info || activeServer.gpu_info || activeServer.disk_info || activeServer.disk_inventory">
               <el-descriptions :column="1" border size="small">
                 <el-descriptions-item v-if="activeServer.os_info" label="OS">
                   <OsLabel class="detail-hw-text detail-os-text" :value="activeServer.os_info" />
@@ -344,8 +345,31 @@
                     <pre v-if="activeServer.gpu_info && activeServer.gpu_status && activeServer.gpu_status !== 'none' && activeServer.gpu_status !== 'unknown'" class="detail-hw-text detail-gpu-text">{{ activeServer.gpu_info }}</pre>
                   </div>
                 </el-descriptions-item>
-                <el-descriptions-item v-if="activeServer.disk_info" label="磁盘">
-                  <pre class="detail-hw-text">{{ activeServer.disk_info }}</pre>
+                <el-descriptions-item v-if="activeServer.disk_info || activeServer.disk_inventory" label="磁盘">
+                  <div v-if="activeServer.disk_inventory" class="disk-inventory">
+                    <div v-if="activeServer.disk_inventory.mounted_filesystems.length" class="disk-inventory__section">
+                      <span class="disk-inventory__label">已挂载文件系统</span>
+                      <div v-for="filesystem in activeServer.disk_inventory.mounted_filesystems" :key="`${filesystem.device}-${filesystem.mountpoint}`" class="disk-inventory__row">
+                        <div class="disk-inventory__device">
+                          <code>{{ filesystem.device }}</code>
+                          <span>{{ filesystem.filesystem_type || '未知类型' }}</span>
+                        </div>
+                        <div class="disk-inventory__metrics">
+                          <span><small>挂载点</small><strong>{{ filesystem.mountpoint }}</strong></span>
+                          <span><small>总容量</small><strong>{{ filesystem.size }}</strong></span>
+                          <span><small>已用</small><strong>{{ filesystem.used }}（{{ filesystem.use_percent }}）</strong></span>
+                          <span><small>可用</small><strong>{{ filesystem.available }}</strong></span>
+                        </div>
+                      </div>
+                    </div>
+                    <div v-if="activeServer.disk_inventory.unmounted_disks.length" class="disk-inventory__section">
+                      <span class="disk-inventory__label">未挂载物理盘</span>
+                      <div v-for="disk in activeServer.disk_inventory.unmounted_disks" :key="disk.device" class="disk-inventory__row disk-inventory__row--unmounted">
+                        {{ `${disk.device} · ${disk.size} · 未分区或未挂载` }}
+                      </div>
+                    </div>
+                  </div>
+                  <pre v-else class="detail-hw-text">{{ activeServer.disk_info }}</pre>
                 </el-descriptions-item>
                 <el-descriptions-item v-if="activeServer.network_info" label="网卡">
                   <pre class="detail-hw-text">{{ activeServer.network_info }}</pre>
@@ -1515,9 +1539,17 @@ onMounted(() => {
   display: flex;
   gap: 8px;
   align-items: center;
-  margin-bottom: 12px;
+  justify-content: flex-end;
+  margin-left: auto;
   flex-wrap: wrap;
-  width: 100%;
+}
+
+@media (max-width: 760px) {
+  .filter-bar {
+    justify-content: flex-start;
+    width: 100%;
+    margin-left: 0;
+  }
 }
 
 .server-table-wrap {
@@ -1548,7 +1580,16 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
   margin-bottom: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--el-border-color-light);
+}
+.server-group__header-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .server-group__trigger {
   display: inline-flex;
@@ -1639,6 +1680,74 @@ onMounted(() => {
 .detail-gpu-text {
   width: 100%;
   margin-top: 2px;
+}
+
+.disk-inventory {
+  display: grid;
+  gap: 10px;
+}
+
+.disk-inventory__section {
+  display: grid;
+  gap: 5px;
+}
+
+.disk-inventory__label {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.disk-inventory__row {
+  padding: 7px 9px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 4px;
+  background: var(--el-fill-color-lighter);
+  color: #334155;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.disk-inventory__device {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.disk-inventory__device code {
+  color: var(--el-color-primary);
+  font-weight: 600;
+}
+
+.disk-inventory__device span {
+  color: var(--el-text-color-secondary);
+}
+
+.disk-inventory__metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  margin-top: 3px;
+}
+
+.disk-inventory__metrics span {
+  display: inline-flex;
+  gap: 5px;
+  align-items: baseline;
+}
+
+.disk-inventory__metrics small {
+  color: var(--el-text-color-secondary);
+  font-size: 11px;
+}
+
+.disk-inventory__metrics strong {
+  color: var(--el-text-color-primary);
+  font-weight: 500;
+}
+
+.disk-inventory__row--unmounted {
+  color: var(--el-color-warning);
 }
 
 .detail-remote-dir {

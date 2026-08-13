@@ -25,7 +25,7 @@ test('renders CPU and GPU as primary hardware text with separate metadata', asyn
   const source = await readFile(new URL('./ServerTable.vue', import.meta.url), 'utf8')
   const cellSource = await readFile(new URL('./ServerHardwareCell.vue', import.meta.url), 'utf8')
 
-  assert.match(source, /formatCpuHardware\(row\.cpu_info\)/)
+  assert.match(source, /formatCpuHardware\(row\.cpu_info, row\.cpu_sockets, row\.cpu_physical_cores, row\.cpu_logical_threads\)/)
   assert.match(source, /formatGpuHardware\(row\.gpu_info, row\.gpu_status\)/)
   assert.match(source, /<ServerHardwareCell/)
   assert.match(cellSource, /class="hardware-cell__title"/)

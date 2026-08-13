@@ -3,6 +3,7 @@ export type HardwareTone = 'default' | 'muted' | 'warning'
 export interface HardwarePresentation {
   title: string
   meta: string[]
+  dangerMeta?: string[]
   fullText: string
   tone: HardwareTone
 }
@@ -11,7 +12,12 @@ function displayValue(value: string | null | undefined): string {
   return value?.trim() || '-'
 }
 
-export function formatCpuHardware(value: string | null | undefined): HardwarePresentation {
+export function formatCpuHardware(
+  value: string | null | undefined,
+  sockets?: number | null,
+  physicalCores?: number | null,
+  logicalThreads?: number | null,
+): HardwarePresentation {
   const fullText = displayValue(value)
   if (fullText === '-') return { title: '-', meta: [], fullText, tone: 'muted' }
 
@@ -19,7 +25,7 @@ export function formatCpuHardware(value: string | null | undefined): HardwarePre
   if (compact) {
     return {
       title: compact[1].trim() || 'CPU',
-      meta: [`${compact[2]} 核`],
+      meta: cpuTopologyLabel(sockets, physicalCores, logicalThreads) ?? [`${compact[2]} 线程`],
       fullText,
       tone: 'default',
     }
@@ -32,7 +38,7 @@ export function formatCpuHardware(value: string | null | undefined): HardwarePre
   if (localizedModel || localizedCores) {
     return {
       title: localizedModel || 'CPU',
-      meta: localizedCores ? [`${localizedCores} 核`] : [],
+      meta: cpuTopologyLabel(sockets, physicalCores, logicalThreads) ?? (localizedCores ? [`${localizedCores} 线程`] : []),
       fullText,
       tone: 'default',
     }
@@ -41,10 +47,19 @@ export function formatCpuHardware(value: string | null | undefined): HardwarePre
   const legacy = fullText.match(/^(.*?)\s+(\d+)\s+cores?\b/i)
   return {
     title: legacy?.[1]?.trim() || fullText,
-    meta: legacy?.[2] ? [`${legacy[2]} 核`] : [],
+    meta: cpuTopologyLabel(sockets, physicalCores, logicalThreads) ?? (legacy?.[2] ? [`${legacy[2]} 线程`] : []),
     fullText,
     tone: 'default',
   }
+}
+
+function cpuTopologyLabel(
+  sockets?: number | null,
+  physicalCores?: number | null,
+  logicalThreads?: number | null,
+): string[] | null {
+  if (!sockets || !physicalCores || !logicalThreads) return null
+  return [`${sockets} 颗 CPU · ${physicalCores} 物理核 · ${logicalThreads} 线程`]
 }
 
 export function formatGpuHardware(
@@ -77,6 +92,7 @@ export function formatGpuHardware(
     .filter(Boolean)
   const models: string[] = []
   const meta: string[] = []
+  const dangerMeta: string[] = []
 
   for (const chunk of chunks) {
     const driver = chunk.match(/^Driver\s+(.+)$/i)
@@ -92,12 +108,19 @@ export function formatGpuHardware(
     models.push(chunk)
   }
 
+  if (!meta.some(item => item.startsWith('CUDA '))) {
+    meta.push('CUDA 未安装')
+    dangerMeta.push('CUDA 未安装')
+  }
+
   const title = models.map(model => model.replace(/\s+x(\d+)\b/gi, ' × $1')).join('\n')
 
-  return {
+  const presentation: HardwarePresentation = {
     title: title || fullText,
     meta,
     fullText,
     tone: 'default',
   }
+  if (dangerMeta.length) presentation.dangerMeta = dangerMeta
+  return presentation
 }

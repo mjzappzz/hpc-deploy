@@ -63,6 +63,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - CUDA Toolkit 安装（`/cuda-toolkit`、`/cuda-toolkit/batch`）：支持 11.8、12.0–12.6、12.8、12.9、13.0，安装前校验 `nvidia-smi`，仅安装 Toolkit，不安装或覆盖驱动
 - 压测套件创建（`/stress-suite`），同服务器内按 GPU → CPU/内存 → 磁盘串行推进
 - 单项压测与压测套件的单个脚本时长范围为 1 分钟–72 小时（后端秒级边界仍为 10–259200 秒）；当前任务页以小时/分钟输入并在 72 小时边界前置限制和提示
+- 磁盘压测脚本 `v2026.08.13.6` 保持单盘、可选已挂载路径的随机写稳定性测试：根分区默认按 `nproc / 16`（限制 4–32）计算 HDD worker，单 worker 数据量为 20G；非根挂载在未显式传入 `WORKERS` 时固定 2 个 worker、每 worker 1G，避免数据盘单次大块随机校验写跨越用户设定时长而长时间收尾。任务页仅提供可压测的根分区与数据盘挂载点，过滤 `/boot`/EFI；批量任务仅能选择所有目标服务器共有的挂载点，默认根分区，暂不按各服务器自动回退。
 - CPU/内存压测脚本 `v2026.08.11.1` 保持 `stress-ng` 全 CPU worker 与内存校验方式，CSV、TXT 和可选 XLSX 报告新增基于 `/proc/stat` 的 CPU Busy、I/O Wait、Steal，以及内存压力目标达成率。CPU Busy 平均低于 80% 或内存目标最高达成率低于 75% 时判定 FAIL，阈值允许通过环境变量覆盖。内存目标仍以启动时可用内存的 85% 为上限；安全余量取“物理内存 10%”与“物理内存 25%（最高 4 GiB）”的较大值，目标缓冲取物理内存 2% 并限制在 128–512 MiB，从而兼容小内存测试机和大内存服务器。运行中可用内存连续 3 个采样周期跌破安全余量时终止 `stress-ng` 并判定 FAIL，不做自动减载或重启 VM worker。CPU 温度优先读取 Intel `Package id`、AMD `Tctl/Tdie`，`sensors -j` 不可用时回退 Linux `hwmon`；温度当前只记录、不参与 PASS/FAIL，也尚未进入任务实时监控接口。脚本以 `dmesg --follow-new` 监听本次新增内核日志，并在结束时按开始时间二次核验 `journalctl -k`；识别到 `UE`/`UECC`、不可纠正内存硬件错误或 EDAC UE 时直接 FAIL。`openpyxl` 改为可选依赖，缺失时跳过 XLSX，但 TXT/CSV 和最终判定正常生成。
 - 受控环境套件创建（`/managed-suite`）：基础环境配置按关闭锁屏/休眠 → 锁定当前系统版本，GPU 驱动安装按 NVIDIA 驱动 → CUDA Toolkit 严格串行；多台服务器各自创建独立批次，前序失败时后序不启动，后端重启后恢复套件 worker
 - 多服务器单动作入口按服务器创建互相独立的单次任务：普通脚本/单项压测/Apptainer（`/batch`）、GPU 驱动（`/gpu-driver/batch`）和 CUDA Toolkit（`/cuda-toolkit/batch`）均返回完整 `task_ids`，每条任务的 `batch_id` 为空；只有同一服务器包含多个有序步骤的受控环境套件和压测套件才创建批次，并按服务器分配独立 `batch_id`
@@ -152,7 +153,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 
 ### ssh detector
 - 执行固定的安全探测命令
-- 解析 OS/CPU/内存/磁盘/GPU 信息
+- 解析 OS/CPU/内存/磁盘/GPU 信息；CPU 同时提取型号、Socket 数、总物理核心与逻辑线程。前端优先显示“颗数 · 物理核 · 线程”；旧记录缺少拓扑字段时保留原摘要并将旧 `CPU(s)` 明确展示为线程，不推断物理核。
 - 不依赖前端输入
 - 服务器离线或重启后沿用最后一次**完整成功**的硬件清单。SSH 已恢复但 NVIDIA PCI 硬件存在、`nvidia-smi` 尚未就绪时，探测器以 2 秒间隔最多重试 3 次；仍未恢复则仅更新在线状态，不覆盖既有硬件信息，也不更新 `last_check_at`。只有 OS/CPU/内存/磁盘/GPU 全部完成当前轮探测时，才原子写入最新清单与“最后探测时间”。
 
@@ -200,6 +201,9 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 | `tags_json` | TEXT DEFAULT '[]' | 单元素标签 JSON 数组；固定业务标签 |
 | `last_check_at` | DATETIME | 最后探测时间 |
 | `last_error` | TEXT | 最后错误 |
+| `cpu_sockets` | INTEGER | CPU 颗数；仅完整 CPU 拓扑探测后写入 |
+| `cpu_physical_cores` | INTEGER | 总物理核心数；不等同于逻辑线程数 |
+| `cpu_logical_threads` | INTEGER | 操作系统可调度的逻辑线程数（`lscpu` 的 `CPU(s)`） |
 
 说明：只保留标签，不做分组。`group_name` 列仍存在于数据库但不再使用。
 

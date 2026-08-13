@@ -29,6 +29,27 @@ test('labels the target-area probe action as detecting target servers', async ()
   assert.doesNotMatch(source, /检测在线服务器/)
 })
 
+test('uses danger styling when a target server has no CUDA Toolkit installed', async () => {
+  const source = await readFile(new URL('./TaskRunner.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /'is-missing': cudaStatus\(server\) === '未安装'/)
+  assert.match(source, /\.s-card-info-value\.is-missing\s*\{\s*color: var\(--el-color-danger\)/)
+})
+
+test('selects a detected mounted filesystem for disk stress and defaults to root', async () => {
+  const source = await readFile(new URL('./TaskRunner.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /<el-select\s+v-model="diskTestDir"/)
+  assert.match(source, /v-for="target in diskTestMountOptions"/)
+  assert.match(source, /const diskTestDir = ref\('\/'\)/)
+  assert.match(source, /const diskTestMountOptions = computed\(\(\) =>/)
+  assert.match(source, /mounted_filesystems/)
+  assert.match(source, /suffix = ` \$\{diskTestDir\.value\}`/)
+  assert.match(source, /filter\(isDiskStressMountpoint\)/)
+  assert.match(source, /mountpoint === '\/' \? '系统盘' : '数据盘'/)
+  assert.match(source, /mountpoint === '\/boot' \|\| mountpoint\.startsWith\('\/boot\/'\)/)
+})
+
 test('lets target server favorites be changed with vector stars without a warning background', async () => {
   const source = await readFile(new URL('./TaskRunner.vue', import.meta.url), 'utf8')
 

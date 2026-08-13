@@ -2,7 +2,7 @@
 
 set -e
 
-SCRIPT_VERSION="2026.07.30"
+SCRIPT_VERSION="2026.08.13.6"
 
 echo "[STAGE] dependency_check_start"
 echo "[INFO] Checking and installing dependencies..."
@@ -90,11 +90,6 @@ DURATION=${1:-43200}
 INTERVAL=${2:-2}
 TEST_DIR=${3:-$(pwd)}
 
-CPU_CORES=$(nproc)
-HDD_WORKERS=$(( CPU_CORES / 16 ))
-[ "$HDD_WORKERS" -lt 4 ] && HDD_WORKERS=4
-[ "$HDD_WORKERS" -gt 32 ] && HDD_WORKERS=32
-
 TIME_TAG=$(date +%F_%H%M%S)
 WORKDIR=$(pwd)
 
@@ -111,6 +106,21 @@ mkdir -p "$TEST_DIR"
 MOUNT_SRC=$(df -P "$TEST_DIR" | awk 'NR==2 {print $1}')
 MOUNT_POINT=$(df -P "$TEST_DIR" | awk 'NR==2 {print $6}')
 FS_TYPE=$(df -T "$TEST_DIR" | awk 'NR==2 {print $2}')
+
+CPU_CORES=$(nproc)
+DEFAULT_HDD_WORKERS=$(( CPU_CORES / 16 ))
+[ "$DEFAULT_HDD_WORKERS" -lt 4 ] && DEFAULT_HDD_WORKERS=4
+[ "$DEFAULT_HDD_WORKERS" -gt 32 ] && DEFAULT_HDD_WORKERS=32
+HDD_WORKERS=${WORKERS:-$DEFAULT_HDD_WORKERS}
+HDD_BYTES=20G
+case "$HDD_WORKERS" in
+    ''|*[!0-9]*) echo "[ERROR] WORKERS must be a positive integer"; exit 2 ;;
+esac
+[ "$HDD_WORKERS" -lt 1 ] && { echo "[ERROR] WORKERS must be greater than zero"; exit 2; }
+if [ "$MOUNT_POINT" != "/" ] && [ -z "${WORKERS+x}" ]; then
+  HDD_WORKERS=2
+  HDD_BYTES=1G
+fi
 
 DISK_DEV=$(lsblk -no PKNAME "$MOUNT_SRC" 2>/dev/null | head -1)
 [ -z "$DISK_DEV" ] && DISK_DEV=$(basename "$MOUNT_SRC")
@@ -216,7 +226,7 @@ echo "[STAGE] stress_start"
 
   stdbuf -oL -eL stress-ng \
     --hdd ${HDD_WORKERS} \
-    --hdd-bytes 20G \
+    --hdd-bytes ${HDD_BYTES} \
     --hdd-opts wr-rnd \
     --verify \
     --timeout "${DURATION}" \
@@ -341,9 +351,9 @@ ${DISK_MODEL_LINE}
 二、测试方法
 测试工具              : stress-ng
 HDD压力线程           : ${HDD_WORKERS}
-线程计算方式          : nproc / 16，限制范围 4~32
+线程计算方式          : 根分区 nproc / 16（限制 4~32）；非根挂载默认 2
 HDD测试模式           : wr-rnd
-单Worker数据量        : 20G
+单Worker数据量        : ${HDD_BYTES}
 测试类型              : 随机写稳定性测试
 数据校验              : verify enabled
 测试时长              : ${DURATION}
@@ -506,9 +516,9 @@ r = section(r, "二、测试方法")
 for k, v in [
     ("测试工具", "stress-ng"),
     ("HDD压力线程", "${HDD_WORKERS}"),
-    ("线程计算方式", "nproc / 16，限制范围 4~32"),
+    ("线程计算方式", "根分区 nproc / 16（限制 4~32）；非根挂载默认 2"),
     ("HDD测试模式", "wr-rnd"),
-    ("单Worker数据量", "20G"),
+    ("单Worker数据量", "${HDD_BYTES}"),
     ("测试类型", "随机写稳定性测试"),
     ("数据校验", "verify enabled"),
     ("测试时长", "${DURATION}"),
@@ -656,4 +666,3 @@ echo "Kernel Error : ${ERR_LOG}"
 echo "Text Report  : ${REPORT}"
 echo "XLSX Report  : ${XLSX_REPORT}"
 echo "======================================"
-

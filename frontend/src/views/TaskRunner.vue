@@ -118,7 +118,7 @@
                               </div>
                               <template v-if="hasDetectedNvidiaGpu(server)">
                                 <div class="s-card-info-item"><span class="s-card-info-label">GPU 驱动</span><span :class="['s-card-info-value', { 'is-ready': server.gpu_status === 'driver_ok' }]">{{ gpuDriverStatus(server) }}</span></div>
-                                <div class="s-card-info-item"><span class="s-card-info-label">CUDA</span><span :class="['s-card-info-value', { 'is-ready': cudaStatus(server) !== '未安装' }]">{{ cudaStatus(server) }}</span></div>
+                                <div class="s-card-info-item"><span class="s-card-info-label">CUDA</span><span :class="['s-card-info-value', { 'is-ready': cudaStatus(server) !== '未安装', 'is-missing': cudaStatus(server) === '未安装' }]">{{ cudaStatus(server) }}</span></div>
                               </template>
                               <div v-else-if="server.gpu_status === 'none'" class="s-card-info-item s-card-no-gpu"><span class="s-card-info-label">GPU</span><span class="s-card-info-value">无 NVIDIA GPU</span></div>
                             </div>
@@ -438,16 +438,22 @@
 
                   <!-- disk_test_dir: only when disk_stress_report.sh is selected -->
                   <template v-if="showDiskTestDir">
-                    <el-form-item label="远端磁盘测试目录">
+                    <el-form-item label="压测磁盘">
                       <div class="disk-test-dir-control">
-                        <el-input
+                        <el-select
                           v-model="diskTestDir"
-                          placeholder="例如：/data 或 /mnt/nvme0；留空则使用远端工作目录"
                           :disabled="isFormDisabled"
-                          clearable
-                        />
+                          style="width: 100%"
+                        >
+                          <el-option
+                            v-for="target in diskTestMountOptions"
+                            :key="target.mountpoint"
+                            :label="target.label"
+                            :value="target.mountpoint"
+                          />
+                        </el-select>
                         <div class="form-help-text">
-                          测试文件会写入该目录以压测对应磁盘；报告仍保存在远端工作目录并回收。请确认目录所在磁盘有足够空间。
+                          默认压测根分区；仅显示已探测、已挂载的本地文件系统。测试文件写入所选挂载点，报告仍回收到远端工作目录。
                         </div>
                       </div>
                     </el-form-item>
@@ -838,7 +844,7 @@ const polling = ref(false)
 const monitorLoading = ref(false)
 const apptainerTargetDir = ref('~/hpcdeploy/apptainer/')
 const apptainerOverwrite = ref(true)
-const diskTestDir = ref('')
+const diskTestDir = ref('/')
 const activeTaskId = ref('')
 const activeTask = ref<TaskRecord | null>(null)
 const activeLogs = ref<TaskLogRecord[]>([])
@@ -1205,6 +1211,48 @@ const showDiskTestDir = computed(() => {
   // Single-select legacy: check selectedFile
   return selectedFile.value?.name === 'disk_stress_report.sh'
 })
+const diskTestMountOptions = computed(() => {
+  const rootFallback = { mountpoint: '/', label: '系统盘 / · 容量待重新检测' }
+  if (selectedServers.value.length === 0) return [rootFallback]
+
+  const inventories = selectedServers.value.map((server) => server.disk_inventory?.mounted_filesystems ?? [])
+  if (inventories.some((filesystems) => filesystems.length === 0)) return [rootFallback]
+
+  const shared = inventories[0].filter(isDiskStressMountpoint).filter((filesystem) =>
+    inventories.every((filesystems) => filesystems.some((item) => item.mountpoint === filesystem.mountpoint)),
+  )
+  const targets = shared.map((filesystem) => ({
+    mountpoint: filesystem.mountpoint,
+    label: diskTestMountLabel(filesystem, selectedServers.value.length),
+  }))
+  if (!targets.some((target) => target.mountpoint === '/')) targets.unshift(rootFallback)
+  return targets.sort((left, right) => {
+    if (left.mountpoint === '/') return -1
+    if (right.mountpoint === '/') return 1
+    return left.mountpoint.localeCompare(right.mountpoint)
+  })
+})
+
+function diskTestMountLabel(
+  filesystem: { device: string; size: string; used: string; available: string; use_percent: string; mountpoint: string },
+  serverCount: number,
+) {
+  const { mountpoint } = filesystem
+  const role = mountpoint === '/' ? '系统盘' : '数据盘'
+  const sharedLabel = serverCount > 1 ? ` · ${serverCount} 台服务器均可用` : ''
+  return `${role} ${mountpoint} · ${filesystem.device} · ${filesystem.size}（已用 ${filesystem.used}，可用 ${filesystem.available}，${filesystem.use_percent}）${sharedLabel}`
+}
+
+function isDiskStressMountpoint(filesystem: { mountpoint: string }) {
+  const { mountpoint } = filesystem
+  return mountpoint === '/' || !(mountpoint === '/boot' || mountpoint.startsWith('/boot/'))
+}
+
+watch(diskTestMountOptions, (targets) => {
+  if (!targets.some((target) => target.mountpoint === diskTestDir.value)) {
+    diskTestDir.value = '/'
+  }
+})
 
 const suitePlanScripts = computed(() => {
   const order = [
@@ -1289,13 +1337,14 @@ const commandPreview = computed(() => {
     const selected = order.filter(item => selectedStressScripts.value.some(p => p.includes(item.name)))
     const lines = selected.map((item, i) => {
       let prefix = ''
+      let suffix = ''
       if (item.name === 'gpu_stress_report.sh' && gpuPrecision.value === 'fp64') {
         prefix = 'GPU_BURN_PRECISION=fp64 '
       }
-      if (item.name === 'disk_stress_report.sh' && diskTestDir.value.trim()) {
-        prefix = `DISK_TEST_DIR='${diskTestDir.value.trim()}' `
+      if (item.name === 'disk_stress_report.sh') {
+        suffix = ` ${diskTestDir.value}`
       }
-      return `${i + 1}. ${item.label}：\n   ${prefix}./${item.name} ${dur} ${interval}`
+      return `${i + 1}. ${item.label}：\n   ${prefix}./${item.name} ${dur} ${interval}${suffix}`
     })
     return `压测套件串行执行：\n\n${lines.join('\n\n')}`
   }
@@ -1305,12 +1354,13 @@ const commandPreview = computed(() => {
     const dur = stressDurationSeconds.value
     const interval = stressIntervalSeconds.value
     let prefix = ''
+    let suffix = ''
     if (selectedFile.value.name === 'gpu_stress_report.sh' && gpuPrecision.value === 'fp64') {
       prefix = 'GPU_BURN_PRECISION=fp64 '
-    } else if (selectedFile.value.name === 'disk_stress_report.sh' && diskTestDir.value.trim()) {
-      prefix = `DISK_TEST_DIR='${diskTestDir.value.trim()}' `
+    } else if (selectedFile.value.name === 'disk_stress_report.sh') {
+      suffix = ` ${diskTestDir.value}`
     }
-    return `${prefix}./${selectedFile.value.name} ${dur} ${interval}`
+    return `${prefix}./${selectedFile.value.name} ${dur} ${interval}${suffix}`
   }
   if (selectedFile.value.physical_category === 'apptainer') {
     return `复制容器到远程目录：${apptainerTargetDir.value}`
@@ -1564,7 +1614,7 @@ function resetParamsForFile() {
   stressIntervalSeconds.value = calcStressInterval(60)
   gpuPrecision.value = 'fp32'
   apptainerTargetDir.value = '~/hpcdeploy/apptainer/'
-  diskTestDir.value = ''
+  diskTestDir.value = '/'
 }
 
 function buildStressParams(): Record<string, unknown> {
@@ -1575,8 +1625,8 @@ function buildStressParams(): Record<string, unknown> {
   }
   const hasDisk = selectedFile.value?.name === 'disk_stress_report.sh' ||
     selectedStressScripts.value.some(p => p.includes('disk_stress_report.sh'))
-  if (hasDisk && diskTestDir.value.trim()) {
-    params.disk_test_dir = diskTestDir.value.trim()
+  if (hasDisk) {
+    params.disk_test_dir = diskTestDir.value
   }
   if (hasGpuStressSelected.value) {
     params.gpu_precision = gpuPrecision.value
@@ -2757,6 +2807,10 @@ onBeforeUnmount(() => {
 
 .s-card-info-value.is-ready {
   color: var(--el-color-success);
+}
+
+.s-card-info-value.is-missing {
+  color: var(--el-color-danger);
 }
 
 .s-card-tag {

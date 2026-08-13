@@ -106,6 +106,10 @@ class ServerUpdate(BaseModel):
 
 class ServerRead(ServerBase):
     id: int
+    cpu_sockets: int | None = Field(default=None, ge=1)
+    cpu_physical_cores: int | None = Field(default=None, ge=1)
+    cpu_logical_threads: int | None = Field(default=None, ge=1)
+    disk_inventory: dict[str, list[dict[str, str]]] | None = None
     tags: list[str] = []
     created_at: datetime
     updated_at: datetime
@@ -117,6 +121,11 @@ class ServerRead(ServerBase):
     def _extract_tags_from_orm(cls, data: Any) -> Any:
         # ── dict input (JSON response) ──
         if isinstance(data, dict):
+            if isinstance(data.get("disk_inventory"), str):
+                try:
+                    data = {**data, "disk_inventory": json.loads(data["disk_inventory"])}
+                except (json.JSONDecodeError, TypeError):
+                    data = {**data, "disk_inventory": None}
             if "tags_json" in data and "tags" not in data:
                 try:
                     tags_val = json.loads(data.pop("tags_json", "[]"))
@@ -130,6 +139,11 @@ class ServerRead(ServerBase):
             d = {}
             for c in data.__table__.columns:
                 d[c.name] = getattr(data, c.name)
+            if isinstance(d.get("disk_inventory"), str):
+                try:
+                    d["disk_inventory"] = json.loads(d["disk_inventory"])
+                except (json.JSONDecodeError, TypeError):
+                    d["disk_inventory"] = None
             try:
                 tags_val = json.loads(d.pop("tags_json", "[]")) if d.get("tags_json") else []
             except (json.JSONDecodeError, TypeError):

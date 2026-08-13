@@ -15,12 +15,31 @@ export interface ServerRecord {
   gpu_info: string | null
   gpu_status: string | null
   cpu_info: string | null
+  cpu_sockets: number | null
+  cpu_physical_cores: number | null
+  cpu_logical_threads: number | null
   memory_info: string | null
   disk_info: string | null
+  disk_inventory: DiskInventory | null
   network_info: string | null
   tags: string[]
   created_at: string
   updated_at: string
+}
+
+export interface DiskFilesystem {
+  device: string
+  filesystem_type: string
+  size: string
+  used: string
+  available: string
+  use_percent: string
+  mountpoint: string
+}
+
+export interface DiskInventory {
+  mounted_filesystems: DiskFilesystem[]
+  unmounted_disks: Array<{ device: string; size: string }>
 }
 
 export interface ServerPayload {
@@ -158,6 +177,7 @@ export interface ServerDetectResult {
   cpu_info: string | null
   memory_info: string | null
   disk_info: string | null
+  disk_inventory: DiskInventory | null
   gpu_info: string | null
   gpu_status: string | null
   network_info: string | null

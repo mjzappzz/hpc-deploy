@@ -1,4 +1,5 @@
 import base64
+import json
 import logging
 import re
 from pathlib import Path
@@ -44,7 +45,13 @@ echo '__HPROBE_SECT_B__memory'
 free -h 2>/dev/null
 echo '__HPROBE_SECT_E__'
 echo '__HPROBE_SECT_B__disk'
-(df -h --local 2>/dev/null || df -h 2>/dev/null)
+(df -hT --local 2>/dev/null || df -hT 2>/dev/null)
+echo '__HPROBE_DISK_BLOCK__'
+if command -v lsblk >/dev/null 2>&1; then
+  lsblk --json --bytes --output NAME,PATH,SIZE,TYPE,MOUNTPOINTS 2>/dev/null || echo '__LSBLK_FAILED__'
+else
+  echo '__LSBLK_NOT_FOUND__'
+fi
 echo '__HPROBE_SECT_E__'
 echo '__HPROBE_SECT_B__gpu'
 # --- Step 1: lspci hardware detection ---
@@ -228,17 +235,20 @@ def detect_server_info(
         client.close()
 
 
-def summarize_detect_result(result: dict[str, str]) -> dict[str, str]:
+def summarize_detect_result(result: dict[str, str]) -> dict[str, str | int | None]:
     os_info = _extract_pretty_name(result.get("os_release", "")) or result.get("uname", "")
     cpu_info = _summarize_cpu_info(result.get("cpu_info", ""))
     memory_info = _summarize_memory_info(result.get("memory_info", ""))
     disk_info = _summarize_disk_info(result.get("disk_info", ""))
+    disk_inventory = _summarize_disk_inventory(result.get("disk_info", ""))
     gpu_info, gpu_status = _summarize_gpu_info(result.get("gpu_info", ""))
     return {
         "os_info": _compact(os_info),
         "cpu_info": _compact(cpu_info),
+        **_summarize_cpu_topology(result.get("cpu_info", "")),
         "memory_info": _compact(memory_info),
         "disk_info": _compact(disk_info),
+        "disk_inventory": json.dumps(disk_inventory, ensure_ascii=False) if disk_inventory else None,
         "gpu_info": _compact(gpu_info),
         "gpu_status": gpu_status,
         "network_info": "",
@@ -284,6 +294,33 @@ def _summarize_cpu_info(raw: str) -> str:
     return model or cores
 
 
+def _summarize_cpu_topology(raw: str) -> dict[str, int | None]:
+    fields: dict[str, int] = {}
+    labels = {
+        "CPU(s)": "cpu_logical_threads",
+        "Thread(s) per core": "threads_per_core",
+        "Core(s) per socket": "cores_per_socket",
+        "Socket(s)": "cpu_sockets",
+    }
+    for line in raw.splitlines():
+        normalized = line.strip().replace("：", ":")
+        for label, field in labels.items():
+            if not normalized.startswith(f"{label}:"):
+                continue
+            value = normalized.split(":", 1)[1].strip()
+            if value.isdigit():
+                fields[field] = int(value)
+            break
+
+    sockets = fields.get("cpu_sockets")
+    cores_per_socket = fields.get("cores_per_socket")
+    return {
+        "cpu_sockets": sockets,
+        "cpu_physical_cores": sockets * cores_per_socket if sockets and cores_per_socket else None,
+        "cpu_logical_threads": fields.get("cpu_logical_threads"),
+    }
+
+
 def _summarize_memory_info(raw: str) -> str:
     for line in raw.splitlines():
         if line.strip().startswith("Mem:"):
@@ -304,6 +341,85 @@ def _summarize_disk_info(raw: str) -> str:
         if len(parts) >= 6:
             return f"{parts[-1]} {parts[1]} total / {parts[2]} used"
     return raw.strip() or "-"
+
+
+def _summarize_disk_inventory(raw: str) -> dict[str, list[dict[str, str]]] | None:
+    """Return mounted device filesystems and whole disks without mounted descendants."""
+    df_output, _, lsblk_output = raw.partition("__HPROBE_DISK_BLOCK__")
+    mounted_filesystems = _parse_mounted_filesystems(df_output)
+    unmounted_disks = _parse_unmounted_disks(lsblk_output)
+    if not mounted_filesystems and not unmounted_disks:
+        return None
+    return {
+        "mounted_filesystems": mounted_filesystems,
+        "unmounted_disks": unmounted_disks,
+    }
+
+
+def _parse_mounted_filesystems(raw: str) -> list[dict[str, str]]:
+    filesystems: list[dict[str, str]] = []
+    for line in raw.splitlines():
+        parts = line.split()
+        if len(parts) < 6 or not parts[0].startswith("/dev/"):
+            continue
+        if len(parts) >= 7:
+            device, filesystem_type, size, used, available, use_percent, mountpoint = parts[:7]
+        else:
+            device, size, used, available, use_percent, mountpoint = parts[:6]
+            filesystem_type = ""
+        filesystems.append({
+            "device": device,
+            "filesystem_type": filesystem_type,
+            "size": size,
+            "used": used,
+            "available": available,
+            "use_percent": use_percent,
+            "mountpoint": mountpoint,
+        })
+    return filesystems
+
+
+def _parse_unmounted_disks(raw: str) -> list[dict[str, str]]:
+    if not raw or raw.lstrip().startswith("__LSBLK_"):
+        return []
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+
+    unmounted: list[dict[str, str]] = []
+    for device in payload.get("blockdevices", []):
+        if not isinstance(device, dict) or device.get("type") != "disk":
+            continue
+        if _block_device_has_mountpoint(device):
+            continue
+        path = device.get("path")
+        size = device.get("size")
+        if not isinstance(path, str) or not isinstance(size, int) or size <= 0:
+            continue
+        unmounted.append({"device": path, "size": _format_binary_size(size)})
+    return unmounted
+
+
+def _block_device_has_mountpoint(device: dict[str, object]) -> bool:
+    mountpoints = device.get("mountpoints")
+    if isinstance(mountpoints, list) and any(isinstance(point, str) and point for point in mountpoints):
+        return True
+    children = device.get("children")
+    return isinstance(children, list) and any(
+        isinstance(child, dict) and _block_device_has_mountpoint(child)
+        for child in children
+    )
+
+
+def _format_binary_size(size_bytes: int) -> str:
+    units = ("B", "K", "M", "G", "T", "P")
+    value = float(size_bytes)
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            return f"{value:.1f}{unit}" if unit != "B" else f"{int(value)}B"
+        value /= 1024
+    return f"{size_bytes}B"
 
 
 def _summarize_gpu_info(raw: str) -> tuple[str, str]:

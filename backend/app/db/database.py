@@ -56,6 +56,8 @@ def init_db() -> None:
 
     Base.metadata.create_all(bind=engine)
     _ensure_stage5_server_columns()
+    _ensure_server_cpu_topology_columns()
+    _ensure_server_disk_inventory_column()
     _ensure_server_auth_columns()
     _ensure_server_health_columns()
     _ensure_server_group_tags_columns()
@@ -98,6 +100,42 @@ def _ensure_stage5_server_columns() -> None:
     with engine.begin() as connection:
         for name, column_type in missing:
             connection.execute(text(f"ALTER TABLE servers ADD COLUMN {name} {column_type}"))
+
+
+def _ensure_server_cpu_topology_columns() -> None:
+    if not normalized_database_url.startswith("sqlite"):
+        return
+
+    inspector = inspect(engine)
+    if "servers" not in inspector.get_table_names():
+        return
+
+    existing = {column["name"] for column in inspector.get_columns("servers")}
+    required = {
+        "cpu_sockets": "INTEGER",
+        "cpu_physical_cores": "INTEGER",
+        "cpu_logical_threads": "INTEGER",
+    }
+    with engine.begin() as connection:
+        for name, column_type in required.items():
+            if name not in existing:
+                connection.execute(text(f"ALTER TABLE servers ADD COLUMN {name} {column_type}"))
+
+
+def _ensure_server_disk_inventory_column() -> None:
+    if not normalized_database_url.startswith("sqlite"):
+        return
+
+    inspector = inspect(engine)
+    if "servers" not in inspector.get_table_names():
+        return
+
+    existing = {column["name"] for column in inspector.get_columns("servers")}
+    if "disk_inventory" in existing:
+        return
+
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE servers ADD COLUMN disk_inventory TEXT"))
 
 
 def _ensure_server_auth_columns() -> None:

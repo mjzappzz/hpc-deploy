@@ -66,7 +66,7 @@ def _detect_server_info_with_deadline(*, deadline_seconds: float = CONSOLIDATED_
         executor.shutdown(wait=False, cancel_futures=True)
 
 
-def _apply_probe_summary(server: Server, summary: dict[str, str]) -> None:
+def _apply_probe_summary(server: Server, summary: dict[str, str | int | None]) -> None:
     """Apply a successful probe without discarding a verified GPU inventory mid-restart."""
     server.status = "online"
     server.last_error = None
@@ -86,9 +86,13 @@ def _apply_probe_summary(server: Server, summary: dict[str, str]) -> None:
 
     server.last_check_at = datetime.utcnow()
     server.os_info = summary["os_info"]
-    server.cpu_info = summary["cpu_info"]
+    server.cpu_info = str(summary["cpu_info"])
+    server.cpu_sockets = summary["cpu_sockets"] if isinstance(summary["cpu_sockets"], int) else None
+    server.cpu_physical_cores = summary["cpu_physical_cores"] if isinstance(summary["cpu_physical_cores"], int) else None
+    server.cpu_logical_threads = summary["cpu_logical_threads"] if isinstance(summary["cpu_logical_threads"], int) else None
     server.memory_info = summary["memory_info"]
     server.disk_info = summary["disk_info"]
+    server.disk_inventory = summary["disk_inventory"]
     server.network_info = summary["network_info"]
     server.gpu_info = summary["gpu_info"]
     server.gpu_status = summary["gpu_status"]
@@ -164,8 +168,12 @@ def _build_probe_response(server: Server, *, success: bool, error: str | None = 
         last_error=server.last_error,
         os_info=server.os_info,
         cpu_info=server.cpu_info,
+        cpu_sockets=server.cpu_sockets,
+        cpu_physical_cores=server.cpu_physical_cores,
+        cpu_logical_threads=server.cpu_logical_threads,
         memory_info=server.memory_info,
         disk_info=server.disk_info,
+        disk_inventory=json.loads(server.disk_inventory) if server.disk_inventory else None,
         gpu_info=server.gpu_info,
         gpu_status=server.gpu_status,
         network_info=server.network_info,

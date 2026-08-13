@@ -19,7 +19,7 @@ _SAFE_DISK_DIR_PREFIXES: tuple[str, ...] = (
 )
 
 _SAFE_DISK_DIR_BLOCKLIST: tuple[str, ...] = (
-    "/", "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64",
+    "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64",
     "/boot", "/dev", "/proc", "/sys", "/run", "/var", "/tmp",
 )
 
@@ -90,7 +90,7 @@ def validate_disk_test_dir(path: str) -> str:
             detail=f"disk_test_dir must not be a system directory ({stripped})",
         )
 
-    if not stripped.startswith(_SAFE_DISK_DIR_PREFIXES):
+    if stripped != "/" and not stripped.startswith(_SAFE_DISK_DIR_PREFIXES):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"disk_test_dir must start with one of: {', '.join(_SAFE_DISK_DIR_PREFIXES)}",

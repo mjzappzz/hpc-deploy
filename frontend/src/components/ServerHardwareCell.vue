@@ -11,7 +11,11 @@
       </span>
     </span>
     <span v-if="hardware.meta.length" class="hardware-cell__meta">
-      <span v-for="item in hardware.meta" :key="item" class="hardware-cell__meta-item">{{ item }}</span>
+      <span
+        v-for="item in hardware.meta"
+        :key="item"
+        :class="['hardware-cell__meta-item', { 'is-danger': hardware.dangerMeta?.includes(item) }]"
+      >{{ item }}</span>
     </span>
   </div>
 </template>
@@ -79,6 +83,11 @@ const titleLines = computed(() => props.hardware.title.split('\n').map((text) =>
   border-radius: 3px;
   background: var(--el-fill-color-light);
   white-space: nowrap;
+}
+
+.hardware-cell__meta-item.is-danger {
+  color: var(--el-color-danger);
+  background: var(--el-color-danger-light-9);
 }
 
 .hardware-cell.is-muted .hardware-cell__title {

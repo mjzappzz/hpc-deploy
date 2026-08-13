@@ -520,6 +520,7 @@ def _build_stress_command(task: Task) -> str:
 
     # Build env var prefix from additional params (memory_percent, workers, etc.)
     env_vars: list[str] = []
+    disk_target_arg = ""
 
     if script_name == "cpu_mem_stress_report.sh":
         if "memory_percent" in params:
@@ -535,7 +536,7 @@ def _build_stress_command(task: Task) -> str:
         if "disk_test_dir" in params:
             dtd = params["disk_test_dir"]
             if dtd:
-                env_vars.append(f"DISK_TEST_DIR={shell_quote(dtd)}")
+                disk_target_arg = f" {shell_quote(dtd)}"
         if "workers" in params:
             env_vars.append(f"WORKERS={params['workers']}")
 
@@ -552,8 +553,8 @@ def _build_stress_command(task: Task) -> str:
 
     env_prefix = " ".join(env_vars)
     if env_prefix:
-        return f"{env_prefix} ./{script_name} {duration_seconds} {interval}"
-    return f"./{script_name} {duration_seconds} {interval}"
+        return f"{env_prefix} ./{script_name} {duration_seconds} {interval}{disk_target_arg}"
+    return f"./{script_name} {duration_seconds} {interval}{disk_target_arg}"
 
 
 def _exec_with_reconnect(executor: SSHExecutor, cmd: str) -> str | None:

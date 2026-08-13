@@ -1,9 +1,10 @@
 import unittest
+from datetime import datetime
 
 from pydantic import ValidationError
 
 from app.models.server import ARCHIVED_SERVER_TAG, Server, is_server_archived
-from app.schemas.server import ServerCreate, ServerUpdate
+from app.schemas.server import ServerCreate, ServerRead, ServerUpdate
 
 
 class ServerTagTests(unittest.TestCase):
@@ -35,3 +36,24 @@ class ServerTagTests(unittest.TestCase):
     def test_archived_server_is_identified_by_its_fixed_tag(self) -> None:
         self.assertTrue(is_server_archived(Server(tags_json=f'["{ARCHIVED_SERVER_TAG}"]')))
         self.assertFalse(is_server_archived(Server(tags_json='["待压测"]')))
+
+    def test_server_read_deserializes_detected_disk_inventory(self) -> None:
+        server = Server(
+            id=1,
+            name="disk-server",
+            host="10.0.0.1",
+            port=22,
+            username="root",
+            auth_type="key",
+            status="online",
+            created_at=datetime(2026, 8, 13),
+            updated_at=datetime(2026, 8, 13),
+            disk_inventory='{"mounted_filesystems": [], "unmounted_disks": [{"device": "/dev/sda", "size": "14.6T"}]}',
+        )
+
+        response = ServerRead.model_validate(server)
+
+        self.assertEqual(response.disk_inventory, {
+            "mounted_filesystems": [],
+            "unmounted_disks": [{"device": "/dev/sda", "size": "14.6T"}],
+        })
