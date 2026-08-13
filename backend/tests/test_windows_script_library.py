@@ -27,6 +27,17 @@ class WindowsScriptLibraryTests(unittest.TestCase):
         self.assertIn('KeyMetricRow "CPU &#x5E73;&#x5747;&#x6E29;&#x5EA6;" (FmtVal $cpuTempAvg \'C\') $cpuTempJudge', content)
         self.assertIn('MetricItem "CPU 平均温度" (FmtVal (Get-Avg $cpuRows \'CPU_Temperature_C\') \'C\')', content)
 
+    def test_v97_windows_cpu_temperature_marks_only_values_above_95c_as_attention(self) -> None:
+        script_path = Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v97_windows_stress.ps1"
+        content = script_path.read_text(encoding="utf-8-sig")
+
+        self.assertIn("[int]$CpuTempWarnC = 95", content)
+        self.assertIn("[int]$CpuTempFailC = 100", content)
+        self.assertIn("elseif($cpuTemp -gt $CpuTempWarnC){ $extra=\"; temperature is above reference but below critical limit\" }", content)
+        self.assertIn("elseif($cpuTemp -gt $CpuTempWarnC){$judgeAccept}", content)
+        self.assertIn("CPU 温度 ≤ ${CpuTempWarnC} C", content)
+        self.assertIn("CPU 温度 &gt; ${CpuTempWarnC} C 且 &lt; ${CpuTempFailC} C", content)
+
     def test_v97_windows_report_includes_average_gpu_telemetry_in_both_summaries(self) -> None:
         script_path = Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v97_windows_stress.ps1"
         content = script_path.read_text(encoding="utf-8-sig")

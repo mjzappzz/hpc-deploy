@@ -113,8 +113,9 @@ param(
     [int]$CpuLoadPassPercent = 95,
     [int]$CpuAvgLoadPassPercent = 85,
     [int]$CpuAvgLoadWarnPercent = 70,
-    [int]$CpuTempWarnC = 90,
-    [int]$CpuTempFailC = 95,
+    # CPU temperature policy: <= 95 C passes; > 95 C requires attention; >= 100 C fails.
+    [int]$CpuTempWarnC = 95,
+    [int]$CpuTempFailC = 100,
     # Optional explicit official TDP override for CPU models not yet in the local catalog.
     [int]$CpuOfficialTdpW = 0,
     [int]$CpuClockWarnPercentOfMax = 50,
@@ -952,19 +953,18 @@ function Apply-AutoHardwareThresholds {
         }
         $script:CpuThresholdProfile = "Generic CPU"
         if($cpuName -match "EPYC|Xeon"){
-            # Server CPU: allow higher sustained temperature under HPC full load.
-            # Warning: elevated temperature. Fail: thermal throttling risk / abnormal cooling.
+            # Keep customer-facing CPU temperature grading consistent across CPU classes.
             $script:CpuThresholdProfile = "Server CPU / IPMI-first"
-            $script:CpuTempWarnC = 90
-            $script:CpuTempFailC = 95
+            $script:CpuTempWarnC = 95
+            $script:CpuTempFailC = 100
         } elseif($cpuName -match "Core\(TM\)|Core |Ryzen|Threadripper"){
             $script:CpuThresholdProfile = "Workstation/Desktop CPU"
-            $script:CpuTempWarnC = 90
+            $script:CpuTempWarnC = 95
             $script:CpuTempFailC = 100
         } else {
             $script:CpuThresholdProfile = "Generic CPU"
-            $script:CpuTempWarnC = 85
-            $script:CpuTempFailC = 95
+            $script:CpuTempWarnC = 95
+            $script:CpuTempFailC = 100
         }
     } catch { $script:CpuThresholdProfile = "Generic CPU" }
 
@@ -2829,7 +2829,7 @@ function Build-Report {
         $powerText=if($cpuPower -eq $null){"not collected"}else{"$cpuPower W"}
         $extra=""
         if($cpuTemp -eq $null){ $extra="; temperature sensor unavailable, not treated as hardware failure" }
-        elseif($cpuTemp -ge $CpuTempWarnC){ $extra="; temperature is above reference but below critical limit" }
+        elseif($cpuTemp -gt $CpuTempWarnC){ $extra="; temperature is above reference but below critical limit" }
         if($cpuAvg -ne $null -and $cpuAvg -lt $CpuAvgLoadPassPercent){ $extra += "; stable avg below strict reference, accepted for short staged test" }
         Add-Status $L.CpuPressure "PASS" ("Max util: {0}%; Stable avg: {1}%; Max temp: {2}; Max package power: {3}{4}" -f $cpuMax,$cpuAvg,$tempText,$powerText,$extra) $true
     }
@@ -3174,8 +3174,8 @@ $diskResultTableRows
 "@
     $criteria=""
     $cpuCriteria = CriteriaCell `
-        "<ul class='mini-list'><li>最大负载 ≥ 80%</li><li>稳定窗口平均 ≥ 50%</li><li>CPU 温度 &lt; ${CpuTempFailC} C</li></ul>" `
-        "<ul class='mini-list'><li>低于严格参考只记录说明</li><li>短测/启动/停止窗口波动不直接判失败</li></ul>" `
+        "<ul class='mini-list'><li>最大负载 ≥ 80%</li><li>稳定窗口平均 ≥ 50%</li><li>CPU 温度 ≤ ${CpuTempWarnC} C</li></ul>" `
+        "<ul class='mini-list'><li>CPU 温度 &gt; ${CpuTempWarnC} C 且 &lt; ${CpuTempFailC} C</li><li>低于严格参考只记录说明</li><li>短测/启动/停止窗口波动不直接判失败</li></ul>" `
         "<ul class='mini-list'><li>CPU 温度 ≥ ${CpuTempFailC} C</li><li>最大负载 &lt; 80%</li><li>稳定窗口平均 &lt; 50%</li><li>崩溃、重启、压测进程失败</li></ul>"
     $criteria += "<tr><td><b>CPU</b><br><span class='muted'>$script:CpuThresholdProfile</span></td><td>$cpuCriteria</td><td>稳定窗口会跳过启动、fallback、停止阶段采样；Server CPU 优先使用 IPMI/CPU_TEMP 传感器。</td></tr>"
 
@@ -3227,7 +3227,7 @@ $diskResultTableRows
     $judgeWarn = "<span class='warn'>&#x5173;&#x6CE8;</span>"
     $cpuMaxJudge = if($cpuMax -ne $null -and $cpuMax -ge 80){$judgeOk}else{$judgeBad}
     $cpuAvgJudge = if($cpuAvg -ne $null -and $cpuAvg -ge 50){$judgeOk}else{$judgeBad}
-    $cpuTempJudge = if($cpuTemp -eq $null){"<span class='na'>&#x672A;&#x91C7;&#x96C6;&#xFF0C;&#x4E0D;&#x53C2;&#x4E0E;&#x5224;&#x5B9A;</span>"}elseif($cpuTemp -ge $CpuTempFailC){$judgeBad}elseif($cpuTemp -ge $CpuTempWarnC){$judgeAccept}else{$judgeOk}
+    $cpuTempJudge = if($cpuTemp -eq $null){"<span class='na'>&#x672A;&#x91C7;&#x96C6;&#xFF0C;&#x4E0D;&#x53C2;&#x4E0E;&#x5224;&#x5B9A;</span>"}elseif($cpuTemp -ge $CpuTempFailC){$judgeBad}elseif($cpuTemp -gt $CpuTempWarnC){$judgeAccept}else{$judgeOk}
     $cpuPowerTelemetryNA = "<span class='na'>-</span>"
     $cpuPowerBelowBaselineJudge = "<span class='na'>-</span>"
     $cpuPowerMaxJudge = if(!$cpuPowerAvailable -or !$cpuPowerBaselineAvailable){$cpuPowerTelemetryNA}elseif($cpuPower -ge $cpuPowerBaselineW){$judgeOk}else{$cpuPowerBelowBaselineJudge}

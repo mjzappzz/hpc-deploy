@@ -94,7 +94,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - 脚本知识库文件列表、上传、预览、下载、删除
 - 常用运维命令位于资产库管理下的独立页面，数据保存在 SQLite `ops_commands` 表；左侧选择标题，标题前的星标沿用服务器关注交互，将当前浏览器关注的命令置顶，无需管理员确认且不写入服务端。右侧默认按安全富文本展示正文，点击编辑后才进入编辑态，支持选中文字加粗、新增、保存、复制和删除。正文仅允许段落、换行及加粗标签，服务端在写入与读取时均清理其他 HTML，审计不记录命令正文；该模块不关联文件上传、脚本白名单或远程任务执行。
 - 前端当前按类型筛选 mpi/stress/windows；apptainer 资产保留但不开放管理入口
-- Windows 分类仅接受 `.ps1`、`.bat`、`.cmd`，单文件不超过 2 MiB；只供 Windows 压测页面预览、复制和下载，不可创建 Linux 任务。当前 `v97_windows_stress.ps1` 在管理员 PowerShell、PawnIO 未安装且 `AutoConfirmPawIoInstall=true` 时，会从 PawnIO 官方 GitHub Release 下载 Authenticode 有效签名的安装器并以 `-install -silent` 安装；仅接受退出码 0 或 3010，且会轮询复核安装状态。非管理员、签名校验失败或超时只记录告警并降级采集。报告的核心指标和 CPU/GPU 分项指标均展示 CPU 最高、平均温度，以及 GPU 最高、平均最高温度和最大、平均总功耗；GPU 优先按驱动的 `power.limit`、`GPU Slowdown Temp` 动态评定，热降频点不可用时按现有 GPU 温度阈值评定。CPU 优先使用 LHM PPT/Power Limit 百分比反推平台上限，未读取到时可回退到本地精确型号的官方 TDP；达到基准显示通过，低于基准显示 `-`。客户报告的参考标准面板只展示已成功读取的动态限制值。
+- Windows 分类仅接受 `.ps1`、`.bat`、`.cmd`，单文件不超过 2 MiB；只供 Windows 压测页面预览、复制和下载，不可创建 Linux 任务。当前 `v97_windows_stress.ps1` 在管理员 PowerShell、PawnIO 未安装且 `AutoConfirmPawIoInstall=true` 时，会从 PawnIO 官方 GitHub Release 下载 Authenticode 有效签名的安装器并以 `-install -silent` 安装；仅接受退出码 0 或 3010，且会轮询复核安装状态。非管理员、签名校验失败或超时只记录告警并降级采集。报告的核心指标和 CPU/GPU 分项指标均展示 CPU 最高、平均温度，以及 GPU 最高、平均最高温度和最大、平均总功耗；CPU 温度在所有 CPU 类型统一按 ≤95°C 通过、>95°C 且 <100°C 关注、≥100°C 不合格评定。GPU 优先按驱动的 `power.limit`、`GPU Slowdown Temp` 动态评定，热降频点不可用时按现有 GPU 温度阈值评定。CPU 优先使用 LHM PPT/Power Limit 百分比反推平台上限，未读取到时可回退到本地精确型号的官方 TDP；达到基准显示通过，低于基准显示 `-`。客户报告的参考标准面板只展示已成功读取的动态限制值。
 - Linux NVIDIA 驱动库由 tasks API 独立管理，避免 `.run` 文件进入通用 Linux 脚本执行链路
 - 前端“资产库管理”将 Linux NVIDIA 驱动库置于独立卡片，普通脚本知识库只展示 mpi/stress；统一上传入口先选择目标模块，再应用对应扩展名约束。Windows 与暂时下线的 Apptainer 资料不进入该页面的“全部”列表
 
