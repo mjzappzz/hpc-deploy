@@ -48,7 +48,7 @@ echo '__HPROBE_SECT_B__disk'
 (df -hT --local 2>/dev/null || df -hT 2>/dev/null)
 echo '__HPROBE_DISK_BLOCK__'
 if command -v lsblk >/dev/null 2>&1; then
-  lsblk --json --bytes --output NAME,PATH,SIZE,TYPE,MOUNTPOINTS 2>/dev/null || echo '__LSBLK_FAILED__'
+  lsblk --json --bytes --output NAME,PATH,SIZE,TYPE,MOUNTPOINTS,ROTA,TRAN,MODEL 2>/dev/null || echo '__LSBLK_FAILED__'
 else
   echo '__LSBLK_NOT_FOUND__'
 fi
@@ -347,6 +347,11 @@ def _summarize_disk_inventory(raw: str) -> dict[str, list[dict[str, str]]] | Non
     """Return mounted device filesystems and whole disks without mounted descendants."""
     df_output, _, lsblk_output = raw.partition("__HPROBE_DISK_BLOCK__")
     mounted_filesystems = _parse_mounted_filesystems(df_output)
+    media_types = _parse_disk_media_types(lsblk_output)
+    interface_types = _parse_disk_interface_types(lsblk_output)
+    for filesystem in mounted_filesystems:
+        filesystem["media_type"] = _media_type_for_device(filesystem["device"], media_types)
+        filesystem["interface_type"] = _interface_type_for_device(filesystem["device"], interface_types)
     unmounted_disks = _parse_unmounted_disks(lsblk_output)
     if not mounted_filesystems and not unmounted_disks:
         return None
@@ -354,6 +359,109 @@ def _summarize_disk_inventory(raw: str) -> dict[str, list[dict[str, str]]] | Non
         "mounted_filesystems": mounted_filesystems,
         "unmounted_disks": unmounted_disks,
     }
+
+
+def _parse_disk_media_types(raw: str) -> dict[str, str]:
+    if not raw or raw.lstrip().startswith("__LSBLK_"):
+        return {}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+
+    media_types: dict[str, str] = {}
+
+    def visit(device: object, inherited_media_type: str | None = None) -> None:
+        if not isinstance(device, dict):
+            return
+        path = device.get("path")
+        detected_media_type = _classify_disk_media_type(device)
+        media_type = inherited_media_type if inherited_media_type == "RAID" else detected_media_type or inherited_media_type
+        if isinstance(path, str) and media_type:
+            media_types[path] = media_type
+        children = device.get("children")
+        if isinstance(children, list):
+            for child in children:
+                visit(child, media_type)
+
+    for device in payload.get("blockdevices", []):
+        visit(device)
+    return media_types
+
+
+def _classify_disk_media_type(device: dict[str, object]) -> str | None:
+    model = device.get("model")
+    normalized_model = model.lower().strip() if isinstance(model, str) else ""
+    if (
+        "raid" in normalized_model
+        or "smart array" in normalized_model
+        or "logical volume" in normalized_model
+        or re.match(r"^mr\d{3,}", normalized_model) is not None
+    ):
+        return "RAID"
+    rotational = device.get("rota")
+    if rotational is True or rotational == 1 or rotational == "1":
+        return "HDD"
+    if rotational is False or rotational == 0 or rotational == "0":
+        return "SSD"
+    return None
+
+
+def _parse_disk_interface_types(raw: str) -> dict[str, str]:
+    if not raw or raw.lstrip().startswith("__LSBLK_"):
+        return {}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+
+    interface_types: dict[str, str] = {}
+
+    def visit(device: object, inherited_interface_type: str | None = None) -> None:
+        if not isinstance(device, dict):
+            return
+        path = device.get("path")
+        interface_type = _classify_disk_interface_type(device) or inherited_interface_type
+        if isinstance(path, str) and interface_type:
+            interface_types[path] = interface_type
+        children = device.get("children")
+        if isinstance(children, list):
+            for child in children:
+                visit(child, interface_type)
+
+    for device in payload.get("blockdevices", []):
+        visit(device)
+    return interface_types
+
+
+def _classify_disk_interface_type(device: dict[str, object]) -> str | None:
+    transport = device.get("tran")
+    if not isinstance(transport, str) or not transport:
+        return None
+    normalized = transport.lower()
+    if normalized == "nvme":
+        return "NVMe"
+    if normalized in {"sata", "sas"}:
+        return normalized.upper()
+    return normalized.upper()
+
+
+def _media_type_for_device(device: str, media_types: dict[str, str]) -> str:
+    if device in media_types:
+        return media_types[device]
+    parents = [path for path in media_types if device.startswith(path)]
+    if parents:
+        return media_types[max(parents, key=len)]
+    return "未知"
+
+
+def _interface_type_for_device(device: str, interface_types: dict[str, str]) -> str:
+    if device in interface_types:
+        return interface_types[device]
+    parents = [path for path in interface_types if device.startswith(path)]
+    if parents:
+        return interface_types[max(parents, key=len)]
+    return "未知接口"
 
 
 def _parse_mounted_filesystems(raw: str) -> list[dict[str, str]]:
@@ -397,7 +505,12 @@ def _parse_unmounted_disks(raw: str) -> list[dict[str, str]]:
         size = device.get("size")
         if not isinstance(path, str) or not isinstance(size, int) or size <= 0:
             continue
-        unmounted.append({"device": path, "size": _format_binary_size(size)})
+        unmounted.append({
+            "device": path,
+            "size": _format_binary_size(size),
+            "media_type": _classify_disk_media_type(device) or "未知",
+            "interface_type": _classify_disk_interface_type(device) or "未知接口",
+        })
     return unmounted
 
 

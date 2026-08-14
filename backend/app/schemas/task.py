@@ -266,6 +266,7 @@ class StressSuiteCreateRequest(BaseModel):
     server_ids: list[int] = Field(min_length=1)
     script_paths: list[str] = Field(min_length=1, max_length=3)
     params: dict[str, object] = Field(default_factory=dict)
+    disk_test_dirs_by_server: dict[int, list[str]] | None = None
 
 
 class StressSuiteCreateItem(BaseModel):

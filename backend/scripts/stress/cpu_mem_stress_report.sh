@@ -1,7 +1,7 @@
 #!/bin/bash
 #set -e  # 不使用 set -e，手工控制每个关键步骤的退出处理
 
-SCRIPT_VERSION="2026.08.11.1"
+SCRIPT_VERSION="2026.08.14.2"
 
 # ===== 自动检测系统并安装依赖 =====
 echo "[STAGE] dependency_check_start"
@@ -68,11 +68,13 @@ echo "[INFO] VM method: write64 (override with VM_METHOD=<method>)"
 
 DURATION=${1:-43200}
 INTERVAL=${2:-2}
+CPU_BUSY_WARMUP_SECONDS=${CPU_BUSY_WARMUP_SECONDS:-15}
 TIME_TAG=$(date +%F_%H%M%S)
 WORKDIR=$(pwd)
 STOP_FILE="${WORKDIR}/.monitor.stop"
 MEMORY_SAFETY_FILE="${WORKDIR}/.memory-safety.stop"
-rm -f "$STOP_FILE" "$MEMORY_SAFETY_FILE"
+STRESS_PID_FILE="${WORKDIR}/.stress-ng.pid"
+rm -f "$STOP_FILE" "$MEMORY_SAFETY_FILE" "$STRESS_PID_FILE"
 
 STRESS_LOG="${WORKDIR}/stress_cpu_mem_${TIME_TAG}.log"
 MON_LOG="${WORKDIR}/cpu_mem_monitor_${TIME_TAG}.csv"
@@ -290,6 +292,7 @@ _cleanup() {
 
     # 通知监控循环退出
     touch "$STOP_FILE" 2>/dev/null || true
+    rm -f "$STRESS_PID_FILE" 2>/dev/null || true
 
     # 关闭资源监控进程
     if [ -n "${MON_PID:-}" ]; then
@@ -336,7 +339,7 @@ KERNEL_LOG_START_AT=$(date '+%Y-%m-%d %H:%M:%S')
 
 
 (
-echo "timestamp,load1,load5,load15,mem_total_MB,mem_used_MB,mem_free_MB,mem_available_MB,swap_total_MB,swap_used_MB,cpu_temp_max_C,cpu_busy_percent,cpu_iowait_percent,cpu_steal_percent,memory_target_achieved_percent,memory_safety_breach"
+echo "timestamp,load1,load5,load15,mem_total_MB,mem_used_MB,mem_free_MB,mem_available_MB,swap_total_MB,swap_used_MB,cpu_temp_max_C,cpu_busy_percent,cpu_iowait_percent,cpu_steal_percent,memory_target_achieved_percent,memory_safety_breach,stress_active"
 read -r _cpu _user _nice _system _idle _iowait _irq _softirq _steal _rest < /proc/stat
 PREV_TOTAL=$(( _user + _nice + _system + _idle + _iowait + _irq + _softirq + _steal ))
 PREV_IDLE=$(( _idle + _iowait ))
@@ -392,7 +395,18 @@ while [ ! -f "$STOP_FILE" ]; do
         MEMORY_SAFETY_BREACH=1
         touch "$MEMORY_SAFETY_FILE"
     fi
-    echo "$TS,$LOAD1,$LOAD5,$LOAD15,$MEM_LINE,$SWAP_LINE,$CPU_TEMP_VALUE,$CPU_BUSY_PERCENT,$CPU_IOWAIT_PERCENT,$CPU_STEAL_PERCENT,$MEMORY_TARGET_ACHIEVED_PERCENT,$MEMORY_SAFETY_BREACH"
+
+    # CPU Busy 仅对压力进程仍在运行的完整采样窗口参与判定；
+    # 主进程每 10 秒轮询一次，不能用 STOP_FILE 判断，否则结束后的收尾空闲样本会稀释均值。
+    STRESS_ACTIVE=0
+    if [ -r "$STRESS_PID_FILE" ]; then
+        MONITORED_STRESS_PID=$(cat "$STRESS_PID_FILE" 2>/dev/null || true)
+        if [[ "$MONITORED_STRESS_PID" =~ ^[0-9]+$ ]] && kill -0 "$MONITORED_STRESS_PID" 2>/dev/null; then
+            MONITORED_STRESS_STATE=$(ps -o stat= -p "$MONITORED_STRESS_PID" 2>/dev/null | tr -d '[:space:]')
+            [[ "$MONITORED_STRESS_STATE" != Z* ]] && STRESS_ACTIVE=1
+        fi
+    fi
+    echo "$TS,$LOAD1,$LOAD5,$LOAD15,$MEM_LINE,$SWAP_LINE,$CPU_TEMP_VALUE,$CPU_BUSY_PERCENT,$CPU_IOWAIT_PERCENT,$CPU_STEAL_PERCENT,$MEMORY_TARGET_ACHIEVED_PERCENT,$MEMORY_SAFETY_BREACH,$STRESS_ACTIVE"
 done
 ) > "$MON_LOG" &
 MON_PID=$!
@@ -474,6 +488,7 @@ fi
 
 STRESS_PID=$!
 STRESS_PGID=$(ps -o pgid= "$STRESS_PID" 2>/dev/null | tr -d ' ')
+printf '%s\n' "$STRESS_PID" > "$STRESS_PID_FILE"
 
 # 后台 tail 实时输出日志到 stdout，让平台能看见 stress-ng 进度
 tail -n +1 -F "$STRESS_LOG" 2>/dev/null &
@@ -525,6 +540,7 @@ done
 # 收集退出码
 wait "$STRESS_PID" 2>/dev/null
 STRESS_EXIT=$?
+rm -f "$STRESS_PID_FILE" 2>/dev/null || true
 
 # 停止 tail
 kill "$TAIL_PID" 2>/dev/null || true
@@ -586,8 +602,10 @@ SWAP_USED_MAX=$(awk -F',' 'NR>1 {if($10>max)max=$10} END{printf "%.0f",max+0}' "
 CPU_TEMP_SAMPLES=$(awk -F',' 'NR>1 && $11 != "" {n++} END{print n+0}' "$MON_LOG")
 CPU_TEMP_AVG=$(awk -F',' 'NR>1 && $11 != "" {sum+=$11; n++} END{if(n>0) printf "%.1f",sum/n; else print "-"}' "$MON_LOG")
 CPU_TEMP_MAX=$(awk -F',' 'NR>1 && $11 != "" {if(!found || $11>max){max=$11; found=1}} END{if(found) printf "%.1f",max; else print "-"}' "$MON_LOG")
-CPU_BUSY_AVG=$(awk -F',' 'NR>1 && $12 != "" {sum+=$12; n++} END{if(n>0) printf "%.2f",sum/n; else print "0.00"}' "$MON_LOG")
-CPU_BUSY_MAX=$(awk -F',' 'NR>1 && $12 != "" {if(!found || $12>max){max=$12; found=1}} END{if(found) printf "%.2f",max; else print "0.00"}' "$MON_LOG")
+CPU_BUSY_WARMUP_SAMPLES=$(( (CPU_BUSY_WARMUP_SECONDS + INTERVAL - 1) / INTERVAL ))
+CPU_BUSY_PRESSURE_SAMPLES=$(awk -F',' -v warmup="$CPU_BUSY_WARMUP_SAMPLES" 'NR>1 + warmup && $12 != "" && $17 == 1 {n++} END{print n+0}' "$MON_LOG")
+CPU_BUSY_AVG=$(awk -F',' -v warmup="$CPU_BUSY_WARMUP_SAMPLES" 'NR>1 + warmup && $12 != "" && $17 == 1 {sum+=$12; n++} END{if(n>0) printf "%.2f",sum/n; else print "0.00"}' "$MON_LOG")
+CPU_BUSY_MAX=$(awk -F',' -v warmup="$CPU_BUSY_WARMUP_SAMPLES" 'NR>1 + warmup && $12 != "" && $17 == 1 {if(!found || $12>max){max=$12; found=1}} END{if(found) printf "%.2f",max; else print "0.00"}' "$MON_LOG")
 CPU_IOWAIT_AVG=$(awk -F',' 'NR>1 && $13 != "" {sum+=$13; n++} END{if(n>0) printf "%.2f",sum/n; else print "0.00"}' "$MON_LOG")
 CPU_STEAL_AVG=$(awk -F',' 'NR>1 && $14 != "" {sum+=$14; n++} END{if(n>0) printf "%.2f",sum/n; else print "0.00"}' "$MON_LOG")
 MEM_TARGET_ACHIEVED_AVG=$(awk -F',' 'NR>1 && $15 != "" {sum+=$15; n++} END{if(n>0) printf "%.2f",sum/n; else print "0.00"}' "$MON_LOG")
@@ -682,6 +700,8 @@ Swap持续失败时间阈值  : ${SWAP_SUSTAIN_SECONDS} 秒
 运行时内存安全余量    : ${MEMORY_SAFETY_RESERVE_MB} MB
 压力目标缓冲          : ${MEMORY_SAFETY_MARGIN_MB} MB
 CPU Busy失败阈值      : ${CPU_BUSY_FAIL_PERCENT}%
+CPU Busy预热排除      : ${CPU_BUSY_WARMUP_SECONDS} 秒（${CPU_BUSY_WARMUP_SAMPLES} 个采样）
+CPU Busy有效压力采样  : ${CPU_BUSY_PRESSURE_SAMPLES} 个（仅 stress-ng 运行期间）
 内存目标达成失败阈值  : ${MEMORY_TARGET_FAIL_PERCENT}%
 
 四、测试结果汇总
@@ -885,6 +905,7 @@ rows_data = [
     ("CPU负载", "平均15分钟负载", "${LOAD15_AVG}"),
     ("CPU负载", "CPU Busy平均", "${CPU_BUSY_AVG}%"),
     ("CPU负载", "CPU Busy最高", "${CPU_BUSY_MAX}%"),
+    ("CPU负载", "CPU Busy有效压力采样", "${CPU_BUSY_PRESSURE_SAMPLES} 个（仅 stress-ng 运行期间）"),
     ("CPU负载", "CPU I/O Wait平均", "${CPU_IOWAIT_AVG}%"),
     ("CPU负载", "CPU Steal平均", "${CPU_STEAL_AVG}%"),
     ("CPU温度", "温度传感器", "${CPU_TEMP_SOURCE}"),
@@ -1154,6 +1175,7 @@ rows_data = [
     ("CPU负载", "平均15分钟负载", "${LOAD15_AVG}"),
     ("CPU负载", "CPU Busy平均", "${CPU_BUSY_AVG}%"),
     ("CPU负载", "CPU Busy最高", "${CPU_BUSY_MAX}%"),
+    ("CPU负载", "CPU Busy有效压力采样", "${CPU_BUSY_PRESSURE_SAMPLES} 个（仅 stress-ng 运行期间）"),
     ("CPU负载", "CPU I/O Wait平均", "${CPU_IOWAIT_AVG}%"),
     ("CPU负载", "CPU Steal平均", "${CPU_STEAL_AVG}%"),
     ("CPU温度", "温度传感器", "${CPU_TEMP_SOURCE}"),

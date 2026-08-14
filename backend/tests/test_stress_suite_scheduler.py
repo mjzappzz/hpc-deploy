@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 import unittest
+from unittest.mock import MagicMock
 
+from app.core import task_runner
 from app.api.tasks import _fail_suite_task_records_for_scheduler, _wait_for_active_suite_task
 
 
@@ -17,6 +19,23 @@ class FakeDb:
 
 
 class StressSuiteSchedulerTests(unittest.TestCase):
+    def test_parallel_disk_batch_failure_does_not_cancel_peer_task(self) -> None:
+        failed = SimpleNamespace(
+            id=1, task_id="task-data", server_id=1, batch_id="batch-disk", sequence_index=3,
+            file_name="disk_stress_report.sh", depends_on_task_id=None,
+        )
+        peer = SimpleNamespace(
+            id=2, task_id="task-root", server_id=1, batch_id="batch-disk", sequence_index=4,
+            file_name="disk_stress_report.sh", depends_on_task_id=None, status="RUNNING",
+        )
+        db = MagicMock()
+        db.query.return_value.filter.return_value.all.return_value = [failed, peer]
+
+        task_runner._cancel_following_stress_batch_tasks(db, failed, "data disk failed")
+
+        self.assertEqual(peer.status, "RUNNING")
+        db.commit.assert_not_called()
+
     def test_scheduler_failure_marks_unfinished_tasks_failed(self) -> None:
         db = FakeDb()
         tasks = [

@@ -69,6 +69,12 @@ export function getGpuStressLabel(params?: Record<string, unknown> | null): stri
     : 'GPU压测 · FP32'
 }
 
+function getDiskStressLabel(params?: Record<string, unknown> | null): string {
+  const mountpoint = typeof params?.disk_test_dir === 'string' ? params.disk_test_dir : ''
+  if (!mountpoint) return '磁盘压测'
+  return `磁盘压测 · ${mountpoint}`
+}
+
 export function getTaskModuleLabel(
   task: TaskPresentationSource,
   options: TaskModuleLabelOptions = {},
@@ -79,17 +85,16 @@ export function getTaskModuleLabel(
   const cpuMemoryLabel = options.cpuMemorySeparator === 'slash'
     ? 'CPU/内存压测'
     : 'CPU与内存压测'
+  const name = taskSourceName(task)
 
   if (task.task_type === 'stress' && task.sequence_index === 1) return getGpuStressLabel(task.params)
   if (task.task_type === 'stress' && task.sequence_index === 2) return cpuMemoryLabel
-  if (task.task_type === 'stress' && task.sequence_index === 3) return '磁盘压测'
+  if ((task.task_type === 'stress' && task.sequence_index === 3) || name.includes('disk')) return getDiskStressLabel(task.params)
 
-  const name = taskSourceName(task)
   if (name.includes('disable_linux_lock_sleep')) return '关闭锁屏与休眠'
   if (name.includes('lock_linux_release')) return '锁定当前系统版本'
   if (name.includes('gpu')) return getGpuStressLabel(task.params)
   if (name.includes('cpu') || name.includes('mem')) return cpuMemoryLabel
-  if (name.includes('disk')) return '磁盘压测'
   if (task.task_type === 'script') {
     return environmentBusinessCategoryLabel(name.split('/').pop() || name)
   }
@@ -138,6 +143,7 @@ export function getBatchStepLabel(task: TaskPresentationSource): string {
   if (fileName === 'install_oneapi_2022.sh' || fileName === 'install_openmpi_4.1.6_aocc_aocl.sh') {
     return getTaskNameLabel(task)
   }
+  if (fileName.includes('disk')) return getDiskStressLabel(task.params)
 
   if (task.sequence_index === 1) return getGpuStressLabel(task.params)
   if (task.sequence_index === 2) return 'CPU与内存'

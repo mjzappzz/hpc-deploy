@@ -10,7 +10,7 @@ STRESS_ALLOWED_GPU_PRECISIONS: set[str] = {"fp32", "fp64"}
 STRESS_ALL_PARAM_KEYS: set[str] = {
     "duration_seconds", "interval_seconds",
     "memory_percent", "workers",
-    "disk_file_size", "disk_path", "disk_test_dir",
+    "disk_file_size", "disk_path", "disk_test_dir", "disk_test_dirs",
     "gpu_ids", "gpu_memory_percent", "gpu_backend", "gpu_precision",
 }
 
@@ -202,8 +202,23 @@ def validate_stress_suite_params(raw: dict[str, object], *, has_disk: bool) -> d
     }
 
     for key in raw:
-        if key not in ("duration_seconds", "interval_seconds"):
+        if key not in ("duration_seconds", "interval_seconds", "disk_test_dirs"):
             suite_params[key] = raw[key]
+
+    raw_dirs = raw.get("disk_test_dirs")
+    if raw_dirs is not None:
+        if not has_disk:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="disk_test_dirs requires disk stress")
+        if not isinstance(raw_dirs, list) or not raw_dirs:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="disk_test_dirs must be a non-empty list")
+        normalized_dirs: list[str] = []
+        for item in raw_dirs:
+            if not isinstance(item, str):
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="disk_test_dirs must contain strings")
+            normalized = validate_disk_test_dir(item)
+            if normalized not in normalized_dirs:
+                normalized_dirs.append(normalized)
+        suite_params["disk_test_dirs"] = normalized_dirs
 
     dtd = suite_params.get("disk_test_dir")
     if dtd is not None and has_disk:

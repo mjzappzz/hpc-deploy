@@ -1,14 +1,30 @@
 import unittest
 
-from app.core.ssh_detector import CONSOLIDATED_PROBE_SCRIPT, _summarize_cpu_info, _summarize_cpu_topology, _summarize_disk_inventory, _summarize_gpu_info
+from app.core.ssh_detector import CONSOLIDATED_PROBE_SCRIPT, _classify_disk_media_type, _parse_disk_media_types, _summarize_cpu_info, _summarize_cpu_topology, _summarize_disk_inventory, _summarize_gpu_info
 
 
 class SshDetectorTests(unittest.TestCase):
     def test_disk_probe_requests_name_to_preserve_lsblk_parent_child_relationships(self) -> None:
         self.assertIn(
-            "lsblk --json --bytes --output NAME,PATH,SIZE,TYPE,MOUNTPOINTS",
+            "lsblk --json --bytes --output NAME,PATH,SIZE,TYPE,MOUNTPOINTS,ROTA,TRAN,MODEL",
             CONSOLIDATED_PROBE_SCRIPT,
         )
+
+    def test_raid_controller_logical_disk_is_not_classified_as_hdd(self) -> None:
+        self.assertEqual(
+            _classify_disk_media_type({"model": "MR9361-8i", "rota": True}),
+            "RAID",
+        )
+
+    def test_raid_media_type_is_inherited_by_its_partitions(self) -> None:
+        media_types = _parse_disk_media_types("""{
+          "blockdevices": [{
+            "path": "/dev/sda", "type": "disk", "model": "MR9361-8i", "rota": true,
+            "children": [{"path": "/dev/sda2", "type": "part", "rota": true}]
+          }]
+        }""")
+
+        self.assertEqual(media_types["/dev/sda2"], "RAID")
 
     def test_probe_retries_nvidia_smi_while_driver_is_starting(self) -> None:
         self.assertIn("for smi_attempt in 1 2 3", CONSOLIDATED_PROBE_SCRIPT)
@@ -68,13 +84,17 @@ __CUDA_VERSION__12.8"""
         raw = """Filesystem     Type   Size  Used Avail Use% Mounted on
 /dev/nvme0n1p2 ext4   916G   27G  842G   4% /
 /dev/nvme0n1p1 vfat   511M  6.1M  505M   2% /boot/efi
+/dev/sda1 ext4 14T    666M  14T   1% /data
 __HPROBE_DISK_BLOCK__
 {
   "blockdevices": [
-    {"path": "/dev/sda", "size": 16060580270080, "type": "disk", "mountpoints": [null]},
-    {"path": "/dev/nvme0n1", "size": 1000204886016, "type": "disk", "mountpoints": [null], "children": [
-      {"path": "/dev/nvme0n1p2", "size": 999000000000, "type": "part", "mountpoints": ["/"]}
-    ]}
+    {"path": "/dev/sda", "size": 16060580270080, "type": "disk", "mountpoints": [null], "rota": true, "tran": "sata", "children": [
+      {"path": "/dev/sda1", "size": 16060580200000, "type": "part", "mountpoints": ["/data"], "rota": true, "tran": "sata"}
+    ]},
+    {"path": "/dev/nvme0n1", "size": 1000204886016, "type": "disk", "mountpoints": [null], "rota": false, "tran": "nvme", "children": [
+      {"path": "/dev/nvme0n1p2", "size": 999000000000, "type": "part", "mountpoints": ["/"], "rota": false, "tran": "nvme"}
+    ]},
+    {"path": "/dev/sdb", "size": 1000204886016, "type": "disk", "mountpoints": [null], "rota": false, "tran": "sas"}
   ]
 }"""
 
@@ -82,9 +102,10 @@ __HPROBE_DISK_BLOCK__
             _summarize_disk_inventory(raw),
             {
                 "mounted_filesystems": [
-                    {"device": "/dev/nvme0n1p2", "filesystem_type": "ext4", "size": "916G", "used": "27G", "available": "842G", "use_percent": "4%", "mountpoint": "/"},
-                    {"device": "/dev/nvme0n1p1", "filesystem_type": "vfat", "size": "511M", "used": "6.1M", "available": "505M", "use_percent": "2%", "mountpoint": "/boot/efi"},
+                    {"device": "/dev/nvme0n1p2", "filesystem_type": "ext4", "size": "916G", "used": "27G", "available": "842G", "use_percent": "4%", "mountpoint": "/", "media_type": "SSD", "interface_type": "NVMe"},
+                    {"device": "/dev/nvme0n1p1", "filesystem_type": "vfat", "size": "511M", "used": "6.1M", "available": "505M", "use_percent": "2%", "mountpoint": "/boot/efi", "media_type": "SSD", "interface_type": "NVMe"},
+                    {"device": "/dev/sda1", "filesystem_type": "ext4", "size": "14T", "used": "666M", "available": "14T", "use_percent": "1%", "mountpoint": "/data", "media_type": "HDD", "interface_type": "SATA"},
                 ],
-                "unmounted_disks": [{"device": "/dev/sda", "size": "14.6T"}],
+                "unmounted_disks": [{"device": "/dev/sdb", "size": "931.5G", "media_type": "SSD", "interface_type": "SAS"}],
             },
         )

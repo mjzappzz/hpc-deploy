@@ -47,7 +47,7 @@
         />
 
         <el-button @click="resetFilters">重置</el-button>
-        <el-tag v-if="isAutoRefreshing" type="info" size="small" effect="plain" class="auto-refresh-tag">
+        <el-tag type="info" size="small" effect="plain" class="auto-refresh-tag">
           <span class="auto-refresh-label">自动刷新中 (5s)</span>
         </el-tag>
       </div>
@@ -244,7 +244,7 @@
           @clear="clearBatchSearch"
         />
         <el-button @click="resetBatchFilters">重置</el-button>
-        <el-tag v-if="isAutoRefreshing" type="info" size="small" effect="plain" class="auto-refresh-tag">
+        <el-tag type="info" size="small" effect="plain" class="auto-refresh-tag">
           <span class="auto-refresh-label">自动刷新中 (5s)</span>
         </el-tag>
       </div>
@@ -685,6 +685,13 @@
             </div>
           </template>
           <template v-else-if="drawerActivePanel === 'disk'">
+            <div v-if="drawerServer?.disk_inventory?.mounted_filesystems.length" class="task-disk-inventory">
+              <div v-for="filesystem in drawerServer.disk_inventory.mounted_filesystems" :key="`${filesystem.device}-${filesystem.mountpoint}`" class="task-disk-inventory__row">
+                <code>{{ filesystem.device }}</code>
+                <span>{{ diskMediaLabel(filesystem.media_type, filesystem.interface_type) }}</span>
+                <span>{{ filesystem.mountpoint }} · {{ filesystem.size }}</span>
+              </div>
+            </div>
             <div v-if="drawerMonitorLoading && !drawerMonitorData" class="task-drawer-loading-inline">
               <el-icon class="is-loading"><Loading /></el-icon>
               <span>正在获取磁盘快照...</span>
@@ -1010,6 +1017,13 @@
                     </el-tab-pane>
 
                     <el-tab-pane v-if="detailShowMonitorDisk" label="磁盘" name="disk">
+                      <div v-if="detailServer?.disk_inventory?.mounted_filesystems.length" class="task-disk-inventory">
+                        <div v-for="filesystem in detailServer.disk_inventory.mounted_filesystems" :key="`${filesystem.device}-${filesystem.mountpoint}`" class="task-disk-inventory__row">
+                          <code>{{ filesystem.device }}</code>
+                          <span>{{ diskMediaLabel(filesystem.media_type, filesystem.interface_type) }}</span>
+                          <span>{{ filesystem.mountpoint }} · {{ filesystem.size }}</span>
+                        </div>
+                      </div>
                       <div v-if="detailMonitorLoading && !detailMonitorData" class="detail-panel-loading-inline">
                         <el-icon class="is-loading"><Loading /></el-icon>
                         <span>正在获取磁盘快照...</span>
@@ -1117,6 +1131,7 @@ import {
 import { requireAdminConfirm } from '@/composables/useAdminConfirm'
 import { TASK_STATE_REFRESHED_EVENT } from '@/utils/trailingRefresh'
 import { beginTaskSubmitting, endTaskSubmitting } from '@/utils/taskSubmitting'
+import { getServer, type ServerRecord } from '@/api/server'
 import StatusTag from '@/components/StatusTag.vue'
 import TaskCard from '@/components/TaskCard.vue'
 import TaskDiagnosisDialog from '@/components/TaskDiagnosisDialog.vue'
@@ -1205,6 +1220,7 @@ const drawerRetrySubmitting = ref(false)
 const drawerActivePanel = ref<DrawerMonitorPanel>('summary')
 const drawerMonitorData = ref<TaskMonitorStructuredResponse | null>(null)
 const drawerMonitorLoading = ref(false)
+const drawerServer = ref<ServerRecord | null>(null)
 const drawerWsHook = useTaskWebSocket()
 const drawerWsConnected = ref(false)
 const drawerWsFallback = ref(false)
@@ -1232,6 +1248,7 @@ const detailLogsLoading = ref(false)
 const detailLogViewerRef = ref<InstanceType<typeof TaskExecutionLogPanel> | null>(null)
 const detailMonitorData = ref<TaskMonitorStructuredResponse | null>(null)
 const detailMonitorLoading = ref(false)
+const detailServer = ref<ServerRecord | null>(null)
 const detailNow = ref(new Date())
 const detailWsHook = useTaskWebSocket()
 const detailWsConnected = ref(false)
@@ -1865,8 +1882,8 @@ const drawerVisibleMonitorTabs = computed<Array<{ name: DrawerMonitorPanel; labe
     { name: 'summary', label: '详情概览' },
     { name: 'logs', label: '执行日志' },
   ]
-  if (drawerIsTerminal.value) return base
   if (type === 'stress') {
+    if (drawerIsTerminal.value) return [...base, { name: 'disk', label: '磁盘' }]
     return [
       ...base,
       { name: 'cpu_mem', label: 'CPU与内存', monitorType: 'cpu_mem' },
@@ -1874,6 +1891,7 @@ const drawerVisibleMonitorTabs = computed<Array<{ name: DrawerMonitorPanel; labe
       { name: 'gpu', label: 'GPU', monitorType: 'gpu' },
     ]
   }
+  if (drawerIsTerminal.value) return base
   if (type === 'apptainer') {
     return [
       ...base,
@@ -2072,7 +2090,6 @@ const detailShowMonitorCpuMem = computed(() => {
 })
 
 const detailShowMonitorDisk = computed(() => {
-  if (detailIsTerminal.value) return false
   if (!batchDetailData.value) return false
   const t = batchDetailData.value.summary.task_type
   return t === 'stress' || t === 'stress_disk' || t === 'apptainer'
@@ -2096,6 +2113,8 @@ async function openTaskDetailDrawer(taskId: string, initialTask?: TaskRecord) {
   drawerLogsLoading.value = false
   drawerActivePanel.value = 'summary'
   drawerMonitorData.value = null
+  drawerServer.value = null
+  if (initialTask?.server_id) void loadDrawerServer(initialTask.server_id)
   taskDetailDrawerVisible.value = true
   await refreshTaskDrawer()
   if (!drawerIsTerminal.value) {
@@ -2176,6 +2195,15 @@ function closeTaskDetailDrawer() {
   drawerLogsLoaded.value = false
   drawerLogsLoading.value = false
   drawerMonitorData.value = null
+  drawerServer.value = null
+}
+
+async function loadDrawerServer(serverId: number) {
+  try {
+    drawerServer.value = (await getServer(serverId)).data
+  } catch {
+    drawerServer.value = null
+  }
 }
 
 async function refreshTaskDrawer(silent = false) {
@@ -2185,6 +2213,7 @@ async function refreshTaskDrawer(silent = false) {
   try {
     const taskResp = await getTask(taskId)
     drawerTask.value = taskResp.data
+    if (!drawerServer.value) void loadDrawerServer(taskResp.data.server_id)
     if (drawerIsTerminal.value) {
       stopDrawerRealtime()
     }
@@ -2262,7 +2291,7 @@ async function refreshDrawerPanel() {
     if (!drawerIsTerminal.value && !drawerLogsLoaded.value) await loadDrawerLogs()
   } else if (drawerActivePanel.value === 'summary') {
     await refreshTaskDrawer(true)
-  } else {
+  } else if (!drawerIsTerminal.value) {
     await fetchDrawerMonitorData()
   }
 }
@@ -2801,11 +2830,17 @@ function batchDetailSelectTask(idx: number) {
   detailLogsLoading.value = false
   detailMonitorData.value = null
   detailMonitorLoading.value = false
+  detailServer.value = null
   detailActivePanel.value = 'summary'
   detailNow.value = new Date()
   detailWsConnected.value = false
 
   const task = batchDetailData.value.tasks[idx]
+  if (task.server_id) {
+    getServer(task.server_id).then(resp => {
+      if (batchDetailSelectedIdx.value === idx) detailServer.value = resp.data
+    }).catch(() => {})
+  }
   // 单独请求完整任务数据，确保 start_time 可靠
   if (task.task_id) {
     getTask(task.task_id).then(resp => {
@@ -2816,6 +2851,12 @@ function batchDetailSelectTask(idx: number) {
   if (!detailIsTerminal.value && task.task_id) {
     detailStartRealtime(task.task_id)
   }
+}
+
+function diskMediaLabel(mediaType: string | undefined, interfaceType: string | undefined) {
+  if (mediaType === 'RAID') return 'RAID'
+  const medium = mediaType === 'SSD' || mediaType === 'HDD' ? mediaType : '未知'
+  return interfaceType && interfaceType !== '未知接口' ? `${medium} · ${interfaceType}` : medium
 }
 
 function detailStopRealtime() {
@@ -2938,7 +2979,7 @@ function handleDetailPanelChange(panelName: string | number) {
   } else if (['cpu_mem', 'disk', 'gpu'].includes(String(panelName))) {
     // Do not wait for the 5s background poll: show a loading state as soon as
     // the user opens a monitor tab, then render either the snapshot or error.
-    void detailFetchMonitor()
+    if (!detailIsTerminal.value) void detailFetchMonitor()
   }
 }
 
@@ -3103,27 +3144,9 @@ function stopAutoRefresh() {
   isAutoRefreshing.value = false
 }
 
-/** Check if auto-refresh should be active based on current view contents. */
+/** Keep task history current even when the active task list is empty. */
 function checkAutoRefresh() {
-  if (viewMode.value === 'tasks') {
-    if (filters.status === 'RUNNING') {
-      startAutoRefresh()
-      return
-    }
-    const hasNonTerminal = tasks.value.some(t => !TERMINAL_STATUSES.includes(t.status))
-    if (hasNonTerminal) {
-      startAutoRefresh()
-    } else {
-      stopAutoRefresh()
-    }
-  } else {
-    const hasRunning = batchItems.value.some(b => b.status === 'RUNNING')
-    if (hasRunning) {
-      startAutoRefresh()
-    } else {
-      stopAutoRefresh()
-    }
-  }
+  startAutoRefresh()
 }
 
 /**
@@ -4856,6 +4879,39 @@ onUnmounted(() => {
   min-height: 60px;
 }
 
+.task-disk-inventory {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.task-disk-inventory__row {
+  display: grid;
+  grid-template-columns: minmax(130px, 1fr) auto minmax(120px, 0.8fr);
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  background: var(--el-fill-color-lighter);
+  font-size: 12px;
+}
+
+.task-disk-inventory__row code {
+  color: var(--el-text-color-primary);
+}
+
+.task-disk-inventory__row span:nth-child(2) {
+  color: var(--el-color-primary);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.task-disk-inventory__row span:last-child {
+  color: var(--el-text-color-secondary);
+  text-align: right;
+}
+
 /* ── Monitor panels ── */
 .detail-monitor-grid {
   display: grid;
@@ -5356,6 +5412,15 @@ onUnmounted(() => {
 }
 
 @media (max-width: 768px) {
+  .task-disk-inventory__row {
+    grid-template-columns: 1fr auto;
+  }
+
+  .task-disk-inventory__row span:last-child {
+    grid-column: 1 / -1;
+    text-align: left;
+  }
+
   .batch-detail-dialog :deep(.el-dialog__header) {
     padding: 14px 16px 10px;
   }

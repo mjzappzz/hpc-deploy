@@ -62,12 +62,11 @@ def _iter_report_files(task_id: str) -> list[Path]:
 
 
 def _report_archive_name(task: Task, report: Path, used_names: set[str], root_folder: str | None = None) -> str:
-    prefix = _report_prefix(task)
-    candidate_name = f"{prefix}{report.suffix.lower()}"
+    candidate_name = report.name
     candidate = f"{root_folder}/{candidate_name}" if root_folder else candidate_name
     index = 2
     while candidate in used_names:
-        candidate_name = f"{prefix}_{index}{report.suffix.lower()}"
+        candidate_name = f"{report.stem}_{index}{report.suffix.lower()}"
         candidate = f"{root_folder}/{candidate_name}" if root_folder else candidate_name
         index += 1
     used_names.add(candidate)
@@ -88,7 +87,11 @@ def _task_has_ok_report(task: Task, reports: list[Path], report_status_by_task: 
 def _select_latest_ok_tasks(server_tasks: list[Task], report_status_by_task: dict[str, str]) -> tuple[list[Task], list[str]]:
     grouped_by_module: dict[str, list[Task]] = {}
     for task in sorted(server_tasks, key=lambda item: (item.sequence_index or 999, item.id)):
-        grouped_by_module.setdefault(_report_prefix(task), []).append(task)
+        module = _report_prefix(task)
+        if module == "disk_report":
+            disk_dir = str((task.params or {}).get("disk_test_dir") or task.task_id)
+            module = f"{module}:{disk_dir}"
+        grouped_by_module.setdefault(module, []).append(task)
 
     selected: list[Task] = []
     missing_lines: list[str] = []

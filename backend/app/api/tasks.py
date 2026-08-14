@@ -19,6 +19,7 @@ from app.core.report_summary import (
 from app.core.task_state_resolver import resolve_final_status
 from app.core.task_serializer import serialize_task_record
 from app.core.stress_params import (
+    validate_disk_test_dir,
     validate_stress_params,
     validate_stress_suite_params,
 )
@@ -916,17 +917,23 @@ MANAGED_SUITE_ACTIONS = {
 MANAGED_SUITE_PARAM_KEY = "__managed_suite_kind"
 
 
+def _managed_suite_effective_tasks(tasks: list[Task]) -> list[Task]:
+    """Hide superseded managed-suite attempts from the serial scheduler."""
+    return sorted(_latest_batch_attempts(tasks), key=lambda task: (task.sequence_index or 0, task.id))
+
+
 def _run_managed_suite_for_server(server_id: int, batch_id: str) -> None:
     lock = _get_stress_suite_server_lock(server_id)
     lock.acquire()
     db = SessionLocal()
     try:
-        tasks = (
+        all_tasks = (
             db.query(Task)
             .filter(Task.server_id == server_id, Task.batch_id == batch_id)
             .order_by(Task.sequence_index)
             .all()
         )
+        tasks = _managed_suite_effective_tasks(all_tasks)
         previous_succeeded = True
         for task in tasks:
             db.refresh(task)
@@ -1496,13 +1503,20 @@ def _wait_for_active_suite_task(db: Session, task: Task) -> bool:
     return task.status in TERMINAL_TASK_STATUSES
 
 
-def _run_stress_suite_for_server(server_id: int, batch_id: str, wait_for_lock: bool = False) -> None:
-    """Run stress suite tasks sequentially for a single server.
+def _parallel_disk_stage_tasks(task_records: list[Task], task_record: Task) -> list[Task]:
+    """Return all disk children that may start together after one predecessor."""
+    if task_record.file_name != "disk_stress_report.sh":
+        return [task_record]
+    siblings = [
+        item for item in task_records
+        if item.file_name == "disk_stress_report.sh"
+        and item.depends_on_task_id == task_record.depends_on_task_id
+    ]
+    return siblings if len(siblings) > 1 else [task_record]
 
-    Tasks are ordered by sequence_index (GPU → CPU/mem → Disk).
-    Each task runs in series; failure of one does not stop subsequent tasks.
-    Different server threads run in parallel (daemon threads).
-    """
+
+def _run_stress_suite_for_server(server_id: int, batch_id: str, wait_for_lock: bool = False) -> None:
+    """Run serial stress stages, then fan out selected disk mounts concurrently."""
     lock = _get_stress_suite_server_lock(server_id)
     acquired = lock.acquire() if wait_for_lock else lock.acquire(timeout=STRESS_SUITE_LOCK_ACQUIRE_TIMEOUT_SECONDS)
     if not acquired:
@@ -1527,7 +1541,10 @@ def _run_stress_suite_for_server(server_id: int, batch_id: str, wait_for_lock: b
             .all()
         )
 
+        processed_parallel_task_ids: set[str] = set()
         for task_record in task_records:
+            if task_record.task_id in processed_parallel_task_ids:
+                continue
             db.refresh(task_record)
 
             if task_record.status in TERMINAL_TASK_STATUSES:
@@ -1552,6 +1569,36 @@ def _run_stress_suite_for_server(server_id: int, batch_id: str, wait_for_lock: b
                 db.commit()
                 break
 
+            parallel_tasks = _parallel_disk_stage_tasks(task_records, task_record)
+            if len(parallel_tasks) > 1:
+                processed_parallel_task_ids.update(item.task_id for item in parallel_tasks)
+                pending_parallel_tasks = []
+                for parallel_task in parallel_tasks:
+                    db.refresh(parallel_task)
+                    if parallel_task.status == "PENDING":
+                        pending_parallel_tasks.append(parallel_task)
+                    elif parallel_task.status in UNFINISHED_TASK_STATUSES:
+                        _wait_for_active_suite_task(db, parallel_task)
+
+                workers = [
+                    threading.Thread(target=run_task_stage8b, args=(parallel_task.task_id,), daemon=True)
+                    for parallel_task in pending_parallel_tasks
+                ]
+                for worker in workers:
+                    worker.start()
+                for worker in workers:
+                    worker.join()
+
+                for parallel_task in parallel_tasks:
+                    db.refresh(parallel_task)
+                    if parallel_task.status not in TERMINAL_TASK_STATUSES:
+                        _mark_suite_task_failed(
+                            db,
+                            parallel_task,
+                            f"stress suite task returned before terminal status: {parallel_task.status}",
+                        )
+                continue
+
             try:
                 run_task_stage8b(task_record.task_id)
             except Exception:
@@ -1575,11 +1622,7 @@ def create_stress_suite(
     payload: StressSuiteCreateRequest,
     db: Session = Depends(get_db),
 ) -> StressSuiteCreateResponse:
-    """Create a sequential stress suite: GPU → CPU/mem → Disk on each server.
-
-    Multiple servers execute in parallel (one daemon thread per server),
-    but within each server the three stress scripts run sequentially.
-    """
+    """Create a stress suite with serial non-disk stages and parallel disk mounts."""
 
     # ── 1. Validate script paths ──
     for sp in payload.script_paths:
@@ -1604,9 +1647,43 @@ def create_stress_suite(
             )
     has_disk = any(s["name"] == "disk_stress_report.sh" for s in selected_scripts)
     suite_params = validate_stress_suite_params(raw, has_disk=has_disk)
+    disk_test_dirs = suite_params.pop("disk_test_dirs", None)
+    if not isinstance(disk_test_dirs, list):
+        disk_test_dirs = [suite_params.get("disk_test_dir")] if has_disk else []
 
     # ── 3. Deduplicate server_ids ──
     server_ids: list[int] = list(dict.fromkeys(payload.server_ids))
+
+    def build_task_specs(directories: list[str]) -> list[tuple[dict[str, str | int], str | None]]:
+        specs: list[tuple[dict[str, str | int], str | None]] = []
+        for script in selected_scripts:
+            if script["name"] == "disk_stress_report.sh":
+                specs.extend((script, directory) for directory in directories)
+            else:
+                specs.append((script, None))
+        return specs
+
+    raw_dirs_by_server = payload.disk_test_dirs_by_server
+    task_specs_by_server: dict[int, list[tuple[dict[str, str | int], str | None]]] = {}
+    if raw_dirs_by_server is not None:
+        if not has_disk:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="disk_test_dirs_by_server requires disk stress")
+        if set(raw_dirs_by_server) != set(server_ids):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="disk_test_dirs_by_server must provide directories for every selected server")
+        for server_id, raw_dirs in raw_dirs_by_server.items():
+            if not isinstance(raw_dirs, list) or not raw_dirs:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="each server requires at least one disk_test_dir")
+            normalized_dirs: list[str] = []
+            for directory in raw_dirs:
+                if not isinstance(directory, str):
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="disk_test_dirs_by_server must contain strings")
+                normalized = validate_disk_test_dir(directory)
+                if normalized not in normalized_dirs:
+                    normalized_dirs.append(normalized)
+            task_specs_by_server[server_id] = build_task_specs(normalized_dirs)
+    else:
+        shared_specs = build_task_specs(disk_test_dirs)
+        task_specs_by_server = {server_id: shared_specs for server_id in server_ids}
 
     # ── 4. Generate one batch_id per server ──
     batch_ids_by_server = _build_batch_ids_by_server(server_ids)
@@ -1617,30 +1694,43 @@ def create_stress_suite(
     per_server_tasks: dict[int, list[tuple[str, str]]] = {}  # server_id → [(task_id, prev_task_id)]
 
     for sid in server_ids:
+        selected_task_specs = task_specs_by_server[sid]
+        parallel_disk_stage = sum(
+            script["name"] == "disk_stress_report.sh" for script, _directory in selected_task_specs
+        ) > 1
         server = db.get(Server, sid)
         if server is None:
-            for s in selected_scripts:
+            for s, disk_test_dir in selected_task_specs:
+                task_name = str(s["label"])
+                if disk_test_dir:
+                    task_name = f"磁盘压测 · {disk_test_dir}"
                 items.append(StressSuiteCreateItem(
                     server_id=sid, server_name="unknown",
-                    script_path=str(s["path"]), task_name=str(s["label"]),
+                    script_path=str(s["path"]), task_name=task_name,
                     status="FAILED",
                 ))
             continue
 
         if is_server_archived(server):
-            for s in selected_scripts:
+            for s, disk_test_dir in selected_task_specs:
+                task_name = str(s["label"])
+                if disk_test_dir:
+                    task_name = f"磁盘压测 · {disk_test_dir}"
                 items.append(StressSuiteCreateItem(
                     server_id=sid, server_name=server.name,
-                    script_path=str(s["path"]), task_name=str(s["label"]),
+                    script_path=str(s["path"]), task_name=task_name,
                     status="SKIPPED",
                 ))
             continue
 
         if server.status != "online":
-            for s in selected_scripts:
+            for s, disk_test_dir in selected_task_specs:
+                task_name = str(s["label"])
+                if disk_test_dir:
+                    task_name = f"磁盘压测 · {disk_test_dir}"
                 items.append(StressSuiteCreateItem(
                     server_id=sid, server_name=server.name,
-                    script_path=str(s["path"]), task_name=str(s["label"]),
+                    script_path=str(s["path"]), task_name=task_name,
                     status="SKIPPED",
                 ))
             continue
@@ -1652,10 +1742,13 @@ def create_stress_suite(
             .first()
         )
         if running is not None:
-            for s in selected_scripts:
+            for s, disk_test_dir in selected_task_specs:
+                task_name = str(s["label"])
+                if disk_test_dir:
+                    task_name = f"磁盘压测 · {disk_test_dir}"
                 items.append(StressSuiteCreateItem(
                     server_id=sid, server_name=server.name,
-                    script_path=str(s["path"]), task_name=str(s["label"]),
+                    script_path=str(s["path"]), task_name=task_name,
                     status="SKIPPED",
                 ))
             continue
@@ -1669,19 +1762,24 @@ def create_stress_suite(
         server_tasks: list[tuple[str, str]] = []
         prev_task_id: str | None = None
 
-        for s in selected_scripts:
+        for s, disk_test_dir in selected_task_specs:
             file_record = _get_library_file_or_400(str(s["path"]))
             script_name = str(s["name"])
+            task_id = _generate_task_id()
+            task_params = dict(suite_params)
+            if disk_test_dir:
+                task_params["disk_test_dir"] = disk_test_dir
+            task_name = str(s["label"])
+            if disk_test_dir:
+                task_name = f"磁盘压测 · {disk_test_dir}"
 
-            remote_work_dir = _build_remote_work_dir("stress")
+            remote_work_dir = f"{_build_remote_work_dir('stress')}-{task_id}"
             command_preview = _build_command_preview(
                 task_type="stress",
                 file_name=script_name,
-                params=suite_params,
+                params=task_params,
                 remote_work_dir=remote_work_dir,
             )
-            task_id = _generate_task_id()
-
             task = Task(
                 task_id=task_id,
                 server_id=sid,
@@ -1692,10 +1790,10 @@ def create_stress_suite(
                 display_category="压测",
                 remote_work_dir=remote_work_dir,
                 command_preview=command_preview,
-                params=suite_params,
+                params=task_params,
                 status="PENDING",
                 batch_id=server_batch_id,
-                sequence_index=int(s["seq"]),
+                sequence_index=int(s["seq"]) + sum(1 for previous, _ in selected_task_specs[:len(server_tasks)] if previous["name"] == "disk_stress_report.sh"),
                 depends_on_task_id=prev_task_id,
             )
             db.add(task)
@@ -1707,15 +1805,16 @@ def create_stress_suite(
                 server_id=sid, server_name=server.name,
                 batch_id=server_batch_id,
                 task_id=task_id, script_path=str(s["path"]),
-                task_name=str(s["label"]), status="PENDING",
+                task_name=task_name, status="PENDING",
             ))
             server_tasks.append((task_id, prev_task_id or ""))
-            prev_task_id = task_id
+            if not (parallel_disk_stage and script_name == "disk_stress_report.sh"):
+                prev_task_id = task_id
 
         per_server_tasks[sid] = server_tasks
 
-    # ── 6. Start sequential workers per server ──
-    for sid in per_server_tasks:
+    # ── 6. Start one stage scheduler per server ──
+    for sid, server_tasks in per_server_tasks.items():
         thread = threading.Thread(
             target=_run_stress_suite_for_server,
             args=(sid, batch_ids_by_server[sid]),
@@ -1867,13 +1966,17 @@ def retry_batch_task(
     task_id: str,
     db: Session = Depends(get_db),
 ) -> BatchTaskRetryResponse:
-    """Append a retry task to the same stress-suite batch and server queue."""
+    """Append a retry task to a stress or managed-script suite queue."""
     original = _get_task_or_404(db, task_id)
     if not original.batch_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="task is not part of a batch")
-    if original.task_type != "stress":
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="only stress suite task retry is supported")
-    if not original.file_path or original.file_path not in STRESS_SUITE_ALLOWED_PATHS:
+    is_stress_suite_task = original.task_type == "stress" and original.file_path in STRESS_SUITE_ALLOWED_PATHS
+    is_managed_script_task = (
+        original.task_type == "script"
+        and bool((original.params or {}).get(MANAGED_SUITE_PARAM_KEY))
+        and original.file_path in {path for actions in MANAGED_SUITE_ACTIONS.values() for _action, path in actions}
+    )
+    if not (is_stress_suite_task or is_managed_script_task):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="task script is not retryable")
     if not _batch_task_can_retry(original, db):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="task is not failed or canceled")
@@ -1923,9 +2026,9 @@ def retry_batch_task(
     retry_params = dict(original.params or {})
     retry_params["__retry_of_task_id"] = original.task_id
     retry_params["__retry_created_at"] = datetime.utcnow().isoformat(timespec="seconds")
-    remote_work_dir = _build_remote_work_dir("stress")
+    remote_work_dir = _build_remote_work_dir(original.task_type)
     command_preview = _build_command_preview(
-        task_type="stress",
+        task_type=original.task_type,
         file_name=str(file_record["name"]),
         params=retry_params,
         remote_work_dir=remote_work_dir,
@@ -1935,10 +2038,10 @@ def retry_batch_task(
         task_id=retry_task_id,
         server_id=original.server_id,
         script_id=None,
-        task_type="stress",
+        task_type=original.task_type,
         file_path=str(file_record["path"]),
         file_name=str(file_record["name"]),
-        display_category=original.display_category or "压测",
+        display_category=original.display_category or ("压测" if original.task_type == "stress" else "基础环境配置"),
         remote_work_dir=remote_work_dir,
         command_preview=command_preview,
         params=retry_params,
@@ -1977,9 +2080,15 @@ def retry_batch_task(
         },
     )
 
+    suite_runner = _run_stress_suite_for_server if is_stress_suite_task else _run_managed_suite_for_server
+    suite_runner_args = (
+        (original.server_id, original.batch_id, True)
+        if is_stress_suite_task
+        else (original.server_id, original.batch_id)
+    )
     thread = threading.Thread(
-        target=_run_stress_suite_for_server,
-        args=(original.server_id, original.batch_id, True),
+        target=suite_runner,
+        args=suite_runner_args,
         daemon=True,
     )
     thread.start()

@@ -29,6 +29,17 @@ test('labels the target-area probe action as detecting target servers', async ()
   assert.doesNotMatch(source, /检测在线服务器/)
 })
 
+test('lays task type cards out horizontally within each task module', async () => {
+  const source = await readFile(new URL('./TaskRunner.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /\.task-type-groups\s*\{[\s\S]*?grid-template-columns:\s*1fr/)
+  assert.match(source, /\.task-type-cards\s*\{[\s\S]*?grid-template-columns:\s*repeat\(3, minmax\(0, 1fr\)\)/)
+  assert.match(source, /@media \(max-width: 980px\)\s*\{[\s\S]*?\.task-type-cards\s*\{[\s\S]*?grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/)
+  assert.match(source, /@media \(max-width: 640px\)\s*\{[\s\S]*?\.task-type-cards\s*\{[\s\S]*?grid-template-columns:\s*1fr/)
+  assert.match(source, /v-if="selectedTaskCategory === tt\.value" class="task-type-card-check"/)
+  assert.match(source, /\.task-type-card-check\s*\{[\s\S]*?background: var\(--el-color-primary\)/)
+})
+
 test('uses danger styling when a target server has no CUDA Toolkit installed', async () => {
   const source = await readFile(new URL('./TaskRunner.vue', import.meta.url), 'utf8')
 
@@ -36,17 +47,28 @@ test('uses danger styling when a target server has no CUDA Toolkit installed', a
   assert.match(source, /\.s-card-info-value\.is-missing\s*\{\s*color: var\(--el-color-danger\)/)
 })
 
-test('selects a detected mounted filesystem for disk stress and defaults to root', async () => {
+test('renders each selected server’s disk targets and defaults every server to all of its mounts', async () => {
   const source = await readFile(new URL('./TaskRunner.vue', import.meta.url), 'utf8')
 
-  assert.match(source, /<el-select\s+v-model="diskTestDir"/)
-  assert.match(source, /v-for="target in diskTestMountOptions"/)
-  assert.match(source, /const diskTestDir = ref\('\/'\)/)
-  assert.match(source, /const diskTestMountOptions = computed\(\(\) =>/)
+  assert.match(source, /v-for="group in diskTestServerGroups"/)
+  assert.match(source, /v-model="diskTestDirsByServer\[group\.serverId\]"/)
+  assert.match(source, /class="disk-mount-card-grid"/)
+  assert.match(source, /'disk-mount-card'/)
+  assert.match(source, /v-for="target in group\.targets"/)
+  assert.match(source, /const diskTestDirsByServer = reactive<Record<number, string\[\]>>\(\{\}\)/)
+  assert.match(source, /const diskTestServerGroups = computed\(\(\) =>/)
   assert.match(source, /mounted_filesystems/)
-  assert.match(source, /suffix = ` \$\{diskTestDir\.value\}`/)
+  assert.match(source, /disk_test_dirs_by_server/)
+  assert.match(source, /Object\.assign\(diskTestDirsByServer, nextSelections\)/)
   assert.match(source, /filter\(isDiskStressMountpoint\)/)
-  assert.match(source, /mountpoint === '\/' \? '系统盘' : '数据盘'/)
+  assert.match(source, /const role = mountpoint === '\/' \? '系统盘' : '数据盘'/)
+  assert.match(source, /class="disk-mount-card-role">\{\{ target\.role \}\}/)
+  assert.match(source, /class="disk-mount-card-media">\{\{ target\.mediaLabel \}\}/)
+  assert.match(source, /function diskMediaLabel\(mediaType: string \| undefined, interfaceType: string \| undefined\)/)
+  assert.match(source, /mediaType === 'RAID'/)
+  assert.match(source, /class="disk-mount-card-summary">\{\{ target\.device \}\} · \{\{ target\.size \}\} · \{\{ target\.mountpoint \}\}<\/span>/)
+  assert.match(source, /\.disk-mount-card-grid\s*\{[\s\S]*?grid-template-columns:\s*repeat\(auto-fill, minmax\(280px, 320px\)\)/)
+  assert.doesNotMatch(source, /target\.sharedLabel/)
   assert.match(source, /mountpoint === '\/boot' \|\| mountpoint\.startsWith\('\/boot\/'\)/)
 })
 

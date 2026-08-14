@@ -27,6 +27,8 @@ test('uses the five-second fill progress tag in both history views', async () =>
   const source = await readFile(new URL('./TaskHistory.vue', import.meta.url), 'utf8')
 
   assert.equal((source.match(/class="auto-refresh-label"/g) || []).length, 2)
+  assert.doesNotMatch(source, /v-if="isAutoRefreshing"/)
+  assert.match(source, /function checkAutoRefresh\(\) \{\s*startAutoRefresh\(\)\s*\}/)
   assert.doesNotMatch(source, /auto-refresh-indicator/)
   assert.match(source, /@keyframes auto-refresh-progress/)
   assert.match(source, /animation: auto-refresh-progress 5s linear infinite/)
@@ -51,4 +53,15 @@ test('uses a compact outcome title on task cards while preserving detailed failu
   assert.match(history, /formatTaskErrorMessage\(task\?\.failure_reason \|\| task\?\.error_message\)/)
   assert.match(history, /const displayError = formatTaskErrorMessage\(rawError\)/)
   assert.match(history, /if \(hasExplicitError\) return displayError/)
+})
+
+test('shows disk medium and interface in both single and batch task details', async () => {
+  const source = await readFile(new URL('./TaskHistory.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /import \{ getServer, type ServerRecord \} from '@\/api\/server'/)
+  assert.equal((source.match(/class="task-disk-inventory"/g) || []).length, 2)
+  assert.match(source, /diskMediaLabel\(filesystem\.media_type, filesystem\.interface_type\)/)
+  assert.match(source, /mediaType === 'RAID'/)
+  assert.match(source, /if \(drawerIsTerminal\.value\) return \[\.\.\.base, \{ name: 'disk', label: '磁盘' \}\]/)
+  assert.doesNotMatch(source, /const detailShowMonitorDisk = computed\(\(\) => \{\s*if \(detailIsTerminal\.value\) return false/)
 })

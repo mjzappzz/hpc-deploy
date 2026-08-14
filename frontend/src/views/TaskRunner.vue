@@ -167,6 +167,7 @@
                       >
                         <span class="task-type-card-title">{{ tt.label }}</span>
                         <span class="task-type-card-desc">{{ taskTypeCardDesc(tt.value) }}</span>
+                        <span v-if="selectedTaskCategory === tt.value" class="task-type-card-check" aria-hidden="true">✓</span>
                       </button>
                     </div>
                   </section>
@@ -440,20 +441,31 @@
                   <template v-if="showDiskTestDir">
                     <el-form-item label="压测磁盘">
                       <div class="disk-test-dir-control">
-                        <el-select
-                          v-model="diskTestDir"
-                          :disabled="isFormDisabled"
-                          style="width: 100%"
-                        >
-                          <el-option
-                            v-for="target in diskTestMountOptions"
-                            :key="target.mountpoint"
-                            :label="target.label"
-                            :value="target.mountpoint"
-                          />
-                        </el-select>
+                        <section v-for="group in diskTestServerGroups" :key="group.serverId" class="disk-server-group">
+                          <div class="disk-server-group__header">
+                            <span>{{ group.serverName }}</span>
+                            <small>已选 {{ diskTestDirsByServer[group.serverId]?.length ?? 0 }} 块</small>
+                          </div>
+                          <el-checkbox-group v-model="diskTestDirsByServer[group.serverId]" class="disk-mount-card-grid" :disabled="isFormDisabled">
+                            <el-checkbox
+                              v-for="target in group.targets"
+                              :key="target.mountpoint"
+                              :label="target.mountpoint"
+                              :class="['disk-mount-card', { 'is-selected': diskTestDirsByServer[group.serverId]?.includes(target.mountpoint) }]"
+                            >
+                              <div class="disk-mount-card-header">
+                                <span class="disk-mount-card-role">{{ target.role }}</span>
+                                <span class="disk-mount-card-media">{{ target.mediaLabel }}</span>
+                                <span class="disk-mount-card-check" aria-hidden="true">✓</span>
+                              </div>
+                              <div class="disk-mount-card-device-row">
+                                <span class="disk-mount-card-summary">{{ target.device }} · {{ target.size }} · {{ target.mountpoint }}</span>
+                              </div>
+                            </el-checkbox>
+                          </el-checkbox-group>
+                        </section>
                         <div class="form-help-text">
-                          默认压测根分区；仅显示已探测、已挂载的本地文件系统。测试文件写入所选挂载点，报告仍回收到远端工作目录。
+                          默认全选每台服务器已探测、已挂载的本地文件系统；每台服务器只压自己勾选的磁盘。
                         </div>
                       </div>
                     </el-form-item>
@@ -844,7 +856,7 @@ const polling = ref(false)
 const monitorLoading = ref(false)
 const apptainerTargetDir = ref('~/hpcdeploy/apptainer/')
 const apptainerOverwrite = ref(true)
-const diskTestDir = ref('/')
+const diskTestDirsByServer = reactive<Record<number, string[]>>({})
 const activeTaskId = ref('')
 const activeTask = ref<TaskRecord | null>(null)
 const activeLogs = ref<TaskLogRecord[]>([])
@@ -1211,36 +1223,41 @@ const showDiskTestDir = computed(() => {
   // Single-select legacy: check selectedFile
   return selectedFile.value?.name === 'disk_stress_report.sh'
 })
-const diskTestMountOptions = computed(() => {
-  const rootFallback = { mountpoint: '/', label: '系统盘 / · 容量待重新检测' }
-  if (selectedServers.value.length === 0) return [rootFallback]
-
-  const inventories = selectedServers.value.map((server) => server.disk_inventory?.mounted_filesystems ?? [])
-  if (inventories.some((filesystems) => filesystems.length === 0)) return [rootFallback]
-
-  const shared = inventories[0].filter(isDiskStressMountpoint).filter((filesystem) =>
-    inventories.every((filesystems) => filesystems.some((item) => item.mountpoint === filesystem.mountpoint)),
-  )
-  const targets = shared.map((filesystem) => ({
-    mountpoint: filesystem.mountpoint,
-    label: diskTestMountLabel(filesystem, selectedServers.value.length),
-  }))
-  if (!targets.some((target) => target.mountpoint === '/')) targets.unshift(rootFallback)
-  return targets.sort((left, right) => {
-    if (left.mountpoint === '/') return -1
-    if (right.mountpoint === '/') return 1
-    return left.mountpoint.localeCompare(right.mountpoint)
+const diskTestServerGroups = computed(() => {
+  const rootFallback = {
+    mountpoint: '/', role: '系统盘', device: '待检测设备', size: '容量待重新检测', mediaLabel: '未知',
+  }
+  return selectedServers.value.map((server) => {
+    const filesystems = server.disk_inventory?.mounted_filesystems ?? []
+    const targets = filesystems.filter(isDiskStressMountpoint).map(diskTestMountTarget)
+    if (targets.length === 0 || !targets.some((target) => target.mountpoint === '/')) targets.unshift(rootFallback)
+    targets.sort((left, right) => {
+      if (left.mountpoint === '/') return -1
+      if (right.mountpoint === '/') return 1
+      return left.mountpoint.localeCompare(right.mountpoint)
+    })
+    return { serverId: server.id, serverName: server.name, targets }
   })
 })
 
-function diskTestMountLabel(
-  filesystem: { device: string; size: string; used: string; available: string; use_percent: string; mountpoint: string },
-  serverCount: number,
+function diskTestMountTarget(
+  filesystem: { device: string; media_type?: string; interface_type?: string; size: string; used: string; available: string; use_percent: string; mountpoint: string },
 ) {
   const { mountpoint } = filesystem
   const role = mountpoint === '/' ? '系统盘' : '数据盘'
-  const sharedLabel = serverCount > 1 ? ` · ${serverCount} 台服务器均可用` : ''
-  return `${role} ${mountpoint} · ${filesystem.device} · ${filesystem.size}（已用 ${filesystem.used}，可用 ${filesystem.available}，${filesystem.use_percent}）${sharedLabel}`
+  return {
+    mountpoint,
+    role,
+    device: filesystem.device,
+    size: filesystem.size,
+    mediaLabel: diskMediaLabel(filesystem.media_type, filesystem.interface_type),
+  }
+}
+
+function diskMediaLabel(mediaType: string | undefined, interfaceType: string | undefined) {
+  if (mediaType === 'RAID') return 'RAID'
+  const medium = mediaType === 'SSD' || mediaType === 'HDD' ? mediaType : '未知'
+  return interfaceType && interfaceType !== '未知接口' ? `${medium} · ${interfaceType}` : medium
 }
 
 function isDiskStressMountpoint(filesystem: { mountpoint: string }) {
@@ -1248,11 +1265,29 @@ function isDiskStressMountpoint(filesystem: { mountpoint: string }) {
   return mountpoint === '/' || !(mountpoint === '/boot' || mountpoint.startsWith('/boot/'))
 }
 
-watch(diskTestMountOptions, (targets) => {
-  if (!targets.some((target) => target.mountpoint === diskTestDir.value)) {
-    diskTestDir.value = '/'
+watch(diskTestServerGroups, (groups) => {
+  const nextSelections: Record<number, string[]> = {}
+  for (const group of groups) {
+    const available = group.targets.map((target) => target.mountpoint)
+    const retained = (diskTestDirsByServer[group.serverId] ?? []).filter((mountpoint) => available.includes(mountpoint))
+    nextSelections[group.serverId] = retained.length > 0 ? retained : available
   }
+  for (const serverId of Object.keys(diskTestDirsByServer)) delete diskTestDirsByServer[Number(serverId)]
+  Object.assign(diskTestDirsByServer, nextSelections)
 })
+
+const selectedDiskTargetCount = computed(() => Object.values(diskTestDirsByServer).reduce((total, dirs) => total + dirs.length, 0))
+const hasSelectedDiskTargetsForEveryServer = computed(() =>
+  diskTestServerGroups.value.length > 0 && diskTestServerGroups.value.every((group) => (diskTestDirsByServer[group.serverId]?.length ?? 0) > 0),
+)
+
+function selectedDiskDirsForServer(serverId: number): string[] {
+  return diskTestDirsByServer[serverId] ?? []
+}
+
+function diskTestDirsByServerPayload(): Record<number, string[]> {
+  return Object.fromEntries(diskTestServerGroups.value.map((group) => [group.serverId, [...selectedDiskDirsForServer(group.serverId)]]))
+}
 
 const suitePlanScripts = computed(() => {
   const order = [
@@ -1307,6 +1342,13 @@ const hasGpuStressSelected = computed(() =>
   selectedFile.value?.name === 'gpu_stress_report.sh' ||
   selectedStressScripts.value.some(path => path.includes('gpu_stress_report.sh'))
 )
+const hasDiskStressSelected = computed(() =>
+  selectedFile.value?.name === 'disk_stress_report.sh' ||
+  selectedStressScripts.value.some(path => path.includes('disk_stress_report.sh'))
+)
+const createsMultipleDiskTasks = computed(() => hasDiskStressSelected.value && (
+  selectedServers.value.length > 1 || selectedDiskTargetCount.value > 1
+))
 
 const commandPreview = computed(() => {
   if (selectedTaskCategory.value === 'base_system' && selectedManagedActions.value.length === 2) {
@@ -1342,7 +1384,7 @@ const commandPreview = computed(() => {
         prefix = 'GPU_BURN_PRECISION=fp64 '
       }
       if (item.name === 'disk_stress_report.sh') {
-        suffix = ` ${diskTestDir.value}`
+        suffix = ` [${selectedDiskTargetCount.value} 个服务器磁盘]`
       }
       return `${i + 1}. ${item.label}：\n   ${prefix}./${item.name} ${dur} ${interval}${suffix}`
     })
@@ -1358,7 +1400,7 @@ const commandPreview = computed(() => {
     if (selectedFile.value.name === 'gpu_stress_report.sh' && gpuPrecision.value === 'fp64') {
       prefix = 'GPU_BURN_PRECISION=fp64 '
     } else if (selectedFile.value.name === 'disk_stress_report.sh') {
-      suffix = ` ${diskTestDir.value}`
+      suffix = ` [${selectedDiskTargetCount.value} 个服务器磁盘]`
     }
     return `${prefix}./${selectedFile.value.name} ${dur} ${interval}${suffix}`
   }
@@ -1407,8 +1449,8 @@ const showStressParamInfo = computed(() => {
 
 const showDiskTestDirInPreview = computed(() => {
   if (selectedTaskType.value !== 'stress') return false
-  if (stressSuiteMode.value) return selectedStressScripts.value.some(p => p.includes('disk_stress_report.sh')) && diskTestDir.value.trim()
-  return selectedFile.value?.name === 'disk_stress_report.sh' && diskTestDir.value.trim()
+  if (stressSuiteMode.value) return selectedStressScripts.value.some(p => p.includes('disk_stress_report.sh')) && hasSelectedDiskTargetsForEveryServer.value
+  return selectedFile.value?.name === 'disk_stress_report.sh' && hasSelectedDiskTargetsForEveryServer.value
 })
 
 const isFileSelected = computed(() => {
@@ -1423,7 +1465,10 @@ const isFileSelected = computed(() => {
 })
 
 const executeTooltip = computed(() => {
-  if (selectedTaskType.value === 'stress' && stressSuiteMode.value && selectedStressScripts.value.length >= 2) {
+  if (selectedTaskType.value === 'stress' && (stressSuiteMode.value || createsMultipleDiskTasks.value)) {
+    if (createsMultipleDiskTasks.value && !stressSuiteMode.value) {
+      return `${selectedDiskTargetCount.value} 个压测磁盘将按服务器分别生成独立子任务`
+    }
     return `${selectedStressScripts.value.length} 个服务器压测脚本按 GPU → CPU/内存 → 磁盘顺序串行执行，每台服务器独立序列`
   }
   if (isMultiServer.value) {
@@ -1614,7 +1659,9 @@ function resetParamsForFile() {
   stressIntervalSeconds.value = calcStressInterval(60)
   gpuPrecision.value = 'fp32'
   apptainerTargetDir.value = '~/hpcdeploy/apptainer/'
-  diskTestDir.value = '/'
+  for (const group of diskTestServerGroups.value) {
+    diskTestDirsByServer[group.serverId] = group.targets.map((target) => target.mountpoint)
+  }
 }
 
 function buildStressParams(): Record<string, unknown> {
@@ -1625,8 +1672,8 @@ function buildStressParams(): Record<string, unknown> {
   }
   const hasDisk = selectedFile.value?.name === 'disk_stress_report.sh' ||
     selectedStressScripts.value.some(p => p.includes('disk_stress_report.sh'))
-  if (hasDisk) {
-    params.disk_test_dir = diskTestDir.value
+  if (hasDisk && !createsMultipleDiskTasks.value) {
+    params.disk_test_dir = selectedDiskDirsForServer(selectedServerIds.value[0])[0] || '/'
   }
   if (hasGpuStressSelected.value) {
     params.gpu_precision = gpuPrecision.value
@@ -1846,10 +1893,14 @@ async function createTask() {
     return
   }
 
-  // ── Stress Suite flow (suite mode, 2+ scripts) ──
-  if (selectedTaskType.value === 'stress' && stressSuiteMode.value) {
-    if (selectedStressScripts.value.length < 2) {
+  // ── Stress Suite flow (multiple scripts or multiple selected disks) ──
+  if (selectedTaskType.value === 'stress' && (stressSuiteMode.value || createsMultipleDiskTasks.value)) {
+    if (stressSuiteMode.value && selectedStressScripts.value.length < 2) {
       ElMessage.warning('请选择至少 2 个服务器压测脚本')
+      return
+    }
+    if (hasDiskStressSelected.value && !hasSelectedDiskTargetsForEveryServer.value) {
+      ElMessage.error('请为每台目标服务器至少选择一个压测磁盘')
       return
     }
     await createStressSuiteTask()
@@ -1864,6 +1915,10 @@ async function createTask() {
     }
     if (stressDurationError.value) {
       ElMessage.error(stressDurationError.value)
+      return
+    }
+    if (hasDiskStressSelected.value && !hasSelectedDiskTargetsForEveryServer.value) {
+      ElMessage.error('请至少选择一个压测磁盘')
       return
     }
   } else if (selectedTaskType.value === 'apptainer') {
@@ -1954,6 +2009,7 @@ async function createStressSuiteTask() {
       server_ids: selectedServerIds.value,
       script_paths: selectedStressScripts.value,
       params: buildStressParams(),
+      ...(hasDiskStressSelected.value ? { disk_test_dirs_by_server: diskTestDirsByServerPayload() } : {}),
     }
     const result = (await createStressSuite(payload)).data
     notifyTaskCreated()
@@ -3060,7 +3116,7 @@ onBeforeUnmount(() => {
 /* ── Task type cards ── */
 .task-type-groups {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: 1fr;
   gap: 14px;
   align-items: stretch;
 }
@@ -3095,11 +3151,12 @@ onBeforeUnmount(() => {
 
 .task-type-cards {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
 }
 
 .task-type-card {
+  position: relative;
   border: 1px solid var(--el-border-color-light);
   border-radius: 12px;
   padding: 12px;
@@ -3121,6 +3178,21 @@ onBeforeUnmount(() => {
   background: var(--el-color-primary-light-9);
 }
 
+.task-type-card-check {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--el-color-primary);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .task-type-card-title {
   display: block;
   font-size: 15px;
@@ -3137,13 +3209,13 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 980px) {
-  .task-type-groups {
+  .task-type-cards {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 640px) {
-  .task-type-groups {
+  .task-type-cards {
     grid-template-columns: 1fr;
   }
 
@@ -4024,13 +4096,130 @@ onBeforeUnmount(() => {
 .disk-test-dir-control {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 6px;
   width: 100%;
   min-width: 0;
 }
 
-.disk-test-dir-control :deep(.el-input) {
+.disk-server-group {
+  display: grid;
+  gap: 6px;
+}
+
+.disk-server-group + .disk-server-group {
+  padding-top: 10px;
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+
+.disk-server-group__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--el-text-color-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.disk-server-group__header small {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.disk-mount-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 320px));
+  gap: 8px;
+  justify-content: start;
   width: 100%;
+}
+
+.disk-mount-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 7px;
+  box-sizing: border-box;
+  width: 100%;
+  height: auto;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--el-border-color);
+  border-radius: 6px;
+  background: var(--el-fill-color-blank);
+  color: var(--el-text-color-regular);
+  transition: border-color .18s ease, background-color .18s ease;
+}
+
+.disk-mount-card:hover:not(.is-disabled) {
+  border-color: var(--el-color-primary-light-5);
+}
+
+.disk-mount-card.is-selected {
+  border-color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+}
+
+.disk-mount-card :deep(.el-checkbox__input) {
+  position: absolute;
+  opacity: 0;
+}
+
+.disk-mount-card :deep(.el-checkbox__label) {
+  display: contents;
+  padding: 0;
+  overflow: visible;
+  line-height: inherit;
+}
+
+.disk-mount-card-header,
+.disk-mount-card-device-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.disk-mount-card-role {
+  color: var(--el-text-color-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.disk-mount-card-media {
+  margin-left: auto;
+  padding: 2px 6px;
+  border: 1px solid var(--el-border-color);
+  border-radius: 3px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.disk-mount-card-check {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border: 1px solid var(--el-border-color);
+  border-radius: 50%;
+  color: transparent;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.disk-mount-card.is-selected .disk-mount-card-check {
+  border-color: var(--el-color-primary);
+  background: var(--el-color-primary);
+  color: #fff;
+}
+
+.disk-mount-card-summary {
+  width: 100%;
+  color: var(--el-text-color-primary);
+  font-family: var(--el-font-family);
+  font-size: 13px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .overwrite-control {

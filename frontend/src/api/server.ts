@@ -29,6 +29,8 @@ export interface ServerRecord {
 
 export interface DiskFilesystem {
   device: string
+  media_type?: string
+  interface_type?: string
   filesystem_type: string
   size: string
   used: string
@@ -39,7 +41,7 @@ export interface DiskFilesystem {
 
 export interface DiskInventory {
   mounted_filesystems: DiskFilesystem[]
-  unmounted_disks: Array<{ device: string; size: string }>
+  unmounted_disks: Array<{ device: string; size: string; media_type?: string; interface_type?: string }>
 }
 
 export interface ServerPayload {

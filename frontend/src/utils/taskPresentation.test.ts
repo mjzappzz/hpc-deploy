@@ -25,6 +25,21 @@ test('GPU FP32 is visible in the history label', () => {
   )
 })
 
+test('disk stress labels identify the selected mountpoint', () => {
+  assert.equal(
+    getTaskModuleLabel({ task_type: 'stress', file_name: 'disk_stress_report.sh', params: { disk_test_dir: '/' } }),
+    '磁盘压测 · /',
+  )
+  assert.equal(
+    getBatchStepLabel({ task_type: 'stress', file_name: 'disk_stress_report.sh', params: { disk_test_dir: '/data' } }),
+    '磁盘压测 · /data',
+  )
+  assert.equal(
+    getBatchStepLabel({ task_type: 'stress', file_name: 'disk_stress_report.sh', sequence_index: 3, params: { disk_test_dir: '/data' } }),
+    '磁盘压测 · /data',
+  )
+})
+
 test('single and batch task shapes resolve the same GPU FP64 label', () => {
   const singleTask = {
     task_type: 'stress',

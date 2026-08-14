@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.6.1"
+SCRIPT_VERSION="1.7.5"
 BACKUP_ROOT="/var/backups/hpcdeploy"
 RUN_ID="$(date +%Y%m%d-%H%M%S-%N)-${BASHPID}"
 BACKUP_DIR="${BACKUP_ROOT}/linux-release-lock-${RUN_ID}"
@@ -15,6 +15,16 @@ UBUNTU_MUTATION_STARTED=0
 UBUNTU_RELEASE_CONFIG_EXISTED=0
 UBUNTU_KERNEL_HOLD_PACKAGES=()
 UBUNTU_NEW_KERNEL_HOLDS=()
+APT_LOCK_MAX_WAIT_SECONDS=900
+APT_LOCK_POLL_SECONDS=5
+APT_STALL_MAX_SECONDS=10
+APT_MIN_DOWNLOAD_BYTES_PER_SECOND=524288
+APT_LOCK_FILES=(
+    /var/lib/dpkg/lock-frontend
+    /var/lib/dpkg/lock
+    /var/lib/apt/lists/lock
+    /var/cache/apt/archives/lock
+)
 
 log() { printf '[%s] %s\n' "$1" "$2"; }
 fail() { log ERROR "$1"; exit 1; }
@@ -234,6 +244,110 @@ verify_ubuntu_kernel_holds() {
         grep -Fxq "$package_name" <<< "$held_packages" \
             || fail "Ubuntu 内核 hold 验证失败：${package_name}"
     done
+}
+
+wait_for_apt_dpkg_unlock() {
+    local operation="$1"
+    local elapsed=0
+    local stalled_seconds=0
+    local recovered_automatic_update=0
+    local holders
+    local download_bytes
+    local previous_download_bytes=""
+    local cpu_times
+    local previous_cpu_times=""
+    local minimum_download_bytes
+    local downloaded_bytes
+
+    command -v fuser >/dev/null 2>&1 || fail "未找到 fuser，无法安全确认 apt/dpkg 锁状态"
+    while true; do
+        holders="$(fuser "${APT_LOCK_FILES[@]}" 2>/dev/null || true)"
+        [[ -z "${holders//[[:space:]]/}" ]] && return 0
+        download_bytes="$(apt_update_download_bytes)"
+        cpu_times="$(apt_update_cpu_times "$holders")"
+        if [[ -n "$previous_download_bytes" ]]; then
+            minimum_download_bytes=$((APT_MIN_DOWNLOAD_BYTES_PER_SECOND * APT_LOCK_POLL_SECONDS))
+            downloaded_bytes=$((download_bytes - previous_download_bytes))
+            if [[ "$cpu_times" == "$previous_cpu_times" && "$downloaded_bytes" -lt "$minimum_download_bytes" ]]; then
+                ((stalled_seconds += APT_LOCK_POLL_SECONDS))
+            else
+                stalled_seconds=0
+            fi
+        fi
+        previous_download_bytes="$download_bytes"
+        previous_cpu_times="$cpu_times"
+        if (( stalled_seconds >= APT_STALL_MAX_SECONDS )); then
+            if (( recovered_automatic_update == 0 )) && is_stalled_automatic_apt_update "$holders"; then
+                recover_stalled_automatic_apt_update "$holders"
+                recovered_automatic_update=1
+                stalled_seconds=0
+                previous_download_bytes=""
+                previous_cpu_times=""
+                continue
+            fi
+            log WARN "${operation} 的 apt/dpkg 锁下载速率低于 $((APT_MIN_DOWNLOAD_BYTES_PER_SECOND / 1024))KiB/s 且无 CPU 配置进展已达 ${stalled_seconds} 秒；仅自动更新允许恢复，人工 apt/dpkg 或 cloud-init 继续等待"
+        fi
+        if (( elapsed >= APT_LOCK_MAX_WAIT_SECONDS )); then
+            fail "apt/dpkg 锁持续占用超过 ${APT_LOCK_MAX_WAIT_SECONDS} 秒，未删除锁文件或终止进程；占用 PID：${holders}"
+        fi
+        log WARN "${operation} 等待 apt/dpkg 锁释放（已等待 ${elapsed} 秒；占用 PID：${holders}）"
+        sleep "$APT_LOCK_POLL_SECONDS"
+        ((elapsed += APT_LOCK_POLL_SECONDS))
+    done
+}
+
+apt_update_download_bytes() {
+    find /var/cache/apt/archives/partial -maxdepth 1 -type f -printf '%s\n' 2>/dev/null \
+        | awk '{total += $1} END {print total + 0}'
+}
+
+apt_update_cpu_times() {
+    local holders="$1"
+    local pid
+    for pid in $holders; do
+        [[ "$pid" =~ ^[0-9]+$ ]] || continue
+        ps -o cputime= -p "$pid" 2>/dev/null | tr -d '[:space:]'
+    done
+}
+
+is_stalled_automatic_apt_update() {
+    local holders="$1"
+    local pid
+    local holder_command
+    local automatic_holder_count=0
+
+    for pid in $holders; do
+        [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+        holder_command="$(ps -o args= -p "$pid" 2>/dev/null || true)"
+        [[ "$holder_command" == *"/usr/bin/unattended-upgrade"* ]] || return 1
+        grep -Fqx '0::/system.slice/apt-daily-upgrade.service' "/proc/${pid}/cgroup" 2>/dev/null || return 1
+        ((automatic_holder_count += 1))
+    done
+    (( automatic_holder_count > 0 ))
+}
+
+recover_stalled_automatic_apt_update() {
+    local holders="$1"
+    local attempt
+    local remaining_holders
+
+    log WARN "检测到 apt-daily-upgrade / unattended-upgrade 连续 ${APT_STALL_MAX_SECONDS} 秒下载速率过低且无 CPU 配置进展；开始受控恢复"
+    log WARN "仅恢复系统自动更新；不终止人工 apt/dpkg 或 cloud-init"
+    systemctl stop --no-block apt-daily-upgrade.service \
+        || fail "无法停止无进展的 apt-daily-upgrade.service；占用 PID：${holders}"
+    systemctl kill --kill-who=all --signal=SIGTERM apt-daily-upgrade.service \
+        || fail "无法向 apt-daily-upgrade 的自动更新进程发送 SIGTERM；占用 PID：${holders}"
+    for ((attempt = 1; attempt <= 12; attempt += 1)); do
+        remaining_holders="$(fuser "${APT_LOCK_FILES[@]}" 2>/dev/null || true)"
+        [[ -z "${remaining_holders//[[:space:]]/}" ]] && break
+        sleep "$APT_LOCK_POLL_SECONDS"
+    done
+    [[ -z "${remaining_holders//[[:space:]]/}" ]] \
+        || fail "已停止 apt-daily-upgrade，但 apt/dpkg 锁仍被占用；未强制终止进程，PID：${remaining_holders}"
+    log INFO "自动更新已停止且锁已释放，执行 dpkg 一致性恢复"
+    DEBIAN_FRONTEND=noninteractive dpkg --configure -a \
+        || fail "dpkg 一致性恢复失败；请人工检查后重试"
+    log PASS "无进展的系统自动更新已安全停止，dpkg 状态恢复完成；继续执行系统版本锁定"
 }
 
 repo_file_has_managed_id() {
@@ -477,10 +591,12 @@ lock_ubuntu_lts() {
     command -v apt-get >/dev/null 2>&1 || fail "未找到 apt-get"
     command -v apt-mark >/dev/null 2>&1 || fail "未找到 apt-mark"
     command -v dpkg-query >/dev/null 2>&1 || fail "未找到 dpkg-query"
+    command -v fuser >/dev/null 2>&1 || fail "未找到 fuser，无法安全确认 apt/dpkg 锁状态"
 
     local running_kernel
     running_kernel="$(uname -r)"
     collect_ubuntu_kernel_hold_packages "$running_kernel"
+    wait_for_apt_dpkg_unlock "读取 Ubuntu hold 策略前"
     mkdir -p "${BACKUP_DIR}"
     apt-mark showhold > "${BACKUP_DIR}/apt-mark-showhold.before"
 
@@ -507,7 +623,9 @@ lock_ubuntu_lts() {
     fi
 
     log INFO "更新 Ubuntu ${VERSION_ID} 软件包索引；不执行发行版升级或全量软件包升级"
+    wait_for_apt_dpkg_unlock "更新 Ubuntu 软件包索引前"
     apt-get update
+    wait_for_apt_dpkg_unlock "写入 Ubuntu 内核 hold 前"
     apt-mark hold "${UBUNTU_KERNEL_HOLD_PACKAGES[@]}"
     grep -qx 'Prompt=never' "$config" || fail "Ubuntu 发行版升级策略验证失败"
     verify_ubuntu_kernel_holds

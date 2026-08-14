@@ -161,7 +161,7 @@ def run_task_stage8b(task_id: str) -> None:
         _ensure_task_not_canceled(db, task)
         _add_log(db, task_id, "SYSTEM", f"remote HOME detected: {remote_home}")
 
-        remote_dir = _resolve_remote_work_dir(task.task_type, remote_home, task.file_name)
+        remote_dir = _resolve_task_remote_work_dir(task, remote_home)
         task.remote_work_dir = remote_dir
         db.commit()
         _ensure_task_not_canceled(db, task)
@@ -306,6 +306,18 @@ def _resolve_remote_work_dir(task_type: str | None, remote_home: str, file_name:
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     dir_name = build_remote_work_dir_name(task_type, file_name, timestamp)
     return f"{base_home}/hpcdeploy/tasks/{task_type}/{dir_name}"
+
+
+def _resolve_task_remote_work_dir(task: Task, remote_home: str) -> str:
+    """Keep the task's preallocated directory so concurrent tasks cannot collide."""
+    configured = (task.remote_work_dir or "").strip()
+    if not configured:
+        return _resolve_remote_work_dir(task.task_type, remote_home, task.file_name)
+    if configured == "~":
+        return remote_home.rstrip("/")
+    if configured.startswith("~/"):
+        return f"{remote_home.rstrip('/')}/{configured[2:]}"
+    return configured
 
 
 def sanitize_dir_prefix(value: str) -> str:
@@ -684,6 +696,19 @@ def _unexpected_stress_reboot_reason(task: Task, executor: SSHExecutor) -> str |
 
 def _cancel_following_stress_batch_tasks(db, task: Task, reason: str) -> None:
     if not task.batch_id or task.sequence_index is None:
+        return
+
+    batch_tasks = (
+        db.query(Task)
+        .filter(Task.batch_id == task.batch_id, Task.server_id == task.server_id)
+        .all()
+    )
+    parallel_disk_siblings = [
+        item for item in batch_tasks
+        if item.file_name == "disk_stress_report.sh"
+        and item.depends_on_task_id == task.depends_on_task_id
+    ]
+    if task.file_name == "disk_stress_report.sh" and len(parallel_disk_siblings) > 1:
         return
 
     followers = (

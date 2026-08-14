@@ -352,7 +352,7 @@
                       <div v-for="filesystem in activeServer.disk_inventory.mounted_filesystems" :key="`${filesystem.device}-${filesystem.mountpoint}`" class="disk-inventory__row">
                         <div class="disk-inventory__device">
                           <code>{{ filesystem.device }}</code>
-                          <span>{{ filesystem.filesystem_type || '未知类型' }}</span>
+                          <span>{{ diskMediaLabel(filesystem.media_type, filesystem.interface_type) }} · {{ filesystem.filesystem_type || '未知文件系统' }}</span>
                         </div>
                         <div class="disk-inventory__metrics">
                           <span><small>挂载点</small><strong>{{ filesystem.mountpoint }}</strong></span>
@@ -365,7 +365,7 @@
                     <div v-if="activeServer.disk_inventory.unmounted_disks.length" class="disk-inventory__section">
                       <span class="disk-inventory__label">未挂载物理盘</span>
                       <div v-for="disk in activeServer.disk_inventory.unmounted_disks" :key="disk.device" class="disk-inventory__row disk-inventory__row--unmounted">
-                        {{ `${disk.device} · ${disk.size} · 未分区或未挂载` }}
+                        {{ `${disk.device} · ${diskMediaLabel(disk.media_type, disk.interface_type)} · ${disk.size} · 未分区或未挂载` }}
                       </div>
                     </div>
                   </div>
@@ -1378,6 +1378,12 @@ function authTypeLabel(value: string | null | undefined) {
   if (value === 'password') return 'Password'
   if (value === 'key') return 'SSH Key'
   return displayValue(value)
+}
+
+function diskMediaLabel(mediaType: string | undefined, interfaceType: string | undefined) {
+  if (mediaType === 'RAID') return 'RAID'
+  const medium = mediaType === 'SSD' || mediaType === 'HDD' ? mediaType : '未知'
+  return interfaceType && interfaceType !== '未知接口' ? `${medium} · ${interfaceType}` : medium
 }
 
 function getApiErrorMessage(error: unknown) {

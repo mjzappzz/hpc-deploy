@@ -2,7 +2,7 @@
 
 set -e
 
-SCRIPT_VERSION="2026.08.13.6"
+SCRIPT_VERSION="2026.08.14.5"
 
 echo "[STAGE] dependency_check_start"
 echo "[INFO] Checking and installing dependencies..."
@@ -97,33 +97,138 @@ STRESS_LOG="${WORKDIR}/stress_disk_${TIME_TAG}.log"
 MON_LOG="${WORKDIR}/disk_monitor_${TIME_TAG}.csv"
 ERR_LOG="${WORKDIR}/disk_error_${TIME_TAG}.log"
 REPORT="${WORKDIR}/disk_stress_report_${TIME_TAG}.txt"
-XLSX_REPORT="${WORKDIR}/disk_stress_report_${TIME_TAG}.xlsx"
+REPORT_TARGET_SUFFIX="$(printf '%s' "${TEST_DIR#/}" | tr '/' '_')"
+if [ "$TEST_DIR" = "/" ]; then
+    REPORT_TARGET_SUFFIX="root"
+fi
+XLSX_REPORT="${WORKDIR}/disk_stress_report_${TIME_TAG}_${REPORT_TARGET_SUFFIX}.xlsx"
 
 CRITICAL_ERR_PATTERN="i/o error|blk_update_request|buffer i/o error|nvme.*error|reset controller|aborting command|medium error|read error|write error|filesystem error|xfs.*error|ext4.*error|bad sector|uncorrected error"
+
+GIB=$((1024 * 1024 * 1024))
+MIN_SAFETY_RESERVE_BYTES=$((20 * GIB))
+HDD_PROFILE_WORKERS=2
+HDD_PROFILE_BYTES=1G
+SSD_WORKERS=4
+SSD_BYTES=2G
+NVME_WORKERS=8
+NVME_BYTES=2G
+# direct minimizes page-cache effects; sync makes each write wait for persistence.
+HDD_IO_OPTS="wr-rnd,direct,sync"
+
+bytes_for_gib() {
+    printf '%s' "$(( $1 * GIB ))"
+}
+
+resolve_backing_device() {
+    local source="$1"
+    local resolved
+
+    resolved=$(lsblk -s -n -r -o NAME,TYPE "$source" 2>/dev/null | awk '$2 == "disk" {print $1; exit}')
+    if [ -z "$resolved" ]; then
+        resolved=$(lsblk -no PKNAME "$source" 2>/dev/null | head -1)
+    fi
+    if [ -z "$resolved" ]; then
+        resolved=$(basename "$source")
+    fi
+    printf '%s' "$resolved"
+}
+
+select_disk_profile() {
+    local rota="$1"
+    local tran="$2"
+    local device="$3"
+
+    HDD_WORKERS=$HDD_PROFILE_WORKERS
+    HDD_BYTES=$HDD_PROFILE_BYTES
+    DISK_PROFILE="unknown-conservative"
+
+    if [ "$tran" = "nvme" ] || [[ "$device" == nvme* ]]; then
+        HDD_WORKERS=$NVME_WORKERS
+        HDD_BYTES=$NVME_BYTES
+        DISK_PROFILE="nvme"
+    elif [ "$rota" = "0" ]; then
+        HDD_WORKERS=$SSD_WORKERS
+        HDD_BYTES=$SSD_BYTES
+        DISK_PROFILE="ssd"
+    elif [ "$rota" = "1" ]; then
+        DISK_PROFILE="hdd"
+    fi
+}
+
+calculate_safety_reserve() {
+    local total_bytes="$1"
+    local percentage_reserve=$((total_bytes / 10))
+
+    SAFETY_RESERVE_BYTES=$percentage_reserve
+    if [ "$SAFETY_RESERVE_BYTES" -lt "$MIN_SAFETY_RESERVE_BYTES" ]; then
+        SAFETY_RESERVE_BYTES=$MIN_SAFETY_RESERVE_BYTES
+    fi
+}
+
+fit_auto_profile_to_capacity() {
+    local available_bytes="$1"
+    local capacity_budget=$((available_bytes - SAFETY_RESERVE_BYTES))
+    local workset_bytes
+
+    while [ "$HDD_WORKERS" -gt 1 ]; do
+        workset_bytes=$((HDD_WORKERS * $(bytes_for_gib "${HDD_BYTES%G}")))
+        [ "$workset_bytes" -le "$capacity_budget" ] && return
+        HDD_WORKERS=$((HDD_WORKERS - 1))
+        DISK_PROFILE="${DISK_PROFILE}-capacity-limited"
+    done
+
+    if [ "$HDD_BYTES" != "1G" ]; then
+        HDD_BYTES=1G
+        DISK_PROFILE="${DISK_PROFILE}-capacity-limited"
+    fi
+}
+
+ensure_capacity_budget() {
+    local total_bytes="$1"
+    local available_bytes="$2"
+    local workset_bytes="$3"
+
+    calculate_safety_reserve "$total_bytes"
+
+    if [ "$available_bytes" -le "$SAFETY_RESERVE_BYTES" ] || \
+       [ "$workset_bytes" -gt $((available_bytes - SAFETY_RESERVE_BYTES)) ]; then
+        echo "[ERROR] Available capacity is below the automatic disk stress safety budget."
+        echo "[ERROR] Available bytes: ${available_bytes}; safety reserve bytes: ${SAFETY_RESERVE_BYTES}; requested workset bytes: ${workset_bytes}."
+        exit 2
+    fi
+}
 
 mkdir -p "$TEST_DIR"
 
 MOUNT_SRC=$(df -P "$TEST_DIR" | awk 'NR==2 {print $1}')
 MOUNT_POINT=$(df -P "$TEST_DIR" | awk 'NR==2 {print $6}')
 FS_TYPE=$(df -T "$TEST_DIR" | awk 'NR==2 {print $2}')
+DISK_DEV=$(resolve_backing_device "$MOUNT_SRC")
+DISK_ROTA=$(lsblk -dn -o ROTA "/dev/${DISK_DEV}" 2>/dev/null | xargs || true)
+DISK_TRAN=$(lsblk -dn -o TRAN "/dev/${DISK_DEV}" 2>/dev/null | xargs || true)
+TOTAL_BYTES=$(df -B1 --output=size "$TEST_DIR" | awk 'NR==2 {print $1}')
+AVAILABLE_BYTES=$(df -B1 --output=avail "$TEST_DIR" | awk 'NR==2 {print $1}')
 
-CPU_CORES=$(nproc)
-DEFAULT_HDD_WORKERS=$(( CPU_CORES / 16 ))
-[ "$DEFAULT_HDD_WORKERS" -lt 4 ] && DEFAULT_HDD_WORKERS=4
-[ "$DEFAULT_HDD_WORKERS" -gt 32 ] && DEFAULT_HDD_WORKERS=32
-HDD_WORKERS=${WORKERS:-$DEFAULT_HDD_WORKERS}
-HDD_BYTES=20G
+AUTO_PROFILE=1
+if [ -n "${WORKERS+x}" ]; then
+    AUTO_PROFILE=0
+    HDD_WORKERS=$WORKERS
+    HDD_BYTES=20G
+    DISK_PROFILE="manual-workers"
+else
+    select_disk_profile "$DISK_ROTA" "$DISK_TRAN" "$DISK_DEV"
+    calculate_safety_reserve "$TOTAL_BYTES"
+    fit_auto_profile_to_capacity "$AVAILABLE_BYTES"
+fi
+
 case "$HDD_WORKERS" in
     ''|*[!0-9]*) echo "[ERROR] WORKERS must be a positive integer"; exit 2 ;;
 esac
 [ "$HDD_WORKERS" -lt 1 ] && { echo "[ERROR] WORKERS must be greater than zero"; exit 2; }
-if [ "$MOUNT_POINT" != "/" ] && [ -z "${WORKERS+x}" ]; then
-  HDD_WORKERS=2
-  HDD_BYTES=1G
-fi
 
-DISK_DEV=$(lsblk -no PKNAME "$MOUNT_SRC" 2>/dev/null | head -1)
-[ -z "$DISK_DEV" ] && DISK_DEV=$(basename "$MOUNT_SRC")
+WORKSET_BYTES=$((HDD_WORKERS * $(bytes_for_gib "${HDD_BYTES%G}")))
+ensure_capacity_budget "$TOTAL_BYTES" "$AVAILABLE_BYTES" "$WORKSET_BYTES"
 
 DISK_MODEL=$(cat /sys/block/${DISK_DEV}/device/model 2>/dev/null | xargs || true)
 if [ -z "$DISK_MODEL" ] || [ "$DISK_MODEL" = "Unknown" ]; then
@@ -140,8 +245,12 @@ echo "Disk Write Stability Test Start"
 echo "Test Dir    : ${TEST_DIR}"
 echo "Mount Point : ${MOUNT_POINT}"
 echo "Device      : /dev/${DISK_DEV}"
+echo "Storage Profile : ${DISK_PROFILE} (rota=${DISK_ROTA:-unknown}, transport=${DISK_TRAN:-unknown}, auto=${AUTO_PROFILE})"
 echo "Filesystem  : ${FS_TYPE}"
 echo "Workers     : ${HDD_WORKERS}"
+echo "Worker Data : ${HDD_BYTES}"
+echo "Safety Reserve : ${SAFETY_RESERVE_BYTES} bytes"
+echo "I/O Path    : ${HDD_IO_OPTS}"
 echo "Duration    : ${DURATION}"
 echo "Interval    : ${INTERVAL}s"
 echo "Mode        : write only, wr-rnd"
@@ -221,13 +330,13 @@ echo "[STAGE] stress_start"
   echo "Test Dir   : ${TEST_DIR}"
   echo "Workers    : ${HDD_WORKERS}"
   echo "Duration   : ${DURATION}"
-  echo "Mode       : wr-rnd"
+  echo "Mode       : ${HDD_IO_OPTS}"
   echo
 
   stdbuf -oL -eL stress-ng \
     --hdd ${HDD_WORKERS} \
     --hdd-bytes ${HDD_BYTES} \
-    --hdd-opts wr-rnd \
+    --hdd-opts ${HDD_IO_OPTS} \
     --verify \
     --timeout "${DURATION}" \
     --metrics-brief \
@@ -347,13 +456,20 @@ cat > "$REPORT" << EOR
 ${DISK_MODEL_LINE}
 磁盘容量              : ${DISK_SIZE}
 文件系统              : ${FS_TYPE}
+Storage Profile       : ${DISK_PROFILE}
+设备旋转属性          : ${DISK_ROTA:-unknown}
+设备传输链路          : ${DISK_TRAN:-unknown}
+自动定档              : ${AUTO_PROFILE}
+安全余量              : ${SAFETY_RESERVE_BYTES} bytes
+I/O Path              : ${HDD_IO_OPTS}
 
 二、测试方法
 测试工具              : stress-ng
 HDD压力线程           : ${HDD_WORKERS}
-线程计算方式          : 根分区 nproc / 16（限制 4~32）；非根挂载默认 2
-HDD测试模式           : wr-rnd
+线程计算方式          : 自动按 HDD / SSD / NVMe 定档；WORKERS 可显式覆盖
+HDD测试模式           : ${HDD_IO_OPTS}
 单Worker数据量        : ${HDD_BYTES}
+总工作集上限          : ${WORKSET_BYTES} bytes
 测试类型              : 随机写稳定性测试
 数据校验              : verify enabled
 测试时长              : ${DURATION}
@@ -507,6 +623,12 @@ if "${DISK_MODEL}".strip():
 test_object_rows.extend([
     ("磁盘容量", "${DISK_SIZE}"),
     ("文件系统", "${FS_TYPE}"),
+    ("Storage Profile", "${DISK_PROFILE}"),
+    ("设备旋转属性", "${DISK_ROTA:-unknown}"),
+    ("设备传输链路", "${DISK_TRAN:-unknown}"),
+    ("自动定档", "${AUTO_PROFILE}"),
+    ("Safety Reserve", "${SAFETY_RESERVE_BYTES} bytes"),
+    ("I/O Path", "${HDD_IO_OPTS}"),
 ])
 for k, v in test_object_rows:
     r = kv(r, k, v)
@@ -516,9 +638,10 @@ r = section(r, "二、测试方法")
 for k, v in [
     ("测试工具", "stress-ng"),
     ("HDD压力线程", "${HDD_WORKERS}"),
-    ("线程计算方式", "根分区 nproc / 16（限制 4~32）；非根挂载默认 2"),
-    ("HDD测试模式", "wr-rnd"),
+    ("线程计算方式", "自动按 HDD / SSD / NVMe 定档；WORKERS 可显式覆盖"),
+    ("HDD测试模式", "${HDD_IO_OPTS}"),
     ("单Worker数据量", "${HDD_BYTES}"),
+    ("总工作集上限", "${WORKSET_BYTES} bytes"),
     ("测试类型", "随机写稳定性测试"),
     ("数据校验", "verify enabled"),
     ("测试时长", "${DURATION}"),

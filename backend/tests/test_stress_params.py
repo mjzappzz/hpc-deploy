@@ -20,6 +20,14 @@ class StressIntervalValidationTests(unittest.TestCase):
         )
         self.assertEqual(result["interval_seconds"], 17)
 
+    def test_suite_accepts_multiple_disk_test_directories(self) -> None:
+        result = validate_stress_suite_params(
+            {"duration_seconds": 60, "disk_test_dirs": ["/", "/data"]},
+            has_disk=True,
+        )
+
+        self.assertEqual(result["disk_test_dirs"], ["/", "/data"])
+
     def test_interval_cannot_exceed_duration(self) -> None:
         with self.assertRaises(HTTPException):
             validate_stress_params(

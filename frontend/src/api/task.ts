@@ -394,6 +394,7 @@ export interface StressSuitePayload {
   server_ids: number[]
   script_paths: string[]
   params: Record<string, unknown>
+  disk_test_dirs_by_server?: Record<number, string[]>
 }
 
 export interface StressSuiteItem {
