@@ -47,10 +47,15 @@ class GpuBurnLogCompactionTests(unittest.TestCase):
     def test_refreshes_gpu_burn_source_only_after_confirmed_kernel_mismatch(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")
 
-        self.assertIn("GPU_BURN_REPOSITORY=", source)
-        self.assertIn("git clone --depth 1", source)
+        self.assertIn("GPU_BURN_ARCHIVE_URL=", source)
+        self.assertIn("171.221.252.54:8573", source)
+        self.assertIn("gpu-burn-master.zip", source)
+        self.assertIn("wget -q -O", source)
+        self.assertIn("unzip -q", source)
+        self.assertNotIn("github.com/wilicc/gpu-burn", source)
+        self.assertNotIn("git clone --depth 1", source)
         self.assertIn("ensure_gpu_burn_source", source)
-        self.assertIn("Local gpu-burn source is missing; restoring it from upstream", source)
+        self.assertIn("Local gpu-burn source is missing; restoring it from shared archive", source)
         self.assertIn("Local gpu-burn source restored", source)
         self.assertIn("refresh_gpu_burn_source_after_kernel_mismatch", source)
         self.assertIn("Confirmed gpu-burn kernel-image mismatch", source)

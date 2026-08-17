@@ -399,13 +399,13 @@ PENDING → CONNECTING → PREPARING → UPLOADING → RUNNING → SUCCESS
 
 GPU 压测 TXT/XLSX 报告分别记录 `nvidia-smi --query-gpu=driver_version` 检出的 NVIDIA 驱动版本和 `nvcc --version` 检出的 CUDA Toolkit 版本，不使用 `nvidia-smi` 顶部 CUDA Version（驱动最高兼容版本）替代实际安装版本。
 
-`gpu_stress_report.sh`（v2026.08.06）为 gpu-burn 实际加载的 `compare.fatbin` 维护服务器级、按本机匹配的编译缓存：只取 `nvidia-smi` 检出的物理 GPU `compute_cap`，并要求当前 CUDA Toolkit 支持每一种架构。首次或缓存不匹配时，在 `/opt/software/gpu-burn` 用 `make COMPUTE= NVCCFLAGS='-gencode=arch=compute_XX,code=sm_XX …'` 禁用 Makefile 的单一 PTX 默认值并重编译；每次启动均以 `cuobjdump --list-elf` 验证 fatbin 确有本机所需 SM。缓存状态同时记录源码指纹、CUDA Toolkit 版本和目标 SM，任一变化或校验失败都会清理旧二进制、fatbin、对象文件后重建；匹配时直接复用。构建锁避免同一服务器并发任务同时清理或编译。每张卡仍以独立 `CUDA_VISIBLE_DEVICES` 实例并发运行，因此 RTX 4090（SM89）与 RTX 5090（SM120）等混合服务器均会参与同一次压测。gpu-burn 的 CR 高频进度在管道中实时拆分，只保留每 10% 的进度样本、错误和每卡汇总，不再写入或回读多 GB 原始日志；任一设备编译或运行失败会使最终报告为 FAIL。
+`gpu_stress_report.sh`（v2026.08.17）为 gpu-burn 实际加载的 `compare.fatbin` 维护服务器级、按本机匹配的编译缓存：只取 `nvidia-smi` 检出的物理 GPU `compute_cap`，并要求当前 CUDA Toolkit 支持每一种架构。首次或缓存不匹配时，在 `/opt/software/gpu-burn` 用 `make COMPUTE= NVCCFLAGS='-gencode=arch=compute_XX,code=sm_XX …'` 禁用 Makefile 的单一 PTX 默认值并重编译；每次启动均以 `cuobjdump --list-elf` 验证 fatbin 确有本机所需 SM。缓存状态同时记录源码指纹、CUDA Toolkit 版本和目标 SM，任一变化或校验失败都会清理旧二进制、fatbin、对象文件后重建；匹配时直接复用。构建锁避免同一服务器并发任务同时清理或编译。每张卡仍以独立 `CUDA_VISIBLE_DEVICES` 实例并发运行，因此 RTX 4090（SM89）与 RTX 5090（SM120）等混合服务器均会参与同一次压测。gpu-burn 的 CR 高频进度在管道中实时拆分，只保留每 10% 的进度样本、错误和每卡汇总，不再写入或回读多 GB 原始日志；任一设备编译或运行失败会使最终报告为 FAIL。
 
 为避免 gpu-burn 多卡实例把部分设备初始化失败掩盖为整体运行，GPU 压测以每张 GPU 一个受限 `CUDA_VISIBLE_DEVICES` 实例执行；同一算力仅复用已编译的原生 SM 二进制，不复用运行进程。每卡日志和退出码写入汇总日志，报告及任务诊断据此定位具体受影响设备。诊断摘要会读取回收的 `stress_gpu*.log`；出现 `no kernel image is available for execution on the device` 时，明确归因为“GPU 内核镜像无法加载”，而不是笼统的报告 FAIL。
 
-GPU 压测默认使用服务器已验证可用的 `/opt/software/gpu-burn` 源码；仅当任一每卡日志明确出现 `no kernel image is available for execution on the device` 时，立即终止本轮全部 gpu-burn 进程（含子进程），再在任务目录从 `https://github.com/wilicc/gpu-burn.git` 浅克隆最新版源码、重新编译并重试一次。拉取失败或新版仍失败会保留准确日志并终止，不把网络或工具升级失败伪装为硬件压测结论。
+GPU 压测默认使用服务器已验证可用的 `/opt/software/gpu-burn` 源码；仅当任一每卡日志明确出现 `no kernel image is available for execution on the device` 时，立即终止本轮全部 gpu-burn 进程（含子进程），再从固定共享地址 `http://171.221.252.54:8573/chfs/shared/%E5%85%B6%E4%BB%96%E5%B8%B8%E7%94%A8%E8%BD%AF%E4%BB%B6%EF%BC%88%E5%90%AB%E5%8E%8B%E6%B5%8B%E8%84%9A%E6%9C%AC%E7%AD%89%EF%BC%89/Stress%E5%8E%8B%E6%B5%8B%E7%9B%B8%E5%85%B3%E8%84%9A%E6%9C%AC/gpu-burn-master.zip` 以 `wget` 的 GET 请求下载、检查 ZIP 路径安全、解压并原子替换源码后重新编译并重试一次。该 CHFS 地址对 HEAD 请求可返回 404，不能据此判定文件不可下载；应以实际 GET 下载结果为准。下载或新版重试失败会保留准确日志并终止，不把网络或工具升级失败伪装为硬件压测结论。
 
-若 `/opt/software/gpu-burn/Makefile` 在压测启动前不存在，脚本将其视为受控依赖缺失：仅此时从上游浅克隆并原子替换本地源码目录，然后继续本机匹配 fat binary 构建；已有可用源码时不会下载。恢复下载失败会显示“gpu-burn 源码缺失”，不会误报为硬件压测异常。
+若 `/opt/software/gpu-burn/Makefile` 在压测启动前不存在，脚本将其视为受控依赖缺失：仅此时从用户指定的共享 ZIP 下载、检查归档路径安全、解压并原子替换本地源码目录，然后继续本机匹配 fat binary 构建；已有可用源码时不会下载。恢复下载失败会显示“gpu-burn 源码缺失”，不会误报为硬件压测异常。
 
 任务列表、单任务详情和批次子任务共用缓存摘要中的 `failure_reason`。结构化诊断发现旧版 GPU 脚本已输出 `Start gpu-burn`、却因缺少 `[STAGE] stress_start` 被 300 秒启动超时终止时，归因为平台阶段协议不一致，并将中文诊断结论写入该字段；原始 `Task.error_message` 保留用于日志和审计。
 

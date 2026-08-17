@@ -3,7 +3,7 @@
 set -u
 set -o pipefail
 
-SCRIPT_VERSION="2026.08.06"
+SCRIPT_VERSION="2026.08.17"
 
 # ============================================================
 # GPU 多卡稳定性压力测试报告脚本
@@ -31,9 +31,8 @@ GPU_BURN_PRECISION="${GPU_BURN_PRECISION:-fp32}"
 TIME_TAG="$(date +%F_%H%M%S)"
 
 WORKDIR="$(pwd)"
-GPU_BURN_REPOSITORY="https://github.com/wilicc/gpu-burn.git"
+GPU_BURN_ARCHIVE_URL="http://171.221.252.54:8573/chfs/shared/%E5%85%B6%E4%BB%96%E5%B8%B8%E7%94%A8%E8%BD%AF%E4%BB%B6%EF%BC%88%E5%90%AB%E5%8E%8B%E6%B5%8B%E8%84%9A%E6%9C%AC%E7%AD%89%EF%BC%89/Stress%E5%8E%8B%E6%B5%8B%E7%9B%B8%E5%85%B3%E8%84%9A%E6%9C%AC/gpu-burn-master.zip"
 GPU_BURN_DIR="/opt/software/gpu-burn"
-GPU_BURN_REFRESH_DIR="/opt/software/.hpcdeploy-gpu-burn-refresh-$$"
 
 BURN_LOG="${WORKDIR}/stress_gpu_${TIME_TAG}.log"
 GPU_BURN_BUILD_LOCK="/opt/software/.hpcdeploy-gpu-burn.lock"
@@ -82,7 +81,7 @@ install_deps() {
 
     NEED_INSTALL=0
 
-    for cmd in python3 make git; do
+    for cmd in python3 make wget unzip; do
         if ! command -v "$cmd" >/dev/null 2>&1; then
             NEED_INSTALL=1
         fi
@@ -112,7 +111,7 @@ PYCHK
 
     if [ -f /etc/redhat-release ]; then
         ensure_epel_repo
-        yum install -y git gcc gcc-c++ make wget unzip python3 python3-pip python3-openpyxl || true
+        yum install -y gcc gcc-c++ make wget unzip python3 python3-pip python3-openpyxl || true
 
         if ! python3 - <<'PYCHK' >/dev/null 2>&1
 import openpyxl
@@ -123,7 +122,7 @@ PYCHK
 
     elif [ -f /etc/debian_version ]; then
         apt update
-        apt install -y git build-essential wget unzip python3 python3-pip python3-openpyxl
+        apt install -y build-essential wget unzip python3 python3-pip python3-openpyxl
 
         if ! python3 - <<'PYCHK' >/dev/null 2>&1
 import openpyxl
@@ -212,35 +211,63 @@ build_gpu_burn_if_needed() {
 }
 
 ensure_gpu_burn_source() {
-    local staging_dir="${GPU_BURN_DIR}.hpcdeploy-download-$$"
     if [ -f "$GPU_BURN_DIR/Makefile" ]; then
         echo "[INFO] Local gpu-burn source is available: $GPU_BURN_DIR"
         return 0
     fi
 
     # This is recovery only: normal tasks never download the source again.
-    echo "[WARN] Local gpu-burn source is missing; restoring it from upstream."
-    rm -rf "$staging_dir"
-    git clone --depth 1 "$GPU_BURN_REPOSITORY" "$staging_dir" || return 1
-    if [ ! -f "$staging_dir/Makefile" ]; then
-        rm -rf "$staging_dir"
-        return 1
-    fi
-    rm -rf "$GPU_BURN_DIR"
-    mv "$staging_dir" "$GPU_BURN_DIR" || return 1
+    echo "[WARN] Local gpu-burn source is missing; restoring it from shared archive."
+    restore_gpu_burn_source_from_archive || return 1
     echo "[INFO] Local gpu-burn source restored: $GPU_BURN_DIR"
 }
 
 refresh_gpu_burn_source_after_kernel_mismatch() {
     echo "[WARN] Confirmed gpu-burn kernel-image mismatch; fetching latest source."
-    rm -rf "$GPU_BURN_REFRESH_DIR"
-    git clone --depth 1 "$GPU_BURN_REPOSITORY" "$GPU_BURN_REFRESH_DIR" || return 1
-    [ -f "$GPU_BURN_REFRESH_DIR/Makefile" ] || return 1
+    restore_gpu_burn_source_from_archive
+}
+
+restore_gpu_burn_source_from_archive() {
+    local archive staging_dir source_dir entry
+    archive="$(mktemp /tmp/hpcdeploy-gpu-burn.XXXXXX.zip)" || return 1
+    staging_dir="$(mktemp -d "${GPU_BURN_DIR}.hpcdeploy-download.XXXXXX")" || {
+        rm -f "$archive"
+        return 1
+    }
+
+    echo "[INFO] Downloading gpu-burn source from shared archive."
+    wget -q -O "$archive" "$GPU_BURN_ARCHIVE_URL" || {
+        rm -f "$archive"
+        rm -rf "$staging_dir"
+        return 1
+    }
+    while IFS= read -r entry; do
+        case "$entry" in
+            /*|../*|*/../*|..)
+                echo "[ERROR] Shared gpu-burn archive contains an unsafe path: $entry"
+                rm -f "$archive"
+                rm -rf "$staging_dir"
+                return 1
+                ;;
+        esac
+    done < <(unzip -Z1 "$archive")
+    unzip -q "$archive" -d "$staging_dir" || {
+        rm -f "$archive"
+        rm -rf "$staging_dir"
+        return 1
+    }
+    rm -f "$archive"
+    source_dir="$(find "$staging_dir" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+    if [ -z "$source_dir" ] || [ ! -f "$source_dir/Makefile" ]; then
+        rm -rf "$staging_dir"
+        return 1
+    fi
     (
         flock -x 9
         rm -rf "$GPU_BURN_DIR"
-        mv "$GPU_BURN_REFRESH_DIR" "$GPU_BURN_DIR"
+        mv "$source_dir" "$GPU_BURN_DIR"
     ) 9>"$GPU_BURN_BUILD_LOCK" || return 1
+    rmdir "$staging_dir" 2>/dev/null || true
 }
 
 gpu_burn_source_fingerprint() {

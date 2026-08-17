@@ -2,6 +2,8 @@
 
 > 维护流水与会话交接材料。它记录变化背景和待办，不替代 [architecture.md](architecture.md) 中的当前架构、安全边界或 [../deploy/README.md](../deploy/README.md) 中的可执行部署步骤。
 
+- `gpu_stress_report.sh` 升级为 `v2026.08.17`：当 `/opt/software/gpu-burn` 源码缺失，或确认 GPU 内核镜像不兼容需刷新源码时，改从固定 CHFS 共享地址以 `wget` GET 下载 `gpu-burn-master.zip`、校验 ZIP 路径并原子替换源码；不再安装 `git` 或访问 GitHub。`openpyxl` 仍按需安装，用于生成 XLSX 压测报告。`task-20260817-165324-4305a7` 已验证源码恢复成功并进入 GPU 压测；该地址的 HEAD 可能返回 404，不能作为下载可用性判断。
+
 ## 当前完成度
 
 ### 2026-08-17 — CPU/内存压测事件归因与明细命名
