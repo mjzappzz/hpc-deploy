@@ -112,6 +112,40 @@ class TaskOutcomeMessageTests(unittest.TestCase):
             "GPU 压测报告未通过",
         )
 
+    def test_cpu_memory_card_title_uses_verified_ecc_failure_reason(self) -> None:
+        self.assertEqual(
+            resolve_card_outcome_title(
+                task_type="stress",
+                file_name="cpu_mem_stress_report.sh",
+                report_status="FAIL",
+                diagnosis={"title": "任务执行成功"},
+                fallback="检测到可纠正 ECC 内存错误（MCE/CECC）；系统已纠正，但反复出现表示内存子系统存在风险。",
+            ),
+            "检测到可纠正 ECC 内存错误（MCE/CECC）",
+        )
+
+    def test_report_failure_card_preserves_the_actual_report_reason_for_gpu_and_disk(self) -> None:
+        self.assertEqual(
+            resolve_card_outcome_title(
+                task_type="stress",
+                file_name="gpu_stress_report.sh",
+                report_status="FAIL",
+                diagnosis={"title": "任务执行成功"},
+                fallback="GPU 2 温度超过安全阈值，已触发保护。请检查散热。",
+            ),
+            "GPU 2 温度超过安全阈值，已触发保护",
+        )
+        self.assertEqual(
+            resolve_card_outcome_title(
+                task_type="stress",
+                file_name="disk_stress_report.sh",
+                report_status="FAIL",
+                diagnosis=None,
+                fallback="Disk I/O error detected on /data.",
+            ),
+            "Disk I/O error detected on /data",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

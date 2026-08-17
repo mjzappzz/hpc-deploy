@@ -54,6 +54,14 @@ test('failed and canceled tasks use shared source precedence and formatting', ()
 
 test('translates collected report failure reasons for task detail views', () => {
   assert.equal(
+    formatTaskErrorMessage('Disk I/O error detected on /data.'),
+    'Disk I/O error detected on /data.',
+  )
+  assert.equal(
+    formatTaskErrorMessage('Correctable ECC memory error detected (MCE/CECC); inspect DIMM, memory channel, CPU memory controller, and platform firmware.'),
+    '检测到可纠正 ECC 内存错误（MCE/CECC）；请检查 DIMM、内存通道、CPU 内存控制器、主板与固件。',
+  )
+  assert.equal(
     formatTaskErrorMessage('Critical kernel error detected.'),
     '检测到严重内核异常，压测未通过。',
   )

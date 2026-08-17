@@ -66,7 +66,21 @@ def resolve_card_outcome_title(
     if isinstance(title, str) and title.strip() and title not in {"任务执行成功", "未知失败类型"}:
         return title.strip()
     if report_status.upper() == "FAIL":
+        compact_reason = _compact_report_failure_reason(fallback)
+        if compact_reason:
+            return compact_reason
         script_name = (file_name or "").rsplit("/", 1)[-1].lower()
+        if script_name == "cpu_mem_stress_report.sh" and fallback:
+            if "可纠正 ECC 内存错误" in fallback or "Correctable ECC memory error" in fallback:
+                return "检测到可纠正 ECC 内存错误（MCE/CECC）"
+            if "不可纠正 ECC 内存错误" in fallback or "Uncorrectable ECC memory error" in fallback:
+                return "检测到不可纠正 ECC 内存错误（UE/UECC）"
+            if "内存耗尽（OOM）" in fallback or "Out-of-memory event" in fallback:
+                return "检测到内存耗尽（OOM）"
+            if "热节流" in fallback or "Thermal throttling" in fallback:
+                return "检测到热节流/过热保护"
+            if "机器检查硬件错误" in fallback or "Machine check hardware error" in fallback:
+                return "检测到机器检查硬件错误（MCE）"
         if script_name == "gpu_stress_report.sh":
             return "GPU 压测报告未通过"
         if script_name == "cpu_mem_stress_report.sh":
@@ -75,6 +89,15 @@ def resolve_card_outcome_title(
             return "磁盘压测报告未通过"
         return "压测报告未通过" if task_type == "stress" else "任务报告未通过"
     return fallback
+
+
+def _compact_report_failure_reason(reason: str | None) -> str | None:
+    if not isinstance(reason, str):
+        return None
+    value = reason.strip()
+    if not value or value in {"报告失败原因", "压测报告未通过，未能从已回收日志确认具体根因，请查看任务日志与结果文件。"}:
+        return None
+    return re.split(r"[。；;.!！？?]", value, maxsplit=1)[0].strip() or None
 
 
 def get_task_card_outcome_title(

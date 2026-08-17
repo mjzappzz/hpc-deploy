@@ -16,6 +16,10 @@ from sqlalchemy.orm import Session
 REPORT_STATUS_VALUES = {"PASS", "FAIL", "UNKNOWN"}
 DIAGNOSIS_VERSION = 10
 _REPORT_FAILURE_REASON_PATTERN = re.compile(r"^\s*(?:Reason|判定原因)\s*:\s*(.+?)\s*$", re.IGNORECASE)
+_CORRECTED_ECC_MCE_REASON = (
+    "检测到可纠正 ECC 内存错误（MCE/CECC）；系统已纠正，但反复出现表示内存子系统存在风险。"
+    "请检查 DIMM、内存通道、CPU 内存控制器、主板与固件。"
+)
 
 _VERIFIED_FAILURE_CATEGORIES = {
     "artifact_recovery_failed",
@@ -33,17 +37,53 @@ _SUMMARY_JOBS: set[str] = set()
 _SUMMARY_JOBS_LOCK = Lock()
 
 
+def extract_report_failure_reason(content: str) -> str | None:
+    """Extract the producer's explicit reason without reinterpreting it."""
+    for line in content.splitlines():
+        match = _REPORT_FAILURE_REASON_PATTERN.match(line)
+        if match:
+            return match.group(1).strip()
+    return None
+
+
+def _is_generic_report_reason(reason: str) -> bool:
+    return reason.strip().lower() in {
+        "critical kernel error detected.",
+        "hardware or system event detected; inspect the event log for the matched evidence.",
+        "stress-ng reported real critical error.",
+        "observed normal monitor data.",
+    }
+
+
+def _last_logged_report_reason(log_messages: list[str] | None) -> str | None:
+    if not log_messages:
+        return None
+    for message in reversed(log_messages):
+        match = _REPORT_FAILURE_REASON_PATTERN.match(message)
+        if match:
+            return match.group(1).strip()
+    return None
+
+
 def resolve_failure_reason(
     task_error_message: str | None,
     report_status: str,
     diagnosis: dict[str, Any],
     *,
+    file_name: str | None = None,
     log_messages: list[str] | None = None,
 ) -> str | None:
     if report_status not in {"FAIL", "UNKNOWN"}:
         return None
     if report_status == "UNKNOWN" and diagnosis.get("category") == "completed":
         return None
+    if report_status == "FAIL" and (file_name or "").rsplit("/", 1)[-1] == "cpu_mem_stress_report.sh":
+        cpu_memory_reason = resolve_cpu_memory_event_failure_reason(log_messages or [])
+        if cpu_memory_reason:
+            return cpu_memory_reason
+    report_reason = _last_logged_report_reason(log_messages)
+    if report_status == "FAIL" and report_reason and not _is_generic_report_reason(report_reason):
+        return report_reason
     if diagnosis.get("category") in _VERIFIED_FAILURE_CATEGORIES:
         conclusion = diagnosis.get("conclusion")
         if isinstance(conclusion, str) and conclusion.strip():
@@ -56,14 +96,30 @@ def resolve_failure_reason(
         and conclusion.strip() == task_error_message.strip()
     ):
         return task_error_message.strip()
-    if report_status == "FAIL" and log_messages:
-        for message in reversed(log_messages):
-            match = _REPORT_FAILURE_REASON_PATTERN.match(message)
-            if match:
-                return match.group(1).strip()
+    if report_status == "FAIL" and report_reason and not _is_generic_report_reason(report_reason):
+        return report_reason
     if report_status == "FAIL":
         return "压测未通过，未能从已回收日志确认具体根因，请查看任务日志与结果文件。"
     return "任务执行失败，未能从已回收日志确认具体根因，请查看任务日志与结果文件。"
+
+
+def resolve_cpu_memory_event_failure_reason(log_messages: list[str]) -> str | None:
+    """Return a specific CPU/memory report reason from verified task evidence."""
+    text = "\n".join(log_messages).lower()
+    has_mce = "mce:" in text or "machine check" in text
+    if "cecc" in text or (has_mce and "corrected error, no action required" in text):
+        return _CORRECTED_ECC_MCE_REASON
+    if "unrecoverable ecc memory error" in text or "ue/uecc" in text:
+        return "检测到不可纠正 ECC 内存错误（UE/UECC）；请立即停止关键业务并检查 DIMM、内存通道、CPU 内存控制器和主板事件日志。"
+    if "out-of-memory event detected" in text:
+        return "检测到内存耗尽（OOM）事件；请检查工作负载内存规模、可用内存和 Swap 策略。"
+    if "thermal throttling detected" in text:
+        return "检测到热节流或过热保护；请检查散热器、风扇、功耗限制和环境温度。"
+    if "machine check hardware error detected" in text:
+        return "检测到机器检查硬件错误（MCE）；请检查 CPU、内存子系统、供电和平台事件日志。"
+    if "stress-ng reported real critical error" in text:
+        return "stress-ng 报告执行或校验错误；请查看 stress-ng 日志中的具体错误行。"
+    return None
 
 
 def unknown_report_summary(task: Task, *, reason: str = "report summary not generated") -> dict[str, Any]:
@@ -177,6 +233,7 @@ def generate_report_summary(task_id: str) -> TaskReportSummary | None:
 
         artifacts_present = False
         report_result: str | None = None
+        report_failure_reason: str | None = None
         try:
             artifact_dir = ARTIFACTS_DIR / task_id
             if artifact_dir.is_dir():
@@ -191,9 +248,13 @@ def generate_report_summary(task_id: str) -> TaskReportSummary | None:
                         report_result = "PASS"
                     elif "测试结果              : FAIL" in content:
                         report_result = "FAIL"
+                        report_failure_reason = extract_report_failure_reason(content)
         except Exception:
             artifacts_present = False
             report_result = None
+
+        if report_failure_reason:
+            log_messages.append(f"判定原因: {report_failure_reason}")
 
         diagnosis = diagnose_task_failure(
             task_status=task.status,
@@ -215,6 +276,7 @@ def generate_report_summary(task_id: str) -> TaskReportSummary | None:
             task.error_message,
             report_status,
             diagnosis,
+            file_name=task.file_name,
             log_messages=log_messages,
         )
         summary_json = {
@@ -268,6 +330,30 @@ def backfill_missing_report_summaries(limit: int = 500) -> int:
             for task_id, summary_json in rows
             if not isinstance(summary_json, dict)
             or int(summary_json.get("diagnosis_version", 0) or 0) < DIAGNOSIS_VERSION
+        ]
+    finally:
+        db.close()
+
+    for task_id in task_ids:
+        generate_report_summary(task_id)
+    return len(task_ids)
+
+
+def backfill_stress_report_failure_summaries(limit: int = 500) -> int:
+    """Refresh cached FAIL summaries for GPU, CPU/memory, and disk reports."""
+    stress_scripts = ("gpu_stress_report.sh", "cpu_mem_stress_report.sh", "disk_stress_report.sh")
+    db = SessionLocal()
+    try:
+        task_ids = [
+            task_id
+            for (task_id,) in (
+                db.query(Task.task_id)
+                .join(TaskReportSummary, TaskReportSummary.task_id == Task.task_id)
+                .filter(Task.file_name.in_(stress_scripts), TaskReportSummary.report_status == "FAIL")
+                .order_by(Task.end_time.desc().nullslast(), Task.id.desc())
+                .limit(limit)
+                .all()
+            )
         ]
     finally:
         db.close()

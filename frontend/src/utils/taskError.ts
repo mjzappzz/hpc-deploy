@@ -36,6 +36,15 @@ export function formatTaskErrorMessage(message?: string | null): string {
   if (value.includes('Critical kernel error detected')) {
     return '检测到严重内核异常，压测未通过。'
   }
+  if (value.includes('Correctable ECC memory error detected')) {
+    return '检测到可纠正 ECC 内存错误（MCE/CECC）；请检查 DIMM、内存通道、CPU 内存控制器、主板与固件。'
+  }
+  if (value.includes('Uncorrectable ECC memory error detected')) {
+    return '检测到不可纠正 ECC 内存错误（UE/UECC）；请立即停止关键业务并检查 DIMM、内存通道、CPU 内存控制器和主板事件日志。'
+  }
+  if (value.includes('Out-of-memory event detected')) return '检测到内存耗尽（OOM）事件；请检查工作负载内存规模、可用内存和 Swap 策略。'
+  if (value.includes('Thermal throttling detected')) return '检测到热节流或过热保护；请检查散热器、风扇、功耗限制和环境温度。'
+  if (value.includes('Machine check hardware error detected')) return '检测到机器检查硬件错误（MCE）；请检查 CPU、内存子系统、供电和平台事件日志。'
   if (value.includes('module verification failed') && value.includes('tainting kernel')) {
     return 'NVIDIA 内核模块签名或验证失败，内核已被标记为受污染。'
   }
@@ -48,7 +57,7 @@ export function formatTaskErrorMessage(message?: string | null): string {
   if (value.includes('SSH connection timed out')) return 'SSH 连接超时，请确认服务器网络与 SSH 服务状态。'
   if (value.includes('authentication failed')) return 'SSH 认证失败，请确认账号或密钥配置。'
   if (value.includes('artifact collection')) return '结果文件回收异常，请检查任务日志和远端报告文件。'
-  return /[\u3400-\u9fff]/.test(value) ? value : '任务执行异常，请查看任务日志获取详细信息。'
+  return value
 }
 
 type TaskOutcomeSource = {

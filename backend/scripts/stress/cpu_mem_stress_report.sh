@@ -1,7 +1,7 @@
 #!/bin/bash
 #set -e  # 不使用 set -e，手工控制每个关键步骤的退出处理
 
-SCRIPT_VERSION="2026.08.14.2"
+SCRIPT_VERSION="2026.08.17.1"
 
 # ===== 自动检测系统并安装依赖 =====
 echo "[STAGE] dependency_check_start"
@@ -131,6 +131,12 @@ VM_METHOD=${VM_METHOD:-write64}
 # UE/UECC 是不可纠正 ECC 内存错误，必须单独识别并在报告中明确标注。
 # 保留独立模式，避免仅依赖泛化的 EDAC/MCE 文本导致漏检。
 UE_ERROR_PATTERN="(^|[^[:alnum:]_])(ue|uecc)([^[:alnum:]_]|$)|uncorrected hardware memory error|uncorrectable hardware memory error|edac.*(ue|uncorrect)|ras.*(ue|uecc|uncorrect)"
+# 可纠正 ECC/MCE 不能与 UE/UECC 混为一谈。虽然系统已经纠错并可继续运行，
+# 但在压力测试中反复出现时仍必须失败，并明确提示检查内存子系统。
+CORRECTED_ECC_MCE_PATTERN="corrected error, no action required|mc[0-9]+_status\\[[^]]*(ce|cecc)"
+OOM_ERROR_PATTERN="out of memory|oom-killer|killed process"
+THERMAL_ERROR_PATTERN="thermal thrott|throttling"
+MCE_ERROR_PATTERN="machine check error|machine check exception|mce:.*error"
 # 仅匹配压测期间应判失败的内存/硬件严重事件。
 # `verification failed` 是 NVIDIA 等驱动常见的签名提示，不属于内存或硬件运行错误；
 # stress-ng 自身校验失败由 STRESS_ERROR 单独识别。
@@ -632,6 +638,10 @@ ERROR_COUNT=$(grep -Ei "$CRITICAL_ERR_PATTERN" "$ERR_LOG" 2>/dev/null | wc -l)
 UE_ERROR_COUNT=$(grep -Ei "$UE_ERROR_PATTERN" "$ERR_LOG" 2>/dev/null | wc -l)
 STRESS_ERROR=$(grep -Ei "verification failed|aborted|segmentation fault|bus error|out of memory|oom-killer|killed process|stress-ng: fail:" "$STRESS_LOG" 2>/dev/null || true)
 
+EVENT_CATEGORY="未发现"
+EVENT_SHEET_NAME="HardwareEvents"
+EVENT_SUMMARY="未发现需要判定失败的硬件或系统事件。"
+
 RESULT="PASS"
 REASON="No critical error detected."
 
@@ -660,15 +670,47 @@ fi
 
 if [ "$UE_ERROR_COUNT" != "0" ]; then
     RESULT="FAIL"
-    REASON="Uncorrectable memory hardware error detected (UE/UECC)."
+    REASON="Uncorrectable ECC memory error detected (UE/UECC)."
+    EVENT_CATEGORY="不可纠正 ECC 内存错误（UE/UECC）"
+    EVENT_SHEET_NAME="UncorrectableECC"
+    EVENT_SUMMARY="检测到不可纠正 ECC 内存错误；应立即停止关键业务并检查 DIMM、内存通道、CPU 内存控制器和主板事件日志。"
+elif grep -Eiq "$CORRECTED_ECC_MCE_PATTERN" "$ERR_LOG" 2>/dev/null; then
+    RESULT="FAIL"
+    REASON="Correctable ECC memory error detected (MCE/CECC); inspect DIMM, memory channel, CPU memory controller, and platform firmware."
+    EVENT_CATEGORY="可纠正 ECC 内存错误（MCE/CECC）"
+    EVENT_SHEET_NAME="CorrectedECC"
+    EVENT_SUMMARY="检测到已由 ECC 纠正的内存错误；系统可继续运行，但反复出现表示内存子系统存在风险，应检查 DIMM、通道、CPU 内存控制器、主板和固件。"
+elif grep -Eiq "$OOM_ERROR_PATTERN" "$ERR_LOG" 2>/dev/null; then
+    RESULT="FAIL"
+    REASON="Out-of-memory event detected; review workload memory sizing and system memory availability."
+    EVENT_CATEGORY="内存耗尽（OOM）"
+    EVENT_SHEET_NAME="OutOfMemory"
+    EVENT_SUMMARY="检测到内存耗尽或 OOM killer 事件；请检查工作负载内存规模、可用内存和 Swap 策略。"
+elif grep -Eiq "$THERMAL_ERROR_PATTERN" "$ERR_LOG" 2>/dev/null; then
+    RESULT="FAIL"
+    REASON="Thermal throttling detected; inspect cooling, fan control, power limits, and ambient temperature."
+    EVENT_CATEGORY="热节流/过热保护"
+    EVENT_SHEET_NAME="ThermalEvents"
+    EVENT_SUMMARY="检测到热节流或过热保护；请检查散热器、风扇、功耗限制和环境温度。"
+elif grep -Eiq "$MCE_ERROR_PATTERN" "$ERR_LOG" 2>/dev/null; then
+    RESULT="FAIL"
+    REASON="Machine check hardware error detected; inspect the CPU, memory subsystem, power delivery, and platform logs."
+    EVENT_CATEGORY="机器检查硬件错误（MCE）"
+    EVENT_SHEET_NAME="MachineCheck"
+    EVENT_SUMMARY="检测到机器检查硬件错误；请结合平台日志检查 CPU、内存子系统和供电。"
 elif [ "$ERROR_COUNT" != "0" ]; then
     RESULT="FAIL"
-    REASON="Critical kernel error detected."
+    REASON="Hardware or system event detected; inspect the event log for the matched evidence."
+    EVENT_CATEGORY="硬件或系统事件"
+    EVENT_SUMMARY="检测到需要关注的硬件或系统事件；请查看事件明细日志中的原始证据。"
 fi
 
 if [ -n "$STRESS_ERROR" ]; then
     RESULT="FAIL"
     REASON="stress-ng reported real critical error."
+    EVENT_CATEGORY="stress-ng 执行或校验错误"
+    EVENT_SHEET_NAME="StressNgErrors"
+    EVENT_SUMMARY="stress-ng 报告了执行或校验错误；请查看 stress-ng 日志中的具体错误行。"
 fi
 
 cat > "$REPORT" << EOR
@@ -737,11 +779,12 @@ Swap连续超阈最长时长  : ${SWAP_OVER_MAX_SECONDS} 秒
 Swap+低可用内存连续最长时长 : ${SWAP_LOW_MEM_MAX_SECONDS} 秒
 
 4. 异常检查
-stress-ng退出码        : ${STRESS_EXIT}
-重大内核异常数量      : ${ERROR_COUNT}
-UE / UECC 错误数量    : ${UE_ERROR_COUNT}
+stress-ng退出码          : ${STRESS_EXIT}
+事件分类                 : ${EVENT_CATEGORY}
+硬件/系统事件匹配行      : ${ERROR_COUNT}
+UE / UECC 匹配行         : ${UE_ERROR_COUNT}
 stress-ng严重错误      : $( [ -z "$STRESS_ERROR" ] && echo "未发现" || echo "发现严重错误，请查看 ${STRESS_LOG}" )
-OOM / MCE / ECC / Thermal Throttling : $( [ "$ERROR_COUNT" = "0" ] && echo "未发现重大异常" || echo "发现重大异常，请查看 ${ERR_LOG}" )
+硬件/系统事件明细      : ${EVENT_SUMMARY}
 
 说明：
 EDAC模块加载、MCE功能启用、thermal governor注册等系统初始化信息不作为失败依据。
@@ -763,14 +806,15 @@ cat << PASS_TEXT
 PASS_TEXT
 else
 cat << FAIL_TEXT
-本次 CPU + 内存压力测试未通过。测试期间检测到重大异常或资源风险。建议结合 stress-ng 日志、资源监控日志和内核错误日志进一步排查 CPU、内存、散热、供电或系统配置问题。
+本次 CPU + 内存压力测试未通过。${EVENT_SUMMARY}
+建议结合 stress-ng 日志、资源监控日志和硬件/系统事件明细进一步排查。
 FAIL_TEXT
 fi)
 
 七、原始文件
 stress-ng日志          : ${STRESS_LOG}
 资源监控日志          : ${MON_LOG}
-内核错误日志          : ${ERR_LOG}
+硬件/系统事件明细      : ${ERR_LOG}
 Excel报告             : ${XLSX_REPORT}
 
 八、报告生成信息
@@ -818,7 +862,7 @@ ws.title = "Summary"
 raw = wb.create_sheet("RawReport")
 stress = wb.create_sheet("StressLog")
 mon = wb.create_sheet("MonitorCSV")
-err = wb.create_sheet("KernelError")
+err = wb.create_sheet("${EVENT_SHEET_NAME}")
 
 dark = "1F4E78"
 green = "C6EFCE"
@@ -921,8 +965,9 @@ rows_data = [
     ("内存表现", "运行时安全余量", "${MEMORY_SAFETY_RESERVE_MB} MB"),
     ("内存表现", "最大Swap使用", "${SWAP_USED_MAX} MB"),
     ("异常检查", "stress-ng退出码", "${STRESS_EXIT}"),
-    ("异常检查", "重大内核异常数量", "${ERROR_COUNT}"),
-    ("异常检查", "UE / UECC 错误数量", "${UE_ERROR_COUNT}"),
+    ("异常检查", "事件分类", "${EVENT_CATEGORY}"),
+    ("异常检查", "硬件/系统事件匹配行", "${ERROR_COUNT}"),
+    ("异常检查", "UE / UECC 匹配行", "${UE_ERROR_COUNT}"),
 ]
 
 for row_data in rows_data:
@@ -957,7 +1002,7 @@ if err_log.exists() and err_log.stat().st_size > 0:
     for line in err_log.read_text(errors="ignore").splitlines():
         err.append([line])
 else:
-    err.append(["No critical kernel error detected."])
+    err.append(["No hardware or system event detected."])
 err.column_dimensions["A"].width = 130
 
 def to_number(v):
@@ -1088,7 +1133,7 @@ ws.title = "Summary"
 raw = wb.create_sheet("RawReport")
 stress = wb.create_sheet("StressLog")
 mon = wb.create_sheet("MonitorCSV")
-err = wb.create_sheet("KernelError")
+err = wb.create_sheet("${EVENT_SHEET_NAME}")
 
 dark = "1F4E78"
 green = "C6EFCE"
@@ -1191,8 +1236,9 @@ rows_data = [
     ("内存表现", "运行时安全余量", "${MEMORY_SAFETY_RESERVE_MB} MB"),
     ("内存表现", "最大Swap使用", "${SWAP_USED_MAX} MB"),
     ("异常检查", "stress-ng退出码", "${STRESS_EXIT}"),
-    ("异常检查", "重大内核异常数量", "${ERROR_COUNT}"),
-    ("异常检查", "UE / UECC 错误数量", "${UE_ERROR_COUNT}"),
+    ("异常检查", "事件分类", "${EVENT_CATEGORY}"),
+    ("异常检查", "硬件/系统事件匹配行", "${ERROR_COUNT}"),
+    ("异常检查", "UE / UECC 匹配行", "${UE_ERROR_COUNT}"),
 ]
 
 for row_data in rows_data:
@@ -1227,7 +1273,7 @@ if err_log.exists() and err_log.stat().st_size > 0:
     for line in err_log.read_text(errors="ignore").splitlines():
         err.append([line])
 else:
-    err.append(["No critical kernel error detected."])
+    err.append(["No hardware or system event detected."])
 err.column_dimensions["A"].width = 130
 
 def to_number(v):
@@ -1345,7 +1391,7 @@ echo "VM Workers   : ${VM_WORKERS}"
 echo "VM Method    : ${VM_METHOD}"
 echo "Stress Log   : ${STRESS_LOG}"
 echo "Monitor CSV  : ${MON_LOG}"
-echo "Kernel Error : ${ERR_LOG}"
+echo "Hardware/System Event Details : ${ERR_LOG}"
 echo "Text Report  : ${REPORT}"
 echo "XLSX Report  : ${XLSX_REPORT}"
 echo "======================================"

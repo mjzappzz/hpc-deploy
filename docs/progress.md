@@ -4,6 +4,13 @@
 
 ## 当前完成度
 
+### 2026-08-17 — CPU/内存压测事件归因与明细命名
+
+- `cpu_mem_stress_report.sh` 升级为 `v2026.08.17.1`：不再将所有已捕获事件泛化为 `Critical kernel error detected.`。压测期间的不可纠正 ECC（UE/UECC）、可纠正 ECC MCE（CE/CECC）、OOM、热节流、一般 MCE 及其他硬件/系统事件分别输出对应判定原因和排查方向；`stress-ng` 自身执行或校验错误也保持独立类别。
+- TXT/XLSX 将“重大内核异常数量”改为事件分类和硬件/系统事件匹配行；XLSX 事件明细 Sheet 按实际分类命名，例如 `CorrectedECC`、`UncorrectableECC`、`OutOfMemory` 与 `ThermalEvents`，不再固定为 `KernelError`。Shell 末尾以 `Hardware/System Event Details` 明确指向 `cpu_mem_error_*.log`，保留既有原始文件命名以兼容采集和历史操作习惯。
+- 任务摘要、历史卡片和详情同步使用已验证的 CPU/内存事件归因：可纠正 ECC MCE 显示“检测到可纠正 ECC 内存错误（MCE/CECC）”，详情给出 DIMM、内存通道、CPU 内存控制器、主板与固件的排查方向。已重算 `batch-20260814-164011-7c1b5d` 的两次 CPU/内存任务摘要缓存；未修改其原始报告或日志。
+- GPU、CPU/内存、磁盘报告摘要统一改为直接解析 TXT 中的 `Reason:` / `判定原因:`；卡片保留首句准确结论，详情保留完整报告原因，未知英文原因不再被前端压缩为泛化错误。无报告或报告原因缺失的准备阶段失败继续由平台依据退出码、任务阶段与已回收日志规则归因；`Critical kernel error detected.`、`Observed normal monitor data.` 等不含根因的泛化报告文案不会被误作准确结论，证据不足时才使用保守兜底。已重算现有三类压测 FAIL 报告摘要，未修改原始报告或日志。
+
 ### 2026-08-14 — 多服务器按各自磁盘压测与 RAID 逻辑盘识别
 
 - 执行任务页的磁盘选择改为按目标服务器分组：每台服务器默认全选其已探测、已挂载且非 `/boot`/EFI 的目录；提交时以 `server_id → [disk_test_dir]` 映射创建任务，避免多台机器只取共同挂载点或把某台的数据盘下发到另一台。每个所选目录保持独立子任务、任务名与报告，且同一服务器的多个磁盘子任务继续并行。
