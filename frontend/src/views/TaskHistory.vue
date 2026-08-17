@@ -5351,7 +5351,7 @@ onUnmounted(() => {
 }
 
 .realtime-log-status {
-  min-width: 132px;
+  min-width: 120px;
   justify-content: center;
 }
 
