@@ -37,7 +37,7 @@ from app.core.task_runner import (
     run_task_stage8b,
 )
 from app.core.gpu_driver_runner import (
-    GPU_DRIVER_FILE_NAME,
+    GPU_DRIVER_DISPLAY_FILE_NAME,
     GPU_DRIVER_PHASE_INITIAL,
     GPU_DRIVER_PHASE_KEY,
     GPU_DRIVER_TASK_TYPE,
@@ -645,8 +645,8 @@ def run_rocky9_gpu_driver(
         task_id=task_id,
         server_id=server.id,
         task_type=GPU_DRIVER_TASK_TYPE,
-        file_path="gpu-driver/rocky9",
-        file_name=GPU_DRIVER_FILE_NAME,
+        file_path="gpu-driver/auto",
+        file_name=GPU_DRIVER_DISPLAY_FILE_NAME,
         display_category="GPU 驱动安装",
         remote_work_dir=None,
         command_preview=f"{server.os_info}：依赖准备 → 检测 Nouveau（必要时禁用并重启）→ 安装 {driver.name} → nvidia-smi 验证",
@@ -666,7 +666,7 @@ def run_rocky9_gpu_driver(
     db.commit()
     write_audit_log(
         db, action="task.gpu_driver_create", target_type="task", status="success",
-        actor="visitor", target_id=task_id, target_name=f"{server.name} · Rocky 9.4 NVIDIA 驱动",
+        actor="visitor", target_id=task_id, target_name=f"{server.name} · NVIDIA 驱动（自动识别系统）",
         server_id=server.id, server_name=server.name, task_id=task_id,
         message=f"created NVIDIA driver task on {server.name}",
         detail={"task_type": GPU_DRIVER_TASK_TYPE, "driver_type": payload.driver_type, "driver_id": payload.driver_id},
@@ -723,7 +723,7 @@ def run_gpu_driver_batch(
             server_id=server_id,
             task_type=GPU_DRIVER_TASK_TYPE,
             file_path="gpu-driver/auto",
-            file_name=GPU_DRIVER_FILE_NAME,
+            file_name=GPU_DRIVER_DISPLAY_FILE_NAME,
             display_category="GPU 驱动安装",
             command_preview=f"{server.os_info}：依赖准备 → 检测 Nouveau（必要时禁用并重启）→ 安装 {driver.name} → nvidia-smi 验证",
             params={
@@ -1011,7 +1011,7 @@ def create_managed_suite(payload: ManagedSuiteCreateRequest, db: Session = Depen
             elif action == "gpu_driver":
                 task = Task(
                     task_id=task_id, server_id=server_id, task_type=GPU_DRIVER_TASK_TYPE,
-                    file_path=path, file_name=GPU_DRIVER_FILE_NAME, display_category="GPU 驱动安装",
+                    file_path=path, file_name=GPU_DRIVER_DISPLAY_FILE_NAME, display_category="GPU 驱动安装",
                     command_preview=f"{server.os_info}：安装 {driver.name if driver else 'NVIDIA 驱动'} → nvidia-smi 验证",
                     params={"driver_type": payload.driver_type, "driver_id": payload.driver_id,
                             "driver_upload_id": payload.driver_upload_id,
@@ -1921,8 +1921,8 @@ def retry_single_task(
             task_id=retry_task_id,
             server_id=server.id,
             task_type=GPU_DRIVER_TASK_TYPE,
-            file_path="gpu-driver/rocky9",
-            file_name=GPU_DRIVER_FILE_NAME,
+            file_path="gpu-driver/auto",
+            file_name=GPU_DRIVER_DISPLAY_FILE_NAME,
             display_category="GPU 驱动安装",
             command_preview=original.command_preview,
             params=retry_params,

@@ -297,7 +297,7 @@
               <template v-if="isGpuDriverSelected">
                 <div class="card-title">Linux NVIDIA 驱动</div>
                 <el-alert :title="gpuDriverOsLabel" :type="isSupportedGpuDriverOs ? 'info' : 'error'" :closable="false" show-icon />
-                <el-alert title="仅在 Nouveau 已加载或 Rocky 更新了默认启动内核时自动重启；安装成功仅以 nvidia-smi 为准。" type="warning" :closable="false" show-icon />
+                <el-alert title="Nouveau、Rocky 默认内核变更，或强制覆盖正在运行的驱动时会自动重启；重连后以 nvidia-smi 的实际版本完成验证。" type="warning" :closable="false" show-icon />
                 <el-form label-position="top" class="gpu-driver-form">
                   <el-form-item label="驱动来源" class="driver-primary-item">
                     <el-radio-group v-model="gpuDriverSource" :disabled="isFormDisabled || uploadingGpuDriver">
@@ -332,7 +332,7 @@
                   <el-form-item label="安装策略" class="install-policy-item">
                     <div class="install-policy-row">
                       <el-checkbox v-model="forceInstallIfDriverExists" :disabled="isFormDisabled">强制安装所选版本</el-checkbox>
-                      <span class="install-policy-hint">默认检测到 nvidia-smi 后跳过安装。</span>
+                      <span class="install-policy-hint">{{ forceInstallIfDriverExists ? '将覆盖安装所选版本' : '默认检测到 nvidia-smi 后跳过安装。' }}</span>
                     </div>
                   </el-form-item>
                 </el-form>
@@ -1358,7 +1358,7 @@ const commandPreview = computed(() => {
     return `GPU 驱动安装套件串行执行：\n\n1. 安装 NVIDIA 驱动并完成 nvidia-smi 验证\n2. 安装 CUDA Toolkit ${cudaToolkitVersion.value} 并完成 nvcc 验证`
   }
   if (isGpuDriverSelected.value) {
-    return 'Rocky 9.4：检查 GPU → 安装依赖 → yum update → 禁用 Nouveau → 自动重启 → 下载 .run → 安装驱动 → nvidia-smi / 模块验证'
+    return '自动识别 Rocky 9 或 Ubuntu：检查 GPU → 安装依赖 → 必要时禁用 Nouveau 并重启 → 安装 .run 驱动 → nvidia-smi 验证'
   }
   if (isCudaToolkitSelected.value) {
     const profiles = new Set(selectedServers.value.map((server) => cudaToolkitOsProfile(server.os_info)))

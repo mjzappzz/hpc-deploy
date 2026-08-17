@@ -22,7 +22,7 @@ class TaskRunResponse(BaseModel):
 
 
 class GpuDriverRunRequest(BaseModel):
-    """Rocky 9.4 NVIDIA .run installation request."""
+    """OS-aware NVIDIA .run installation request."""
 
     server_id: int = Field(ge=1)
     driver_type: Literal["geforce", "datacenter"]

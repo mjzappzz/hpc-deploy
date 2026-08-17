@@ -59,7 +59,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 
 ### tasks API (`/api/tasks`)
 - 任务创建、批量创建（`/batch`）
-- GPU 驱动安装（`/gpu-driver/rocky9`、`/gpu-driver/batch`）：按目标服务器 OS 自动选择 Rocky 9 或 Ubuntu 安装脚本，支持 GeForce / Data Center（RTX Enterprise）驱动库与临时 `.run` 上传
+- GPU 驱动安装（`/gpu-driver/rocky9`、`/gpu-driver/batch`）：接口路径为兼容保留名称；任务展示为“自动识别系统”，并按目标服务器 OS 自动选择 Rocky 9 或 Ubuntu 安装脚本，支持 GeForce / Data Center（RTX Enterprise）驱动库与临时 `.run` 上传
 - CUDA Toolkit 安装（`/cuda-toolkit`、`/cuda-toolkit/batch`）：支持 11.8、12.0–12.6、12.8、12.9、13.0，安装前校验 `nvidia-smi`，仅安装 Toolkit，不安装或覆盖驱动
 - 压测套件创建（`/stress-suite`）：同服务器内 GPU → CPU/内存保持串行；选择多个磁盘时，前置阶段结束后各挂载点并行推进
 - 批次子任务重跑（`/{task_id}/retry-in-batch`）：支持压测套件和基础环境受控脚本套件的失败步骤；新尝试替代原失败步骤参与后续调度，已成功前序步骤不会重跑
@@ -83,7 +83,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - 日志查询、日志下载、WebSocket 实时日志（`/api/tasks/{task_id}/logs/ws`）
 - 失败诊断（`/{task_id}/diagnosis`）
 - 结构化监控（`/{task_id}/monitor` — CPU/内存/磁盘/GPU 5s 轮询）
-- 历史任务统一展示：普通任务按单次任务卡展示；同一 `batch_id` 在前端聚合为批次卡，首页展示批次概览，批次详情弹窗展示完整子任务信息。批次有成功和失败时，全部子任务结束后才显示橙色 `PARTIAL SUCCESS` / “部分成功”及成功、失败计数；仍有子任务运行时只显示运行状态。
+- 历史任务统一展示：普通任务按单次任务卡展示；同一 `batch_id` 在前端聚合为批次卡，首页展示批次概览，批次详情弹窗展示完整子任务信息。批次有成功和失败时，全部子任务结束后才显示橙色 `PARTIAL SUCCESS` / “部分成功”及成功、失败计数；仍有子任务运行时只显示运行状态。单次与批次详情的实时日志连接状态固定置于任务标题旁，WebSocket 建连、已连接和 HTTP 轮询兜底仅更新既有标签内容与颜色，避免状态切换导致标题行重排。
 - 仪表盘“运行中任务”使用独立任务 ID 列，并与历史任务共用任务类型标签规则；返回所有 PENDING、CONNECTING、PREPARING、UPLOADING、WAITING_REBOOT、RUNNING、CANCELING 状态任务，不设数量上限。页面可见时每 5 秒静默刷新，切回前台立即补刷；右上角标签以 5 秒蓝色填充进度表示下一轮刷新。拖选表格文本不触发行跳转
 - 仪表盘服务器概览的离线计数使用红色告警样式；在线、总数等既有统计口径不变
 - 历史任务卡片统一展示模块、文件、远程目录、命令、计划时长、开始/结束/耗时、报告状态和失败原因
@@ -143,7 +143,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 
 ### GPU 驱动与 CUDA runner
 - `gpu_driver_runner.py` 管理驱动库、临时上传驱动和安装任务。驱动文件名限制为 `NVIDIA-Linux-x86_64-*.run`，类型为 GeForce / Data Center（RTX Enterprise）；临时文件默认保留 7 天，引用中的文件不会清理。
-- 驱动安装根据探测 OS 选择 Rocky 9 或 Ubuntu 自动化脚本。若已存在可用 `nvidia-smi`，默认跳过；勾选强制安装时才覆盖执行。需要时自动完成 Nouveau 禁用、重启与恢复执行；Ubuntu `.run` 安装器显式使用 `--no-questions --accept-license --ui=none`，避免无终端 SSH 环境因交互 UI 初始化失败。
+- 驱动安装根据探测 OS 选择 Rocky 9 或 Ubuntu 自动化脚本。若已存在可用 `nvidia-smi`，默认跳过；勾选强制安装时才覆盖执行。强制路径从 `.run` 安装包探测并固定 NVIDIA 推荐的 `open` 或 `proprietary` 内核模块类型，并使用 `--allow-installation-with-running-driver`，避免非交互任务因模块类型和运行中驱动确认而默认中止。强制替换运行中驱动时，安装成功后任务进入 `WAITING_REBOOT`，自动重启、重连并以 `nvidia-smi` 实际版本收尾，避免旧内核模块与新用户态库短暂不匹配而误报失败。需要时自动完成 Nouveau 禁用、重启与恢复执行；Ubuntu `.run` 安装器显式使用 `--no-questions --accept-license --ui=none`，避免无终端 SSH 环境因交互 UI 初始化失败。
 - `cuda_toolkit_runner.py` 使用 NVIDIA 官方软件源安装指定 Toolkit；写入 `/etc/profile.d/cuda-<version>.sh` 并维护 `/usr/local/cuda` 软链接。成功后仅以 `nvcc --version` 验证，并在任务日志输出可复制的环境变量。
 
 ### task runner

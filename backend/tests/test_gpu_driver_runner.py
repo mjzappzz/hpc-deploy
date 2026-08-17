@@ -13,6 +13,7 @@ from app.core.gpu_driver_runner import (
     list_library_drivers,
     driver_version_from_filename,
     should_reboot_for_gpu_driver,
+    should_reboot_after_driver_install,
     should_skip_existing_driver,
     resolve_gpu_driver_os_profile,
     build_ubuntu_pre_reboot_script,
@@ -33,6 +34,9 @@ class GpuDriverRunnerTests(unittest.TestCase):
         self.assertIn('--kernel-source-path="/usr/src/kernels/$(uname -r)"', script)
         self.assertIn('--no-cc-version-check --no-opengl-files --disable-nouveau --dkms', script)
         self.assertIn('--no-questions --accept-license --ui=none', script)
+        self.assertIn('--kernel-module-type="$kernel_module_type"', script)
+        self.assertIn('--allow-installation-with-running-driver', script)
+        self.assertIn("awk '$0 == \"open\" || $0 == \"proprietary\" { result=$0 } END { print result }'", script)
         self.assertIn('nvidia-smi', script)
         self.assertNotIn('lsmod | grep nvidia', script)
         self.assertNotIn('glxinfo', script)
@@ -111,6 +115,11 @@ class GpuDriverRunnerTests(unittest.TestCase):
         self.assertTrue(should_reboot_for_gpu_driver(nouveau_loaded=False, kernel_reboot_required=True))
         self.assertFalse(should_reboot_for_gpu_driver(nouveau_loaded=False, kernel_reboot_required=False))
 
+    def test_forced_upgrade_of_a_running_driver_reboots_before_final_verification(self) -> None:
+        self.assertTrue(should_reboot_after_driver_install(force_install=True, nvidia_smi_available=True))
+        self.assertFalse(should_reboot_after_driver_install(force_install=False, nvidia_smi_available=True))
+        self.assertFalse(should_reboot_after_driver_install(force_install=True, nvidia_smi_available=False))
+
     def test_driver_os_profile_supports_rocky9_and_supported_ubuntu_releases(self) -> None:
         self.assertEqual(resolve_gpu_driver_os_profile("Rocky Linux 9.4 (Blue Onyx)"), "rocky9")
         self.assertEqual(resolve_gpu_driver_os_profile("Ubuntu 22.04.5 LTS"), "ubuntu22")
@@ -125,6 +134,9 @@ class GpuDriverRunnerTests(unittest.TestCase):
         self.assertIn("update-initramfs -u", preparation)
         self.assertIn("--kernel-source-path=/lib/modules/$(uname -r)/build", installer)
         self.assertIn("--no-questions --accept-license --ui=none", installer)
+        self.assertIn('--kernel-module-type="$kernel_module_type"', installer)
+        self.assertIn('--allow-installation-with-running-driver', installer)
+        self.assertIn("awk '$0 == \"open\" || $0 == \"proprietary\" { result=$0 } END { print result }'", installer)
         self.assertIn("nvidia-smi", installer)
         self.assertNotIn("lsmod | grep nvidia", installer)
         self.assertNotIn("compute_cap", installer)

@@ -24,12 +24,17 @@ from app.models.task import Task
 from app.models.task_log import TaskLog
 
 GPU_DRIVER_TASK_TYPE = "gpu_driver"
+# The remote filename is retained for recovery compatibility with tasks created
+# by earlier releases.  It is never presented as the task's user-facing name.
 GPU_DRIVER_FILE_NAME = "nvidia-rocky9-driver.run"
+GPU_DRIVER_DISPLAY_FILE_NAME = "nvidia-linux-driver.run"
 GPU_DRIVER_PHASE_KEY = "gpu_driver_phase"
 GPU_DRIVER_BOOT_ID_KEY = "gpu_driver_boot_id"
 GPU_DRIVER_PHASE_INITIAL = "initial"
 GPU_DRIVER_PHASE_WAITING_REBOOT = "waiting_reboot"
 GPU_DRIVER_PHASE_INSTALLING = "installing"
+GPU_DRIVER_PHASE_WAITING_POST_INSTALL_REBOOT = "waiting_post_install_reboot"
+GPU_DRIVER_REBOOT_AFTER_INSTALL_KEY = "gpu_driver_reboot_after_install"
 GPU_DRIVER_WAIT_REBOOT_SECONDS = 1800
 GPU_DRIVER_RECONNECT_INTERVAL_SECONDS = 10
 GPU_DRIVER_UPLOAD_ROOT = BACKEND_ROOT / "data" / "gpu_driver_uploads"
@@ -73,6 +78,11 @@ def should_skip_existing_driver(*, nvidia_smi_available: bool, force_install: bo
 
 def should_reboot_for_gpu_driver(*, nouveau_loaded: bool, kernel_reboot_required: bool) -> bool:
     return nouveau_loaded or kernel_reboot_required
+
+
+def should_reboot_after_driver_install(*, force_install: bool, nvidia_smi_available: bool) -> bool:
+    """A running driver must be rebooted before its replacement can be verified."""
+    return force_install and nvidia_smi_available
 
 
 def resolve_gpu_driver_os_profile(os_info: str | None) -> str:
@@ -219,10 +229,20 @@ sudo yum install -y "kernel-devel-$(uname -r)" "kernel-headers-$(uname -r)"
 echo '========== 检查 NVIDIA 驱动文件 =========='
 test -s "$driver_file"
 chmod +x "$driver_file"
+echo '========== 选择推荐的 NVIDIA 内核模块类型 =========='
+module_type_output="$(sudo "$driver_file" --print-recommended-kernel-module-type 2>&1)"
+printf '%s\n' "$module_type_output"
+kernel_module_type="$(printf '%s\n' "$module_type_output" | awk '$0 == "open" || $0 == "proprietary" {{ result=$0 }} END {{ print result }}')"
+case "$kernel_module_type" in
+  open|proprietary) echo "使用 NVIDIA 推荐的内核模块类型：$kernel_module_type" ;;
+  *) echo "ERROR: 无法确定 NVIDIA 推荐的内核模块类型：$kernel_module_type"; exit 31 ;;
+esac
 echo '========== 安装 NVIDIA 驱动 =========='
 sudo "./{GPU_DRIVER_FILE_NAME}" \\
   --kernel-source-path="/usr/src/kernels/$(uname -r)" \\
   --no-cc-version-check --no-opengl-files --disable-nouveau --dkms \\
+  --kernel-module-type="$kernel_module_type" \\
+  --allow-installation-with-running-driver \\
   --no-questions --accept-license --ui=none
 echo '========== 验证 NVIDIA 驱动 =========='
 nvidia-smi
@@ -241,10 +261,20 @@ fi
 echo '========== 检查 NVIDIA 驱动文件 =========='
 test -s "$driver_file"
 chmod +x "$driver_file"
+echo '========== 选择推荐的 NVIDIA 内核模块类型 =========='
+module_type_output="$(sudo "$driver_file" --print-recommended-kernel-module-type 2>&1)"
+printf '%s\n' "$module_type_output"
+kernel_module_type="$(printf '%s\n' "$module_type_output" | awk '$0 == "open" || $0 == "proprietary" {{ result=$0 }} END {{ print result }}')"
+case "$kernel_module_type" in
+  open|proprietary) echo "使用 NVIDIA 推荐的内核模块类型：$kernel_module_type" ;;
+  *) echo "ERROR: 无法确定 NVIDIA 推荐的内核模块类型：$kernel_module_type"; exit 31 ;;
+esac
 echo '========== 安装 NVIDIA 驱动 =========='
 sudo "./{GPU_DRIVER_FILE_NAME}" \\
   --no-opengl-files --dkms --no-questions --accept-license --ui=none \\
-  --kernel-source-path=/lib/modules/$(uname -r)/build
+  --kernel-source-path=/lib/modules/$(uname -r)/build \\
+  --kernel-module-type="$kernel_module_type" \\
+  --allow-installation-with-running-driver
 echo '========== 验证 NVIDIA 驱动 =========='
 nvidia-smi
 """
@@ -330,7 +360,7 @@ def _wait_for_reboot(db, task: Task, server: Server, executor: SSHExecutor) -> b
     return False
 
 
-def _monitor_remote_install(db, task: Task, executor: SSHExecutor) -> None:
+def _monitor_remote_install(db, task: Task, executor: SSHExecutor) -> bool:
     if not task.remote_work_dir:
         raise RuntimeError("remote work directory is missing")
     exit_file = f"{task.remote_work_dir.rstrip('/')}/.gpu-driver.exit"
@@ -339,7 +369,7 @@ def _monitor_remote_install(db, task: Task, executor: SSHExecutor) -> None:
     while True:
         db.refresh(task)
         if task.status in {"CANCELED", "CANCELING"}:
-            return
+            return False
         code, output, _err = executor.exec_capture(
             f"if test -f {shell_quote(exit_file)}; then cat {shell_quote(exit_file)}; "
             f"elif test -f {shell_quote(pid_file)} && kill -0 \"$(cat {shell_quote(pid_file)})\" 2>/dev/null; then echo RUNNING; "
@@ -357,6 +387,20 @@ def _monitor_remote_install(db, task: Task, executor: SSHExecutor) -> None:
             _log(db, task.task_id, "INFO" if state == "0" else "ERROR", tail[-4096:])
         task.end_time = datetime.utcnow()
         if state == "0":
+            if bool((task.params or {}).get(GPU_DRIVER_REBOOT_AFTER_INSTALL_KEY, False)):
+                boot_id = _read_boot_id(executor)
+                _update_params(
+                    db,
+                    task,
+                    **{
+                        GPU_DRIVER_PHASE_KEY: GPU_DRIVER_PHASE_WAITING_POST_INSTALL_REBOOT,
+                        GPU_DRIVER_BOOT_ID_KEY: boot_id,
+                    },
+                )
+                _set_status(db, task, "WAITING_REBOOT")
+                _log(db, task.task_id, "SYSTEM", "NVIDIA driver installation completed; rebooting to activate replacement kernel modules before verification")
+                _schedule_reboot(executor)
+                return True
             task.status = "SUCCESS"
             task.exit_code = 0
             task.error_message = None
@@ -365,7 +409,7 @@ def _monitor_remote_install(db, task: Task, executor: SSHExecutor) -> None:
                 ws_manager.broadcast_done_sync(task.task_id, "SUCCESS")
             except Exception:
                 pass
-            return
+            return False
         task.status = "FAILED"
         task.exit_code = int(state) if state.isdigit() else None
         task.error_message = "NVIDIA driver installer ended without an exit code" if state == "MISSING" else f"NVIDIA driver installer exited with code {state}"
@@ -374,7 +418,28 @@ def _monitor_remote_install(db, task: Task, executor: SSHExecutor) -> None:
             ws_manager.broadcast_done_sync(task.task_id, "FAILED")
         except Exception:
             pass
-        return
+        return False
+
+
+def _verify_driver_after_reboot(db, task: Task, executor: SSHExecutor, target_version: str | None) -> None:
+    code, versions, error = executor.exec_capture(
+        "nvidia-smi --query-gpu=driver_version --format=csv,noheader",
+        timeout_seconds=30,
+    )
+    if code != 0 or not versions.strip():
+        raise RuntimeError(f"NVIDIA driver did not become available after reboot: {error or versions}")
+    if target_version and not installed_driver_matches_target(versions, target_version):
+        raise RuntimeError(f"NVIDIA driver version verification failed after reboot: expected {target_version}, got {versions.strip()}")
+    task.end_time = datetime.utcnow()
+    task.status = "SUCCESS"
+    task.exit_code = 0
+    task.error_message = None
+    db.commit()
+    _log(db, task.task_id, "SYSTEM", f"post-reboot NVIDIA driver verification passed: {versions.strip()}")
+    try:
+        ws_manager.broadcast_done_sync(task.task_id, "SUCCESS")
+    except Exception:
+        pass
 
 
 def _schedule_retry(task_id: str) -> None:
@@ -455,7 +520,9 @@ def run_rocky9_gpu_driver_task(task_id: str) -> None:
                 return
             if nvidia_smi_code == 0 and force_install:
                 _log(db, task_id, "SYSTEM", f"nvidia-smi is available; force installing selected driver (installed: {installed_versions.strip() or 'unknown'}, target: {target_version or 'custom'})")
-            _log(db, task_id, "SYSTEM", "Rocky 9.4 NVIDIA driver: checking GPU, dependencies, system update and Nouveau")
+            if should_reboot_after_driver_install(force_install=force_install, nvidia_smi_available=nvidia_smi_code == 0):
+                _update_params(db, task, **{GPU_DRIVER_REBOOT_AFTER_INSTALL_KEY: True})
+            _log(db, task_id, "SYSTEM", f"{server.os_info} NVIDIA driver: checking GPU, dependencies, system update and Nouveau")
             nouveau_code, _out, _err = executor.exec_capture("lsmod | grep -q nouveau", timeout_seconds=15)
             nouveau_loaded = nouveau_code == 0
             preparation_script = build_rocky9_pre_reboot_script(nouveau_loaded) if os_profile == "rocky9" else build_ubuntu_pre_reboot_script(nouveau_loaded)
@@ -511,10 +578,31 @@ def run_rocky9_gpu_driver_task(task_id: str) -> None:
             task.start_time = task.start_time or datetime.utcnow()
             _set_status(db, task, "RUNNING")
 
-        _monitor_remote_install(db, task, executor)
+        if phase == GPU_DRIVER_PHASE_WAITING_POST_INSTALL_REBOOT:
+            _set_status(db, task, "WAITING_REBOOT")
+            if not _wait_for_reboot(db, task, server, executor):
+                db.refresh(task)
+                if task.status in {"CANCELED", "CANCELING"}:
+                    return
+                raise RuntimeError("server did not reconnect after NVIDIA driver activation reboot within 30 minutes")
+            _set_status(db, task, "RUNNING")
+            _verify_driver_after_reboot(db, task, executor, target_version)
+            return
+
+        post_install_reboot_scheduled = _monitor_remote_install(db, task, executor)
+        if post_install_reboot_scheduled:
+            db.refresh(task)
+            if not _wait_for_reboot(db, task, server, executor):
+                db.refresh(task)
+                if task.status in {"CANCELED", "CANCELING"}:
+                    return
+                raise RuntimeError("server did not reconnect after NVIDIA driver activation reboot within 30 minutes")
+            _set_status(db, task, "RUNNING")
+            _verify_driver_after_reboot(db, task, executor, target_version)
     except (GpuDriverValidationError, SSHExecutorError, RuntimeError) as exc:
         if isinstance(exc, SSHExecutorError) and task is not None and phase in {
             GPU_DRIVER_PHASE_WAITING_REBOOT,
+            GPU_DRIVER_PHASE_WAITING_POST_INSTALL_REBOOT,
             GPU_DRIVER_PHASE_INSTALLING,
         }:
             _log(db, task_id, "WARNING", f"GPU driver task connection unavailable; will retry: {exc}")

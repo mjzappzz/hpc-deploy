@@ -609,8 +609,12 @@
         </div>
 
         <div class="task-drawer-actions">
-          <el-tag v-if="drawerWsConnected" size="small" type="success">实时日志：已连接</el-tag>
-          <el-tag v-else-if="drawerWsFallback" size="small" type="warning">实时日志：普通刷新</el-tag>
+          <el-tag
+            v-if="!drawerIsTerminal"
+            size="small"
+            :type="drawerWsConnected ? 'success' : drawerWsFallback ? 'warning' : 'info'"
+            class="realtime-log-status"
+          >{{ drawerWsConnected ? '实时日志：已连接' : drawerWsFallback ? '实时日志：普通刷新' : '实时日志：连接中…' }}</el-tag>
           <el-button size="small" type="warning" plain @click="openDrawerDiagnosis">诊断</el-button>
         </div>
 
@@ -850,7 +854,12 @@
                     <div class="detail-panel__title-row">
                       <div class="detail-panel__title-wrap">
                         <span class="detail-panel__title">{{ selectedTaskLabel }}</span>
-                        <el-tag v-if="detailShowRealtimeLogStatus" size="small" type="success">实时日志：已连接</el-tag>
+                        <el-tag
+                          v-if="!detailIsTerminal"
+                          size="small"
+                          :type="detailWsConnected ? 'success' : detailWsFallback ? 'warning' : 'info'"
+                          class="realtime-log-status"
+                        >{{ detailWsConnected ? '实时日志：已连接' : detailWsFallback ? '实时日志：普通刷新' : '实时日志：连接中…' }}</el-tag>
                       </div>
                       <div class="detail-panel__header-actions">
                         <el-button
@@ -1224,6 +1233,7 @@ const drawerServer = ref<ServerRecord | null>(null)
 const drawerWsHook = useTaskWebSocket()
 const drawerWsConnected = ref(false)
 const drawerWsFallback = ref(false)
+const drawerWsConnecting = ref(false)
 const drawerNow = ref(new Date())
 let drawerPollTimer: ReturnType<typeof setInterval> | null = null
 let drawerNowTimer: ReturnType<typeof setInterval> | null = null
@@ -1252,6 +1262,8 @@ const detailServer = ref<ServerRecord | null>(null)
 const detailNow = ref(new Date())
 const detailWsHook = useTaskWebSocket()
 const detailWsConnected = ref(false)
+const detailWsFallback = ref(false)
+const detailWsConnecting = ref(false)
 const batchRetrySubmitting = ref<Record<string, boolean>>({})
 // 单独缓存选中任务的完整数据，确保 start_time 不被 batch 刷新覆盖
 const detailTaskData = ref<TaskRecord | null>(null)
@@ -2075,10 +2087,6 @@ const detailIsTerminal = computed(() => {
   return TERMINAL_STATUSES.includes(status)
 })
 
-const detailShowRealtimeLogStatus = computed(() => {
-  return !detailIsTerminal.value && detailWsConnected.value
-})
-
 const detailShowManualLogLoad = computed(() => {
   return detailIsTerminal.value && !detailLogsLoaded.value && detailLogs.value.length === 0
 })
@@ -2131,6 +2139,7 @@ function startDrawerRealtime(taskId: string) {
 
   drawerWsConnected.value = false
   drawerWsFallback.value = false
+  drawerWsConnecting.value = true
   drawerWsHook.connect(
     taskId,
     (level, line, created_at) => {
@@ -2151,20 +2160,29 @@ function startDrawerRealtime(taskId: string) {
     },
     () => {
       drawerWsConnected.value = true
+      drawerWsConnecting.value = false
     },
   )
 
   const wsCheckTimer = window.setInterval(() => {
     if (drawerWsHook.getIsConnected()) {
       drawerWsConnected.value = true
+      drawerWsConnecting.value = false
       window.clearInterval(wsCheckTimer)
     }
     if (drawerWsHook.getWsError()) {
       drawerWsFallback.value = true
+      drawerWsConnecting.value = false
       window.clearInterval(wsCheckTimer)
     }
   }, 500)
-  window.setTimeout(() => window.clearInterval(wsCheckTimer), 5000)
+  window.setTimeout(() => {
+    window.clearInterval(wsCheckTimer)
+    if (!drawerWsConnected.value && !drawerWsFallback.value) {
+      drawerWsFallback.value = true
+      drawerWsConnecting.value = false
+    }
+  }, 5000)
 
   drawerPollTimer = setInterval(() => {
     void refreshTaskDrawer(true)
@@ -2176,6 +2194,7 @@ function stopDrawerRealtime() {
   drawerWsHook.disconnect()
   drawerWsConnected.value = false
   drawerWsFallback.value = false
+  drawerWsConnecting.value = false
   if (drawerPollTimer !== null) {
     clearInterval(drawerPollTimer)
     drawerPollTimer = null
@@ -2834,6 +2853,8 @@ function batchDetailSelectTask(idx: number) {
   detailActivePanel.value = 'summary'
   detailNow.value = new Date()
   detailWsConnected.value = false
+  detailWsFallback.value = false
+  detailWsConnecting.value = false
 
   const task = batchDetailData.value.tasks[idx]
   if (task.server_id) {
@@ -2862,6 +2883,8 @@ function diskMediaLabel(mediaType: string | undefined, interfaceType: string | u
 function detailStopRealtime() {
   detailWsHook.disconnect()
   detailWsConnected.value = false
+  detailWsFallback.value = false
+  detailWsConnecting.value = false
   if (detailNowTimer !== null) {
     clearInterval(detailNowTimer)
     detailNowTimer = null
@@ -2874,6 +2897,7 @@ function detailStopRealtime() {
 
 function detailStartRealtime(taskId: string) {
   detailStopRealtime()
+  detailWsConnecting.value = true
   detailNow.value = new Date()
   detailNowTimer = setInterval(() => {
     detailNow.value = new Date()
@@ -2911,6 +2935,7 @@ function detailStartRealtime(taskId: string) {
     },
     () => {
       detailWsConnected.value = true
+      detailWsConnecting.value = false
     },
   )
 
@@ -2918,13 +2943,22 @@ function detailStartRealtime(taskId: string) {
   const wsCheckTimer = window.setInterval(() => {
     if (detailWsHook.getIsConnected()) {
       detailWsConnected.value = true
+      detailWsConnecting.value = false
       window.clearInterval(wsCheckTimer)
     }
     if (detailWsHook.getWsError()) {
+      detailWsFallback.value = true
+      detailWsConnecting.value = false
       window.clearInterval(wsCheckTimer)
     }
   }, 500)
-  window.setTimeout(() => window.clearInterval(wsCheckTimer), 5000)
+  window.setTimeout(() => {
+    window.clearInterval(wsCheckTimer)
+    if (!detailWsConnected.value && !detailWsFallback.value) {
+      detailWsFallback.value = true
+      detailWsConnecting.value = false
+    }
+  }, 5000)
 
   // Monitor polling
   startDetailMonitorPolling()
@@ -5314,6 +5348,11 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   margin: 12px 0 6px;
+}
+
+.realtime-log-status {
+  min-width: 132px;
+  justify-content: center;
 }
 
 .task-drawer-tabs {

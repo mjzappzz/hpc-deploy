@@ -65,3 +65,16 @@ test('shows disk medium and interface in both single and batch task details', as
   assert.match(source, /if \(drawerIsTerminal\.value\) return \[\.\.\.base, \{ name: 'disk', label: '磁盘' \}\]/)
   assert.doesNotMatch(source, /const detailShowMonitorDisk = computed\(\(\) => \{\s*if \(detailIsTerminal\.value\) return false/)
 })
+
+test('keeps realtime log status beside task titles without remounting it during connection', async () => {
+  const source = await readFile(new URL('./TaskHistory.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /const drawerWsConnecting = ref\(false\)/)
+  assert.match(source, /const detailWsConnecting = ref\(false\)/)
+  assert.match(source, /drawerWsConnecting\.value = true/)
+  assert.match(source, /detailWsConnecting\.value = true/)
+  assert.equal((source.match(/class="realtime-log-status"/g) || []).length, 2)
+  assert.match(source, /detail-panel__title-wrap[\s\S]{0,500}v-if="!detailIsTerminal"[\s\S]{0,500}class="realtime-log-status"/)
+  assert.match(source, /task-drawer-actions[\s\S]{0,500}v-if="!drawerIsTerminal"[\s\S]{0,500}class="realtime-log-status"/)
+  assert.doesNotMatch(source, /realtime-log-status-row/)
+})

@@ -114,3 +114,16 @@ test('serializes structured monitor polling and waits for one response before sc
   assert.match(source, /monitorPollTimer = setTimeout\(\(\) => \{\s*void fetchMonitorData\(\)\s*\}, 5000\)/)
   assert.doesNotMatch(source, /monitorPollTimer = setInterval/)
 })
+
+test('describes the active GPU driver install policy instead of always showing the skip default', async () => {
+  const source = await readFile(new URL('./TaskRunner.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /forceInstallIfDriverExists \? '将覆盖安装所选版本' : '默认检测到 nvidia-smi 后跳过安装。'/)
+})
+
+test('describes GPU driver installation as OS-aware rather than Rocky-only', async () => {
+  const source = await readFile(new URL('./TaskRunner.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /自动识别 Rocky 9 或 Ubuntu：检查 GPU → 安装依赖 → 必要时禁用 Nouveau 并重启 → 安装 .run 驱动 → nvidia-smi 验证/)
+  assert.doesNotMatch(source, /return 'Rocky 9\.4：检查 GPU/)
+})
