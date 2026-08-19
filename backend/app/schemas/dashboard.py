@@ -65,4 +65,5 @@ class DashboardSummary(BaseModel):
     servers: ServerStats = ServerStats()
     tasks: TaskStats = TaskStats()
     recent_tasks: list[RecentTaskItem] = []
+    recent_completed_tasks: list[RecentTaskItem] = []
     artifacts: ArtifactStats = ArtifactStats()

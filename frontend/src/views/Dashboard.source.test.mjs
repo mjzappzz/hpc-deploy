@@ -10,6 +10,15 @@ test('labels the dashboard table as all running tasks with a matching empty stat
   assert.match(source, /:data="summary\.recent_tasks"/)
 })
 
+test('shows the latest completed successful and failed tasks in a separate table', async () => {
+  const source = await readFile(new URL('./Dashboard.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /<template #header>近期已完成任务<\/template>/)
+  assert.match(source, /empty-text="当前没有近期已完成的任务"/)
+  assert.match(source, /:data="summary\.recent_completed_tasks"/)
+  assert.match(source, /label="结束时间"/)
+})
+
 test('silently refreshes the visible dashboard every five seconds', async () => {
   const source = await readFile(new URL('./Dashboard.vue', import.meta.url), 'utf8')
 

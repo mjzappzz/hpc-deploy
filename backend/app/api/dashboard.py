@@ -23,6 +23,7 @@ ACTIVE_TASK_STATUSES = (
     "PENDING", "CONNECTING", "PREPARING", "UPLOADING",
     "WAITING_REBOOT", "RUNNING", "CANCELING",
 )
+COMPLETED_TASK_STATUSES = ("SUCCESS", "FAILED")
 
 
 @router.get("/summary", response_model=DashboardSummary)
@@ -54,6 +55,19 @@ def get_dashboard_summary(db: Session = Depends(get_db)) -> DashboardSummary:
     for t in recent_tasks_db:
         record = serialize_task_record(t, db)
         recent_tasks.append(RecentTaskItem.model_validate(record))
+
+    # --- recently completed tasks (latest ten successful or failed tasks) ---
+    recent_completed_tasks_db = (
+        db.query(Task)
+        .filter(Task.status.in_(COMPLETED_TASK_STATUSES))
+        .order_by(Task.end_time.desc().nullslast(), Task.id.desc())
+        .limit(10)
+        .all()
+    )
+    recent_completed_tasks = []
+    for t in recent_completed_tasks_db:
+        record = serialize_task_record(t, db)
+        recent_completed_tasks.append(RecentTaskItem.model_validate(record))
 
     # --- local artifact stats ---
     artifacts_count = 0
@@ -88,6 +102,7 @@ def get_dashboard_summary(db: Session = Depends(get_db)) -> DashboardSummary:
             canceling=canceling_count,
         ),
         recent_tasks=recent_tasks,
+        recent_completed_tasks=recent_completed_tasks,
         artifacts=ArtifactStats(
             local_artifacts_count=artifacts_count,
             local_artifacts_size_bytes=artifacts_size,

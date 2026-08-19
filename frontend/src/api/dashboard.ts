@@ -44,6 +44,7 @@ export interface DashboardSummary {
   servers: ServerStats
   tasks: TaskStats
   recent_tasks: RecentTaskItem[]
+  recent_completed_tasks: RecentTaskItem[]
   artifacts: ArtifactStats
 }
 

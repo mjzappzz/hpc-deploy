@@ -137,6 +137,57 @@
         </el-table-column>
       </el-table>
     </el-card>
+
+    <!-- recently completed tasks -->
+    <el-card shadow="never" class="section-card">
+      <template #header>近期已完成任务</template>
+      <el-table
+        :data="summary.recent_completed_tasks"
+        border
+        stripe
+        v-loading="loading"
+        empty-text="当前没有近期已完成的任务"
+        highlight-current-row
+        :row-style="{ cursor: 'pointer' }"
+        @row-click="goToTask"
+      >
+        <el-table-column prop="task_id" label="任务 ID" width="260" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span class="recent-task-column-id">{{ row.task_id }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="任务名称" min-width="360" show-overflow-tooltip>
+          <template #default="{ row }">
+            <div class="recent-task-name" :title="formatTaskDisplayName(row)">
+              <span>{{ formatTaskDisplayName(row) }}</span>
+              <el-tag size="small" :type="row.batch_id ? 'warning' : 'info'" effect="plain">
+                {{ row.batch_id ? '批次' : '单次' }}
+              </el-tag>
+              <el-tag v-for="tag in getTaskTypeTags(row)" :key="tag" size="small" effect="plain">{{ tag }}</el-tag>
+            </div>
+            <div v-if="row.batch_id" class="recent-task-id">
+              <span class="recent-task-batch-id">{{ row.batch_id }}</span>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column prop="server_name" label="服务器" min-width="150" show-overflow-tooltip />
+        <el-table-column label="类型" width="140" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span class="recent-task-type">{{ getTaskCategoryLabel(row) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="状态" width="110" align="center">
+          <template #default="{ row }">
+            <StatusTag :status="row.status" />
+          </template>
+        </el-table-column>
+        <el-table-column label="结束时间" width="170">
+          <template #default="{ row }">
+            {{ formatDateTime(row.end_time) }}
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-card>
   </section>
 </template>
 
@@ -165,6 +216,7 @@ const summary = reactive<DashboardSummary>({
   servers: { total: 0, online: 0, offline: 0 },
   tasks: { total: 0, running: 0, success: 0, failed: 0, canceled: 0, pending: 0, canceling: 0 },
   recent_tasks: [],
+  recent_completed_tasks: [],
   artifacts: { local_artifacts_count: 0, local_artifacts_size_bytes: 0 },
 })
 
@@ -190,6 +242,7 @@ async function loadDashboard(silent = false) {
     summary.servers = resp.data.servers
     summary.tasks = resp.data.tasks
     summary.recent_tasks = resp.data.recent_tasks
+    summary.recent_completed_tasks = resp.data.recent_completed_tasks
   } catch {
     if (!silent) loadError.value = true
   } finally {
