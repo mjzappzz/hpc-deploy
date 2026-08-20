@@ -2,7 +2,12 @@
 
 set -e
 
-SCRIPT_VERSION="2026.08.14.5"
+SCRIPT_VERSION="2026.08.19.1"
+
+DNF_MINRATE="${HPCDEPLOY_DNF_MINRATE:-51200}"
+DNF_TIMEOUT="${HPCDEPLOY_DNF_TIMEOUT:-30}"
+DNF_RETRIES="${HPCDEPLOY_DNF_RETRIES:-2}"
+DNF_INSTALL_ATTEMPTS="${HPCDEPLOY_DNF_INSTALL_ATTEMPTS:-3}"
 
 echo "[STAGE] dependency_check_start"
 echo "[INFO] Checking and installing dependencies..."
@@ -13,11 +18,55 @@ epel_repo_enabled() {
         grep -Eq '^epel(/|$)'
 }
 
+rpm_package_manager() {
+    if command -v dnf >/dev/null 2>&1; then
+        echo dnf
+    elif command -v yum >/dev/null 2>&1; then
+        echo yum
+    else
+        echo "[ERROR] No supported RPM package manager found" >&2
+        return 1
+    fi
+}
+
+dnf_install_with_retry() {
+    local package_manager attempt delay
+    local -a refresh_args=()
+
+    package_manager="$(rpm_package_manager)" || return 1
+    attempt=1
+    while [ "$attempt" -le "$DNF_INSTALL_ATTEMPTS" ]; do
+        refresh_args=()
+        if [ "$attempt" -gt 1 ] && [ "$package_manager" = "dnf" ]; then
+            refresh_args=(--refresh)
+        fi
+        echo "[INFO] Dependency install attempt ${attempt}/${DNF_INSTALL_ATTEMPTS}: $*"
+        if "$package_manager" -y \
+            --setopt="minrate=${DNF_MINRATE}" \
+            --setopt="timeout=${DNF_TIMEOUT}" \
+            --setopt="retries=${DNF_RETRIES}" \
+            "${refresh_args[@]}" install "$@"; then
+            return 0
+        fi
+        if [ "$attempt" -ge "$DNF_INSTALL_ATTEMPTS" ]; then
+            break
+        fi
+        if [ "$attempt" -eq 1 ]; then delay=5; else delay=15; fi
+        echo "[WARN] Dependency install attempt ${attempt}/${DNF_INSTALL_ATTEMPTS} failed; retrying in ${delay}s."
+        sleep "$delay"
+        attempt=$((attempt + 1))
+    done
+    return 1
+}
+
 ensure_epel_repo() {
     if epel_repo_enabled; then
         echo "[INFO] EPEL repository already enabled; skip epel-release install."
     else
-        yum install -y epel-release || true
+        if ! dnf_install_with_retry epel-release; then
+            echo "[ERROR] Dependency installation failed after ${DNF_INSTALL_ATTEMPTS} attempts: epel-release"
+            return 1
+        fi
     fi
 }
 
@@ -27,24 +76,29 @@ install_deps() {
         exit 1
     fi
 
-    NEED_INSTALL=0
+    local -a rpm_packages=()
+    local openpyxl_missing=0
 
     if ! command -v stress-ng >/dev/null 2>&1; then
-        NEED_INSTALL=1
+        rpm_packages+=(stress-ng)
     fi
 
     if ! command -v python3 >/dev/null 2>&1; then
-        NEED_INSTALL=1
+        rpm_packages+=(python3 python3-pip)
+        openpyxl_missing=1
     else
         if ! python3 - << 'PYCHK' >/dev/null 2>&1
 import openpyxl
 PYCHK
         then
-            NEED_INSTALL=1
+            openpyxl_missing=1
+            if ! python3 -m pip --version >/dev/null 2>&1; then
+                rpm_packages+=(python3-pip)
+            fi
         fi
     fi
 
-    if [ "$NEED_INSTALL" -eq 0 ]; then
+    if [ "${#rpm_packages[@]}" -eq 0 ] && [ "$openpyxl_missing" -eq 0 ]; then
         echo "[INFO] Dependencies already installed, skip install."
         return 0
     fi
@@ -53,8 +107,15 @@ PYCHK
 
     if [ -f /etc/redhat-release ]; then
         echo "[INFO] Detected RHEL/CentOS/Rocky/Alma"
-        ensure_epel_repo
-        yum install -y stress-ng python3 python3-pip python3-openpyxl || true
+        ensure_epel_repo || return 1
+        if [ "${#rpm_packages[@]}" -gt 0 ] && ! dnf_install_with_retry "${rpm_packages[@]}"; then
+            echo "[ERROR] Dependency installation failed after ${DNF_INSTALL_ATTEMPTS} attempts: ${rpm_packages[*]}"
+            return 1
+        fi
+
+        if [ "$openpyxl_missing" -eq 1 ] && ! dnf_install_with_retry python3-openpyxl; then
+            echo "[WARN] RPM package python3-openpyxl is unavailable; falling back to pip."
+        fi
 
         if ! python3 - << 'PYCHK' >/dev/null 2>&1
 import openpyxl
@@ -81,7 +142,7 @@ PYCHK
     fi
 }
 
-install_deps
+install_deps || exit 1
 
 echo "[STAGE] dependency_check_done"
 echo "[INFO] Dependency check done."
