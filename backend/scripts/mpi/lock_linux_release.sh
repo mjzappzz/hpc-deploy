@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.7.5"
+SCRIPT_VERSION="1.7.6"
 BACKUP_ROOT="/var/backups/hpcdeploy"
 RUN_ID="$(date +%Y%m%d-%H%M%S-%N)-${BASHPID}"
 BACKUP_DIR="${BACKUP_ROOT}/linux-release-lock-${RUN_ID}"
@@ -246,6 +246,33 @@ verify_ubuntu_kernel_holds() {
     done
 }
 
+apt_dpkg_lock_holders() {
+    if command -v fuser >/dev/null 2>&1; then
+        fuser "${APT_LOCK_FILES[@]}" 2>/dev/null || true
+        return 0
+    fi
+
+    command -v lslocks >/dev/null 2>&1 \
+        || fail "未找到 fuser 或 lslocks，无法安全确认 apt/dpkg 锁状态"
+
+    local lock_file
+    local pid
+    local path
+    local lock_pids=()
+
+    while read -r pid path; do
+        [[ "$pid" =~ ^[0-9]+$ ]] || continue
+        for lock_file in "${APT_LOCK_FILES[@]}"; do
+            [[ "$path" == "$lock_file" ]] || continue
+            lock_pids+=("$pid")
+            break
+        done
+    done < <(lslocks -n -o PID,PATH 2>/dev/null || true)
+
+    (( ${#lock_pids[@]} > 0 )) || return 0
+    printf '%s\n' "${lock_pids[@]}" | sort -u | tr '\n' ' '
+}
+
 wait_for_apt_dpkg_unlock() {
     local operation="$1"
     local elapsed=0
@@ -259,9 +286,8 @@ wait_for_apt_dpkg_unlock() {
     local minimum_download_bytes
     local downloaded_bytes
 
-    command -v fuser >/dev/null 2>&1 || fail "未找到 fuser，无法安全确认 apt/dpkg 锁状态"
     while true; do
-        holders="$(fuser "${APT_LOCK_FILES[@]}" 2>/dev/null || true)"
+        holders="$(apt_dpkg_lock_holders)"
         [[ -z "${holders//[[:space:]]/}" ]] && return 0
         download_bytes="$(apt_update_download_bytes)"
         cpu_times="$(apt_update_cpu_times "$holders")"
@@ -338,7 +364,7 @@ recover_stalled_automatic_apt_update() {
     systemctl kill --kill-who=all --signal=SIGTERM apt-daily-upgrade.service \
         || fail "无法向 apt-daily-upgrade 的自动更新进程发送 SIGTERM；占用 PID：${holders}"
     for ((attempt = 1; attempt <= 12; attempt += 1)); do
-        remaining_holders="$(fuser "${APT_LOCK_FILES[@]}" 2>/dev/null || true)"
+        remaining_holders="$(apt_dpkg_lock_holders)"
         [[ -z "${remaining_holders//[[:space:]]/}" ]] && break
         sleep "$APT_LOCK_POLL_SECONDS"
     done
@@ -591,7 +617,9 @@ lock_ubuntu_lts() {
     command -v apt-get >/dev/null 2>&1 || fail "未找到 apt-get"
     command -v apt-mark >/dev/null 2>&1 || fail "未找到 apt-mark"
     command -v dpkg-query >/dev/null 2>&1 || fail "未找到 dpkg-query"
-    command -v fuser >/dev/null 2>&1 || fail "未找到 fuser，无法安全确认 apt/dpkg 锁状态"
+    if ! command -v fuser >/dev/null 2>&1 && ! command -v lslocks >/dev/null 2>&1; then
+        fail "未找到 fuser 或 lslocks，无法安全确认 apt/dpkg 锁状态"
+    fi
 
     local running_kernel
     running_kernel="$(uname -r)"

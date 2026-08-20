@@ -3116,7 +3116,7 @@ onBeforeUnmount(() => {
 /* ── Task type cards ── */
 .task-type-groups {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
   align-items: stretch;
 }
@@ -3151,7 +3151,7 @@ onBeforeUnmount(() => {
 
 .task-type-cards {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: 1fr;
   gap: 10px;
 }
 
@@ -3209,16 +3209,12 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 980px) {
-  .task-type-cards {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .task-type-groups {
+    grid-template-columns: 1fr;
   }
 }
 
 @media (max-width: 640px) {
-  .task-type-cards {
-    grid-template-columns: 1fr;
-  }
-
   .task-type-group-heading {
     min-height: 0;
   }

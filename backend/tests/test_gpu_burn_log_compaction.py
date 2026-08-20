@@ -48,9 +48,12 @@ class GpuBurnLogCompactionTests(unittest.TestCase):
         source = SCRIPT.read_text(encoding="utf-8")
 
         self.assertIn("GPU_BURN_ARCHIVE_URL=", source)
+        self.assertIn('GPU_BURN_ARCHIVE_PATH="/opt/software/gpu-burn-master.zip"', source)
         self.assertIn("171.221.252.54:8573", source)
         self.assertIn("gpu-burn-master.zip", source)
         self.assertIn("wget -q -O", source)
+        self.assertIn('mv "$archive_temp" "$GPU_BURN_ARCHIVE_PATH"', source)
+        self.assertIn("Reusing cached gpu-burn source archive", source)
         self.assertIn("unzip -q", source)
         self.assertNotIn("github.com/wilicc/gpu-burn", source)
         self.assertNotIn("git clone --depth 1", source)

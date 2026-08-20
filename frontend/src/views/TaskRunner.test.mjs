@@ -29,13 +29,12 @@ test('labels the target-area probe action as detecting target servers', async ()
   assert.doesNotMatch(source, /检测在线服务器/)
 })
 
-test('lays task type cards out horizontally within each task module', async () => {
+test('lays task type modules side by side with vertically stacked cards', async () => {
   const source = await readFile(new URL('./TaskRunner.vue', import.meta.url), 'utf8')
 
-  assert.match(source, /\.task-type-groups\s*\{[\s\S]*?grid-template-columns:\s*1fr/)
-  assert.match(source, /\.task-type-cards\s*\{[\s\S]*?grid-template-columns:\s*repeat\(3, minmax\(0, 1fr\)\)/)
-  assert.match(source, /@media \(max-width: 980px\)\s*\{[\s\S]*?\.task-type-cards\s*\{[\s\S]*?grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/)
-  assert.match(source, /@media \(max-width: 640px\)\s*\{[\s\S]*?\.task-type-cards\s*\{[\s\S]*?grid-template-columns:\s*1fr/)
+  assert.match(source, /\.task-type-groups\s*\{[\s\S]*?grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/)
+  assert.match(source, /\.task-type-cards\s*\{[\s\S]*?grid-template-columns:\s*1fr/)
+  assert.match(source, /@media \(max-width: 980px\)\s*\{[\s\S]*?\.task-type-groups\s*\{[\s\S]*?grid-template-columns:\s*1fr/)
   assert.match(source, /v-if="selectedTaskCategory === tt\.value" class="task-type-card-check"/)
   assert.match(source, /\.task-type-card-check\s*\{[\s\S]*?background: var\(--el-color-primary\)/)
 })

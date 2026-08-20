@@ -2484,7 +2484,7 @@ function resetFilters() {
   filters.server_id = undefined
   filters.keyword = undefined
   filters.task_ids = undefined
-  filters.limit = 50
+  filters.limit = 20
   filters.offset = 0
   batchFilters.status = undefined
   batchFilters.keyword = undefined
@@ -3671,12 +3671,21 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.filter-bar {
+.task-history-page .filter-bar {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-bottom: 16px;
+  position: fixed;
+  top: var(--topbar-height);
+  right: 16px;
+  left: var(--sidebar-width);
+  z-index: 19;
+  min-height: var(--history-filter-bar-height);
+  padding: 8px 24px;
+  margin-bottom: 0;
   flex-wrap: wrap;
+  background: #f8fafc;
+  border-bottom: 1px solid var(--el-border-color-lighter);
 }
 
 .keyword-input {
@@ -3884,7 +3893,9 @@ onUnmounted(() => {
 
 /* ── Unified batch card ── */
 .task-history-page {
+  --history-filter-bar-height: 52px;
   min-height: 100%;
+  padding-top: var(--history-filter-bar-height);
   background: #f8fafc;
 }
 

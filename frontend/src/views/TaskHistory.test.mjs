@@ -11,6 +11,24 @@ test('labels stress preparation states distinctly from runtime', async () => {
   assert.match(source, /RUNNING: '运行中'/)
 })
 
+test('keeps the task history page size at twenty after filters are reset', async () => {
+  const source = await readFile(new URL('./TaskHistory.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /limit: 20,\n\s*offset: 0,/)
+  assert.match(source, /function resetFilters\(\) \{[\s\S]*?filters\.limit = 20/)
+  assert.doesNotMatch(source, /function resetFilters\(\) \{[\s\S]*?filters\.limit = 50/)
+})
+
+test('fixes the history filter and refresh bar below the topbar while task results scroll', async () => {
+  const source = await readFile(new URL('./TaskHistory.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /\.task-history-page \.filter-bar \{[\s\S]*?position: fixed;[\s\S]*?top: var\(--topbar-height\);[\s\S]*?right: 16px;[\s\S]*?left: var\(--sidebar-width\);/)
+  assert.match(source, /z-index: 19;/)
+  assert.match(source, /\.task-history-page \{[\s\S]*?padding-top: var\(--history-filter-bar-height\);/)
+  assert.match(source, /background: #f8fafc;/)
+  assert.match(source, /border-bottom: 1px solid var\(--el-border-color-lighter\);/)
+})
+
 test('presents mixed batch results as an amber partial success with counts', async () => {
   const source = await readFile(new URL('./TaskHistory.vue', import.meta.url), 'utf8')
   const statusTag = await readFile(new URL('../components/StatusTag.vue', import.meta.url), 'utf8')

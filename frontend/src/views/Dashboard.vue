@@ -113,14 +113,23 @@
                 {{ row.batch_id ? '批次' : '单次' }}
               </el-tag>
               <el-tag v-for="tag in getTaskTypeTags(row)" :key="tag" size="small" effect="plain">{{ tag }}</el-tag>
+              <TaskDurationTag
+                :task-type="row.task_type"
+                :params="row.params"
+                :duration-seconds="row.duration_seconds"
+              />
             </div>
             <div v-if="row.batch_id" class="recent-task-id">
               <span v-if="row.batch_id" class="recent-task-batch-id">{{ row.batch_id }}</span>
             </div>
           </template>
         </el-table-column>
-        <el-table-column prop="server_name" label="服务器" min-width="150" show-overflow-tooltip />
-        <el-table-column label="类型" width="140" show-overflow-tooltip>
+        <el-table-column label="服务器" width="110" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span class="recent-task-server">{{ row.server_name }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="类型" width="130" show-overflow-tooltip>
           <template #default="{ row }">
             <span class="recent-task-type">{{ getTaskCategoryLabel(row) }}</span>
           </template>
@@ -140,9 +149,18 @@
 
     <!-- recently completed tasks -->
     <el-card shadow="never" class="section-card">
-      <template #header>近期已完成任务</template>
+      <template #header>
+        <div class="recent-completed-header">
+          <span>近期已完成任务</span>
+          <el-select v-model="completedTaskDisplayLimit" size="small" style="width: 112px" aria-label="近期已完成任务显示数量">
+            <el-option :value="10" label="显示 10 条" />
+            <el-option :value="20" label="显示 20 条" />
+            <el-option :value="50" label="显示 50 条" />
+          </el-select>
+        </div>
+      </template>
       <el-table
-        :data="summary.recent_completed_tasks"
+        :data="visibleCompletedTasks"
         border
         stripe
         v-loading="loading"
@@ -164,21 +182,30 @@
                 {{ row.batch_id ? '批次' : '单次' }}
               </el-tag>
               <el-tag v-for="tag in getTaskTypeTags(row)" :key="tag" size="small" effect="plain">{{ tag }}</el-tag>
+              <TaskDurationTag
+                :task-type="row.task_type"
+                :params="row.params"
+                :duration-seconds="row.duration_seconds"
+              />
             </div>
             <div v-if="row.batch_id" class="recent-task-id">
               <span class="recent-task-batch-id">{{ row.batch_id }}</span>
             </div>
           </template>
         </el-table-column>
-        <el-table-column prop="server_name" label="服务器" min-width="150" show-overflow-tooltip />
-        <el-table-column label="类型" width="140" show-overflow-tooltip>
+        <el-table-column label="服务器" width="110" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span class="recent-task-server">{{ row.server_name }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="类型" width="130" show-overflow-tooltip>
           <template #default="{ row }">
             <span class="recent-task-type">{{ getTaskCategoryLabel(row) }}</span>
           </template>
         </el-table-column>
         <el-table-column label="状态" width="110" align="center">
           <template #default="{ row }">
-            <StatusTag :status="row.status" />
+            <StatusTag :status="getTaskDisplayStatus(row)" />
           </template>
         </el-table-column>
         <el-table-column label="结束时间" width="170">
@@ -192,15 +219,16 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   getDashboardSummary,
   type DashboardSummary,
 } from '@/api/dashboard'
 import StatusTag from '@/components/StatusTag.vue'
+import TaskDurationTag from '@/components/TaskDurationTag.vue'
 import { formatTaskDisplayName, getTaskTypeTags } from '@/utils/taskDisplay'
-import { getTaskCategoryLabel } from '@/utils/taskPresentation'
+import { getTaskCategoryLabel, getTaskDisplayStatus } from '@/utils/taskPresentation'
 import { formatDateTime } from '@/utils/time'
 
 const router = useRouter()
@@ -209,6 +237,7 @@ const DASHBOARD_REFRESH_INTERVAL_MS = 5_000
 const loading = ref(false)
 const loadError = ref(false)
 const isAutoRefreshing = ref(false)
+const completedTaskDisplayLimit = ref(10)
 let dashboardRefreshTimer: number | undefined
 let dashboardRequestInFlight = false
 
@@ -219,6 +248,8 @@ const summary = reactive<DashboardSummary>({
   recent_completed_tasks: [],
   artifacts: { local_artifacts_count: 0, local_artifacts_size_bytes: 0 },
 })
+
+const visibleCompletedTasks = computed(() => summary.recent_completed_tasks.slice(0, completedTaskDisplayLimit.value))
 
 function goToTask(row: { task_id: string; batch_id?: string | null }) {
   if (window.getSelection()?.toString().trim()) return
@@ -340,6 +371,13 @@ onUnmounted(() => {
   color: #1f2937;
 }
 
+.recent-completed-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .recent-task-column-id {
   display: block;
   overflow: hidden;
@@ -364,7 +402,10 @@ onUnmounted(() => {
   color: #b88230;
 }
 
+.recent-task-server,
 .recent-task-type {
+  display: block;
+  line-height: 20px;
   white-space: nowrap;
 }
 

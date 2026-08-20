@@ -9,22 +9,24 @@ class CpuMemoryPressureSafetyTests(unittest.TestCase):
     def test_memory_headroom_scales_for_small_and_large_servers(self) -> None:
         def limits(total_mb: int) -> tuple[int, int]:
             reserve = max(total_mb * 10 // 100, min(4096, total_mb * 25 // 100))
-            margin = min(512, max(total_mb * 2 // 100, 128))
+            margin = min(2048, max(total_mb * 2 // 100, 128))
             return reserve, margin
 
         self.assertEqual(limits(1638), (409, 128))
         self.assertEqual(limits(4096), (1024, 128))
         self.assertEqual(limits(8192), (2048, 163))
         self.assertEqual(limits(16384), (4096, 327))
-        self.assertEqual(limits(32768), (4096, 512))
-        self.assertEqual(limits(65536), (6553, 512))
-        self.assertEqual(limits(262144), (26214, 512))
+        self.assertEqual(limits(32768), (4096, 655))
+        self.assertEqual(limits(65536), (6553, 1310))
+        self.assertEqual(limits(262144), (26214, 2048))
 
         source = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("MEMORY_SAFETY_RESERVE_CAP_MB", source)
         self.assertIn("MEMORY_SAFETY_RESERVE_SMALL_PERCENT", source)
         self.assertIn("MEMORY_SAFETY_MARGIN_MIN_MB", source)
         self.assertIn("MEMORY_SAFETY_MARGIN_CAP_MB", source)
+        self.assertIn("MEMORY_SAFETY_MARGIN_CAP_MB:-2048", source)
+        self.assertIn("VM_SAFE_LIMIT_MB=$(( MEM_AVAILABLE_MB - MEMORY_SAFETY_RESERVE_MB - MEMORY_SAFETY_MARGIN_MB ))", source)
 
     def test_monitor_records_cpu_pressure_and_memory_target_metrics(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")
@@ -49,7 +51,7 @@ class CpuMemoryPressureSafetyTests(unittest.TestCase):
     def test_pressure_must_reach_cpu_and_memory_targets(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")
 
-        self.assertIn('SCRIPT_VERSION="2026.08.19.1"', source)
+        self.assertIn('SCRIPT_VERSION="2026.08.20.1"', source)
         self.assertIn("CPU_BUSY_FAIL_PERCENT", source)
         self.assertIn("CPU_BUSY_WARMUP_SECONDS", source)
         self.assertIn("CPU_BUSY_WARMUP_SAMPLES", source)

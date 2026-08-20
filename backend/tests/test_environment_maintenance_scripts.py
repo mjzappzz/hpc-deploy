@@ -52,7 +52,7 @@ class EnvironmentMaintenanceScriptTests(unittest.TestCase):
     def test_lock_linux_release_has_safe_scope(self) -> None:
         content = _script("lock_linux_release.sh")
 
-        self.assertIn('SCRIPT_VERSION="1.7.5"', content)
+        self.assertIn('SCRIPT_VERSION="1.7.6"', content)
         self.assertIn('[[ "$VERSION_ID" =~ ^9\\.[0-9]+$ ]]', content)
         self.assertIn('select_rocky_repo_root', content)
         self.assertIn('"--setopt=reposdir=${probe_root}"', content)
@@ -95,7 +95,11 @@ class EnvironmentMaintenanceScriptTests(unittest.TestCase):
         self.assertIn('APT_STALL_MAX_SECONDS=10', content)
         self.assertIn('APT_MIN_DOWNLOAD_BYTES_PER_SECOND=524288', content)
         apt_lock_wait = _shell_function(content, "wait_for_apt_dpkg_unlock")
-        self.assertIn('fuser "${APT_LOCK_FILES[@]}"', apt_lock_wait)
+        lock_holders = _shell_function(content, "apt_dpkg_lock_holders")
+        self.assertIn('fuser "${APT_LOCK_FILES[@]}"', lock_holders)
+        self.assertIn('lslocks -n -o PID,PATH', lock_holders)
+        self.assertIn('未找到 fuser 或 lslocks', lock_holders)
+        self.assertIn('holders="$(apt_dpkg_lock_holders)"', apt_lock_wait)
         self.assertIn('sleep "$APT_LOCK_POLL_SECONDS"', apt_lock_wait)
         self.assertIn('锁持续占用超过', apt_lock_wait)
         self.assertIn('is_stalled_automatic_apt_update', apt_lock_wait)
@@ -108,6 +112,7 @@ class EnvironmentMaintenanceScriptTests(unittest.TestCase):
         self.assertIn('systemctl kill --kill-who=all --signal=SIGTERM apt-daily-upgrade.service', recovery)
         self.assertNotIn('SIGKILL', recovery)
         self.assertIn('dpkg --configure -a', recovery)
+        self.assertIn('remaining_holders="$(apt_dpkg_lock_holders)"', recovery)
         self.assertIn('不终止人工 apt/dpkg 或 cloud-init', recovery)
         self.assertGreaterEqual(content.count('wait_for_apt_dpkg_unlock'), 3)
         self.assertNotIn('rm -f /var/lib/dpkg/lock', content)
@@ -132,7 +137,7 @@ class EnvironmentMaintenanceScriptTests(unittest.TestCase):
         self.assertNotIn("dnf update", content)
         self.assertNotIn("yum update", content)
         self.assertNotIn("sudo ", content)
-        self.assertEqual(extract_content_version(content), "v1.7.5")
+        self.assertEqual(extract_content_version(content), "v1.7.6")
 
     def test_lock_linux_release_accepts_held_installed_ubuntu_packages(self) -> None:
         content = _script("lock_linux_release.sh")
@@ -177,6 +182,32 @@ class EnvironmentMaintenanceScriptTests(unittest.TestCase):
             check=False,
         )
         self.assertNotEqual(query_failure.returncode, 0)
+
+    def test_lock_linux_release_uses_lslocks_when_fuser_is_unavailable(self) -> None:
+        content = _script("lock_linux_release.sh")
+        function = _shell_function(content, "apt_dpkg_lock_holders")
+
+        command = (
+            "command() {\n"
+            "    if [[ \"$1\" == \"-v\" && \"$2\" == \"fuser\" ]]; then return 1; fi\n"
+            "    builtin command \"$@\"\n"
+            "}\n"
+            "lslocks() {\n"
+            "    printf '%s\\n' '4321 /var/lib/dpkg/lock-frontend' '9876 /tmp/unrelated-lock'\n"
+            "}\n"
+            "APT_LOCK_FILES=(/var/lib/dpkg/lock-frontend /var/lib/dpkg/lock)\n"
+            f"{function}\n"
+            "apt_dpkg_lock_holders\n"
+        )
+        result = subprocess.run(
+            ["/bin/bash", "-c", command],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "4321", result.stderr)
 
     def test_disable_linux_lock_sleep_avoids_session_disruption(self) -> None:
         content = _script("disable_linux_lock_sleep.sh")

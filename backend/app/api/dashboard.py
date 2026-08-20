@@ -56,12 +56,12 @@ def get_dashboard_summary(db: Session = Depends(get_db)) -> DashboardSummary:
         record = serialize_task_record(t, db)
         recent_tasks.append(RecentTaskItem.model_validate(record))
 
-    # --- recently completed tasks (latest ten successful or failed tasks) ---
+    # --- recently completed tasks (latest fifty successful or failed tasks) ---
     recent_completed_tasks_db = (
         db.query(Task)
         .filter(Task.status.in_(COMPLETED_TASK_STATUSES))
         .order_by(Task.end_time.desc().nullslast(), Task.id.desc())
-        .limit(10)
+        .limit(50)
         .all()
     )
     recent_completed_tasks = []

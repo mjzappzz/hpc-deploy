@@ -73,6 +73,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - Intel oneAPI 2022 安装脚本 v1.1.0 在执行安装器前分别检查 MKL 与编译器/Intel MPI 命令；目标组件已完整安装时跳过对应离线包下载和安装，最终严格验证 `icc`、`icx`、`ifort`、`mpiicc`、`mpiifort`、`mpirun` 及 `MKLROOT`，重复执行不再因 Intel 安装器返回“already installed”而误报失败
 - AOCC/AOCL + OpenMPI 安装脚本 v1.1.0 分别检测 AOCC 编译器、AOCL 库和 OpenMPI wrapper；已完整安装的组件跳过下载、包安装或编译，最终严格验证 `clang`、`clang++`、`flang`、`mpicc`、`mpicxx`、`mpif90`、`mpirun`、AOCL 库及 `mpicc --showme`
 - Linux 当前版本锁定脚本 v1.7.5 接受 x86_64 Rocky 9.x 与 Ubuntu 22.04/24.04。Rocky 读取执行前 `VERSION_ID` 与 `uname -r`，要求当前运行内核存在对应 `kernel-core` RPM，并收集当前内核对应的已安装 `kernel`、`kernel-core`、`kernel-modules*`、`kernel-devel` 及已安装的 `kernel-headers`；随后预检并固定当前小版本仓库，通过 DNF versionlock 锁定 release/repo/GPG 与内核包。每个 Rocky 候选源的隔离 DNF 预检由 coreutils `timeout` 限制为 90 秒，超时后发送 TERM、10 秒后强制结束并切换下一源；所有候选失败时仍处于预检阶段，不修改系统配置。Ubuntu 在读取 hold、更新软件包索引和写入 hold 前，均通过 `fuser` 检查 apt/dpkg 锁。仅当持锁进程命令为 `unattended-upgrade` 且 cgroup 归属 `apt-daily-upgrade.service` 时，脚本才将它识别为可恢复的自动更新，因此服务主进程已退出并显示 failed 的遗留子进程也能被正确处理；每 5 秒比较下载缓存增量与进程 CPU 时间，连续两个采样的平均下载速率低于 512KiB/s 且没有 CPU 配置进展时（约 10 秒），先异步停止该服务，再仅向该服务 cgroup 的自动更新进程发送 `SIGTERM`，等待锁释放后执行 `dpkg --configure -a` 恢复包管理一致性，再继续版本锁定；不会使用 `SIGKILL`。人工 apt/dpkg、cloud-init 或未识别的锁始终只等待，最长 900 秒，绝不删除锁文件或终止进程。随后将 `Prompt` 设置为 `never`，收集当前运行内核对应的 image/modules/headers 包以及已安装的 generic、HWE、virtual、lowlatency、OEM 内核元包，再通过 `apt-mark hold` 锁定并逐项验证；包状态识别接受 `dpkg` 的普通已安装（`ii`）和已 hold 且已安装（`hi`），仍拒绝残留配置或未安装状态。Ubuntu 备份原发行版升级配置与原 hold 清单，保留既有 hold，失败时只撤销本次新增 hold 并恢复配置。Rocky 备份全部 `.repo`、`releasever` 与 `versionlock.list`，失败时完整恢复并校验。脚本不自动补装、升级或切换内核，也不执行跨版本升级、降级或全量更新；内核安全更新需在维护窗口手动解锁、升级并重新验证驱动。
+- Linux 当前版本锁定脚本 v1.7.6 保持上述版本锁定与自动更新恢复策略；Ubuntu 的 apt/dpkg 锁检测优先使用 `fuser`，目标机未安装 `fuser` 时回退到 `lslocks` 读取内核锁表并返回持锁 PID，后续等待、自动更新识别和受控恢复逻辑一致。两者均不可用时才拒绝执行；不会为此自动安装软件包、删除锁文件或绕过锁检查。
 - 资产库对所有文本脚本解析内容版本（支持 `SCRIPT_VERSION=...`、`ScriptVersion: ...` 等形式），API 通过 `content_version` 返回，管理表格统一展示“版本”列；未声明版本的文件显示 `-`。
 - 任务执行恢复：普通脚本和 CUDA Toolkit 与压测、NVIDIA 驱动一致，远端进程使用 `nohup + setsid` 脱离 SSH，任务目录保存 `.hpcdeploy.pid`、`task.log` 和 `.hpcdeploy.exit_code`。后端启动时扫描 RUNNING 任务，通过 SSH 重新附着监控、补录日志并按远端退出码收尾；CONNECTING/PREPARING/UPLOADING 阶段任务由启动恢复器重新排队。已在远端启动的压测任务会保留 `PREPARING` 状态直到负载启动标记出现，重启恢复器按 PID 重新附着而不重复下发。
 - 重启恢复中的普通脚本与 CUDA Toolkit 遇到 SSH 连接或 channel 临时不可用时保持 RUNNING，并以 60 秒间隔重新附着；NVIDIA 驱动已有同类延迟重试，压测执行多次即时重连后再延迟重试。控制面连接失败不再直接覆盖远端任务真实退出状态。
@@ -86,6 +87,8 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - 历史任务统一展示：普通任务按单次任务卡展示；同一 `batch_id` 在前端聚合为批次卡，首页展示批次概览，批次详情弹窗展示完整子任务信息。批次有成功和失败时，全部子任务结束后才显示橙色 `PARTIAL SUCCESS` / “部分成功”及成功、失败计数；仍有子任务运行时只显示运行状态。单次与批次详情的实时日志连接状态固定置于任务标题旁，WebSocket 建连、已连接和 HTTP 轮询兜底仅更新既有标签内容与颜色，避免状态切换导致标题行重排。
 - 仪表盘“运行中任务”使用独立任务 ID 列，并与历史任务共用任务类型标签规则；返回所有 PENDING、CONNECTING、PREPARING、UPLOADING、WAITING_REBOOT、RUNNING、CANCELING 状态任务，不设数量上限。页面可见时每 5 秒静默刷新，切回前台立即补刷；右上角标签以 5 秒蓝色填充进度表示下一轮刷新。拖选表格文本不触发行跳转
 - 仪表盘在“运行中任务”下展示“近期已完成任务”：`/api/dashboard/summary` 返回最近 10 条 `SUCCESS` 或 `FAILED` 任务，按 `end_time` 倒序（同一结束时间按数据库记录 ID 倒序）；取消任务不混入该列表，继续仅在任务结果统计中单列。两张任务表均可跳转对应单次或批次历史记录
+- 仪表盘“近期已完成任务”接口保留最近 50 条 `SUCCESS` 或 `FAILED` 任务；页面默认显示 10 条，并可切换显示 10/20/50 条。运行中与近期已完成两张表均复用任务卡的“压测时间”标签，仅压测任务展示计划时长；最终状态优先采用报告结果，报告 FAIL 不会被执行退出码为 0 覆盖。
+- 执行任务页第二步按竖向分组展示任务卡：环境部署下含基础环境、GPU 驱动和 MPI 编译环境，稳定性验证下含服务器压测；历史任务筛选/刷新栏固定于内容区顶部，预留滚动条空间且不遮挡右侧滚轮。历史任务默认每页 20 条。
 - 仪表盘服务器概览的离线计数使用红色告警样式；在线、总数等既有统计口径不变
 - 历史任务卡片统一展示模块、文件、远程目录、命令、计划时长、开始/结束/耗时、报告状态和失败原因
 - 重跑链以最新一次尝试计算批次当前状态；旧尝试仅作为历史审计记录保留
@@ -400,13 +403,13 @@ PENDING → CONNECTING → PREPARING → UPLOADING → RUNNING → SUCCESS
 
 GPU 压测 TXT/XLSX 报告分别记录 `nvidia-smi --query-gpu=driver_version` 检出的 NVIDIA 驱动版本和 `nvcc --version` 检出的 CUDA Toolkit 版本，不使用 `nvidia-smi` 顶部 CUDA Version（驱动最高兼容版本）替代实际安装版本。
 
-`gpu_stress_report.sh`（v2026.08.19.1）为 gpu-burn 实际加载的 `compare.fatbin` 维护服务器级、按本机匹配的编译缓存：只取 `nvidia-smi` 检出的物理 GPU `compute_cap`，并要求当前 CUDA Toolkit 支持每一种架构。首次或缓存不匹配时，在 `/opt/software/gpu-burn` 用 `make COMPUTE= NVCCFLAGS='-gencode=arch=compute_XX,code=sm_XX …'` 禁用 Makefile 的单一 PTX 默认值并重编译；每次启动均以 `cuobjdump --list-elf` 验证 fatbin 确有本机所需 SM。缓存状态同时记录源码指纹、CUDA Toolkit 版本和目标 SM，任一变化或校验失败都会清理旧二进制、fatbin、对象文件后重建；匹配时直接复用。构建锁避免同一服务器并发任务同时清理或编译。每张卡仍以独立 `CUDA_VISIBLE_DEVICES` 实例并发运行，因此 RTX 4090（SM89）与 RTX 5090（SM120）等混合服务器均会参与同一次压测。gpu-burn 的 CR 高频进度在管道中实时拆分，只保留每 10% 的进度样本、错误和每卡汇总，不再写入或回读多 GB 原始日志；任一设备编译或运行失败会使最终报告为 FAIL。
+`gpu_stress_report.sh`（v2026.08.20.1）为 gpu-burn 实际加载的 `compare.fatbin` 维护服务器级、按本机匹配的编译缓存：只取 `nvidia-smi` 检出的物理 GPU `compute_cap`，并要求当前 CUDA Toolkit 支持每一种架构。首次或缓存不匹配时，在 `/opt/software/gpu-burn` 用 `make COMPUTE= NVCCFLAGS='-gencode=arch=compute_XX,code=sm_XX …'` 禁用 Makefile 的单一 PTX 默认值并重编译；每次启动均以 `cuobjdump --list-elf` 验证 fatbin 确有本机所需 SM。缓存状态同时记录源码指纹、CUDA Toolkit 版本和目标 SM，任一变化或校验失败都会清理旧二进制、fatbin、对象文件后重建；匹配时直接复用。构建锁避免同一服务器并发任务同时清理或编译。每张卡仍以独立 `CUDA_VISIBLE_DEVICES` 实例并发运行，因此 RTX 4090（SM89）与 RTX 5090（SM120）等混合服务器均会参与同一次压测。gpu-burn 的 CR 高频进度在管道中实时拆分，只保留每 10% 的进度样本、错误和每卡汇总，不再写入或回读多 GB 原始日志；任一设备编译或运行失败会使最终报告为 FAIL。
 
 为避免 gpu-burn 多卡实例把部分设备初始化失败掩盖为整体运行，GPU 压测以每张 GPU 一个受限 `CUDA_VISIBLE_DEVICES` 实例执行；同一算力仅复用已编译的原生 SM 二进制，不复用运行进程。每卡日志和退出码写入汇总日志，报告及任务诊断据此定位具体受影响设备。诊断摘要会读取回收的 `stress_gpu*.log`；出现 `no kernel image is available for execution on the device` 时，明确归因为“GPU 内核镜像无法加载”，而不是笼统的报告 FAIL。
 
-GPU 压测默认使用服务器已验证可用的 `/opt/software/gpu-burn` 源码；仅当任一每卡日志明确出现 `no kernel image is available for execution on the device` 时，立即终止本轮全部 gpu-burn 进程（含子进程），再从固定共享地址 `http://171.221.252.54:8573/chfs/shared/%E5%85%B6%E4%BB%96%E5%B8%B8%E7%94%A8%E8%BD%AF%E4%BB%B6%EF%BC%88%E5%90%AB%E5%8E%8B%E6%B5%8B%E8%84%9A%E6%9C%AC%E7%AD%89%EF%BC%89/Stress%E5%8E%8B%E6%B5%8B%E7%9B%B8%E5%85%B3%E8%84%9A%E6%9C%AC/gpu-burn-master.zip` 以 `wget` 的 GET 请求下载、检查 ZIP 路径安全、解压并原子替换源码后重新编译并重试一次。该 CHFS 地址对 HEAD 请求可返回 404，不能据此判定文件不可下载；应以实际 GET 下载结果为准。下载或新版重试失败会保留准确日志并终止，不把网络或工具升级失败伪装为硬件压测结论。
+GPU 压测默认使用服务器已验证可用的 `/opt/software/gpu-burn` 源码；归档固定缓存为 `/opt/software/gpu-burn-master.zip`。仅在该归档缺失时，才从固定共享地址 `http://171.221.252.54:8573/chfs/shared/%E5%85%B6%E4%BB%96%E5%B8%B8%E7%94%A8%E8%BD%AF%E4%BB%B6%EF%BC%88%E5%90%AB%E5%8E%8B%E6%B5%8B%E8%84%9A%E6%9C%AC%E7%AD%89%EF%BC%89/Stress%E5%8E%8B%E6%B5%8B%E7%9B%B8%E5%85%B3%E8%84%9A%E6%9C%AC/gpu-burn-master.zip` 以 `wget` 的 GET 请求下载到同目录临时文件、验证为可读 ZIP 后原子写入缓存；缓存包不会被脚本删除。源码缺失或任一每卡日志明确出现 `no kernel image is available for execution on the device` 时，脚本只复用该缓存包，检查 ZIP 路径安全、解压并原子替换源码后重新编译并重试一次。该 CHFS 地址对 HEAD 请求可返回 404，不能据此判定文件不可下载；应以实际 GET 下载结果为准。缓存包损坏或新版重试失败会保留准确日志并终止，不把网络或工具升级失败伪装为硬件压测结论。
 
-若 `/opt/software/gpu-burn/Makefile` 在压测启动前不存在，脚本将其视为受控依赖缺失：仅此时从用户指定的共享 ZIP 下载、检查归档路径安全、解压并原子替换本地源码目录，然后继续本机匹配 fat binary 构建；已有可用源码时不会下载。恢复下载失败会显示“gpu-burn 源码缺失”，不会误报为硬件压测异常。
+若 `/opt/software/gpu-burn/Makefile` 在压测启动前不存在，脚本将其视为受控依赖缺失：仅此时使用已有 `/opt/software/gpu-burn-master.zip`，或在该缓存包缺失时从用户指定共享地址下载后持久保留；随后检查归档路径安全、解压并原子替换本地源码目录，然后继续本机匹配 fat binary 构建。已有可用源码时不会读取或下载归档。恢复失败会显示“gpu-burn 源码缺失”，不会误报为硬件压测异常。
 
 任务列表、单任务详情和批次子任务共用缓存摘要中的 `failure_reason`。结构化诊断发现旧版 GPU 脚本已输出 `Start gpu-burn`、却因缺少 `[STAGE] stress_start` 被 300 秒启动超时终止时，归因为平台阶段协议不一致，并将中文诊断结论写入该字段；原始 `Task.error_message` 保留用于日志和审计。
 
@@ -421,7 +424,7 @@ GPU 压测默认使用服务器已验证可用的 `/opt/software/gpu-burn` 源�
 - 远端脚本先写入临时 XLSX，再原子替换最终文件名；采集端下载到本地 `.part`，完成 ZIP 完整性校验后再原子入库。
 - 运行中的压测任务每次 SSH 健康轮询都会更新 heartbeat/lease；后端重启后通过 SSH 检查远端 PID，并恢复对应监控线程。
 - GPU、CPU/内存和磁盘压测脚本依次输出 `[STAGE] dependency_check_start`、`[STAGE] dependency_check_done`、`[STAGE] stress_start`。后端在 `stress_start` 前保持 `PREPARING`，准备期上限为 30 分钟；收到标记才切换 `RUNNING`、重置任务开始时间。用户压测时长加报告回收宽限仅用于标记“预计完成已延后”：远端 PID 和 SSH 健康时持续监控，不因该阈值失败；PID 异常退出、服务器重启、SSH 恢复失败或准备期无启动标记才判失败。依赖安装、下载或编译不再侵占用户设定的压测时长。
-- 三类 Linux 压测脚本在 RPM 系发行版上只请求实际缺失的软件包；DNF/YUM 下载默认以 `51200 B/s` 为最低速率、30 秒为网络超时、单次包下载重试 2 次，外层安装最多尝试 3 次并在第二次起刷新元数据。默认值可分别通过 `HPCDEPLOY_DNF_MINRATE`、`HPCDEPLOY_DNF_TIMEOUT`、`HPCDEPLOY_DNF_RETRIES`、`HPCDEPLOY_DNF_INSTALL_ATTEMPTS` 覆盖。安装最终失败时脚本在准备阶段立即退出并保留明确错误，不使用外层 `timeout` 强杀可能已进入 RPM 事务的包管理器；Debian/Ubuntu 的 APT 行为保持不变。
+- 三类 Linux 压测脚本在 RPM 系发行版上只请求实际缺失的软件包；DNF/YUM 下载默认以 `51200 B/s` 为最低速率、30 秒为网络超时、单次包下载重试 2 次，外层安装最多尝试 3 次并在第二次起刷新元数据。默认值可分别通过 `HPCDEPLOY_DNF_MINRATE`、`HPCDEPLOY_DNF_TIMEOUT`、`HPCDEPLOY_DNF_RETRIES`、`HPCDEPLOY_DNF_INSTALL_ATTEMPTS` 覆盖。安装最终失败时脚本在准备阶段立即退出并保留明确错误，不使用外层 `timeout` 强杀可能已进入 RPM 事务的包管理器；Debian/Ubuntu 的 APT 行为保持不变。CPU/内存压测保留运行时可用内存不得低于物理内存 10% 的保护线；默认负载计算的额外波动缓冲按物理内存 2% 取值，范围为 128 MiB–2 GiB，避免大内存服务器仅留 512 MiB 缓冲而被页缓存或内核内存波动误停。该上限可通过 `MEMORY_SAFETY_MARGIN_CAP_MB` 覆盖。
 - 压测套件以服务器为批次边界：每台服务器使用独立 `batch_id`，同服务器的 GPU、CPU/内存前置任务串行；多个磁盘子任务共享最后一个前置任务并行运行，不同服务器批次也并行。批次取消、重试和结果文件只作用于对应服务器；一次多服务器请求通过响应中的 `batch_ids`/`batches` 关联，不合并为历史页中的单个批次。
 
 ---

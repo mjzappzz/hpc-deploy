@@ -3,7 +3,7 @@
 set -u
 set -o pipefail
 
-SCRIPT_VERSION="2026.08.19.1"
+SCRIPT_VERSION="2026.08.20.1"
 
 DNF_MINRATE="${HPCDEPLOY_DNF_MINRATE:-51200}"
 DNF_TIMEOUT="${HPCDEPLOY_DNF_TIMEOUT:-30}"
@@ -38,6 +38,7 @@ TIME_TAG="$(date +%F_%H%M%S)"
 WORKDIR="$(pwd)"
 GPU_BURN_ARCHIVE_URL="http://171.221.252.54:8573/chfs/shared/%E5%85%B6%E4%BB%96%E5%B8%B8%E7%94%A8%E8%BD%AF%E4%BB%B6%EF%BC%88%E5%90%AB%E5%8E%8B%E6%B5%8B%E8%84%9A%E6%9C%AC%E7%AD%89%EF%BC%89/Stress%E5%8E%8B%E6%B5%8B%E7%9B%B8%E5%85%B3%E8%84%9A%E6%9C%AC/gpu-burn-master.zip"
 GPU_BURN_DIR="/opt/software/gpu-burn"
+GPU_BURN_ARCHIVE_PATH="/opt/software/gpu-burn-master.zip"
 
 BURN_LOG="${WORKDIR}/stress_gpu_${TIME_TAG}.log"
 GPU_BURN_BUILD_LOCK="/opt/software/.hpcdeploy-gpu-burn.lock"
@@ -289,35 +290,47 @@ refresh_gpu_burn_source_after_kernel_mismatch() {
 }
 
 restore_gpu_burn_source_from_archive() {
-    local archive staging_dir source_dir entry
-    archive="$(mktemp /tmp/hpcdeploy-gpu-burn.XXXXXX.zip)" || return 1
+    local archive_temp staging_dir source_dir entry
     staging_dir="$(mktemp -d "${GPU_BURN_DIR}.hpcdeploy-download.XXXXXX")" || {
-        rm -f "$archive"
         return 1
     }
 
-    echo "[INFO] Downloading gpu-burn source from shared archive."
-    wget -q -O "$archive" "$GPU_BURN_ARCHIVE_URL" || {
-        rm -f "$archive"
-        rm -rf "$staging_dir"
-        return 1
-    }
+    if [ -f "$GPU_BURN_ARCHIVE_PATH" ]; then
+        echo "[INFO] Reusing cached gpu-burn source archive: $GPU_BURN_ARCHIVE_PATH"
+    else
+        archive_temp="$(mktemp "${GPU_BURN_ARCHIVE_PATH}.download.XXXXXX")" || {
+            rm -rf "$staging_dir"
+            return 1
+        }
+        echo "[INFO] Downloading gpu-burn source archive to persistent cache: $GPU_BURN_ARCHIVE_PATH"
+        wget -q -O "$archive_temp" "$GPU_BURN_ARCHIVE_URL" || {
+            rm -f "$archive_temp"
+            rm -rf "$staging_dir"
+            return 1
+        }
+        if ! unzip -Z1 "$archive_temp" >/dev/null 2>&1; then
+            echo "[ERROR] Downloaded gpu-burn source archive is not a readable ZIP."
+            rm -f "$archive_temp"
+            rm -rf "$staging_dir"
+            return 1
+        fi
+        mv "$archive_temp" "$GPU_BURN_ARCHIVE_PATH"
+        echo "[INFO] Cached gpu-burn source archive: $GPU_BURN_ARCHIVE_PATH"
+    fi
+
     while IFS= read -r entry; do
         case "$entry" in
             /*|../*|*/../*|..)
                 echo "[ERROR] Shared gpu-burn archive contains an unsafe path: $entry"
-                rm -f "$archive"
                 rm -rf "$staging_dir"
                 return 1
                 ;;
         esac
-    done < <(unzip -Z1 "$archive")
-    unzip -q "$archive" -d "$staging_dir" || {
-        rm -f "$archive"
+    done < <(unzip -Z1 "$GPU_BURN_ARCHIVE_PATH")
+    unzip -q "$GPU_BURN_ARCHIVE_PATH" -d "$staging_dir" || {
         rm -rf "$staging_dir"
         return 1
     }
-    rm -f "$archive"
     source_dir="$(find "$staging_dir" -mindepth 1 -maxdepth 1 -type d -print -quit)"
     if [ -z "$source_dir" ] || [ ! -f "$source_dir/Makefile" ]; then
         rm -rf "$staging_dir"
