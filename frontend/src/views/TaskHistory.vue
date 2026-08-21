@@ -593,10 +593,15 @@
             <span><b>任务</b>{{ taskDisplayModuleName(drawerTask) }}</span>
             <span><b>报告状态</b><el-tag size="small" :type="drawerReportTagType" effect="plain">{{ drawerReportLabel }}</el-tag></span>
             <span><b>远端目录</b><code class="task-detail-value-text">{{ drawerTask.remote_work_dir || '-' }}</code></span>
+            <span><b>创建时间</b>{{ formatDate(drawerTask.created_at) }}</span>
+            <span v-if="drawerTask.task_type === 'stress'"><b>计划时长</b>{{ formatStressDuration(drawerTask.params) }}</span>
             <span><b>开始</b>{{ formatDate(drawerTask.start_time) }}</span>
             <span><b>{{ drawerEndTimeLabel }}</b>{{ formatDate(drawerEndTime) }}</span>
-            <span><b>已运行</b>{{ drawerRunningDuration !== null ? formatSeconds(drawerRunningDuration) : '-' }}</span>
-            <span v-if="drawerEstimatedRemaining !== null"><b>预计剩余</b>{{ formatSeconds(drawerEstimatedRemaining) }}</span>
+            <span v-if="drawerIsTerminal"><b>总耗时</b>{{ drawerRunningDuration !== null ? formatSeconds(drawerRunningDuration) : '-' }}</span>
+            <template v-else>
+              <span><b>已运行</b>{{ drawerRunningDuration !== null ? formatSeconds(drawerRunningDuration) : '-' }}</span>
+              <span v-if="drawerIsRunning && drawerEstimatedRemaining !== null"><b>预计剩余</b>{{ formatSeconds(drawerEstimatedRemaining) }}</span>
+            </template>
           </div>
           <el-progress
             :percentage="drawerProgressValue"
@@ -641,14 +646,6 @@
               <div class="task-drawer-overview__row">
                 <span>远端用户</span>
                 <strong>{{ drawerTask.server_username || '-' }}</strong>
-              </div>
-              <div class="task-drawer-overview__row">
-                <span>创建时间</span>
-                <strong>{{ formatDate(drawerTask.created_at) }}</strong>
-              </div>
-              <div v-if="drawerTask.task_type === 'stress'" class="task-drawer-overview__row">
-                <span>计划时长</span>
-                <strong>{{ formatStressDuration(drawerTask.params) }}</strong>
               </div>
               <div class="task-drawer-overview__row">
                 <span>执行命令</span>
@@ -1899,6 +1896,8 @@ const drawerIsTerminal = computed(() => {
   return TERMINAL_STATUSES.includes(status)
 })
 
+const drawerIsRunning = computed(() => drawerTask.value?.status?.toUpperCase() === 'RUNNING')
+
 const drawerVisibleMonitorTabs = computed<Array<{ name: DrawerMonitorPanel; label: string; monitorType?: MonitorType }>>(() => {
   const type = drawerTask.value?.task_type
   const base: Array<{ name: DrawerMonitorPanel; label: string; monitorType?: MonitorType }> = [
@@ -1906,7 +1905,7 @@ const drawerVisibleMonitorTabs = computed<Array<{ name: DrawerMonitorPanel; labe
     { name: 'logs', label: '执行日志' },
   ]
   if (type === 'stress') {
-    if (drawerIsTerminal.value) return [...base, { name: 'disk', label: '磁盘' }]
+    if (drawerIsTerminal.value) return base
     return [
       ...base,
       { name: 'gpu', label: 'GPU', monitorType: 'gpu' },
@@ -2109,6 +2108,7 @@ const detailShowMonitorCpuMem = computed(() => {
 })
 
 const detailShowMonitorDisk = computed(() => {
+  if (detailIsTerminal.value) return false
   if (!batchDetailData.value) return false
   const t = batchDetailData.value.summary.task_type
   return t === 'stress' || t === 'stress_disk' || t === 'apptainer'

@@ -83,15 +83,15 @@ test('uses a compact outcome title on task cards while preserving detailed failu
   assert.match(history, /if \(hasExplicitError\) return displayError/)
 })
 
-test('shows disk medium and interface in both single and batch task details', async () => {
+test('hides all realtime monitor tabs after single or batch tasks finish', async () => {
   const source = await readFile(new URL('./TaskHistory.vue', import.meta.url), 'utf8')
 
   assert.match(source, /import \{ getServer, type ServerRecord \} from '@\/api\/server'/)
   assert.equal((source.match(/class="task-disk-inventory"/g) || []).length, 2)
   assert.match(source, /diskMediaLabel\(filesystem\.media_type, filesystem\.interface_type\)/)
   assert.match(source, /mediaType === 'RAID'/)
-  assert.match(source, /if \(drawerIsTerminal\.value\) return \[\.\.\.base, \{ name: 'disk', label: '磁盘' \}\]/)
-  assert.doesNotMatch(source, /const detailShowMonitorDisk = computed\(\(\) => \{\s*if \(detailIsTerminal\.value\) return false/)
+  assert.match(source, /if \(drawerIsTerminal\.value\) return base/)
+  assert.match(source, /const detailShowMonitorDisk = computed\(\(\) => \{\s*if \(detailIsTerminal\.value\) return false/)
 })
 
 test('keeps realtime log status beside task titles without remounting it during connection', async () => {
@@ -105,4 +105,16 @@ test('keeps realtime log status beside task titles without remounting it during 
   assert.match(source, /detail-panel__title-wrap[\s\S]{0,500}v-if="!detailIsTerminal"[\s\S]{0,500}class="realtime-log-status"/)
   assert.match(source, /task-drawer-actions[\s\S]{0,500}v-if="!drawerIsTerminal"[\s\S]{0,500}class="realtime-log-status"/)
   assert.doesNotMatch(source, /realtime-log-status-row/)
+})
+
+test('keeps single-task timing metadata in one grid and uses total duration after completion', async () => {
+  const source = await readFile(new URL('./TaskHistory.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /<span><b>创建时间<\/b>\{\{ formatDate\(drawerTask\.created_at\) \}\}<\/span>/)
+  assert.match(source, /v-if="drawerTask\.task_type === 'stress'"[\s\S]{0,160}<b>计划时长<\/b>/)
+  assert.match(source, /v-if="drawerIsTerminal"[\s\S]{0,120}<b>总耗时<\/b>/)
+  assert.match(source, /v-else[\s\S]{0,120}<b>已运行<\/b>/)
+  assert.match(source, /v-if="drawerIsRunning && drawerEstimatedRemaining !== null"[\s\S]{0,120}<b>预计剩余<\/b>/)
+  assert.doesNotMatch(source, /task-drawer-overview__row[\s\S]{0,240}<span>创建时间<\/span>/)
+  assert.doesNotMatch(source, /task-drawer-overview__row[\s\S]{0,240}<span>计划时长<\/span>/)
 })
