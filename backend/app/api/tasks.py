@@ -3524,36 +3524,90 @@ def _parse_cpu_memory(executor: SSHExecutor) -> dict[str, object]:
     return result
 
 
+def _parse_iostat(output: str) -> list[dict[str, object]]:
+    """Parse the final interval from `iostat -dx 1 2` across sysstat versions."""
+    blocks = [block for block in re.split(r"\n\s*\n", output) if "Device" in block]
+    if not blocks:
+        return []
+    lines = [line.split() for line in blocks[-1].splitlines() if line.strip()]
+    header_index = next((index for index, columns in enumerate(lines) if columns and columns[0] == "Device"), None)
+    if header_index is None:
+        return []
+    header = lines[header_index]
+    positions = {name: index for index, name in enumerate(header)}
+
+    def value(columns: list[str], *names: str) -> float | None:
+        for name in names:
+            index = positions.get(name)
+            if index is not None and index < len(columns):
+                try:
+                    return float(columns[index])
+                except ValueError:
+                    return None
+        return None
+
+    bandwidth_unit = "MB/s" if "rMB/s" in positions or "wMB/s" in positions else "kB/s"
+    stats: list[dict[str, object]] = []
+    for columns in lines[header_index + 1:]:
+        if len(columns) < 2:
+            continue
+        stats.append({
+            "device": columns[0],
+            "read_iops": value(columns, "r/s"),
+            "write_iops": value(columns, "w/s"),
+            "read_bandwidth": value(columns, "rMB/s", "rkB/s"),
+            "write_bandwidth": value(columns, "wMB/s", "wkB/s"),
+            "bandwidth_unit": bandwidth_unit,
+            "read_await_ms": value(columns, "r_await", "await"),
+            "write_await_ms": value(columns, "w_await", "await"),
+            "queue_depth": value(columns, "aqu-sz", "avgqu-sz"),
+            "utilization_percent": value(columns, "%util"),
+        })
+    return stats
+
+
 def _parse_disk(executor: SSHExecutor) -> dict[str, object]:
-    """Parse disk usage from df -h output."""
-    result: dict[str, object] = {"available": False, "disk_usage": [], "message": None}
+    """Parse filesystem capacity and a bounded device I/O sample."""
+    result: dict[str, object] = {
+        "available": False,
+        "disk_usage": [],
+        "message": None,
+        "io_available": False,
+        "io_stats": [],
+        "io_message": None,
+    }
     try:
         df_out = _exec_monitor_cmd(executor, "df -h --local 2>/dev/null || df -h 2>/dev/null")
-        if not df_out:
-            result["message"] = "df 命令不可用"
-            return result
-
         items: list[dict[str, object]] = []
-        for line in df_out.strip().split("\n"):
-            parts = line.split()
-            if len(parts) >= 6 and parts[0].startswith("/"):
-                usage_str = parts[4].replace("%", "")
-                try:
-                    usage_pct = float(usage_str)
-                except ValueError:
-                    usage_pct = 0.0
-                items.append({
-                    "mount": parts[5],
-                    "total": parts[1],
-                    "used": parts[2],
-                    "available": parts[3],
-                    "usage_percent": usage_pct,
-                })
+        if df_out:
+            for line in df_out.strip().split("\n"):
+                parts = line.split()
+                if len(parts) >= 6 and parts[0].startswith("/"):
+                    usage_str = parts[4].replace("%", "")
+                    try:
+                        usage_pct = float(usage_str)
+                    except ValueError:
+                        usage_pct = 0.0
+                    items.append({
+                        "mount": parts[5],
+                        "total": parts[1],
+                        "used": parts[2],
+                        "available": parts[3],
+                        "usage_percent": usage_pct,
+                    })
 
         result["disk_usage"] = items
-        result["available"] = len(items) > 0
         if not items:
-            result["message"] = "未检测到本地磁盘挂载点"
+            result["message"] = "df 命令不可用或未检测到本地磁盘挂载点"
+
+        iostat_out = _exec_monitor_cmd(executor, "LC_ALL=C iostat -dx 1 2 2>/dev/null")
+        io_stats = _parse_iostat(iostat_out) if iostat_out else []
+        result["io_stats"] = io_stats
+        result["io_available"] = len(io_stats) > 0
+        if not io_stats:
+            result["io_message"] = "iostat 不可用或未返回设备 I/O 数据"
+
+        result["available"] = len(items) > 0 or len(io_stats) > 0
     except Exception as exc:
         result["message"] = str(exc)
     return result

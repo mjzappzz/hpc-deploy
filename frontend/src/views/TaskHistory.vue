@@ -478,7 +478,7 @@
                     <el-button size="small" text :disabled="!item.remoteDir" @click="copyPath(item.remoteDir)">复制路径</el-button>
                   </div>
                 </div>
-                <el-button size="small" type="primary" @click="downloadArtifact(item.file.name, item.taskId)">下载</el-button>
+                <el-button size="small" type="primary" :loading="artifactDownloading" :disabled="artifactDownloading" @click="downloadArtifact(item.file.name, item.taskId)">下载</el-button>
               </div>
             </div>
             <div v-if="batchArtifactFiles.rawFiles.length > 0" class="art-group">
@@ -504,7 +504,7 @@
                     <el-button size="small" text :disabled="!item.remoteDir" @click="copyPath(item.remoteDir)">复制路径</el-button>
                   </div>
                 </div>
-                <el-button size="small" @click="downloadArtifact(item.file.name, item.taskId)">下载</el-button>
+                <el-button size="small" :loading="artifactDownloading" :disabled="artifactDownloading" @click="downloadArtifact(item.file.name, item.taskId)">下载</el-button>
               </div>
             </div>
           </div>
@@ -529,7 +529,7 @@
                   <span class="art-local-path" :title="f.local_relative_path">{{ f.local_relative_path }}</span>
                 </div>
               </div>
-              <el-button size="small" type="primary" @click="downloadArtifact(f.name)">下载</el-button>
+              <el-button size="small" type="primary" :loading="artifactDownloading" :disabled="artifactDownloading" @click="downloadArtifact(f.name)">下载</el-button>
             </div>
           </div>
           <!-- 原始文件 -->
@@ -547,7 +547,7 @@
                   <span class="art-local-path" :title="f.local_relative_path">{{ f.local_relative_path }}</span>
                 </div>
               </div>
-              <el-button size="small" @click="downloadArtifact(f.name)">下载</el-button>
+              <el-button size="small" :loading="artifactDownloading" :disabled="artifactDownloading" @click="downloadArtifact(f.name)">下载</el-button>
             </div>
           </div>
         </div>
@@ -700,20 +700,26 @@
               <el-icon class="is-loading"><Loading /></el-icon>
               <span>正在获取磁盘快照...</span>
             </div>
-            <div v-else-if="!drawerMonitorData?.disk.available" class="task-drawer-empty">
-              <el-empty description="暂无磁盘监控数据" :image-size="60" />
-              <div v-if="drawerMonitorData?.disk.message" class="task-drawer-empty-msg">{{ drawerMonitorData.disk.message }}</div>
+            <div v-else-if="!drawerMonitorData?.disk.io_available" class="task-drawer-empty">
+              <el-empty description="暂无磁盘 I/O 实时监控数据" :image-size="60" />
+              <div v-if="drawerMonitorData?.disk.io_message" class="task-drawer-empty-msg">{{ drawerMonitorData.disk.io_message }}</div>
             </div>
-            <el-table v-else :data="drawerMonitorData.disk.disk_usage" stripe size="small" max-height="360">
+            <el-table v-else :data="drawerMonitorData.disk.io_stats" stripe size="small" max-height="240">
+              <el-table-column prop="device" label="设备" min-width="100" />
+              <el-table-column label="读 IOPS" width="90"><template #default="{ row }">{{ row.read_iops ?? '-' }}</template></el-table-column>
+              <el-table-column label="写 IOPS" width="90"><template #default="{ row }">{{ row.write_iops ?? '-' }}</template></el-table-column>
+              <el-table-column label="读带宽" width="110"><template #default="{ row }">{{ row.read_bandwidth ?? '-' }} {{ row.bandwidth_unit ?? '' }}</template></el-table-column>
+              <el-table-column label="写带宽" width="110"><template #default="{ row }">{{ row.write_bandwidth ?? '-' }} {{ row.bandwidth_unit ?? '' }}</template></el-table-column>
+              <el-table-column label="读/写 await" width="120"><template #default="{ row }">{{ row.read_await_ms ?? '-' }} / {{ row.write_await_ms ?? '-' }} ms</template></el-table-column>
+              <el-table-column label="队列深度" width="90"><template #default="{ row }">{{ row.queue_depth ?? '-' }}</template></el-table-column>
+              <el-table-column label="util" width="80"><template #default="{ row }">{{ row.utilization_percent ?? '-' }}%</template></el-table-column>
+            </el-table>
+            <div v-if="drawerMonitorData?.disk.disk_usage.length" class="disk-capacity-caption">文件系统容量</div>
+            <el-table v-if="drawerMonitorData?.disk.disk_usage.length" :data="drawerMonitorData.disk.disk_usage" stripe size="small" max-height="180">
               <el-table-column prop="mount" label="挂载点" />
               <el-table-column prop="total" label="总容量" width="90" />
               <el-table-column prop="used" label="已用" width="90" />
               <el-table-column prop="available" label="可用" width="90" />
-              <el-table-column label="使用率" width="150">
-                <template #default="{ row }">
-                  <el-progress :percentage="row.usage_percent ?? 0" :stroke-width="12" />
-                </template>
-              </el-table-column>
             </el-table>
           </template>
           <template v-else-if="drawerActivePanel === 'gpu'">
@@ -1025,7 +1031,7 @@
                       </div>
                     </el-tab-pane>
 
-                    <el-tab-pane v-if="detailShowMonitorDisk" label="磁盘" name="disk">
+                    <el-tab-pane v-if="detailShowMonitorDisk" label="磁盘 I/O" name="disk">
                       <div v-if="detailServer?.disk_inventory?.mounted_filesystems.length" class="task-disk-inventory">
                         <div v-for="filesystem in detailServer.disk_inventory.mounted_filesystems" :key="`${filesystem.device}-${filesystem.mountpoint}`" class="task-disk-inventory__row">
                           <code>{{ filesystem.device }}</code>
@@ -1037,20 +1043,24 @@
                         <el-icon class="is-loading"><Loading /></el-icon>
                         <span>正在获取磁盘快照...</span>
                       </div>
-                      <div v-else-if="!detailMonitorData?.disk.available" class="detail-panel-empty-action">
-                        <el-empty description="暂无磁盘监控数据" :image-size="40" />
-                        <div v-if="detailMonitorData?.disk.message" class="detail-monitor-msg">{{ detailMonitorData.disk.message }}</div>
+                      <div v-else-if="!detailMonitorData?.disk.io_available" class="detail-panel-empty-action">
+                        <el-empty description="暂无磁盘 I/O 实时监控数据" :image-size="40" />
+                        <div v-if="detailMonitorData?.disk.io_message" class="detail-monitor-msg">{{ detailMonitorData.disk.io_message }}</div>
                       </div>
-                      <el-table v-else :data="detailMonitorData.disk.disk_usage" stripe size="small" max-height="260">
+                      <el-table v-else :data="detailMonitorData.disk.io_stats" stripe size="small" max-height="220">
+                        <el-table-column prop="device" label="设备" min-width="90" />
+                        <el-table-column label="读/写 IOPS" width="130"><template #default="{ row }">{{ row.read_iops ?? '-' }} / {{ row.write_iops ?? '-' }}</template></el-table-column>
+                        <el-table-column label="读/写带宽" width="160"><template #default="{ row }">{{ row.read_bandwidth ?? '-' }} / {{ row.write_bandwidth ?? '-' }} {{ row.bandwidth_unit ?? '' }}</template></el-table-column>
+                        <el-table-column label="读/写 await" width="130"><template #default="{ row }">{{ row.read_await_ms ?? '-' }} / {{ row.write_await_ms ?? '-' }} ms</template></el-table-column>
+                        <el-table-column label="队列深度" width="90"><template #default="{ row }">{{ row.queue_depth ?? '-' }}</template></el-table-column>
+                        <el-table-column label="util" width="80"><template #default="{ row }">{{ row.utilization_percent ?? '-' }}%</template></el-table-column>
+                      </el-table>
+                      <div v-if="detailMonitorData?.disk.disk_usage.length" class="disk-capacity-caption">文件系统容量</div>
+                      <el-table v-if="detailMonitorData?.disk.disk_usage.length" :data="detailMonitorData.disk.disk_usage" stripe size="small" max-height="160">
                         <el-table-column prop="mount" label="挂载点" />
                         <el-table-column prop="total" label="总容量" width="90" />
                         <el-table-column prop="used" label="已用" width="90" />
                         <el-table-column prop="available" label="可用" width="90" />
-                        <el-table-column label="使用率" width="150">
-                          <template #default="{ row }">
-                            <el-progress :percentage="row.usage_percent ?? 0" :stroke-width="12" />
-                          </template>
-                        </el-table-column>
                       </el-table>
                     </el-tab-pane>
 
@@ -1118,7 +1128,7 @@
 import { computed, nextTick, onMounted, onActivated, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
-import { cancelBatch, cancelTask, cleanupBatchLocalArtifacts, cleanupTaskLocalArtifacts, downloadBatchReportZip, downloadTaskLogs, getTask, getTaskLogs, getTaskMonitor, listArtifacts, listBatches, getBatchDetail, listTasks, retryBatchTask, retryTask, type ArtifactFileDetail, type BatchDetailResponse, type BatchQuery, type BatchSummaryItem, type BatchTaskDetailItem, type MonitorType, type TaskLogRecord, type TaskListQuery, type TaskMonitorStructuredResponse, type TaskRecord } from '@/api/task'
+import { cancelBatch, cancelTask, cleanupBatchLocalArtifacts, cleanupTaskLocalArtifacts, downloadBatchReportZip, downloadTaskArtifact, downloadTaskLogs, getTask, getTaskLogs, getTaskMonitor, listArtifacts, listBatches, getBatchDetail, listTasks, retryBatchTask, retryTask, type ArtifactFileDetail, type BatchDetailResponse, type BatchQuery, type BatchSummaryItem, type BatchTaskDetailItem, type MonitorType, type TaskLogRecord, type TaskListQuery, type TaskMonitorStructuredResponse, type TaskRecord } from '@/api/task'
 import { formatDateTime } from '@/utils/time'
 import { getApiErrorMessage as readApiErrorMessage, isApiRequestTimeout } from '@/utils/apiError'
 import {
@@ -1155,6 +1165,7 @@ const tasks = ref<TaskRecord[]>([])
 
 const artDialogVisible = ref(false)
 const artLoading = ref(false)
+const artifactDownloading = ref(false)
 const artDir = ref('')
 const artFiles = ref<ArtifactFileDetail[]>([])
 const activeArtTaskId = ref('')
@@ -1898,9 +1909,9 @@ const drawerVisibleMonitorTabs = computed<Array<{ name: DrawerMonitorPanel; labe
     if (drawerIsTerminal.value) return [...base, { name: 'disk', label: '磁盘' }]
     return [
       ...base,
-      { name: 'cpu_mem', label: 'CPU与内存', monitorType: 'cpu_mem' },
-      { name: 'disk', label: '磁盘', monitorType: 'disk' },
       { name: 'gpu', label: 'GPU', monitorType: 'gpu' },
+      { name: 'cpu_mem', label: 'CPU与内存', monitorType: 'cpu_mem' },
+      { name: 'disk', label: '磁盘 I/O', monitorType: 'disk' },
     ]
   }
   if (drawerIsTerminal.value) return base
@@ -2692,6 +2703,19 @@ function getDownloadFilename(contentDisposition: string | undefined, fallback: s
   return asciiMatch?.[1] || fallback
 }
 
+function finishReportDownload(blob: Blob, filename: string) {
+  const url = window.URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  window.URL.revokeObjectURL(url)
+  artDialogVisible.value = false
+  ElMessage.success('报告已下载，已返回历史任务')
+}
+
 async function downloadBatchReports(row: BatchSummaryItem) {
   if (!canDownloadBatchReport(row)) {
     ElMessage.warning('批次仍在运行，报告尚未全部生成')
@@ -2705,14 +2729,7 @@ async function downloadBatchReports(row: BatchSummaryItem) {
       resp.headers['content-disposition'],
       `${row.batch_id}_reports.zip`,
     )
-    const url = window.URL.createObjectURL(resp.data)
-    const anchor = document.createElement('a')
-    anchor.href = url
-    anchor.download = filename
-    document.body.appendChild(anchor)
-    anchor.click()
-    anchor.remove()
-    window.URL.revokeObjectURL(url)
+    finishReportDownload(resp.data, filename)
   } catch (err) {
     ElMessage.error(`下载失败：${getApiErrorMessage(err) || '未知错误'}`)
   } finally {
@@ -3432,9 +3449,19 @@ async function openBatchSummaryArtifacts(summary: BatchSummaryItem) {
   }
 }
 
-function downloadArtifact(filename: string, taskId = activeArtTaskId.value) {
+async function downloadArtifact(filename: string, taskId = activeArtTaskId.value) {
   if (!taskId) return
-  window.open(`/api/tasks/${taskId}/artifacts/${encodeURIComponent(filename)}/download`, '_blank')
+  if (artifactDownloading.value) return
+  artifactDownloading.value = true
+  try {
+    const resp = await downloadTaskArtifact(taskId, filename)
+    const downloadFilename = getDownloadFilename(resp.headers['content-disposition'], filename)
+    finishReportDownload(resp.data, downloadFilename)
+  } catch (err) {
+    ElMessage.error(`下载失败：${getApiErrorMessage(err) || '未知错误'}`)
+  } finally {
+    artifactDownloading.value = false
+  }
 }
 
 function copyArtifactDir() {

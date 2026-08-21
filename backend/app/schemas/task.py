@@ -371,10 +371,26 @@ class MonitorDiskItem(BaseModel):
     usage_percent: float | None = None
 
 
+class MonitorDiskIoItem(BaseModel):
+    device: str
+    read_iops: float | None = None
+    write_iops: float | None = None
+    read_bandwidth: float | None = None
+    write_bandwidth: float | None = None
+    bandwidth_unit: str | None = None
+    read_await_ms: float | None = None
+    write_await_ms: float | None = None
+    queue_depth: float | None = None
+    utilization_percent: float | None = None
+
+
 class MonitorDisk(BaseModel):
     available: bool = False
     disk_usage: list[MonitorDiskItem] = []
     message: str | None = None
+    io_available: bool = False
+    io_stats: list[MonitorDiskIoItem] = []
+    io_message: str | None = None
 
 
 class MonitorGpuItem(BaseModel):

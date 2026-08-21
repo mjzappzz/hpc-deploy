@@ -4,7 +4,7 @@
       <template #header>
         <div class="runner-header">
           <div>
-            <div class="runner-title">执行任务准备</div>
+            <div class="runner-title">任务下发准备</div>
             <div class="runner-subtitle">从脚本知识库中选择环境部署或稳定性验证任务执行。</div>
           </div>
         </div>

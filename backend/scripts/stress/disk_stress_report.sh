@@ -2,7 +2,7 @@
 
 set -e
 
-SCRIPT_VERSION="2026.08.19.1"
+SCRIPT_VERSION="2026.08.21.5"
 
 DNF_MINRATE="${HPCDEPLOY_DNF_MINRATE:-51200}"
 DNF_TIMEOUT="${HPCDEPLOY_DNF_TIMEOUT:-30}"
@@ -79,8 +79,11 @@ install_deps() {
     local -a rpm_packages=()
     local openpyxl_missing=0
 
-    if ! command -v stress-ng >/dev/null 2>&1; then
-        rpm_packages+=(stress-ng)
+    if ! command -v fio >/dev/null 2>&1; then
+        rpm_packages+=(fio)
+    fi
+    if ! command -v iostat >/dev/null 2>&1; then
+        rpm_packages+=(sysstat)
     fi
 
     if ! command -v python3 >/dev/null 2>&1; then
@@ -127,7 +130,7 @@ PYCHK
     elif [ -f /etc/debian_version ]; then
         echo "[INFO] Detected Debian/Ubuntu"
         apt update
-        apt install -y stress-ng python3 python3-pip python3-openpyxl
+        apt install -y fio sysstat python3 python3-pip python3-openpyxl
 
         if ! python3 - << 'PYCHK' >/dev/null 2>&1
 import openpyxl
@@ -154,7 +157,9 @@ TEST_DIR=${3:-$(pwd)}
 TIME_TAG=$(date +%F_%H%M%S)
 WORKDIR=$(pwd)
 
-STRESS_LOG="${WORKDIR}/stress_disk_${TIME_TAG}.log"
+STRESS_LOG="${WORKDIR}/fio_disk_${TIME_TAG}.log"
+FIO_JSON="${WORKDIR}/fio_performance_${TIME_TAG}.json"
+FIO_DURABILITY_JSON="${WORKDIR}/fio_durability_${TIME_TAG}.json"
 MON_LOG="${WORKDIR}/disk_monitor_${TIME_TAG}.csv"
 ERR_LOG="${WORKDIR}/disk_error_${TIME_TAG}.log"
 REPORT="${WORKDIR}/disk_stress_report_${TIME_TAG}.txt"
@@ -174,8 +179,14 @@ SSD_WORKERS=4
 SSD_BYTES=2G
 NVME_WORKERS=8
 NVME_BYTES=2G
-# direct minimizes page-cache effects; sync makes each write wait for persistence.
-HDD_IO_OPTS="wr-rnd,direct,sync"
+# Explicit fio workload: 4 KiB random mixed I/O, 70% writes, direct I/O and a
+# durable flush after each write. This avoids stress-ng's implicit read defaults.
+FIO_RW="randrw"
+FIO_RWMIXWRITE=70
+FIO_BS="4k"
+FIO_PERFORMANCE_IOENGINE="libaio"
+FIO_VERIFY="crc32c"
+FIO_PATH="performance: rw=${FIO_RW},rwmixwrite=${FIO_RWMIXWRITE},bs=${FIO_BS},direct=1,ioengine=${FIO_PERFORMANCE_IOENGINE}; durability: randwrite,fdatasync=1,verify=${FIO_VERIFY}"
 
 bytes_for_gib() {
     printf '%s' "$(( $1 * GIB ))"
@@ -291,6 +302,25 @@ esac
 WORKSET_BYTES=$((HDD_WORKERS * $(bytes_for_gib "${HDD_BYTES%G}")))
 ensure_capacity_budget "$TOTAL_BYTES" "$AVAILABLE_BYTES" "$WORKSET_BYTES"
 
+case "$DISK_PROFILE" in
+    nvme*) FIO_PERFORMANCE_IODEPTH=32 ;;
+    ssd*) FIO_PERFORMANCE_IODEPTH=16 ;;
+    *) FIO_PERFORMANCE_IODEPTH=4 ;;
+esac
+PERFORMANCE_DURATION=$DURATION
+FIO_PERFORMANCE_TOTAL_QD=$((HDD_WORKERS * FIO_PERFORMANCE_IODEPTH))
+
+if [ "$DURATION" -le 180 ]; then
+    FIO_DURABILITY_BYTES="8M"
+    FIO_DURABILITY_PROFILE="<= 3 minutes"
+elif [ "$DURATION" -le 3600 ]; then
+    FIO_DURABILITY_BYTES="32M"
+    FIO_DURABILITY_PROFILE="3-60 minutes"
+else
+    FIO_DURABILITY_BYTES="256M"
+    FIO_DURABILITY_PROFILE="> 60 minutes"
+fi
+
 DISK_MODEL=$(cat /sys/block/${DISK_DEV}/device/model 2>/dev/null | xargs || true)
 if [ -z "$DISK_MODEL" ] || [ "$DISK_MODEL" = "Unknown" ]; then
     DISK_MODEL_LINE=""
@@ -302,7 +332,7 @@ DISK_SIZE=$(lsblk -dn -o SIZE "/dev/${DISK_DEV}" 2>/dev/null | xargs || echo "Un
 OS_INFO=$(cat /etc/os-release 2>/dev/null | awk -F= '/^PRETTY_NAME=/ {gsub(/"/,"",$2); print $2}')
 
 echo "======================================"
-echo "Disk Write Stability Test Start"
+echo "Disk Random Mixed I/O Stability Test Start"
 echo "Test Dir    : ${TEST_DIR}"
 echo "Mount Point : ${MOUNT_POINT}"
 echo "Device      : /dev/${DISK_DEV}"
@@ -311,14 +341,14 @@ echo "Filesystem  : ${FS_TYPE}"
 echo "Workers     : ${HDD_WORKERS}"
 echo "Worker Data : ${HDD_BYTES}"
 echo "Safety Reserve : ${SAFETY_RESERVE_BYTES} bytes"
-echo "I/O Path    : ${HDD_IO_OPTS}"
+echo "I/O Path    : ${FIO_PATH}"
 echo "Duration    : ${DURATION}"
 echo "Interval    : ${INTERVAL}s"
-echo "Mode        : write only, wr-rnd"
+echo "Mode        : fio 4K random mixed I/O (read 30% / write 70%)"
 echo "======================================"
 
 (
-echo "timestamp,used_GB,avail_GB,use_percent,write_MBps,write_iops,await_ms,util_percent"
+echo "timestamp,used_GB,avail_GB,use_percent,read_MBps,read_iops,read_await_ms,write_MBps,write_iops,write_await_ms,util_percent"
 
 PREV_LINE=$(awk -v dev="$DISK_DEV" '$3==dev {print}' /proc/diskstats)
 PREV_TIME=$(date +%s)
@@ -338,6 +368,9 @@ while true; do
             split(p,a," ");
             split(c,b," ");
 
+            r_ios=b[4]-a[4];
+            r_sec=b[6]-a[6];
+            r_ticks=b[7]-a[7];
             w_ios=b[8]-a[8];
             w_sec=b[10]-a[10];
             w_ticks=b[11]-a[11];
@@ -346,23 +379,20 @@ while true; do
             write_MBps=(w_sec*512/1024/1024)/dt;
             write_iops=w_ios/dt;
 
-            await=0;
-            await_valid=1;
-            if (w_ios>0) await=w_ticks/w_ios;
-
-            # 剔除明显异常的 await 样本：负值或极端 spike 不写入 CSV，避免污染图表和统计
-            if (await < 0 || await > 5000) await_valid=0;
+            read_MBps=(r_sec*512/1024/1024)/dt;
+            read_iops=r_ios/dt;
+            read_await=(r_ios>0 ? r_ticks/r_ios : 0);
+            write_await=(w_ios>0 ? w_ticks/w_ios : 0);
+            if (read_await < 0 || read_await > 5000) read_await="";
+            if (write_await < 0 || write_await > 5000) write_await="";
 
             util=io_ticks/(dt*10);
             if (util>100) util=100;
 
-            if (await_valid==1)
-                printf "%.2f,%.2f,%.2f,%.2f", write_MBps,write_iops,await,util
-            else
-                printf "%.2f,%.2f,,%.2f", write_MBps,write_iops,util
+            printf "%.2f,%.2f,%s,%.2f,%.2f,%s,%.2f", read_MBps,read_iops,read_await,write_MBps,write_iops,write_await,util
         }')
     else
-        METRICS="0,0,0,0"
+        METRICS="0,0,0,0,0,0,0"
     fi
 
     echo "$TS,$DF_LINE,$METRICS"
@@ -386,29 +416,72 @@ echo "[STAGE] stress_start"
 (
   cd "$TEST_DIR" || exit 1
 
-  echo "===== stress-ng disk test start ====="
+  echo "===== fio disk test start ====="
   echo "Start Time : $(date '+%F %T')"
   echo "Test Dir   : ${TEST_DIR}"
   echo "Workers    : ${HDD_WORKERS}"
-  echo "Duration   : ${DURATION}"
-  echo "Mode       : ${HDD_IO_OPTS}"
+  echo "Performance Duration : ${PERFORMANCE_DURATION}"
+  echo "Durability Mode      : fixed-size write and CRC32C verify"
+  echo "Mode       : ${FIO_PATH}"
   echo
 
-  stdbuf -oL -eL stress-ng \
-    --hdd ${HDD_WORKERS} \
-    --hdd-bytes ${HDD_BYTES} \
-    --hdd-opts ${HDD_IO_OPTS} \
-    --verify \
-    --timeout "${DURATION}" \
-    --metrics-brief \
-    --verbose
+  echo "===== fio performance test start ====="
+  stdbuf -oL -eL fio \
+    --name=hpcdeploy-performance \
+    --directory="${TEST_DIR}" \
+    --rw="${FIO_RW}" \
+    --rwmixwrite="${FIO_RWMIXWRITE}" \
+    --bs="${FIO_BS}" \
+    --numjobs="${HDD_WORKERS}" \
+    --size="${HDD_BYTES}" \
+    --ioengine="${FIO_PERFORMANCE_IOENGINE}" \
+    --iodepth="${FIO_PERFORMANCE_IODEPTH}" \
+    --direct=1 \
+    --clat_percentiles=1 \
+    --percentile_list=95:99 \
+    --time_based=1 \
+    --runtime="${PERFORMANCE_DURATION}" \
+    --group_reporting=1 \
+    --unlink=1 \
+    --eta=never \
+    --output-format=json \
+    --output="${FIO_JSON}"
 
-  RET=$?
+  PERFORMANCE_RET=$?
+  echo "Performance Exit Code : ${PERFORMANCE_RET}"
+  echo "===== fio performance test end ====="
+
+  echo "===== fio durability test start ====="
+  stdbuf -oL -eL fio \
+    --name=hpcdeploy-durability \
+    --directory="${TEST_DIR}" \
+    --rw=randwrite \
+    --bs="${FIO_BS}" \
+    --numjobs="${HDD_WORKERS}" \
+    --size="${FIO_DURABILITY_BYTES}" \
+    --ioengine=psync \
+    --direct=1 \
+    --fdatasync=1 \
+    --verify="${FIO_VERIFY}" \
+    --verify_fatal=1 \
+    --do_verify=1 \
+    --clat_percentiles=1 \
+    --percentile_list=95:99 \
+    --group_reporting=1 \
+    --unlink=1 \
+    --eta=never \
+    --output-format=json \
+    --output="${FIO_DURABILITY_JSON}"
+
+  DURABILITY_RET=$?
+  RET=0
+  [ "$PERFORMANCE_RET" -ne 0 ] && RET="$PERFORMANCE_RET"
+  [ "$DURABILITY_RET" -ne 0 ] && RET="$DURABILITY_RET"
 
   echo
   echo "End Time   : $(date '+%F %T')"
   echo "Exit Code  : ${RET}"
-  echo "===== stress-ng disk test end ====="
+  echo "===== fio disk test end ====="
 
   exit ${RET}
 ) > "$STRESS_LOG" 2>&1 &
@@ -446,53 +519,109 @@ kill "$MON_PID" >/dev/null 2>&1 || true
 kill "$ERR_PID" >/dev/null 2>&1 || true
 sleep 1
 
+FIO_METRICS_ENV="${WORKDIR}/fio_metrics_${TIME_TAG}.env"
+python3 - "$FIO_JSON" > "$FIO_METRICS_ENV" <<'PYEOF'
+import json
+import sys
+
+defaults = {
+    "FIO_METRICS_STATUS": "invalid_json",
+    "FIO_READ_BW_MBPS": "0.00", "FIO_READ_IOPS": "0.00",
+    "FIO_READ_CLAT_MEAN_MS": "0.000", "FIO_READ_CLAT_P95_MS": "0.000", "FIO_READ_CLAT_P99_MS": "0.000",
+    "FIO_WRITE_BW_MBPS": "0.00", "FIO_WRITE_IOPS": "0.00",
+    "FIO_WRITE_CLAT_MEAN_MS": "0.000", "FIO_WRITE_CLAT_P95_MS": "0.000", "FIO_WRITE_CLAT_P99_MS": "0.000",
+}
+
+def latency_ms(stats, field):
+    for unit, scale in (("clat_ns", 1_000_000), ("clat_us", 1_000), ("clat_ms", 1)):
+        values = stats.get(unit) or {}
+        if field == "mean":
+            return float(values.get("mean", 0)) / scale
+        percentiles = values.get("percentile") or {}
+        return float(percentiles.get(field, 0)) / scale
+    return 0.0
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        json_text = f.read()
+    if "{" not in json_text:
+        raise ValueError("fio JSON payload is missing")
+    job = json.loads(json_text[json_text.find("{"):])["jobs"][0]
+    for direction, prefix in (("read", "FIO_READ"), ("write", "FIO_WRITE")):
+        stats = job.get(direction) or {}
+        defaults[f"{prefix}_BW_MBPS"] = f"{float(stats.get('bw_bytes', 0)) / 1024 / 1024:.2f}"
+        defaults[f"{prefix}_IOPS"] = f"{float(stats.get('iops', 0)):.2f}"
+        defaults[f"{prefix}_CLAT_MEAN_MS"] = f"{latency_ms(stats, 'mean'):.3f}"
+        defaults[f"{prefix}_CLAT_P95_MS"] = f"{latency_ms(stats, '95.000000'):.3f}"
+        defaults[f"{prefix}_CLAT_P99_MS"] = f"{latency_ms(stats, '99.000000'):.3f}"
+    defaults["FIO_METRICS_STATUS"] = "ok"
+except (FileNotFoundError, IndexError, KeyError, ValueError, json.JSONDecodeError):
+    pass
+
+for key, value in defaults.items():
+    print(f"{key}={value}")
+PYEOF
+. "$FIO_METRICS_ENV"
+
+FIO_DURABILITY_METRICS_ENV="${WORKDIR}/fio_durability_metrics_${TIME_TAG}.env"
+python3 - "$FIO_DURABILITY_JSON" > "$FIO_DURABILITY_METRICS_ENV" <<'PYEOF'
+import json
+import sys
+
+metrics = {
+    "FIO_DURABILITY_STATUS": "invalid_json",
+    "FIO_DURABILITY_WRITE_IOPS": "0.00",
+    "FIO_DURABILITY_SYNC_MEAN_MS": "0.000",
+    "FIO_DURABILITY_SYNC_P95_MS": "0.000",
+    "FIO_DURABILITY_SYNC_P99_MS": "0.000",
+}
+
+try:
+    json_text = open(sys.argv[1], encoding="utf-8").read()
+    if "{" not in json_text:
+        raise ValueError("fio JSON payload is missing")
+    job = json.loads(json_text[json_text.find("{"):])["jobs"][0]
+    sync = (job.get("sync") or {}).get("lat_ns") or {}
+    percentiles = sync.get("percentile") or {}
+    metrics["FIO_DURABILITY_WRITE_IOPS"] = f"{float((job.get('write') or {}).get('iops', 0)):.2f}"
+    metrics["FIO_DURABILITY_SYNC_MEAN_MS"] = f"{float(sync.get('mean', 0)) / 1_000_000:.3f}"
+    metrics["FIO_DURABILITY_SYNC_P95_MS"] = f"{float(percentiles.get('95.000000', 0)) / 1_000_000:.3f}"
+    metrics["FIO_DURABILITY_SYNC_P99_MS"] = f"{float(percentiles.get('99.000000', 0)) / 1_000_000:.3f}"
+    metrics["FIO_DURABILITY_STATUS"] = "ok"
+except (FileNotFoundError, IndexError, KeyError, ValueError, json.JSONDecodeError):
+    pass
+
+for key, value in metrics.items():
+    print(f"{key}={value}")
+PYEOF
+. "$FIO_DURABILITY_METRICS_ENV"
+
 USED_MAX=$(awk -F',' 'NR>1 {if($2>max)max=$2} END{print max+0}' "$MON_LOG")
 AVAIL_MIN=$(awk -F',' 'NR>1 {if(NR==2 || $3<min)min=$3} END{print min+0}' "$MON_LOG")
 USE_MAX=$(awk -F',' 'NR>1 {if($4>max)max=$4} END{print max+0}' "$MON_LOG")
 
-WRITE_AVG=$(awk -F',' 'NR>1 {sum+=$5; n++} END{if(n>0) printf "%.2f",sum/n; else print "0"}' "$MON_LOG")
-WRITE_MAX=$(awk -F',' 'NR>1 {if($5>max)max=$5} END{printf "%.2f",max+0}' "$MON_LOG")
-
-WIOPS_AVG=$(awk -F',' 'NR>1 {sum+=$6; n++} END{if(n>0) printf "%.2f",sum/n; else print "0"}' "$MON_LOG")
-WIOPS_MAX=$(awk -F',' 'NR>1 {if($6>max)max=$6} END{printf "%.2f",max+0}' "$MON_LOG")
-
-AWAIT_AVG=$(awk -F',' '
-NR>1 {
-    v=$7
-    if (v != "" && v+0 >= 0 && v+0 <= 5000) {
-        sum += v+0
-        n++
-    }
-}
-END{
-    if(n>0) printf "%.2f",sum/n;
-    else print "0"
-}' "$MON_LOG")
-AWAIT_MAX=$(awk -F',' '
-NR>1 {
-    v=$7
-    if (v != "" && v+0 >= 0 && v+0 <= 5000) {
-        if (!seen || v+0 > max) max=v+0
-        seen=1
-    }
-}
-END{
-    if(seen) printf "%.2f",max;
-    else print "0.00"
-}' "$MON_LOG")
-
-UTIL_AVG=$(awk -F',' 'NR>1 {sum+=$8; n++} END{if(n>0) printf "%.2f",sum/n; else print "0"}' "$MON_LOG")
-UTIL_MAX=$(awk -F',' 'NR>1 {if($8>max)max=$8} END{printf "%.2f",max+0}' "$MON_LOG")
+UTIL_AVG=$(awk -F',' 'NR>1 {sum+=$11; n++} END{if(n>0) printf "%.2f",sum/n; else print "0"}' "$MON_LOG")
+UTIL_MAX=$(awk -F',' 'NR>1 {if($11>max)max=$11} END{printf "%.2f",max+0}' "$MON_LOG")
 
 ERROR_COUNT=$(grep -Ei "$CRITICAL_ERR_PATTERN" "$ERR_LOG" | wc -l)
-STRESS_ERROR=$(grep -Ei "verification failed|aborted|segmentation fault|bus error|out of memory|oom-killer|killed process|input/output error|read error|write error|stress-ng: fail:" "$STRESS_LOG" || true)
+STRESS_ERROR=$(grep -Ei "verify.*(fail|error)|verification failed|aborted|segmentation fault|bus error|input/output error|read error|write error|fio:.*(fail|error)" "$STRESS_LOG" || true)
 
 RESULT="PASS"
 REASON="No critical error detected."
 
 if [ "$STRESS_EXIT" != "0" ]; then
     RESULT="FAIL"
-    REASON="stress-ng exited abnormally. Exit code: ${STRESS_EXIT}"
+    REASON="fio exited abnormally. Exit code: ${STRESS_EXIT}"
+fi
+
+if [ "$FIO_METRICS_STATUS" != "ok" ]; then
+    RESULT="FAIL"
+    REASON="fio JSON result is missing or invalid."
+fi
+
+if [ "$FIO_DURABILITY_STATUS" != "ok" ]; then
+    RESULT="FAIL"
+    REASON="fio durability JSON result is missing or invalid."
 fi
 
 if [ "$ERROR_COUNT" != "0" ]; then
@@ -502,11 +631,11 @@ fi
 
 if [ -n "$STRESS_ERROR" ]; then
     RESULT="FAIL"
-    REASON="stress-ng reported real critical disk error."
+    REASON="fio reported a data verification or I/O error."
 fi
 
 cat > "$REPORT" << EOR
-磁盘写入稳定性压力测试报告
+磁盘随机混合读写稳定性压力测试报告
 
 一、测试对象
 操作系统              : ${OS_INFO}
@@ -522,17 +651,23 @@ Storage Profile       : ${DISK_PROFILE}
 设备传输链路          : ${DISK_TRAN:-unknown}
 自动定档              : ${AUTO_PROFILE}
 安全余量              : ${SAFETY_RESERVE_BYTES} bytes
-I/O Path              : ${HDD_IO_OPTS}
+I/O Path              : ${FIO_PATH}
 
 二、测试方法
-测试工具              : stress-ng
-HDD压力线程           : ${HDD_WORKERS}
+测试工具              : fio
+fio并发任务数         : ${HDD_WORKERS}
 线程计算方式          : 自动按 HDD / SSD / NVMe 定档；WORKERS 可显式覆盖
-HDD测试模式           : ${HDD_IO_OPTS}
+性能主测模式          : ${FIO_PATH}
+性能主测时长          : ${PERFORMANCE_DURATION} 秒
+性能主测队列深度      : ${FIO_PERFORMANCE_IODEPTH}
+性能主测总队列深度    : ${FIO_PERFORMANCE_TOTAL_QD}
+持久化校验模式        : 固定工作集完整写入后 CRC32C 回读
+持久化校验工作集      : ${FIO_DURABILITY_BYTES} / worker
+持久化工作集分档      : ${FIO_DURABILITY_PROFILE}
 单Worker数据量        : ${HDD_BYTES}
 总工作集上限          : ${WORKSET_BYTES} bytes
-测试类型              : 随机写稳定性测试
-数据校验              : verify enabled
+测试类型              : 性能主测：4K 随机混合读写（读 30% / 写 70%）；持久化：4K 随机写
+数据校验              : 持久化阶段 ${FIO_VERIFY}，完成负载后校验
 测试时长              : ${DURATION}
 采样间隔              : ${INTERVAL} 秒
 测试目录              : ${TEST_DIR}
@@ -542,23 +677,31 @@ HDD测试模式           : ${HDD_IO_OPTS}
 最低可用空间          : ${AVAIL_MIN} GB
 最高使用率            : ${USE_MAX} %
 
-平均写入速度          : ${WRITE_AVG} MB/s
-峰值写入速度          : ${WRITE_MAX} MB/s
+性能主测读取带宽      : ${FIO_READ_BW_MBPS} MB/s
+性能主测读取IOPS      : ${FIO_READ_IOPS}
+性能主测读取平均延迟  : ${FIO_READ_CLAT_MEAN_MS} ms
+性能主测读取p95延迟   : ${FIO_READ_CLAT_P95_MS} ms
+性能主测读取p99延迟   : ${FIO_READ_CLAT_P99_MS} ms
 
-平均写IOPS            : ${WIOPS_AVG}
-峰值写IOPS            : ${WIOPS_MAX}
+性能主测写入带宽      : ${FIO_WRITE_BW_MBPS} MB/s
+性能主测写入IOPS      : ${FIO_WRITE_IOPS}
+性能主测写入平均延迟  : ${FIO_WRITE_CLAT_MEAN_MS} ms
+性能主测写入p95延迟   : ${FIO_WRITE_CLAT_P95_MS} ms
+性能主测写入p99延迟   : ${FIO_WRITE_CLAT_P99_MS} ms
 
-平均写await           : ${AWAIT_AVG} ms
-最大写await           : ${AWAIT_MAX} ms
+持久化校验写IOPS      : ${FIO_DURABILITY_WRITE_IOPS}
+持久化同步平均延迟    : ${FIO_DURABILITY_SYNC_MEAN_MS} ms
+持久化同步p95延迟     : ${FIO_DURABILITY_SYNC_P95_MS} ms
+持久化同步p99延迟     : ${FIO_DURABILITY_SYNC_P99_MS} ms
 
 平均util              : ${UTIL_AVG} %
 最大util              : ${UTIL_MAX} %
 
 
 四、异常检查
-stress-ng退出码        : ${STRESS_EXIT}
+fio退出码             : ${STRESS_EXIT}
 重大内核磁盘异常数量  : ${ERROR_COUNT}
-stress-ng严重错误      : $( [ -z "$STRESS_ERROR" ] && echo "未发现" || echo "发现严重错误，请查看 ${STRESS_LOG}" )
+fio严重错误            : $( [ -z "$STRESS_ERROR" ] && echo "未发现" || echo "发现严重错误，请查看 ${STRESS_LOG}" )
 
 五、综合判定
 测试结果              : ${RESULT}
@@ -567,19 +710,21 @@ stress-ng严重错误      : $( [ -z "$STRESS_ERROR" ] && echo "未发现" || ec
 六、结论
 $(if [ "$RESULT" = "PASS" ]; then
 cat << PASS_TEXT
-本次硬盘写入稳定性压力测试期间，指定目录所在磁盘持续进行随机写入压力测试，未发现 stress-ng 校验错误、I/O 错误、NVMe 控制器异常或文件系统重大错误。
+本次磁盘随机混合读写稳定性压力测试期间，指定目录所在磁盘完成 4K 随机混合读写性能主测，以及固定工作集的 CRC32C 回读校验；未发现 fio 校验错误、I/O 错误、NVMe 控制器异常或文件系统重大错误。
 
-综合判断：本次测试通过，磁盘在持续随机写入负载下运行稳定，未发现数据校验失败、文件系统异常或内核级磁盘故障。
+综合判断：本次测试通过，磁盘在持续随机混合读写负载下运行稳定，未发现数据校验失败、文件系统异常或内核级磁盘故障。
 
 PASS_TEXT
 else
 cat << FAIL_TEXT
-本次硬盘写入稳定性压力测试未通过。建议结合 stress-ng 日志、磁盘监控日志、dmesg 日志、SMART/NVMe 健康状态进一步排查。
+本次磁盘随机混合读写稳定性压力测试未通过。建议结合 fio 日志、磁盘监控日志、dmesg 日志、SMART/NVMe 健康状态进一步排查。
 FAIL_TEXT
 fi)
 
 七、原始文件
-stress-ng日志          : ${STRESS_LOG}
+fio日志                : ${STRESS_LOG}
+fio性能JSON结果        : ${FIO_JSON}
+fio持久化JSON结果      : ${FIO_DURABILITY_JSON}
 资源监控日志          : ${MON_LOG}
 内核错误日志          : ${ERR_LOG}
 Excel报告             : ${XLSX_REPORT}
@@ -600,6 +745,8 @@ from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 
 report = Path("${REPORT}")
 stress_log = Path("${STRESS_LOG}")
+fio_json = Path("${FIO_JSON}")
+fio_durability_json = Path("${FIO_DURABILITY_JSON}")
 mon_log = Path("${MON_LOG}")
 err_log = Path("${ERR_LOG}")
 xlsx = Path("${XLSX_REPORT}")
@@ -629,6 +776,8 @@ ws = wb.active
 ws.title = "Summary"
 raw = wb.create_sheet("RawReport")
 stress = wb.create_sheet("StressLog")
+fio_raw = wb.create_sheet("FioJSON")
+fio_durability_raw = wb.create_sheet("FioDurabilityJSON")
 mon = wb.create_sheet("MonitorCSV")
 err = wb.create_sheet("KernelError")
 
@@ -646,7 +795,7 @@ border = Border(
 )
 
 ws.merge_cells("A1:H1")
-ws["A1"] = "磁盘写入稳定性压力测试报告"
+ws["A1"] = "磁盘随机混合读写稳定性压力测试报告"
 ws["A1"].font = Font(size=18, bold=True, color=white)
 ws["A1"].fill = PatternFill("solid", fgColor=dark)
 ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
@@ -689,7 +838,7 @@ test_object_rows.extend([
     ("设备传输链路", "${DISK_TRAN:-unknown}"),
     ("自动定档", "${AUTO_PROFILE}"),
     ("Safety Reserve", "${SAFETY_RESERVE_BYTES} bytes"),
-    ("I/O Path", "${HDD_IO_OPTS}"),
+    ("I/O Path", "${FIO_PATH}"),
 ])
 for k, v in test_object_rows:
     r = kv(r, k, v)
@@ -697,14 +846,20 @@ for k, v in test_object_rows:
 r += 1
 r = section(r, "二、测试方法")
 for k, v in [
-    ("测试工具", "stress-ng"),
-    ("HDD压力线程", "${HDD_WORKERS}"),
+    ("测试工具", "fio"),
+    ("fio并发任务数", "${HDD_WORKERS}"),
     ("线程计算方式", "自动按 HDD / SSD / NVMe 定档；WORKERS 可显式覆盖"),
-    ("HDD测试模式", "${HDD_IO_OPTS}"),
+    ("性能主测模式", "${FIO_PATH}"),
+    ("性能主测时长", "${PERFORMANCE_DURATION} 秒"),
+    ("性能主测队列深度", "${FIO_PERFORMANCE_IODEPTH}"),
+    ("性能主测总队列深度", "${FIO_PERFORMANCE_TOTAL_QD}"),
+    ("持久化校验模式", "固定工作集完整写入后 CRC32C 回读"),
+    ("持久化校验工作集", "${FIO_DURABILITY_BYTES} / worker"),
+    ("持久化工作集分档", "${FIO_DURABILITY_PROFILE}"),
     ("单Worker数据量", "${HDD_BYTES}"),
     ("总工作集上限", "${WORKSET_BYTES} bytes"),
-    ("测试类型", "随机写稳定性测试"),
-    ("数据校验", "verify enabled"),
+    ("测试类型", "性能主测：4K 随机混合读写（读 30% / 写 70%）；持久化：4K 随机写"),
+    ("数据校验", "持久化阶段 ${FIO_VERIFY}，完成负载后校验"),
     ("测试时长", "${DURATION}"),
     ("采样间隔", "${INTERVAL} 秒"),
 ]:
@@ -727,16 +882,20 @@ rows = [
     ("磁盘空间", "最低可用空间", "${AVAIL_MIN} GB"),
     ("磁盘空间", "最高使用率", "${USE_MAX} %"),
 
-    ("运行状态", "平均写入速度", "${WRITE_AVG} MB/s"),
-    ("运行状态", "峰值写入速度", "${WRITE_MAX} MB/s"),
-    ("运行状态", "平均写IOPS", "${WIOPS_AVG}"),
-    ("运行状态", "峰值写IOPS", "${WIOPS_MAX}"),
-    ("运行状态", "平均写await", "${AWAIT_AVG} ms"),
-    ("运行状态", "最大写await", "${AWAIT_MAX} ms"),
+    ("性能主测", "读取带宽", "${FIO_READ_BW_MBPS} MB/s"),
+    ("性能主测", "读取IOPS", "${FIO_READ_IOPS}"),
+    ("性能主测", "读取平均延迟", "${FIO_READ_CLAT_MEAN_MS} ms"),
+    ("性能主测", "读取p95/p99延迟", "${FIO_READ_CLAT_P95_MS} / ${FIO_READ_CLAT_P99_MS} ms"),
+    ("性能主测", "写入带宽", "${FIO_WRITE_BW_MBPS} MB/s"),
+    ("性能主测", "写入IOPS", "${FIO_WRITE_IOPS}"),
+    ("性能主测", "写入平均延迟", "${FIO_WRITE_CLAT_MEAN_MS} ms"),
+    ("性能主测", "写入p95/p99延迟", "${FIO_WRITE_CLAT_P95_MS} / ${FIO_WRITE_CLAT_P99_MS} ms"),
+    ("持久化校验", "写IOPS", "${FIO_DURABILITY_WRITE_IOPS}"),
+    ("持久化校验", "同步p95/p99延迟", "${FIO_DURABILITY_SYNC_P95_MS} / ${FIO_DURABILITY_SYNC_P99_MS} ms"),
     ("运行状态", "平均util", "${UTIL_AVG} %"),
     ("运行状态", "最大util", "${UTIL_MAX} %"),
 
-    ("异常检查", "stress-ng退出码", "${STRESS_EXIT}"),
+    ("异常检查", "fio退出码", "${STRESS_EXIT}"),
     ("异常检查", "重大内核磁盘异常数量", "${ERROR_COUNT}"),
 ]
 
@@ -769,6 +928,16 @@ if stress_log.exists():
         stress.append([clean_excel_text(line)])
 stress.column_dimensions["A"].width = 120
 
+if fio_json.exists():
+    for line in fio_json.read_text(errors="ignore").splitlines():
+        fio_raw.append([clean_excel_text(line)])
+fio_raw.column_dimensions["A"].width = 120
+
+if fio_durability_json.exists():
+    for line in fio_durability_json.read_text(errors="ignore").splitlines():
+        fio_durability_raw.append([clean_excel_text(line)])
+fio_durability_raw.column_dimensions["A"].width = 120
+
 if err_log.exists() and err_log.stat().st_size > 0:
     for line in err_log.read_text(errors="ignore").splitlines():
         err.append([clean_excel_text(line)])
@@ -783,7 +952,7 @@ if mon_log.exists():
             out = []
             for j, val in enumerate(row, 1):
                 if idx > 1 and j >= 2:
-                    if j == 7:
+                    if j in {7, 10}:
                         s = str(val).strip()
                         if s == "":
                             out.append(None)
@@ -799,7 +968,7 @@ if mon_log.exists():
                     out.append(clean_excel_text(val.strip()) if isinstance(val, str) else val)
             mon.append(out)
 
-for sheet in [raw, stress, mon, err]:
+for sheet in [raw, stress, fio_raw, fio_durability_raw, mon, err]:
     sheet.freeze_panes = "A2"
     if sheet.max_row >= 1:
         for cell in sheet[1]:
@@ -809,7 +978,7 @@ for sheet in [raw, stress, mon, err]:
 for col in range(1, mon.max_column + 1):
     mon.column_dimensions[get_column_letter(col)].width = 22
 
-if mon.max_row > 2 and mon.max_column >= 8:
+if mon.max_row > 2 and mon.max_column >= 11:
     def add_chart(title, col, pos):
         chart = LineChart()
         chart.title = title
@@ -821,10 +990,11 @@ if mon.max_row > 2 and mon.max_column >= 8:
         chart.width = 14
         ws.add_chart(chart, pos)
 
-    add_chart("写入速度变化趋势(MB/s)", 5, "J3")
-    add_chart("写IOPS变化趋势", 6, "J18")
-    add_chart("写await变化趋势(ms)", 7, "J33")
-    add_chart("磁盘util变化趋势(%)", 8, "J48")
+    add_chart("读取速度变化趋势(MB/s)", 5, "J3")
+    add_chart("写入速度变化趋势(MB/s)", 8, "J18")
+    add_chart("读取延迟变化趋势(ms)", 7, "J33")
+    add_chart("写入延迟变化趋势(ms)", 10, "J48")
+    add_chart("磁盘util变化趋势(%)", 11, "J63")
 
 
 for sheet in wb.worksheets:
@@ -839,7 +1009,7 @@ PYEOF
 
 echo
 echo "======================================"
-echo "Disk Write Stability Test Finished"
+echo "Disk Random Mixed I/O Stability Test Finished"
 echo "Result       : ${RESULT}"
 echo "Reason       : ${REASON}"
 echo "Test Dir     : ${TEST_DIR}"

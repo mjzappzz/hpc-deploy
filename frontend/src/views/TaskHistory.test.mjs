@@ -62,6 +62,16 @@ test('keeps batch result paths copyable and makes ZIP download the primary actio
   assert.match(source, /下载批次报告（ZIP）/)
 })
 
+test('returns to task history after a report download is received', async () => {
+  const source = await readFile(new URL('./TaskHistory.vue', import.meta.url), 'utf8')
+  const taskApi = await readFile(new URL('../api/task.ts', import.meta.url), 'utf8')
+
+  assert.match(taskApi, /export function downloadTaskArtifact\(taskId: string, filename: string\)/)
+  assert.match(source, /function finishReportDownload\(blob: Blob, filename: string\) \{[\s\S]*?artDialogVisible\.value = false/)
+  assert.match(source, /const resp = await downloadTaskArtifact\(taskId, filename\)[\s\S]*?finishReportDownload\(resp\.data, downloadFilename\)/)
+  assert.match(source, /const resp = await downloadBatchReportZip\(row\.batch_id\)[\s\S]*?finishReportDownload\(resp\.data, filename\)/)
+})
+
 test('uses a compact outcome title on task cards while preserving detailed failure reasons', async () => {
   const taskCard = await readFile(new URL('../components/TaskCard.vue', import.meta.url), 'utf8')
   const history = await readFile(new URL('./TaskHistory.vue', import.meta.url), 'utf8')

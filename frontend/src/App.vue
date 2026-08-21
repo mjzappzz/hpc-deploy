@@ -26,7 +26,7 @@
         </el-menu-item>
         <el-menu-item index="/tasks">
           <el-icon><Operation /></el-icon>
-          <span>执行任务</span>
+          <span>任务下发</span>
         </el-menu-item>
         <el-menu-item index="/history" @click="goTaskHistory">
           <el-icon><Tickets /></el-icon>

@@ -134,10 +134,26 @@ export interface MonitorDiskItem {
   usage_percent: number | null
 }
 
+export interface MonitorDiskIoItem {
+  device: string
+  read_iops: number | null
+  write_iops: number | null
+  read_bandwidth: number | null
+  write_bandwidth: number | null
+  bandwidth_unit: string | null
+  read_await_ms: number | null
+  write_await_ms: number | null
+  queue_depth: number | null
+  utilization_percent: number | null
+}
+
 export interface MonitorDisk {
   available: boolean
   disk_usage: MonitorDiskItem[]
   message: string | null
+  io_available: boolean
+  io_stats: MonitorDiskIoItem[]
+  io_message: string | null
 }
 
 export interface MonitorGpuItem {
@@ -348,6 +364,12 @@ export function getTaskMonitor(taskId: string) {
 
 export function listArtifacts(taskId: string) {
   return request.get<ArtifactListResponse>(`/tasks/${taskId}/artifacts`)
+}
+
+export function downloadTaskArtifact(taskId: string, filename: string) {
+  return request.get<Blob>(`/tasks/${taskId}/artifacts/${encodeURIComponent(filename)}/download`, {
+    responseType: 'blob',
+  })
 }
 
 export interface BatchTaskCreatePayload {

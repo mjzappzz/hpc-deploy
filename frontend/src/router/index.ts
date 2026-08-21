@@ -15,7 +15,7 @@ const router = createRouter({
   routes: [
     { path: '/', component: Dashboard, meta: { title: '仪表盘' } },
     { path: '/servers', component: Servers, meta: { title: '服务器管理' } },
-    { path: '/task-runner', component: TaskRunner, meta: { title: '执行任务' }, alias: '/tasks' },
+    { path: '/task-runner', component: TaskRunner, meta: { title: '任务下发' }, alias: '/tasks' },
     { path: '/history', component: TaskHistory, meta: { title: '历史任务' } },
     { path: '/windows-stress', component: WindowsStress, meta: { title: 'Windows 压测（试验）' } },
     { path: '/audit-logs', component: AuditLog, meta: { title: '审计日志' } },
