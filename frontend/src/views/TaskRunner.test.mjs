@@ -46,7 +46,7 @@ test('uses danger styling when a target server has no CUDA Toolkit installed', a
   assert.match(source, /\.s-card-info-value\.is-missing\s*\{\s*color: var\(--el-color-danger\)/)
 })
 
-test('renders each selected server’s disk targets and defaults every server to all of its mounts', async () => {
+test('renders only safe disk targets and defaults to data mounts, not the system disk', async () => {
   const source = await readFile(new URL('./TaskRunner.vue', import.meta.url), 'utf8')
 
   assert.match(source, /v-for="group in diskTestServerGroups"/)
@@ -60,6 +60,11 @@ test('renders each selected server’s disk targets and defaults every server to
   assert.match(source, /disk_test_dirs_by_server/)
   assert.match(source, /Object\.assign\(diskTestDirsByServer, nextSelections\)/)
   assert.match(source, /filter\(isDiskStressMountpoint\)/)
+  assert.match(source, /function isRecommendedDiskStressMountpoint\(mountpoint: string\)/)
+  assert.match(source, /const preferredTarget = groupTargets\.find\(\(target\) => target\.mountpoint !== '\/'\) \?\? groupTargets\[0\]/)
+  assert.match(source, /physicalDevice: filesystem\.physical_device \?\? filesystem\.device/)
+  assert.match(source, /targetsByPhysicalDevice = new Map<string, Array<\{ mountpoint: string; physicalDevice: string \}>>\(\)/)
+  assert.match(source, /targetsByPhysicalDevice\.get\(target\.physicalDevice\)/)
   assert.match(source, /const role = mountpoint === '\/' \? '系统盘' : '数据盘'/)
   assert.match(source, /class="disk-mount-card-role">\{\{ target\.role \}\}/)
   assert.match(source, /class="disk-mount-card-media">\{\{ target\.mediaLabel \}\}/)
@@ -68,7 +73,9 @@ test('renders each selected server’s disk targets and defaults every server to
   assert.match(source, /class="disk-mount-card-summary">\{\{ target\.device \}\} · \{\{ target\.size \}\} · \{\{ target\.mountpoint \}\}<\/span>/)
   assert.match(source, /\.disk-mount-card-grid\s*\{[\s\S]*?grid-template-columns:\s*repeat\(auto-fill, minmax\(280px, 320px\)\)/)
   assert.doesNotMatch(source, /target\.sharedLabel/)
-  assert.match(source, /mountpoint === '\/boot' \|\| mountpoint\.startsWith\('\/boot\/'\)/)
+  assert.match(source, /return mountpoint === '\/' \|\| isRecommendedDiskStressMountpoint\(mountpoint\)/)
+  assert.match(source, /mountpoint\.startsWith\(prefix\)/)
+  assert.match(source, /\['\/data', '\/mnt', '\/scratch', '\/public', '\/home', '\/root'\]/)
 })
 
 test('lets target server favorites be changed with vector stars without a warning background', async () => {

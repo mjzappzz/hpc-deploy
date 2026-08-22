@@ -3,7 +3,7 @@
 set -u
 set -o pipefail
 
-SCRIPT_VERSION="2026.08.20.1"
+SCRIPT_VERSION="2026.08.21.1"
 
 DNF_MINRATE="${HPCDEPLOY_DNF_MINRATE:-51200}"
 DNF_TIMEOUT="${HPCDEPLOY_DNF_TIMEOUT:-30}"
@@ -291,6 +291,10 @@ refresh_gpu_burn_source_after_kernel_mismatch() {
 
 restore_gpu_burn_source_from_archive() {
     local archive_temp staging_dir source_dir entry
+    mkdir -p "$(dirname "$GPU_BURN_DIR")" || {
+        echo "[ERROR] Cannot create gpu-burn parent directory: $(dirname "$GPU_BURN_DIR")"
+        return 1
+    }
     staging_dir="$(mktemp -d "${GPU_BURN_DIR}.hpcdeploy-download.XXXXXX")" || {
         return 1
     }

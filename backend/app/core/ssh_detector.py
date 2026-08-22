@@ -65,7 +65,9 @@ echo '---GPU-SPLIT---'
 if command -v nvidia-smi >/dev/null 2>&1; then
   smi_output=""
   for smi_attempt in 1 2 3; do
-    if smi_output="$(timeout 3 nvidia-smi --query-gpu=index,name,driver_version,memory.total,memory.used,temperature.gpu,utilization.gpu --format=csv,noheader,nounits 2>/dev/null)" && [ -n "$smi_output" ]; then
+    smi_candidate="$(timeout 3 nvidia-smi --query-gpu=index,name,driver_version,memory.total,memory.used,temperature.gpu,utilization.gpu --format=csv,noheader,nounits 2>/dev/null || true)"
+    if [ -n "$smi_candidate" ] && printf '%s\n' "$smi_candidate" | grep -Eq '^[[:space:]]*[0-9]+,[[:space:]]*[^,]+,[[:space:]]*[0-9]+([.][0-9]+)+,[[:space:]]*[0-9]+,'; then
+      smi_output="$smi_candidate"
       printf '%s\n' "$smi_output"
       break
     fi
@@ -349,9 +351,11 @@ def _summarize_disk_inventory(raw: str) -> dict[str, list[dict[str, str]]] | Non
     mounted_filesystems = _parse_mounted_filesystems(df_output)
     media_types = _parse_disk_media_types(lsblk_output)
     interface_types = _parse_disk_interface_types(lsblk_output)
+    physical_devices = _parse_physical_devices(lsblk_output)
     for filesystem in mounted_filesystems:
         filesystem["media_type"] = _media_type_for_device(filesystem["device"], media_types)
         filesystem["interface_type"] = _interface_type_for_device(filesystem["device"], interface_types)
+        filesystem["physical_device"] = physical_devices.get(filesystem["device"], filesystem["device"])
     unmounted_disks = _parse_unmounted_disks(lsblk_output)
     if not mounted_filesystems and not unmounted_disks:
         return None
@@ -359,6 +363,35 @@ def _summarize_disk_inventory(raw: str) -> dict[str, list[dict[str, str]]] | Non
         "mounted_filesystems": mounted_filesystems,
         "unmounted_disks": unmounted_disks,
     }
+
+
+def _parse_physical_devices(raw: str) -> dict[str, str]:
+    """Map each lsblk device path to its containing physical disk path."""
+    if not raw or raw.lstrip().startswith("__LSBLK_"):
+        return {}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+
+    physical_devices: dict[str, str] = {}
+
+    def visit(device: object, physical_device: str | None = None) -> None:
+        if not isinstance(device, dict):
+            return
+        path = device.get("path")
+        device_type = device.get("type")
+        resolved_physical_device = path if device_type == "disk" and isinstance(path, str) else physical_device
+        if isinstance(path, str) and resolved_physical_device:
+            physical_devices[path] = resolved_physical_device
+        children = device.get("children")
+        if isinstance(children, list):
+            for child in children:
+                visit(child, resolved_physical_device)
+
+    for device in payload.get("blockdevices", []):
+        visit(device)
+    return physical_devices
 
 
 def _parse_disk_media_types(raw: str) -> dict[str, str]:

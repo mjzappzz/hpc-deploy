@@ -66,6 +66,14 @@ class GpuBurnLogCompactionTests(unittest.TestCase):
         self.assertIn("stop_gpu_burn_process_tree", source)
         self.assertIn("pgrep -P", source)
 
+    def test_restoring_gpu_burn_creates_missing_parent_directory_before_staging(self) -> None:
+        source = SCRIPT.read_text(encoding="utf-8")
+
+        parent_dir_creation = 'mkdir -p "$(dirname "$GPU_BURN_DIR")"'
+        staging_creation = 'mktemp -d "${GPU_BURN_DIR}.hpcdeploy-download.XXXXXX"'
+        self.assertIn(parent_dir_creation, source)
+        self.assertLess(source.index(parent_dir_creation), source.index(staging_creation))
+
         raw = (
             "0.0% first\r0.1% duplicate\r9.9% duplicate\r"
             "10.0% second bucket\r20.0% third bucket\rCUDA error: retained\n"

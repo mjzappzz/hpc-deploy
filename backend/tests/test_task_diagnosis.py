@@ -164,6 +164,24 @@ class TaskDiagnosisTests(unittest.TestCase):
         self.assertEqual(diagnosis["category"], "gpu_burn_source_missing")
         self.assertEqual(diagnosis["title"], "gpu-burn 源码缺失")
 
+    def test_dpkg_lock_is_not_misclassified_by_cuda_repository_url(self) -> None:
+        diagnosis = diagnose_task_failure(
+            task_status="FAILED",
+            error_message="command exited with code 100",
+            logs=[
+                "Hit:6 https://developer.download.nvidia.cn/compute/cuda/repos/ubuntu2204/x86_64 InRelease",
+                "dpkg: error: dpkg frontend lock was locked by another process with pid 6095",
+                "E: Sub-process dpkg --set-selections returned an error code (2)",
+            ],
+            exit_code=100,
+            task_type="script",
+            file_name="lock_linux_release.sh",
+        )
+
+        self.assertEqual(diagnosis["category"], "package_manager_locked")
+        self.assertEqual(diagnosis["title"], "系统包管理器被占用")
+        self.assertNotEqual(diagnosis["category"], "cuda_or_gpu_failed")
+
 
 if __name__ == "__main__":
     unittest.main()

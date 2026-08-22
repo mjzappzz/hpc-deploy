@@ -133,6 +133,16 @@ class ReportSummaryFailureReasonTests(unittest.TestCase):
             diagnosis["conclusion"],
         )
 
+    def test_package_manager_lock_uses_structured_conclusion(self) -> None:
+        diagnosis = {
+            "category": "package_manager_locked",
+            "conclusion": "apt/dpkg 正被其他进程占用，任务无法继续执行。",
+        }
+        self.assertEqual(
+            resolve_failure_reason("command exited with code 100", "UNKNOWN", diagnosis),
+            diagnosis["conclusion"],
+        )
+
     def test_report_failure_without_verified_root_cause_is_conservative(self) -> None:
         self.assertEqual(
             resolve_failure_reason("报告已生成，压测结果为 FAIL", "FAIL", {"category": "completed"}),

@@ -14,7 +14,7 @@ from app.models.task_log import TaskLog
 from sqlalchemy.orm import Session
 
 REPORT_STATUS_VALUES = {"PASS", "FAIL", "UNKNOWN"}
-DIAGNOSIS_VERSION = 10
+DIAGNOSIS_VERSION = 11
 _REPORT_FAILURE_REASON_PATTERN = re.compile(r"^\s*(?:Reason|判定原因)\s*:\s*(.+?)\s*$", re.IGNORECASE)
 _CORRECTED_ECC_MCE_REASON = (
     "检测到可纠正 ECC 内存错误（MCE/CECC）；系统已纠正，但反复出现表示内存子系统存在风险。"
@@ -24,6 +24,7 @@ _CORRECTED_ECC_MCE_REASON = (
 _VERIFIED_FAILURE_CATEGORIES = {
     "artifact_recovery_failed",
     "gpu_burn_source_missing",
+    "package_manager_locked",
     "shell_unbound_variable",
     "gpu_kernel_image_unavailable",
     "stress_root_required",

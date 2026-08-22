@@ -37,6 +37,7 @@ export interface DiskFilesystem {
   available: string
   use_percent: string
   mountpoint: string
+  physical_device?: string
 }
 
 export interface DiskInventory {

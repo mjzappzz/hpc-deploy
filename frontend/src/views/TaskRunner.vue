@@ -465,7 +465,7 @@
                           </el-checkbox-group>
                         </section>
                         <div class="form-help-text">
-                          默认全选每台服务器已探测、已挂载的本地文件系统；每台服务器只压自己勾选的磁盘。
+                          默认仅选可压测的数据目录；系统盘需手动勾选。Docker 和系统目录不会作为压测目标。
                         </div>
                       </div>
                     </el-form-item>
@@ -1225,7 +1225,7 @@ const showDiskTestDir = computed(() => {
 })
 const diskTestServerGroups = computed(() => {
   const rootFallback = {
-    mountpoint: '/', role: '系统盘', device: '待检测设备', size: '容量待重新检测', mediaLabel: '未知',
+    mountpoint: '/', role: '系统盘', device: '待检测设备', physicalDevice: 'root-fallback', size: '容量待重新检测', mediaLabel: '未知',
   }
   return selectedServers.value.map((server) => {
     const filesystems = server.disk_inventory?.mounted_filesystems ?? []
@@ -1241,7 +1241,7 @@ const diskTestServerGroups = computed(() => {
 })
 
 function diskTestMountTarget(
-  filesystem: { device: string; media_type?: string; interface_type?: string; size: string; used: string; available: string; use_percent: string; mountpoint: string },
+  filesystem: { device: string; physical_device?: string; media_type?: string; interface_type?: string; size: string; used: string; available: string; use_percent: string; mountpoint: string },
 ) {
   const { mountpoint } = filesystem
   const role = mountpoint === '/' ? '系统盘' : '数据盘'
@@ -1249,6 +1249,7 @@ function diskTestMountTarget(
     mountpoint,
     role,
     device: filesystem.device,
+    physicalDevice: filesystem.physical_device ?? filesystem.device,
     size: filesystem.size,
     mediaLabel: diskMediaLabel(filesystem.media_type, filesystem.interface_type),
   }
@@ -1262,7 +1263,25 @@ function diskMediaLabel(mediaType: string | undefined, interfaceType: string | u
 
 function isDiskStressMountpoint(filesystem: { mountpoint: string }) {
   const { mountpoint } = filesystem
-  return mountpoint === '/' || !(mountpoint === '/boot' || mountpoint.startsWith('/boot/'))
+  return mountpoint === '/' || isRecommendedDiskStressMountpoint(mountpoint)
+}
+
+function isRecommendedDiskStressMountpoint(mountpoint: string) {
+  return ['/data', '/mnt', '/scratch', '/public', '/home', '/root'].some((prefix) => mountpoint.startsWith(prefix))
+}
+
+function defaultDiskTestDirs(targets: Array<{ mountpoint: string; physicalDevice: string }>) {
+  const targetsByPhysicalDevice = new Map<string, Array<{ mountpoint: string; physicalDevice: string }>>()
+  for (const target of targets) {
+    const groupTargets = targetsByPhysicalDevice.get(target.physicalDevice) ?? []
+    groupTargets.push(target)
+    targetsByPhysicalDevice.set(target.physicalDevice, groupTargets)
+  }
+  return Array.from(targetsByPhysicalDevice.values())
+    .map((groupTargets) => {
+      const preferredTarget = groupTargets.find((target) => target.mountpoint !== '/') ?? groupTargets[0]
+      return preferredTarget.mountpoint
+    })
 }
 
 watch(diskTestServerGroups, (groups) => {
@@ -1270,7 +1289,8 @@ watch(diskTestServerGroups, (groups) => {
   for (const group of groups) {
     const available = group.targets.map((target) => target.mountpoint)
     const retained = (diskTestDirsByServer[group.serverId] ?? []).filter((mountpoint) => available.includes(mountpoint))
-    nextSelections[group.serverId] = retained.length > 0 ? retained : available
+    const defaults = defaultDiskTestDirs(group.targets)
+    nextSelections[group.serverId] = retained.length > 0 ? retained : defaults
   }
   for (const serverId of Object.keys(diskTestDirsByServer)) delete diskTestDirsByServer[Number(serverId)]
   Object.assign(diskTestDirsByServer, nextSelections)
@@ -1660,7 +1680,7 @@ function resetParamsForFile() {
   gpuPrecision.value = 'fp32'
   apptainerTargetDir.value = '~/hpcdeploy/apptainer/'
   for (const group of diskTestServerGroups.value) {
-    diskTestDirsByServer[group.serverId] = group.targets.map((target) => target.mountpoint)
+    diskTestDirsByServer[group.serverId] = defaultDiskTestDirs(group.targets)
   }
 }
 
