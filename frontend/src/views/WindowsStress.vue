@@ -60,22 +60,31 @@
       </div>
 
       <div class="windows-section">
-        <div class="section-heading"><h2>压测命令预设</h2><span v-if="commandScriptName">当前脚本：<code>$HOME\Downloads\{{ commandScriptName }}</code></span></div>
+        <div class="section-heading"><h2>压测命令</h2><span v-if="commandScriptName">当前脚本：<code>$HOME\Downloads\{{ commandScriptName }}</code></span></div>
         <el-alert v-if="!commandScriptName" title="请仅保留或上传一个 Windows 压测脚本后再复制命令，避免命令版本与脚本文件不一致。" type="warning" :closable="false" />
         <el-alert v-else-if="versionMismatch" :title="`文件名版本 ${activeScript?.filename_version ?? '未标记'} 与内容版本 ${activeScript?.content_version ?? '未标记'} 不一致；请修正后再复制压测命令。`" type="error" :closable="false" />
-        <div v-for="group in presetGroups" :key="group.name" class="preset-group">
-          <h3>{{ group.name }}</h3>
-          <div class="preset-grid">
-            <article v-for="preset in group.presets" :key="preset.name" class="preset-card">
-              <div class="preset-content">
-                <b>{{ preset.name }}</b>
-                <p>{{ preset.description }}</p>
-                <pre>{{ preset.command }}</pre>
-              </div>
-              <el-button type="primary" plain :disabled="!canCopyPresets" @click="copyCommand(preset.command)">一键复制</el-button>
-            </article>
-          </div>
+        <div class="custom-command-config">
+          <span class="custom-command-label">自定义配置</span>
+          <el-radio-group v-model="customMode" aria-label="选择压测模块">
+            <el-radio-button label="staged">整机</el-radio-button>
+            <el-radio-button label="gpu">GPU</el-radio-button>
+            <el-radio-button label="cpu">CPU / 内存</el-radio-button>
+            <el-radio-button label="disk">磁盘</el-radio-button>
+          </el-radio-group>
+          <span class="custom-command-label">每个模块时长</span>
+          <el-input-number v-model="customDurationHours" :min="0" :max="72" :step="1" controls-position="right" aria-label="压测时长（小时）" @change="normalizeCustomDurationParts" />
+          <span class="custom-command-unit">小时</span>
+          <el-input-number v-model="customDurationMinutes" :min="0" :max="customDurationHours === 72 ? 0 : 59" :step="1" controls-position="right" aria-label="压测时长（分钟）" @change="normalizeCustomDurationParts" />
+          <span class="custom-command-unit">分钟</span>
         </div>
+        <article class="preset-card">
+          <div class="preset-content">
+            <b>{{ customPreset.title }}</b>
+            <p>{{ customPreset.description }}</p>
+            <pre>{{ customPreset.command }}</pre>
+          </div>
+          <el-button type="primary" plain :disabled="!canCopyPresets" @click="copyCommand(customPreset.command)">一键复制</el-button>
+        </article>
       </div>
     </el-card>
 
@@ -107,6 +116,9 @@ const loading = ref(false)
 const keyword = ref('')
 const previewVisible = ref(false)
 const previewFile = ref<ScriptFilePreviewRecord | null>(null)
+const customMode = ref<'staged' | 'gpu' | 'cpu' | 'disk'>('staged')
+const customDurationHours = ref<number | null>(0)
+const customDurationMinutes = ref<number | null>(3)
 
 const filteredFiles = computed(() => {
   const text = keyword.value.trim().toLowerCase()
@@ -144,30 +156,54 @@ const activeScript = computed(() => windowsFiles.value.length === 1 ? windowsFil
 const commandScriptName = computed(() => activeScript.value?.name ?? '')
 const versionMismatch = computed(() => activeScript.value?.version_consistent === false)
 const canCopyPresets = computed(() => Boolean(commandScriptName.value) && !versionMismatch.value)
-const presetGroups = computed(() => {
+
+function formatStressDuration(minutes: number) {
+  const hours = Math.floor(minutes / 60)
+  const remainingMinutes = minutes % 60
+  if (hours === 0) return `${remainingMinutes} 分钟`
+  if (remainingMinutes === 0) return `${hours} 小时`
+  return `${hours} 小时 ${remainingMinutes} 分钟`
+}
+
+function normalizeCustomDurationParts() {
+  const hours = Number.isFinite(customDurationHours.value) ? Math.max(0, Math.min(72, Math.floor(customDurationHours.value ?? 0))) : 0
+  const minutes = Number.isFinite(customDurationMinutes.value) ? Math.max(0, Math.min(hours === 72 ? 0 : 59, Math.floor(customDurationMinutes.value ?? 0))) : 0
+  customDurationHours.value = hours
+  customDurationMinutes.value = hours === 0 && minutes === 0 ? 1 : minutes
+}
+
+const customPreset = computed(() => {
   const scriptName = commandScriptName.value || 'WindowsStress.ps1'
-  const fullSystem = [
-    { name: '整机 9 分钟测试', description: '总时长约 9 分钟：GPU、CPU/内存、磁盘各 3 分钟，5 秒采样，10G 磁盘测试文件。', command: presetCommand(scriptName, commonFull, { minutes: '3', interval: '5', diskSize: '10G' }) },
-    { name: '整机 36 小时正式压测', description: '总时长约 36 小时：GPU、CPU/内存、磁盘各 12 小时，60 秒采样，100G 磁盘测试文件。', command: presetCommand(scriptName, commonFull, { minutes: '720', interval: '60', diskSize: '100G' }) },
-  ]
-  const gpu = [
-    { name: 'GPU 3 分钟测试', description: 'FurMark2 GPU 与显存压测，5 秒采样。', command: presetCommand(scriptName, commonGpu, { minutes: '3', interval: '5' }) },
-    { name: 'GPU 12 小时测试', description: 'FurMark2 GPU 与显存压测，60 秒采样。', command: presetCommand(scriptName, commonGpu, { minutes: '720', interval: '60' }) },
-  ]
-  const cpuMemory = [
-    { name: 'CPU / 内存 3 分钟测试', description: 'y-cruncher CPU/内存压测，5 秒采样。', command: presetCommand(scriptName, commonCpu, { minutes: '3', interval: '5' }) },
-    { name: 'CPU / 内存 12 小时测试', description: 'y-cruncher CPU/内存压测，60 秒采样。', command: presetCommand(scriptName, commonCpu, { minutes: '720', interval: '60' }) },
-  ]
-  const disk = [
-    { name: '磁盘 3 分钟测试', description: 'DiskSpd 双 profile 压测，5 秒采样，10G 测试文件。', command: presetCommand(scriptName, commonDisk, { minutes: '3', interval: '5', diskSize: '10G' }) },
-    { name: '磁盘 12 小时测试', description: 'DiskSpd 双 profile 压测，60 秒采样，100G 测试文件。', command: presetCommand(scriptName, commonDisk, { minutes: '720', interval: '60', diskSize: '100G' }) },
-  ]
-  return [
-    { name: '整机压测', presets: fullSystem },
-    { name: 'GPU 压测', presets: gpu },
-    { name: 'CPU / 内存压测', presets: cpuMemory },
-    { name: '磁盘压测', presets: disk },
-  ]
+  const hours = Number.isFinite(customDurationHours.value) ? Math.max(0, Math.min(72, Math.floor(customDurationHours.value ?? 0))) : 0
+  const remainingMinutes = Number.isFinite(customDurationMinutes.value) ? Math.max(0, Math.min(hours === 72 ? 0 : 59, Math.floor(customDurationMinutes.value ?? 0))) : 0
+  const minutes = Math.max(1, hours * 60 + remainingMinutes)
+  const interval = minutes <= 10 ? '5' : '60'
+  const diskSize = minutes <= 60 ? '10G' : '100G'
+  const duration = formatStressDuration(minutes)
+  const templates = {
+    staged: commonFull,
+    gpu: commonGpu,
+    cpu: commonCpu,
+    disk: commonDisk,
+  }
+  const descriptions = {
+    staged: `GPU、CPU/内存、磁盘各运行 ${duration}，合计约 ${formatStressDuration(minutes * 3)}；采样间隔 ${interval} 秒。`,
+    gpu: `GPU 模块运行 ${duration}；采样间隔 ${interval} 秒。`,
+    cpu: `CPU / 内存模块运行 ${duration}；采样间隔 ${interval} 秒。`,
+    disk: `磁盘模块运行 ${duration}；磁盘测试文件为 ${diskSize}，采样间隔 ${interval} 秒。`,
+  }
+  const titles = {
+    staged: `整机 ${duration} 测试`,
+    gpu: `GPU ${duration} 测试`,
+    cpu: `CPU / 内存 ${duration} 测试`,
+    disk: `磁盘 ${duration} 测试`,
+  }
+  const mode = customMode.value
+  return {
+    title: titles[mode],
+    description: descriptions[mode],
+    command: presetCommand(scriptName, templates[mode], { minutes: String(minutes), interval, diskSize }),
+  }
 })
 
 async function loadFiles() {
@@ -255,15 +291,16 @@ onMounted(loadFiles)
 .section-heading h2 { margin: 0; font-size: 16px; }
 .script-search { width: 240px; }
 .windows-table { margin-top: 14px; }
-.preset-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(480px, 1fr)); gap: 12px; margin-top: 14px; }
-.preset-group { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--el-border-color-lighter); }
-.preset-group h3 { margin: 0; font-size: 15px; }
-.preset-card { align-items: flex-start; justify-content: space-between; gap: 16px; padding: 16px; border: 1px solid var(--el-border-color-lighter); border-radius: 12px; margin-top: 0; }
+.preset-card { align-items: flex-start; justify-content: space-between; gap: 16px; padding: 16px; border: 1px solid var(--el-border-color-lighter); border-radius: 12px; }
+.preset-card { margin-top: 0; }
 .preset-content { min-width: 0; flex: 1; }
 .preset-card p { margin-bottom: 0; line-height: 1.5; }
 .preset-card pre { max-height: 260px; overflow: auto; margin: 12px 0 0; padding: 12px; border-radius: 8px; background: var(--el-fill-color-light); color: var(--el-text-color-primary); white-space: pre-wrap; word-break: break-word; font: 12px/1.5 'SFMono-Regular', Consolas, monospace; }
+.custom-command-config { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 16px 0; padding: 12px 0; }
+.custom-command-label { color: var(--el-text-color-secondary); font-size: 13px; }
+.custom-command-unit { color: var(--el-text-color-secondary); font-size: 13px; margin-left: -8px; }
 .hidden-file-input { display: none; }
 .preview-alert { margin-bottom: 12px; }
 .preview-content { max-height: 60vh; overflow: auto; margin: 0; padding: 16px; border-radius: 12px; background: #111827; color: #e5eefc; white-space: pre-wrap; word-break: break-word; font: 13px/1.55 'SFMono-Regular', Consolas, monospace; }
-@media (max-width: 720px) { .windows-header, .section-heading, .preset-card { align-items: flex-start; flex-direction: column; } .script-search { width: 100%; } }
+@media (max-width: 720px) { .windows-header, .section-heading, .preset-card, .custom-command-config { align-items: flex-start; flex-direction: column; } .script-search { width: 100%; } }
 </style>
