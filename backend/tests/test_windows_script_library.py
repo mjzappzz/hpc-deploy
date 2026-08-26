@@ -22,6 +22,10 @@ class WindowsScriptLibraryTests(unittest.TestCase):
         script_path = Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v97_windows_stress.ps1"
         content = script_path.read_text(encoding="utf-8-sig")
 
+        self.assertIn("function Test-PawnIoSystemInstall", content)
+        self.assertIn('SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\PawnIO', content)
+        self.assertIn('Join-Path $env:ProgramFiles "PawnIO\\PawnIOLib.dll"', content)
+        self.assertIn("if (Test-PawnIoSystemInstall) { return $true }", content)
         self.assertIn("AutoConfirmPawIoInstall", content)
         self.assertIn("PawIoConfirmTimeoutSeconds", content)
         self.assertIn("Get-AuthenticodeSignature", content)

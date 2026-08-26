@@ -1166,7 +1166,34 @@ function Test-IsAdministrator {
         return $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     } catch { return $false }
 }
+function Test-PawnIoSystemInstall {
+    # Source: https://github.com/namazso/PawnIO.Modules/wiki/Using-PawnIO-Modules
+    # PawnIO.Setup registers this uninstall key and installs PawnIOLib in Program Files.
+    # Check those durable OS-level markers before consulting the LHM assembly property.
+    $uninstallKeys = @(
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PawnIO",
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\PawnIO"
+    )
+    foreach ($key in $uninstallKeys) {
+        try {
+            if (Test-Path $key) { return $true }
+        } catch {}
+    }
+
+    $libraryPaths = @()
+    if (![string]::IsNullOrWhiteSpace($env:ProgramFiles)) {
+        $libraryPaths += (Join-Path $env:ProgramFiles "PawnIO\PawnIOLib.dll")
+    }
+    if (![string]::IsNullOrWhiteSpace($env:ProgramW6432) -and $env:ProgramW6432 -ne $env:ProgramFiles) {
+        $libraryPaths += (Join-Path $env:ProgramW6432 "PawnIO\PawnIOLib.dll")
+    }
+    foreach ($path in $libraryPaths) {
+        if (Test-Path $path) { return $true }
+    }
+    return $false
+}
 function Test-LhmPawnIoInstalled {
+    if (Test-PawnIoSystemInstall) { return $true }
     try {
         $t = [type]::GetType("LibreHardwareMonitor.PawnIo.PawnIo, LibreHardwareMonitorLib", $false)
         if ($null -eq $t) {
