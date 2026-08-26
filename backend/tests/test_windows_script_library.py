@@ -8,6 +8,16 @@ from app.core.task_runner import TaskRunnerError, _resolve_task_library_file
 
 
 class WindowsScriptLibraryTests(unittest.TestCase):
+    def test_v97_windows_stress_downloads_full_seven_zip_from_internal_mirror(self) -> None:
+        script_path = Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v97_windows_stress.ps1"
+        content = script_path.read_text(encoding="utf-8-sig")
+
+        self.assertIn(
+            'http://171.221.252.54:8573/chfs/shared/%E5%85%B6%E4%BB%96%E5%B8%B8%E7%94%A8%E8%BD%AF%E4%BB%B6%EF%BC%88%E5%90%AB%E5%8E%8B%E6%B5%8B%E8%84%9A%E6%9C%AC%E7%AD%89%EF%BC%89/Stress%E5%8E%8B%E6%B5%8B%E7%9B%B8%E5%85%B3%E8%84%9A%E6%9C%AC/windows%E5%8E%8B%E6%B5%8B/7z2409-x64.exe',
+            content,
+        )
+        self.assertNotIn("https://www.7-zip.org/a/7z2409-x64.exe", content)
+
     def test_v97_windows_stress_script_automatically_installs_signed_pawnio_when_elevated(self) -> None:
         script_path = Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v97_windows_stress.ps1"
         content = script_path.read_text(encoding="utf-8-sig")
