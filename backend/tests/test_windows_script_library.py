@@ -14,6 +14,74 @@ class WindowsScriptLibraryTests(unittest.TestCase):
         self.assertIn("Copy-Item -LiteralPath $baseFile.FullName -Destination $currentFile", content)
         self.assertIn("$baseKeep = @($baseRows | Where-Object { $_.Phase -notmatch $phasePattern })", content)
 
+    def test_v97_windows_disk_supplement_renders_preserved_drives_in_html(self) -> None:
+        content = (Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v97_windows_stress.ps1").read_text(encoding="utf-8-sig")
+
+        self.assertIn("function Get-ReportDiskDrives", content)
+        self.assertIn("$reportDiskDrives = @(Get-ReportDiskDrives $diskSpd.Details)", content)
+        self.assertIn("foreach($d0 in $reportDiskDrives)", content)
+        self.assertIn("$diskThresholdHtml = Get-DiskThresholdSummaryHtml $reportDiskDrives", content)
+
+    def test_v97_windows_supplement_html_rebuilds_cpu_and_gpu_from_merged_data(self) -> None:
+        content = (Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v97_windows_stress.ps1").read_text(encoding="utf-8-sig")
+
+        self.assertIn('Stage-Row "gpu" $gpuRows', content)
+        self.assertIn('Stage-Row "cpu" $cpuRows', content)
+        self.assertIn('$preserveBaseTelemetry = ($Mode -ne $telemetryPhase)', content)
+        self.assertIn('$baseGpuLogDir = Join-Path $script:MergeBaseReportDir "furmark_gpu_log"', content)
+        self.assertIn('$gpuModuleStatus = if($hasGpuEvidence)', content)
+        self.assertIn('$cpuModuleStatus = if($hasCpuEvidence)', content)
+        self.assertNotIn("已保留（原报告，未补测）", content)
+
+    def test_v97_windows_supplement_uses_merged_evidence_for_every_report_status(self) -> None:
+        content = (Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v97_windows_stress.ps1").read_text(encoding="utf-8-sig")
+
+        self.assertIn('$hasGpuEvidence = ($gpuRows.Count -gt 0)', content)
+        self.assertIn('$hasCpuEvidence = ($cpuRows.Count -gt 0)', content)
+        self.assertIn('$hasDiskEvidence = ($diskRows.Count -gt 0 -or $diskSpd.Details.Count -gt 0)', content)
+        self.assertIn('if($hasGpuEvidence){ $gpuEnabled = $true }', content)
+        self.assertIn('if($hasCpuEvidence){ $cpuEnabled = $true }', content)
+        self.assertIn('if($hasDiskEvidence){ $diskEnabled = $true }', content)
+        self.assertIn('$gpuReasonDisplay = if($hasGpuEvidence){"-"}', content)
+        self.assertIn('$cpuModuleReasonDisplay = if($hasCpuEvidence){"-"}', content)
+        self.assertIn('$diskModuleReasonDisplay = if($hasDiskEvidence){"-"}', content)
+
+    def test_v97_windows_supplement_uses_configured_cpu_backend_when_merged_cpu_data_exists(self) -> None:
+        content = (Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v97_windows_stress.ps1").read_text(encoding="utf-8-sig")
+
+        self.assertIn('$effectiveCpuMemBackend = if($hasCpuEvidence -and $script:CpuMemBackendUsed -in @("NotStarted","Unknown")){ $CpuMemBackend }', content)
+        self.assertIn('$backendText = if($effectiveCpuMemBackend){$effectiveCpuMemBackend}else{"Unknown"}', content)
+
+    def test_v97_windows_disk_supplement_preserves_report_history_and_complete_tools(self) -> None:
+        content = (Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v97_windows_stress.ps1").read_text(encoding="utf-8-sig")
+
+        self.assertIn('function Preserve-BaseDiskHistoryRows', content)
+        self.assertIn('function Merge-BaseReportToolInfo', content)
+        self.assertIn('$reportStartTime = Get-MinTime $rows', content)
+        self.assertIn('$reportEndTime = Get-MaxTime $rows', content)
+        self.assertIn('disk 原测 总计', content)
+        self.assertIn('disk 补测 总计', content)
+        self.assertIn('磁盘顺序读取速度（按盘）', content)
+        self.assertIn('Merge-BaseReportToolInfo', content)
+
+    def test_v97_windows_disk_trends_are_collected_and_merged_per_drive(self) -> None:
+        content = (Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v97_windows_stress.ps1").read_text(encoding="utf-8-sig")
+
+        self.assertIn('$DiskDriveIoCsv = Join-Path $LogDir "disk_io_by_drive.csv"', content)
+        self.assertIn('function Write-DiskDriveIoSamples', content)
+        self.assertIn('"Timestamp,Phase,Drive,Read_MBps,Write_MBps" | Out-File $DiskDriveIoCsv', content)
+        self.assertIn('Merge-BaseDiskDriveIoSamples', content)
+        self.assertIn('disk_read_{0}.svg', content)
+        self.assertIn('disk_write_{0}.svg', content)
+
+    def test_v97_windows_stress_can_rebuild_html_from_existing_report_data(self) -> None:
+        content = (Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v97_windows_stress.ps1").read_text(encoding="utf-8-sig")
+
+        self.assertIn('[string]$RebuildReportDir = ""', content)
+        self.assertIn("function Restore-RebuildReportSource", content)
+        self.assertIn("[REBUILD] Rebuilt report from existing data", content)
+        self.assertIn("if($script:OfflineRebuildMode)", content)
+
     def test_v97_windows_stress_deduplicates_partitions_on_the_same_physical_disk(self) -> None:
         script_path = Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v97_windows_stress.ps1"
         content = script_path.read_text(encoding="utf-8-sig")

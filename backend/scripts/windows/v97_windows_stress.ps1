@@ -52,6 +52,7 @@ param(
     [string]$ReportBase = "",
     [switch]$FastScanOnly,
     [string]$MergeBaseReportDir = "",
+    [string]$RebuildReportDir = "",
 
     [bool]$AutoDownloadDiskSpd = $true,
     [string]$DiskSpdUrl = "http://171.221.252.54:8573/chfs/shared/%E5%85%B6%E4%BB%96%E5%B8%B8%E7%94%A8%E8%BD%AF%E4%BB%B6%EF%BC%88%E5%90%AB%E5%8E%8B%E6%B5%8B%E8%84%9A%E6%9C%AC%E7%AD%89%EF%BC%89/Stress%E5%8E%8B%E6%B5%8B%E7%9B%B8%E5%85%B3%E8%84%9A%E6%9C%AC/windows%E5%8E%8B%E6%B5%8B/DiskSpd.ZIP",
@@ -213,6 +214,7 @@ New-Item -ItemType Directory -Force -Path $ReportRoot,$LogDir,$ChartDir,$ShotDir
 
 $EventLog = Join-Path $LogDir "events.log"
 $MonitorCsv = Join-Path $LogDir "monitor.csv"
+$DiskDriveIoCsv = Join-Path $LogDir "disk_io_by_drive.csv"
 $GpuSmiCsv = Join-Path $LogDir "gpu_smi.csv"
 $CpuSensorCsv = Join-Path $LogDir "cpu_sensors.csv"
 $SummaryTxt = Join-Path $ReportRoot "summary.txt"
@@ -227,6 +229,13 @@ if (![string]::IsNullOrWhiteSpace($MergeBaseReportDir)) {
 } else {
     $script:MergeBaseReportDir = ""
     $script:SupplementMergeMode = $false
+}
+$script:RebuildReportDir = ""
+$script:OfflineRebuildMode = $false
+if (![string]::IsNullOrWhiteSpace($RebuildReportDir)) {
+    try { $RebuildReportDir = [System.IO.Path]::GetFullPath($RebuildReportDir) } catch {}
+    $script:RebuildReportDir = $RebuildReportDir
+    $script:OfflineRebuildMode = $true
 }
 $script:CpuTempSensorName = ""
 $script:CpuTempLast = $null
@@ -908,9 +917,9 @@ function Get-DiskDriveThresholdInfo([string]$Drive) {
     if($script:DiskDriveProfiles -and $script:DiskDriveProfiles.ContainsKey($d)){ return $script:DiskDriveProfiles[$d] }
     return (Get-DiskProfileForDrive $d)
 }
-function Get-DiskThresholdSummaryText {
+function Get-DiskThresholdSummaryText([string[]]$Drives=$script:ResolvedTestDrives) {
     $lines=@()
-    foreach($d0 in $script:ResolvedTestDrives){
+    foreach($d0 in $Drives){
         $info = Get-DiskDriveThresholdInfo $d0
         $role = Get-DiskRoleDisplayName $info.IsSystemDrive
         $profileDisplay = Get-DiskProfileDisplayName $info.Profile
@@ -921,9 +930,9 @@ function Get-DiskThresholdSummaryText {
     if($lines.Count -eq 0){ return "-" }
     return ($lines -join "`r`n")
 }
-function Get-DiskThresholdSummaryHtml {
+function Get-DiskThresholdSummaryHtml([string[]]$Drives=$script:ResolvedTestDrives) {
     $rows=""
-    foreach($d0 in $script:ResolvedTestDrives){
+    foreach($d0 in $Drives){
         $info = Get-DiskDriveThresholdInfo $d0
         $role = Get-DiskRoleDisplayName $info.IsSystemDrive
         $profileDisplay = Get-DiskProfileDisplayName $info.Profile
@@ -1595,6 +1604,7 @@ function Get-CpuTelemetrySample {
 }
 function Write-MonitorHeader {
     "Timestamp,Phase,CPU_Percent,CPU_Clock_Current_MHz,CPU_MaxClock_MHz,Memory_Used_Percent,Memory_Used_GB,Memory_Total_GB,CPU_Temperature_C,CPU_Temp_Sensor,CPU_Package_Power_W,CPU_Power_Sensor,CPU_Power_Limit_Percent,CPU_Power_Limit_Sensor,GPU_Count,GPU_Util_Max_Percent,GPU_Temp_Max_C,GPU_Fan_Max_Percent,GPU_Power_Total_W,GPU_Mem_Used_Total_MB,GPU_Mem_Total_MB,Disk_Read_MBps,Disk_Write_MBps" | Out-File $MonitorCsv -Encoding UTF8
+    "Timestamp,Phase,Drive,Read_MBps,Write_MBps" | Out-File $DiskDriveIoCsv -Encoding UTF8
     "Timestamp,Name,TempC,FanPercent,PowerW,PowerLimitW,UtilPercent,MemUsedMB,MemTotalMB" | Out-File $GpuSmiCsv -Encoding UTF8
     "Timestamp,Sensor,TempC" | Out-File $CpuSensorCsv -Encoding UTF8
 }
@@ -1604,6 +1614,19 @@ function Write-GpuSmiSample {
         if (!$raw) { return }
         foreach ($line in $raw) { Add-Content -Path $GpuSmiCsv -Value $line -Encoding UTF8 }
     } catch {}
+}
+function Write-DiskDriveIoSamples([string]$Timestamp,[string]$Phase) {
+    foreach($drive0 in @($script:ResolvedTestDrives)){
+        $drive=Normalize-DriveLetter $drive0
+        if([string]::IsNullOrWhiteSpace($drive)){ continue }
+        $read=0; $write=0
+        try {
+            $counter=Get-Counter ("\LogicalDisk({0})\Disk Read Bytes/sec" -f $drive),("\LogicalDisk({0})\Disk Write Bytes/sec" -f $drive) -ErrorAction Stop
+            $read=[math]::Round($counter.CounterSamples[0].CookedValue/1MB,2)
+            $write=[math]::Round($counter.CounterSamples[1].CookedValue/1MB,2)
+        } catch {}
+        Add-Content -Path $DiskDriveIoCsv -Value ("{0},{1},{2},{3},{4}" -f $Timestamp,$Phase,$drive,$read,$write) -Encoding UTF8
+    }
 }
 function Write-MonitorSample([string]$Phase) {
     $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -1653,6 +1676,7 @@ function Write-MonitorSample([string]$Phase) {
     $cpuPowerCsv = if ($null -eq $cpuPower) { "" } else { [math]::Round([double]$cpuPower,2) }
     $cpuPowerLimitCsv = if ($null -eq $cpuPowerLimitPercent) { "" } else { [math]::Round([double]$cpuPowerLimitPercent,2) }
     Add-Content -Path $MonitorCsv -Value ("$ts,$Phase,$cpu,$clock,$maxClock,$memUsedPct,$memUsedGB,$memTotalGB,$temp,$($cpuTelemetry.TempSensor),$cpuPowerCsv,$($cpuTelemetry.PowerSensor),$cpuPowerLimitCsv,$($cpuTelemetry.PowerLimitSensor),$gpuCount,$gpuUtilCsv,$gpuTempCsv,$gpuFanCsv,$gpuPowerCsv,$gpuMemUsed,$gpuMemTotal,$read,$write") -Encoding UTF8
+    Write-DiskDriveIoSamples $ts $Phase
     Write-GpuSmiSample
 }
 function Start-FurMarkStress([int]$DurationSeconds) {
@@ -2368,6 +2392,11 @@ function CriteriaCell([string]$pass,[string]$warn,[string]$fail) {
 function FmtVal($v,$unit="") { if($null -eq $v -or [string]::IsNullOrWhiteSpace([string]$v)){return "-"}; return ("$v $unit").Trim() }
 function Get-MinTime($rows){ $arr=@(); foreach($r in $rows){ try{$arr += [datetime]$r.Timestamp}catch{} }; if($arr.Count -eq 0){return $null}; return ($arr|Sort-Object|Select-Object -First 1) }
 function Get-MaxTime($rows){ $arr=@(); foreach($r in $rows){ try{$arr += [datetime]$r.Timestamp}catch{} }; if($arr.Count -eq 0){return $null}; return ($arr|Sort-Object|Select-Object -Last 1) }
+function Get-StageDurationMinutes($rows){
+    $start=Get-MinTime $rows; $end=Get-MaxTime $rows
+    if($null -eq $start -or $null -eq $end){ return $null }
+    return [math]::Round((New-TimeSpan -Start $start -End $end).TotalMinutes,1)
+}
 function Stage-Row($name,$rows){
     $s=Get-MinTime $rows; $e=Get-MaxTime $rows
     if($null -eq $s -or $null -eq $e){ return "" }
@@ -2406,6 +2435,64 @@ function Get-SupplementPhasePattern {
     if($Mode -eq "disk"){ return "^disk" }
     return "^$"
 }
+function Preserve-BaseDiskHistoryRows($Rows) {
+    $preserved = @()
+    foreach($row in @($Rows)){
+        $phase = [string]$row.Phase
+        if($phase -eq "disk"){
+            $row.Phase = "disk-baseline"
+        } elseif($phase -eq "disk-throughput-probe"){
+            $row.Phase = "disk-throughput-baseline"
+        }
+        $preserved += $row
+    }
+    return @($preserved)
+}
+function Merge-BaseReportToolInfo {
+    if(!$script:SupplementMergeMode -or [string]::IsNullOrWhiteSpace($script:MergeBaseReportDir)){ return }
+    $baseEvents = Join-Path (Join-Path $script:MergeBaseReportDir "logs") "events.log"
+    if(!(Test-Path $baseEvents)){ return }
+    try {
+        $lines = @(Get-Content -LiteralPath $baseEvents -ErrorAction Stop)
+        $toolSpecs = @(
+            [pscustomobject]@{ Tool="FurMark 2"; Module="GPU stress"; Pattern="\[OK\] FurMark2 ready:\s*(.+)$"; Args="furmark-gl / original report execution"; Source=$FurMark2OfficialSource },
+            [pscustomobject]@{ Tool="y-cruncher"; Module="CPU + memory stress"; Pattern="\[OK\] y-cruncher ready:\s*(.+)$"; Args="stress / original report execution"; Source=$YCruncherOfficialSource },
+            [pscustomobject]@{ Tool="DiskSpd"; Module="磁盘 I/O"; Pattern="\[OK\] DiskSpd ready:\s*(.+)$"; Args="original report execution"; Source=$DiskSpdOfficialSource }
+        )
+        foreach($spec in $toolSpecs){
+            $alreadyPresent = if($spec.Tool -eq "DiskSpd"){
+                @($script:ToolInfo | Where-Object { $_.Tool -like "DiskSpd*" }).Count -gt 0
+            } else {
+                @($script:ToolInfo | Where-Object { $_.Tool -eq $spec.Tool }).Count -gt 0
+            }
+            if($alreadyPresent){ continue }
+            $match = @($lines | Select-String -Pattern $spec.Pattern | Select-Object -First 1)
+            if($match.Count -gt 0){ Add-ToolInfo $spec.Module $spec.Tool $match[0].Matches[0].Groups[1].Value $spec.Args $spec.Source }
+        }
+    } catch { Log "[MERGE] Failed to preserve base tool info: $($_.Exception.Message)" }
+}
+function Merge-BaseDiskDriveIoSamples([string]$BaseLogDir) {
+    $basePath=Join-Path $BaseLogDir "disk_io_by_drive.csv"
+    if(!(Test-Path $basePath) -or !(Test-Path $DiskDriveIoCsv)){ return }
+    try {
+        $baseRows=@(Import-Csv $basePath)
+        $currentRows=@(Import-Csv $DiskDriveIoCsv)
+        $replacementDrives=@($script:ResolvedTestDrives | ForEach-Object { Normalize-DriveLetter $_ })
+        if($Mode -eq "disk" -and $replacementDrives.Count -gt 0){
+            $baseKeep=@($baseRows | Where-Object { $replacementDrives -notcontains (Normalize-DriveLetter $_.Drive) })
+            foreach($row in $baseKeep){
+                if($row.Phase -eq "disk"){$row.Phase="disk-baseline"}
+                elseif($row.Phase -eq "disk-throughput-probe"){$row.Phase="disk-throughput-baseline"}
+            }
+            $merged=@($baseKeep + $currentRows)
+        } else {
+            $merged=@($baseRows + $currentRows)
+        }
+        $merged=@($merged | Sort-Object { try { [datetime]$_.Timestamp } catch { [datetime]::MinValue } })
+        if($merged.Count -gt 0){$merged | Export-Csv -Path $DiskDriveIoCsv -NoTypeInformation -Encoding UTF8}
+        Log "[MERGE] disk_io_by_drive.csv merged. Total=$($merged.Count)"
+    } catch { Log "[MERGE] Failed to merge per-drive disk I/O samples: $($_.Exception.Message)" }
+}
 function Merge-BaseReportNonDiskSamples {
     if(!$script:SupplementMergeMode){ return }
     if([string]::IsNullOrWhiteSpace($script:MergeBaseReportDir)){ return }
@@ -2431,34 +2518,67 @@ function Merge-BaseReportNonDiskSamples {
 
         $phasePattern = Get-SupplementPhasePattern
         $baseKeep = @($baseRows | Where-Object { $_.Phase -notmatch $phasePattern })
+        if($Mode -eq "disk"){
+            # Disk monitor samples are aggregate host I/O and have no drive letter.
+            # Preserve them as a labeled historical period; DiskSpd logs remain the
+            # per-drive source of truth and only the selected drive logs are replaced.
+            $baseDiskHistory = @(Preserve-BaseDiskHistoryRows @($baseRows | Where-Object { $_.Phase -match "^disk" }))
+            $baseKeep += $baseDiskHistory
+        }
         $newKeep  = @($newRows  | Where-Object { $_.Phase -match $phasePattern })
         $merged = @($baseKeep + $newKeep | Sort-Object { try { [datetime]$_.Timestamp } catch { [datetime]::MinValue } })
         if($merged.Count -gt 0){ $merged | Export-Csv -Path $MonitorCsv -NoTypeInformation -Encoding UTF8 }
-        Log ("[MERGE] monitor.csv merged. BaseNonDisk={0}; CurrentDisk={1}; Total={2}; Base={3}" -f $baseKeep.Count,$newKeep.Count,$merged.Count,$script:MergeBaseReportDir)
+        Log ("[MERGE] monitor.csv merged. BaseKept={0}; CurrentSupplement={1}; Total={2}; Base={3}" -f $baseKeep.Count,$newKeep.Count,$merged.Count,$script:MergeBaseReportDir)
+        Merge-BaseReportToolInfo
+        Merge-BaseDiskDriveIoSamples $baseLogDir
         foreach($baseFile in @(Get-ChildItem -Path $baseLogDir -Filter "diskspd_*.log" -File -ErrorAction SilentlyContinue)){
             $currentFile = Join-Path $LogDir $baseFile.Name
             if(!(Test-Path $currentFile)){ Copy-Item -LiteralPath $baseFile.FullName -Destination $currentFile -Force }
         }
-        foreach($name in @("gpu_smi.csv","cpu_sensors.csv")){
+        foreach($telemetry in @(
+            [pscustomobject]@{ Name="gpu_smi.csv"; Phase="gpu" },
+            [pscustomobject]@{ Name="cpu_sensors.csv"; Phase="cpu" }
+        )){
+            $name = $telemetry.Name
             $b = Join-Path $baseLogDir $name
             $c = Join-Path $LogDir $name
-            if((Test-Path $b) -and (Test-Path $c)){
+            $telemetryPhase = $telemetry.Phase
+            $preserveBaseTelemetry = ($Mode -ne $telemetryPhase)
+            if((Test-Path $b) -and $preserveBaseTelemetry){
                 try {
-                    $bLines = @(Get-Content $b -ErrorAction SilentlyContinue)
-                    $cLines = @(Get-Content $c -ErrorAction SilentlyContinue)
-                    if($bLines.Count -gt 0){
-                        $header = $bLines[0]
-                        $body = @()
-                        if($bLines.Count -gt 1){ $body += $bLines[1..($bLines.Count-1)] }
-                        if($cLines.Count -gt 1){ $body += $cLines[1..($cLines.Count-1)] }
-                        @($header) + $body | Out-File $c -Encoding UTF8
-                    }
+                    Copy-Item -LiteralPath $b -Destination $c -Force
+                    Log "[MERGE] Preserved base $name because $telemetryPhase was not supplemented."
                 } catch {}
             }
+        }
+        $baseGpuLogDir = Join-Path $script:MergeBaseReportDir "furmark_gpu_log"
+        $currentGpuLogDir = Join-Path $ReportRoot "furmark_gpu_log"
+        if($Mode -ne "gpu" -and (Test-Path $baseGpuLogDir) -and !(Test-Path $currentGpuLogDir)){
+            try {
+                Copy-Item -LiteralPath $baseGpuLogDir -Destination $currentGpuLogDir -Recurse -Force
+                Log "[MERGE] Preserved base furmark_gpu_log because GPU was not supplemented."
+            } catch {}
         }
     } catch {
         Log "[MERGE] Failed: $($_.Exception.Message)"
     }
+}
+function Restore-RebuildReportSource {
+    if(!$script:OfflineRebuildMode){ return }
+    $sourceLogDir = Join-Path $script:RebuildReportDir "logs"
+    $sourceMonitor = Join-Path $sourceLogDir "monitor.csv"
+    if(!(Test-Path $sourceMonitor)){ throw "[REBUILD] Source monitor.csv not found: $sourceMonitor" }
+    foreach($item in @(Get-ChildItem -LiteralPath $sourceLogDir -Force -ErrorAction Stop)){
+        Copy-Item -LiteralPath $item.FullName -Destination $LogDir -Recurse -Force
+    }
+    foreach($name in @("furmark_gpu_log","screenshots")){
+        $sourcePath = Join-Path $script:RebuildReportDir $name
+        $targetPath = Join-Path $ReportRoot $name
+        if((Test-Path $sourcePath) -and !(Test-Path $targetPath)){
+            Copy-Item -LiteralPath $sourcePath -Destination $targetPath -Recurse -Force
+        }
+    }
+    Log "[REBUILD] Restored existing report data: $script:RebuildReportDir"
 }
 
 function Get-DiskSpdParsedResult {
@@ -2568,6 +2688,13 @@ function Get-DiskSpdParsedResult {
         Log "[DISKSPD PARSE ERROR] $($_.Exception.Message)"
     }
     return [pscustomobject]$result
+}
+function Get-ReportDiskDrives($Details) {
+    $drives = @($script:ResolvedTestDrives)
+    foreach($detail in @($Details)){
+        if($detail -and $detail.Drive){ $drives += (Normalize-DriveLetter $detail.Drive) }
+    }
+    return @($drives | Where-Object { $_ -match '^[A-Za-z]:$' } | Sort-Object -Unique)
 }
 function Get-DiskSpdLogHealth([string]$Drive,[ValidateSet("stability","throughput")][string]$WorkloadKind) {
     $d = Normalize-DriveLetter $Drive
@@ -2818,11 +2945,18 @@ function Build-Report {
     }
     $EndTime=Get-Date
     $rows=@(); if(Test-Path $MonitorCsv){ $rows=@(Import-Csv $MonitorCsv) }
+    $diskDriveIoRows=@(); if(Test-Path $DiskDriveIoCsv){ $diskDriveIoRows=@(Import-Csv $DiskDriveIoCsv) }
+    $reportStartTime = Get-MinTime $rows; if($null -eq $reportStartTime){ $reportStartTime = $StartTime }
+    $reportEndTime = Get-MaxTime $rows; if($null -eq $reportEndTime){ $reportEndTime = $EndTime }
     $gpuRows=@($rows|Where-Object {$_.Phase -eq "gpu" -or $_.Phase -eq "all"})
     $cpuRows=@($rows|Where-Object {$_.Phase -eq "cpu" -or $_.Phase -eq "all"})
-    $diskRows=@($rows|Where-Object {$_.Phase -eq "disk" -or $_.Phase -eq "disk-throughput-probe" -or $_.Phase -eq "all"})
-    $diskStabilityRows=@($rows|Where-Object {$_.Phase -eq "disk"})
-    $diskThroughputRows=@($rows|Where-Object {$_.Phase -eq "disk-throughput-probe"})
+    $diskBaselineRows=@($rows|Where-Object {$_.Phase -eq "disk-baseline" -or $_.Phase -eq "disk-throughput-baseline"})
+    $diskBaselineStabilityRows=@($rows|Where-Object {$_.Phase -eq "disk-baseline"})
+    $diskBaselineThroughputRows=@($rows|Where-Object {$_.Phase -eq "disk-throughput-baseline"})
+    $diskSupplementRows=@($rows|Where-Object {$_.Phase -eq "disk" -or $_.Phase -eq "disk-throughput-probe"})
+    $diskRows=@($diskBaselineRows + $diskSupplementRows + @($rows|Where-Object {$_.Phase -eq "all"}))
+    $diskStabilityRows=@($diskSupplementRows|Where-Object {$_.Phase -eq "disk"})
+    $diskThroughputRows=@($diskSupplementRows|Where-Object {$_.Phase -eq "disk-throughput-probe"})
     $cpuJudgeRows=@(Get-StableRows $cpuRows $CpuStableSkipStartSeconds $CpuStableSkipEndSeconds)
     $gpuJudgeRows=@(Get-GpuEffectiveRows $gpuRows)
     $cpuMax=Get-Max $cpuRows "CPU_Percent"; $cpuAvg=Get-Avg $cpuJudgeRows "CPU_Percent"
@@ -2862,17 +2996,25 @@ function Build-Report {
     $diskRead=Get-Max $diskRows "Disk_Read_MBps"; $diskWrite=Get-Max $diskRows "Disk_Write_MBps"
     $diskTotal=0; if($null -ne $diskRead){$diskTotal+=$diskRead}; if($null -ne $diskWrite){$diskTotal+=$diskWrite}
     $diskSpd=Get-DiskSpdParsedResult
+    $reportDiskDrives = @(Get-ReportDiskDrives $diskSpd.Details)
+    # A merged report must be judged from the merged evidence, never from the
+    # current supplement run's launch flags. This also keeps conclusion, module
+    # cards, and status table consistent when only one module was re-tested.
+    $hasGpuEvidence = ($gpuRows.Count -gt 0)
+    $hasCpuEvidence = ($cpuRows.Count -gt 0)
+    $hasDiskEvidence = ($diskRows.Count -gt 0 -or $diskSpd.Details.Count -gt 0)
+    $effectiveCpuMemBackend = if($hasCpuEvidence -and $script:CpuMemBackendUsed -in @("NotStarted","Unknown")){ $CpuMemBackend } else { $script:CpuMemBackendUsed }
+    $gpuStageMinutes = Get-StageDurationMinutes $gpuRows
+    $cpuStageMinutes = Get-StageDurationMinutes $cpuRows
     $diskJudgeTotal=$diskTotal; $diskJudgeRead=$diskRead; $diskJudgeWrite=$diskWrite; $diskJudgeSource="real-time monitor"
     if($diskSpd.TotalMiBps -ne $null){ $diskJudgeTotal=$diskSpd.TotalMiBps; $diskJudgeRead=$diskSpd.ReadMiBps; $diskJudgeWrite=$diskSpd.WriteMiBps; $diskJudgeSource="DiskSpd 最终结果" }
-    $gpuDetected = ($gpuCnt -ne $null -and $gpuCnt -gt 0)
+    $gpuDetected = ($gpuCnt -ne $null -and $gpuCnt -gt 0) -or $hasGpuEvidence
     $gpuEnabled = (($Mode -eq "staged" -and $GpuMinutes -gt 0) -or (($Mode -eq "gpu" -or $Mode -eq "all") -and $DurationHours -gt 0) -or $AllHours -gt 0)
     $cpuEnabled = (($Mode -eq "staged" -and $CpuMinutes -gt 0) -or (($Mode -eq "cpu" -or $Mode -eq "all") -and $DurationHours -gt 0) -or $AllHours -gt 0)
     $diskEnabled = (($Mode -eq "staged" -and $DiskMinutes -gt 0) -or (($Mode -eq "disk" -or $Mode -eq "all") -and ($DurationHours -gt 0 -or $DiskMinutes -gt 0)) -or $AllHours -gt 0) -and !$script:SkipDiskPhase
-    if($script:SupplementMergeMode){
-        if($gpuRows.Count -gt 0){ $gpuEnabled = $true }
-        if($cpuRows.Count -gt 0){ $cpuEnabled = $true }
-        if($diskRows.Count -gt 0){ $diskEnabled = $true }
-    }
+    if($hasGpuEvidence){ $gpuEnabled = $true }
+    if($hasCpuEvidence){ $cpuEnabled = $true }
+    if($hasDiskEvidence){ $diskEnabled = $true }
     $script:StatusItems = @()
     if($gpuEnabled -and !$gpuDetected){ Add-Status $L.GpuPressure "NOT_TESTED" "未检测到 NVIDIA GPU，GPU 压测未执行" $false }
     elseif(!$gpuEnabled){ Add-Status $L.GpuPressure "NOT_TESTED" $L.GpuNotTestedText $false }
@@ -2909,8 +3051,8 @@ function Build-Report {
         $memTargetFail=[math]::Round($MemoryStressPercent*50/100.0,1)
         if($MemoryStressPercent -gt 0 -and $memMax -ne $null -and $memMax -lt $memTargetFail){ Add-Status $L.MemPressure "FAIL" ("Memory max usage {0}% is far below target reference {1}%; memory workers may not have run" -f $memMax,$memTargetFail) $true }
         else{
-            $backendText = if($script:CpuMemBackendUsed){$script:CpuMemBackendUsed}else{"Unknown"}
-            $policyText = if($script:CpuMemBackendUsed -eq "Fallback CPU+Memory Worker"){
+            $backendText = if($effectiveCpuMemBackend){$effectiveCpuMemBackend}else{"Unknown"}
+            $policyText = if($effectiveCpuMemBackend -eq "Fallback CPU+Memory Worker"){
                 "Fallback memory workers target ${YCruncherMemoryPercent}% RAM (workers=${MemoryStressWorkers}, reserve=${MemoryReserveGB}GB)"
             } else {
                 "y-cruncher controls memory target (${YCruncherMemoryPercent}% RAM)"
@@ -2924,6 +3066,7 @@ function Build-Report {
     $diskStatusLines = @()
     $diskMetricItems = @()
     $diskStageSummaryItems = @()
+    $diskSpeedSummaryRows = @()
     $diskResultTableRows = ""
     if(!$diskEnabled){
         Add-Status $L.DiskPressure "NOT_TESTED" $L.DiskLowSpace $false
@@ -2944,7 +3087,7 @@ function Build-Report {
         elseif($DiskIoProfile -eq "throughput"){ $expectedKinds=@("throughput") }
         else { $expectedKinds=@("stability","throughput") }
 
-        foreach($d0 in $script:ResolvedTestDrives){
+        foreach($d0 in $reportDiskDrives){
             $d = Normalize-DriveLetter $d0
             $di = Get-DiskDriveThresholdInfo $d
             $role = Get-DiskRoleDisplayName $di.IsSystemDrive
@@ -3000,6 +3143,10 @@ function Build-Report {
                     Value=$metricResult
                     State=$eval.State
                 }
+                if($kind -eq "throughput" -and $null -ne $detail -and $detail.ParseOk){
+                    $diskSpeedSummaryRows += ("<tr><td><b>{0}</b></td><td>{1} MiB/s</td><td>{2} MiB/s</td><td>{3} MiB/s</td></tr>" -f `
+                        (Html $d),(Format-DiskNumber $detail.ReadMiBps 2 $false),(Format-DiskNumber $detail.WriteMiBps 2 $false),(Format-DiskNumber $detail.TotalMiBps 2 $false))
+                }
             }
 
             $driveConclusion = if($driveState -eq "PASS"){"通过"}elseif($driveState -eq "WARN"){"关注"}else{"不合格"}
@@ -3010,7 +3157,7 @@ function Build-Report {
             $diskStatusLines += ("{0}：综合结论 {1}" -f $d,$driveConclusion)
         }
 
-        if($script:ResolvedTestDrives.Count -eq 0){
+        if($reportDiskDrives.Count -eq 0){
             $diskModuleState = "FAIL"
             $diskOverallPass = $false
             $diskStatusLines += "没有解析到可测试的本地固定盘"
@@ -3037,6 +3184,10 @@ $diskResultTableRows
 </table>
 "@
     }
+    $diskSpeedSummaryHtml = ""
+    if($diskSpeedSummaryRows.Count -gt 0){
+        $diskSpeedSummaryHtml = "<h3>磁盘顺序读取速度（按盘）</h3><table><tr><th>盘符</th><th>读取速度</th><th>写入速度</th><th>综合读写速度</th></tr>$($diskSpeedSummaryRows -join '')</table>"
+    }
     $overall="PASS"
     foreach($s in $script:StatusItems|Where-Object {$_.Participate}){
         if($s.Status -eq "FAIL"){
@@ -3058,18 +3209,28 @@ $diskResultTableRows
     New-SvgChart (Join-Path $ChartDir "memory_percent.svg") $cpuRows "Memory_Used_Percent" "Memory Used" " %"
     New-SvgChart (Join-Path $ChartDir "disk_read.svg") $diskRows "Disk_Read_MBps" "Disk Read Throughput" " MB/s"
     New-SvgChart (Join-Path $ChartDir "disk_write.svg") $diskRows "Disk_Write_MBps" "Disk Write Throughput" " MB/s"
-    $diskTargets = if($script:ResolvedTestDrives.Count -gt 0){ ($script:ResolvedTestDrives -join ', ') + ' / ' + $DiskFileSize } else { '-' }
-    $gpuNotDetected = ($script:GpuTestStatus -eq "Not Tested" -and $script:GpuTestReason -match "NVIDIA GPU|未检测到")
-    $gpuStatusDisplay = if($gpuNotDetected){"未测试（未检测到 NVIDIA GPU）"} elseif([string]::IsNullOrWhiteSpace($script:GpuTestStatus)){"-"} else {$script:GpuTestStatus}
-    $gpuPlanDisplay = if($gpuNotDetected){"未测试"} else {"$GpuMinutes 分钟"}
-    $gpuActualDisplay = if($gpuNotDetected){"0 秒"} elseif($script:GpuActualSeconds -gt 0){"$($script:GpuActualSeconds) 秒"} else {"-"}
-    $gpuReasonDisplay = if($gpuNotDetected){"未检测到 NVIDIA GPU"} elseif([string]::IsNullOrWhiteSpace($script:GpuTestReason)){"-"} else {$script:GpuTestReason}
-    $gpuBackendDisplay = if($gpuNotDetected){"未测试"} else {$GpuBackend}
-    $gpuToolDisplay = if($gpuNotDetected){"未测试"} else {"FurMark 2 / Auto GPU stress"}
+    foreach($drive0 in $reportDiskDrives){
+        $drive=Normalize-DriveLetter $drive0; $letter=$drive.TrimEnd(':')
+        $driveRows=@($diskDriveIoRows | Where-Object { (Normalize-DriveLetter $_.Drive) -eq $drive -and $_.Phase -match '^disk' })
+        New-SvgChart (Join-Path $ChartDir ("disk_read_{0}.svg" -f $letter)) $driveRows "Read_MBps" ("{0} Disk Read Throughput" -f $drive) " MB/s"
+        New-SvgChart (Join-Path $ChartDir ("disk_write_{0}.svg" -f $letter)) $driveRows "Write_MBps" ("{0} Disk Write Throughput" -f $drive) " MB/s"
+    }
+    $diskTargets = if($reportDiskDrives.Count -gt 0){ ($reportDiskDrives -join ', ') + ' / ' + $DiskFileSize } else { '-' }
+    $gpuNotDetected = (!$hasGpuEvidence -and $script:GpuTestStatus -eq "Not Tested" -and $script:GpuTestReason -match "NVIDIA GPU|未检测到")
+    $gpuStatusDisplay = if($hasGpuEvidence){"已测试"} elseif($gpuNotDetected){"未测试（未检测到 NVIDIA GPU）"} elseif([string]::IsNullOrWhiteSpace($script:GpuTestStatus)){"-"} else {$script:GpuTestStatus}
+    $gpuPlanDisplay = if($gpuNotDetected){"未测试"} elseif($null -ne $gpuStageMinutes){"$gpuStageMinutes 分钟"} else {"$GpuMinutes 分钟"}
+    $cpuPlanDisplay = if($null -ne $cpuStageMinutes){"$cpuStageMinutes 分钟"} else {"$CpuMinutes 分钟"}
+    $gpuActualDisplay = if($hasGpuEvidence){
+        $gpuStart=Get-MinTime $gpuRows; $gpuEnd=Get-MaxTime $gpuRows
+        if($gpuStart -ne $null -and $gpuEnd -ne $null){ "{0} 秒" -f [int][math]::Round((New-TimeSpan -Start $gpuStart -End $gpuEnd).TotalSeconds) } else { "已测试" }
+    } elseif($gpuNotDetected){"0 秒"} elseif($script:GpuActualSeconds -gt 0){"$($script:GpuActualSeconds) 秒"} else {"-"}
+    $gpuReasonDisplay = if($hasGpuEvidence){"-"} elseif($gpuNotDetected){"未检测到 NVIDIA GPU"} elseif([string]::IsNullOrWhiteSpace($script:GpuTestReason)){"-"} else {$script:GpuTestReason}
+    $gpuBackendDisplay = if($hasGpuEvidence){$GpuBackend} elseif($gpuNotDetected){"未测试"} else {$GpuBackend}
+    $gpuToolDisplay = if($hasGpuEvidence){"FurMark 2 / Auto GPU stress"} elseif($gpuNotDetected){"未测试"} else {"FurMark 2 / Auto GPU stress"}
     $testInfo=""
-    $testInfo += "<tr><th>$($L.StartTime)</th><td>$(Html $StartTime)</td><th>$($L.EndTime)</th><td>$(Html $EndTime)</td></tr>"
+    $testInfo += "<tr><th>$($L.StartTime)</th><td>$(Html $reportStartTime)</td><th>$($L.EndTime)</th><td>$(Html $reportEndTime)</td></tr>"
     $testInfo += "<tr><th>$($L.Mode)</th><td>$(Html $Mode)</td><th>$($L.Interval)</th><td>$IntervalSeconds $($L.Seconds)</td></tr>"
-    $testInfo += "<tr><th>$($L.GpuStage)</th><td>$(Html $gpuPlanDisplay)</td><th>$($L.CpuStage)</th><td>$CpuMinutes $($L.Minutes)</td></tr>"
+    $testInfo += "<tr><th>$($L.GpuStage)</th><td>$(Html $gpuPlanDisplay)</td><th>$($L.CpuStage)</th><td>$(Html $cpuPlanDisplay)</td></tr>"
     $diskStageDisplay = "$DiskMinutes $($L.Minutes)"
     if($DiskIoProfile -eq "both" -and $DiskBothTimePolicy -eq "split"){
         $totalSecForInfo=[int][math]::Round($DiskMinutes*60)
@@ -3079,6 +3240,14 @@ $diskResultTableRows
         $diskStageDisplay = "$DiskMinutes $($L.Minutes)（稳定性 $stabMin $($L.Minutes) + 速度 $thrMin $($L.Minutes)）"
     } elseif($DiskIoProfile -eq "both") {
         $diskStageDisplay = "$DiskMinutes $($L.Minutes) + 速度探针 $DiskThroughputProbeSeconds 秒"
+    }
+    if($script:SupplementMergeMode -and $diskBaselineRows.Count -gt 0){
+        $baseDiskMinutes=Get-StageDurationMinutes $diskBaselineRows
+        $supplementDiskMinutes=Get-StageDurationMinutes $diskSupplementRows
+        $periods=@()
+        if($null -ne $baseDiskMinutes){$periods += "原测 $baseDiskMinutes $($L.Minutes)"}
+        if($null -ne $supplementDiskMinutes){$periods += "本次补测 $supplementDiskMinutes $($L.Minutes)"}
+        if($periods.Count -gt 0){$diskStageDisplay = $periods -join " + "}
     }
     $testInfo += "<tr><th>$($L.DiskStage)</th><td>$diskStageDisplay</td><th>$($L.DiskTarget)</th><td>$(Html $diskTargets)</td></tr>"
     $testInfo += "<tr><th>$($L.MemoryTarget)</th><td>y-cruncher policy $YCruncherMemoryPercent% RAM</td></tr>"
@@ -3095,7 +3264,9 @@ $diskResultTableRows
     $cpuTestEnabled = $cpuEnabled
     $diskTestEnabled = $diskEnabled
 
-    $gpuModuleStatus = if(!$gpuTestEnabled){
+    $gpuModuleStatus = if($hasGpuEvidence){
+        "已测试"
+    } elseif(!$gpuTestEnabled){
         "未测试（未启用）"
     } elseif($script:GpuTestStatus -eq "PASS"){
         "已测试"
@@ -3108,7 +3279,9 @@ $diskResultTableRows
         "未测试（$reason）"
     }
 
-    $cpuModuleStatus = if(!$cpuTestEnabled){
+    $cpuModuleStatus = if($hasCpuEvidence){
+        "已测试"
+    } elseif(!$cpuTestEnabled){
         "未测试（未启用）"
     } elseif($script:CpuModuleExecuted){
         "已测试"
@@ -3117,7 +3290,9 @@ $diskResultTableRows
         "未测试（$reason）"
     }
 
-    $diskModuleStatus = if(!$diskTestEnabled){
+    $diskModuleStatus = if($hasDiskEvidence){
+        "已测试"
+    } elseif(!$diskTestEnabled){
         $reason = if($script:SkipDiskPhase -and ![string]::IsNullOrWhiteSpace($script:DiskModuleReason)){$script:DiskModuleReason}else{"未启用"}
         "未测试（$reason）"
     } elseif($script:DiskModuleExecuted){
@@ -3127,15 +3302,13 @@ $diskResultTableRows
         "未测试（$reason）"
     }
 
-    $cpuBackendDisplay = if($script:CpuModuleExecuted){
-        if($script:CpuMemBackendUsed -and $script:CpuMemBackendUsed -notin @("NotStarted","Unknown")){$script:CpuMemBackendUsed}else{$CpuMemBackend}
+    $cpuBackendDisplay = if($hasCpuEvidence){
+        if($effectiveCpuMemBackend){$effectiveCpuMemBackend}else{$CpuMemBackend}
     } else { "未测试" }
-    $cpuModuleReasonDisplay = if($script:CpuModuleExecuted){
-        if([string]::IsNullOrWhiteSpace($script:CpuMemBackendReason)){"-"}else{$script:CpuMemBackendReason}
-    } else {
+    $cpuModuleReasonDisplay = if($hasCpuEvidence){"-"} else {
         if([string]::IsNullOrWhiteSpace($script:CpuModuleReason)){"未执行 CPU/内存压力测试"}else{$script:CpuModuleReason}
     }
-    $diskModuleReasonDisplay = if($script:DiskModuleExecuted){"-"}else{
+    $diskModuleReasonDisplay = if($hasDiskEvidence){"-"}else{
         if([string]::IsNullOrWhiteSpace($script:DiskModuleReason)){"未执行磁盘压力测试"}else{$script:DiskModuleReason}
     }
 
@@ -3143,15 +3316,15 @@ $diskResultTableRows
 <div class='info-grid'>
   <div class='info-card span-2'>
     <div class='card-title'>总体测试信息</div>
-    <div class='info-row'><div class='info-key'>$($L.StartTime)</div><div class='info-val'>$(Html $StartTime)</div></div>
-    <div class='info-row'><div class='info-key'>$($L.EndTime)</div><div class='info-val'>$(Html $EndTime)</div></div>
+    <div class='info-row'><div class='info-key'>$($L.StartTime)</div><div class='info-val'>$(Html $reportStartTime)</div></div>
+    <div class='info-row'><div class='info-key'>$($L.EndTime)</div><div class='info-val'>$(Html $reportEndTime)</div></div>
     <div class='info-row'><div class='info-key'>$($L.Mode)</div><div class='info-val'>$(Html $Mode)</div></div>
     <div class='info-row'><div class='info-key'>$($L.Interval)</div><div class='info-val'>$IntervalSeconds $($L.Seconds)</div></div>
   </div>
   <div class='info-card'>
     <div class='card-title'>GPU 测试模块</div>
     <div class='info-row'><div class='info-key'>执行状态</div><div class='info-val'>$(Html $gpuModuleStatus)</div></div>
-    $(if($gpuTestEnabled){
+    $(if($gpuTestEnabled -or $hasGpuEvidence){
 @"
     <div class='info-row'><div class='info-key'>阶段时长</div><div class='info-val'>$(Html $gpuPlanDisplay)</div></div>
     <div class='info-row'><div class='info-key'>实际时长</div><div class='info-val'>$(Html $gpuActualDisplay)</div></div>
@@ -3164,9 +3337,9 @@ $diskResultTableRows
   <div class='info-card'>
     <div class='card-title'>CPU / 内存测试模块</div>
     <div class='info-row'><div class='info-key'>执行状态</div><div class='info-val'>$(Html $cpuModuleStatus)</div></div>
-    $(if($cpuTestEnabled -or $script:CpuModuleAttempted){
+    $(if($cpuTestEnabled -or $hasCpuEvidence -or $script:CpuModuleAttempted){
 @"
-    <div class='info-row'><div class='info-key'>阶段时长</div><div class='info-val'>$CpuMinutes $($L.Minutes)</div></div>
+    <div class='info-row'><div class='info-key'>阶段时长</div><div class='info-val'>$(Html $cpuPlanDisplay)</div></div>
     <div class='info-row'><div class='info-key'>实际后端</div><div class='info-val'>$(Html $cpuBackendDisplay)</div></div>
     <div class='info-row'><div class='info-key'>$($L.MemoryTarget)</div><div class='info-val'>y-cruncher policy $YCruncherMemoryPercent% RAM</div></div>
     <div class='info-row'><div class='info-key'>说明</div><div class='info-val'>$(Html $cpuModuleReasonDisplay)</div></div>
@@ -3176,7 +3349,7 @@ $diskResultTableRows
   <div class='info-card span-2'>
     <div class='card-title'>磁盘测试模块</div>
     <div class='info-row'><div class='info-key'>执行状态</div><div class='info-val'>$(Html $diskModuleStatus)</div></div>
-    $(if($diskTestEnabled -or $script:DiskModuleAttempted){
+    $(if($diskTestEnabled -or $hasDiskEvidence -or $script:DiskModuleAttempted){
 @"
     <div class='info-row'><div class='info-key'>磁盘总时长</div><div class='info-val'>$diskStageDisplay</div></div>
     <div class='info-row'><div class='info-key'>$($L.DiskTarget)</div><div class='info-val'>$(Html $diskTargets)</div></div>
@@ -3190,11 +3363,18 @@ $diskResultTableRows
 </div>
 "@
     $stageRows = ""
-    if($script:GpuTestStatus -eq "PASS"){$stageRows += Stage-Row "gpu" $gpuRows}
-    if($script:CpuModuleExecuted){$stageRows += Stage-Row "cpu" $cpuRows}
-    if($script:DiskModuleExecuted -and $diskRows.Count -gt 0){ $stageRows += Stage-Row "disk 总计" $diskRows }
-    if($script:DiskModuleExecuted -and $diskStabilityRows.Count -gt 0){ $stageRows += Stage-Row "disk 稳定性" $diskStabilityRows }
-    if($script:DiskModuleExecuted -and $diskThroughputRows.Count -gt 0){ $stageRows += Stage-Row "disk 速度" $diskThroughputRows }
+    if($gpuRows.Count -gt 0){$stageRows += Stage-Row "gpu" $gpuRows}
+    if($cpuRows.Count -gt 0){$stageRows += Stage-Row "cpu" $cpuRows}
+    if($diskBaselineRows.Count -gt 0){
+        $stageRows += Stage-Row "disk 原测 总计" $diskBaselineRows
+        if($diskBaselineStabilityRows.Count -gt 0){ $stageRows += Stage-Row "disk 原测 稳定性" $diskBaselineStabilityRows }
+        if($diskBaselineThroughputRows.Count -gt 0){ $stageRows += Stage-Row "disk 原测 速度" $diskBaselineThroughputRows }
+    }
+    if($diskSupplementRows.Count -gt 0){
+        $stageRows += Stage-Row "disk 补测 总计" $diskSupplementRows
+        if($diskStabilityRows.Count -gt 0){ $stageRows += Stage-Row "disk 补测 稳定性" $diskStabilityRows }
+        if($diskThroughputRows.Count -gt 0){ $stageRows += Stage-Row "disk 补测 速度" $diskThroughputRows }
+    } elseif($diskRows.Count -gt 0){ $stageRows += Stage-Row "disk 总计" $diskRows }
     if([string]::IsNullOrWhiteSpace($stageRows)){ $stageRows = "<tr><td colspan='4'>-</td></tr>" }
     $toolRows=""; foreach($t in $script:ToolInfo){ $module=$t.Module; if([string]::IsNullOrWhiteSpace($module)){ if($t.Tool -match "Disk"){$module=$L.DiskPressure} elseif($t.Tool -match "FurMark"){$module=$L.GpuPressure} elseif($t.Tool -match "y-cruncher"){$module=$L.CpuPressure} else {$module="Runtime"} }; $toolRows += "<tr><td>$module</td><td>$(Html $t.Tool)</td><td>$(Html $t.Source)</td><td>$(Html $t.Path)</td><td>$(Html $t.Args)</td></tr>" }
     if([string]::IsNullOrWhiteSpace($toolRows)){ $toolRows="<tr><td colspan='5'>-</td></tr>" }
@@ -3218,7 +3398,7 @@ $diskResultTableRows
     }catch{$sysInfo="-"}
     try{ $g=& nvidia-smi --query-gpu=index,name,driver_version,temperature.gpu,fan.speed,power.draw,memory.used,memory.total --format=csv,noheader,nounits 2>$null; if($g){$gpuInfo=Html ($g -join "`r`n")} else {$gpuInfo="未检测到 NVIDIA GPU<br>GPU 压测：未测试<br>GPU 相关项目：全部跳过"} }catch{$gpuInfo="未检测到 NVIDIA GPU<br>GPU 压测：未测试<br>GPU 相关项目：全部跳过"}
     try{ $ds=Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3"|Sort-Object DeviceID|ForEach-Object{"{0} | Size {1} GB | Free {2} GB" -f $_.DeviceID,(ToGB $_.Size),(ToGB $_.FreeSpace)}; $diskInfo=Html ($ds -join "`r`n") }catch{$diskInfo="-"}
-    $diskThresholdHtml = Get-DiskThresholdSummaryHtml
+    $diskThresholdHtml = Get-DiskThresholdSummaryHtml $reportDiskDrives
     $dynamicThresholdInfo=@()
     if($cpuPowerLimitAvailable) {
         $cpuPowerLimitDisplay = Html ("{0} W（LHM PPT/Power Limit 反推）" -f $cpuPowerLimitW)
@@ -3381,7 +3561,12 @@ $diskResultTableRows
     if([string]::IsNullOrWhiteSpace($stageMetricCards)){$stageMetricCards="<div class='stage-card'><div class='stage-card-title'>分项指标汇总</div><div class='metric-row'><div class='metric-key'>状态</div><div class='metric-val'>-</div></div></div>"}
     function ChartBlock($label,$file){ $path=Join-Path $ChartDir $file; if(Test-Path $path){ return "<h3>$label</h3><div class='chart'><object data='charts/$file' type='image/svg+xml'></object></div>" }; return "" }
     $charts=""; if($gpuDetected -and $gpuEnabled){ $charts += ChartBlock $L.GpuUtilChart "gpu_util.svg"; $charts += ChartBlock $L.GpuTempChart "gpu_temp.svg"; $charts += ChartBlock "GPU Fan Speed" "gpu_fan.svg"; $charts += ChartBlock $L.GpuPowerChart "gpu_power.svg"; $charts += ChartBlock $L.GpuMemChart "gpu_memory.svg" }
-    $charts += ChartBlock $L.CpuUtilChart "cpu_percent.svg"; $charts += ChartBlock $L.CpuClockChart "cpu_clock.svg"; $charts += ChartBlock $L.CpuTempChart "cpu_temp.svg"; $charts += ChartBlock $L.CpuPowerChart "cpu_power.svg"; $charts += ChartBlock $L.MemChart "memory_percent.svg"; $charts += ChartBlock $L.DiskReadChart "disk_read.svg"; $charts += ChartBlock $L.DiskWriteChart "disk_write.svg"
+    $charts += ChartBlock $L.CpuUtilChart "cpu_percent.svg"; $charts += ChartBlock $L.CpuClockChart "cpu_clock.svg"; $charts += ChartBlock $L.CpuTempChart "cpu_temp.svg"; $charts += ChartBlock $L.CpuPowerChart "cpu_power.svg"; $charts += ChartBlock $L.MemChart "memory_percent.svg"; $charts += $diskSpeedSummaryHtml
+    foreach($drive0 in $reportDiskDrives){
+        $drive=Normalize-DriveLetter $drive0; $letter=$drive.TrimEnd(':')
+        $charts += ChartBlock ("{0} 磁盘读取速度" -f $drive) ("disk_read_{0}.svg" -f $letter)
+        $charts += ChartBlock ("{0} 磁盘写入速度" -f $drive) ("disk_write_{0}.svg" -f $letter)
+    }
     $rawRows=""
     $rawRows += "<tr><th>$($L.SampleCsv)</th><td>$(Html $MonitorCsv)</td></tr>"
     $rawRows += "<tr><th>$($L.GpuCsv)</th><td>$(Html $GpuSmiCsv)</td></tr>"
@@ -3507,6 +3692,8 @@ Log "CpuMemBackend: $CpuMemBackend"
 Log "AutoHardwareThreshold: $AutoHardwareThreshold"
 Log "MergeBaseReportDir: $script:MergeBaseReportDir"
 Log "SupplementMergeMode: $script:SupplementMergeMode"
+Log "RebuildReportDir: $script:RebuildReportDir"
+Log "OfflineRebuildMode: $script:OfflineRebuildMode"
 Log "CpuThresholdProfile: $script:CpuThresholdProfile"
 Log "GpuThresholdProfile: $script:GpuThresholdProfile"
 Log "DiskThresholdProfile: $script:DiskThresholdProfile"
@@ -3515,6 +3702,18 @@ Log "EnableCpuPower: $EnableCpuPower"
 Log "GpuPowerPassW: $GpuPowerPassW"
 Log "GpuFanFullPercent: $GpuFanFullPercent"
 Log "============================================================"
+
+if($script:OfflineRebuildMode){
+    Restore-RebuildReportSource
+    $script:ResolvedTestDrives = Resolve-PhysicalTestDrives (Resolve-TestDrives)
+    Initialize-DiskDriveProfiles $script:ResolvedTestDrives
+    Build-Report
+    Log "[REBUILD] Rebuilt report from existing data without running stress workloads."
+    Write-Zip
+    Log "[完成] HTML报告位置: $HtmlReport"
+    Log "[完成] 压测报告压缩包位置: $ZipPath"
+    exit 0
+}
 
 Log "[START] Stress workflow initialization completed."
 Pause-WindowsUpdateForStress
