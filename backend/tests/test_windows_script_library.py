@@ -8,6 +8,22 @@ from app.core.task_runner import TaskRunnerError, _resolve_task_library_file
 
 
 class WindowsScriptLibraryTests(unittest.TestCase):
+    def test_v97_windows_stress_replaces_only_the_supplemented_phase_and_disk_letters(self) -> None:
+        content = (Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v97_windows_stress.ps1").read_text(encoding="utf-8-sig")
+        self.assertIn("function Get-SupplementPhasePattern", content)
+        self.assertIn("Copy-Item -LiteralPath $baseFile.FullName -Destination $currentFile", content)
+        self.assertIn("$baseKeep = @($baseRows | Where-Object { $_.Phase -notmatch $phasePattern })", content)
+
+    def test_v97_windows_stress_deduplicates_partitions_on_the_same_physical_disk(self) -> None:
+        script_path = Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v97_windows_stress.ps1"
+        content = script_path.read_text(encoding="utf-8-sig")
+
+        self.assertIn("function Resolve-PhysicalTestDrives", content)
+        self.assertIn('"disk:{0}" -f $info.DiskNumber', content)
+        self.assertIn("Sort-Object @{Expression={$_.IsSystemDrive};Ascending=$true}, Drive", content)
+        self.assertIn("[DISK DEDUPE]", content)
+        self.assertIn("$script:ResolvedTestDrives = Resolve-PhysicalTestDrives (Resolve-TestDrives)", content)
+
     def test_v97_windows_stress_downloads_full_seven_zip_from_internal_mirror(self) -> None:
         script_path = Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v97_windows_stress.ps1"
         content = script_path.read_text(encoding="utf-8-sig")

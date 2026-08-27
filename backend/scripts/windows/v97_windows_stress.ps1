@@ -11,6 +11,10 @@ V97 CPU telemetry corrections:
 - Warm up LibreHardwareMonitor so package-power delta sensors have valid samples.
 - Log CPU temperature/power sensor candidates and administrator privilege state.
 - Add CPU power to monitor.csv, HTML summary, key metrics, and trend charts.
+
+V97 physical-disk test correction:
+- Partitions on the same Windows physical disk are deduplicated before DiskSpd starts.
+- A non-system partition is preferred as the representative test location.
 #>
 
 param(
@@ -1113,6 +1117,35 @@ function Resolve-TestDrives {
     if ($TestDrives.Count -gt 0) { foreach ($d in $TestDrives) { if ($d -match '^[A-Za-z]:$') { $targets += $d.ToUpper() } } }
     if ($targets.Count -eq 0 -and $TestDrive -match '^[A-Za-z]:$') { $targets += $TestDrive.ToUpper() }
     return @($targets | Select-Object -Unique)
+}
+function Resolve-PhysicalTestDrives([string[]]$Drives) {
+    $candidates = @()
+    foreach ($drive0 in @($Drives)) {
+        $drive = Normalize-DriveLetter $drive0
+        if ([string]::IsNullOrWhiteSpace($drive)) { continue }
+        $info = Get-DiskProfileForDrive $drive
+        # Do not merge unresolved mappings: distinct drives can legitimately have no DiskNumber.
+        $physicalKey = if ($null -ne $info.DiskNumber) { "disk:{0}" -f $info.DiskNumber } else { "drive:{0}" -f $drive }
+        $candidates += [pscustomobject]@{
+            Drive = $drive
+            DiskNumber = $info.DiskNumber
+            IsSystemDrive = $info.IsSystemDrive
+            PhysicalKey = $physicalKey
+        }
+    }
+
+    $resolved = @()
+    foreach ($group in @($candidates | Group-Object PhysicalKey)) {
+        # Prefer a data partition so the performance run does not compete with Windows system I/O.
+        $selected = @($group.Group | Sort-Object @{Expression={$_.IsSystemDrive};Ascending=$true}, Drive | Select-Object -First 1)[0]
+        if ($null -eq $selected) { continue }
+        $resolved += $selected.Drive
+        $skipped = @($group.Group | Where-Object { $_.Drive -ne $selected.Drive } | ForEach-Object { $_.Drive })
+        if ($skipped.Count -gt 0) {
+            Log ("[DISK DEDUPE] DiskNumber={0}; selected {1}; skipped same physical disk partitions: {2}" -f $selected.DiskNumber,$selected.Drive,($skipped -join ", "))
+        }
+    }
+    return @($resolved)
 }
 function Assert-TestDrives([string[]]$Drives) {
     if (!$Drives -or $Drives.Count -eq 0) {
@@ -2367,6 +2400,12 @@ function Get-GpuEffectiveRows($Rows){
     return $arr
 }
 
+function Get-SupplementPhasePattern {
+    if($Mode -eq "gpu"){ return "^gpu$" }
+    if($Mode -eq "cpu"){ return "^cpu$" }
+    if($Mode -eq "disk"){ return "^disk" }
+    return "^$"
+}
 function Merge-BaseReportNonDiskSamples {
     if(!$script:SupplementMergeMode){ return }
     if([string]::IsNullOrWhiteSpace($script:MergeBaseReportDir)){ return }
@@ -2390,11 +2429,16 @@ function Merge-BaseReportNonDiskSamples {
             }
         }
 
-        $baseKeep = @($baseRows | Where-Object { $_.Phase -ne "disk" })
-        $newKeep  = @($newRows  | Where-Object { $_.Phase -eq "disk" -or $_.Phase -eq "all" })
+        $phasePattern = Get-SupplementPhasePattern
+        $baseKeep = @($baseRows | Where-Object { $_.Phase -notmatch $phasePattern })
+        $newKeep  = @($newRows  | Where-Object { $_.Phase -match $phasePattern })
         $merged = @($baseKeep + $newKeep | Sort-Object { try { [datetime]$_.Timestamp } catch { [datetime]::MinValue } })
         if($merged.Count -gt 0){ $merged | Export-Csv -Path $MonitorCsv -NoTypeInformation -Encoding UTF8 }
         Log ("[MERGE] monitor.csv merged. BaseNonDisk={0}; CurrentDisk={1}; Total={2}; Base={3}" -f $baseKeep.Count,$newKeep.Count,$merged.Count,$script:MergeBaseReportDir)
+        foreach($baseFile in @(Get-ChildItem -Path $baseLogDir -Filter "diskspd_*.log" -File -ErrorAction SilentlyContinue)){
+            $currentFile = Join-Path $LogDir $baseFile.Name
+            if(!(Test-Path $currentFile)){ Copy-Item -LiteralPath $baseFile.FullName -Destination $currentFile -Force }
+        }
         foreach($name in @("gpu_smi.csv","cpu_sensors.csv")){
             $b = Join-Path $baseLogDir $name
             $c = Join-Path $LogDir $name
@@ -3476,7 +3520,7 @@ Log "[START] Stress workflow initialization completed."
 Pause-WindowsUpdateForStress
 Log "[START] Hardware detection and test preparation..."
 
-$script:ResolvedTestDrives = Resolve-TestDrives
+$script:ResolvedTestDrives = Resolve-PhysicalTestDrives (Resolve-TestDrives)
 Assert-TestDrives $script:ResolvedTestDrives
 Initialize-DiskDriveProfiles $script:ResolvedTestDrives
 Log "DiskThresholdProfile: $script:DiskThresholdProfile"
