@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="1.0.0"
+SCRIPT_VERSION="1.1.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 BACKEND_DIR="$PROJECT_ROOT/backend"
 WEB_ROOT="/var/www/hpcdeploy"
 NGINX_SITE_DEST="/etc/nginx/conf.d/hpcdeploy.conf"
 BACKEND_SERVICE="hpcdeploy-backend.service"
+BACKUP_SERVICE="hpcdeploy-sqlite-backup.service"
+BACKUP_TIMER="hpcdeploy-sqlite-backup.timer"
 RUNTIME_DATA_PURGE=false
 SECRETS_PURGE=false
 FORCE=false
@@ -21,6 +23,7 @@ usage() {
 
 默认卸载范围：
   - 停止并移除 hpcdeploy-backend systemd 服务
+  - 停止并移除每日 SQLite 备份定时任务
   - 移除 HPCDeploy Nginx 站点配置和 /var/www/hpcdeploy 前端静态文件
   - 保留项目源代码、SQLite、任务结果、SSH 密钥和 /etc/hpcdeploy/hpcdeploy.env
 
@@ -62,6 +65,7 @@ show_plan() {
   echo "项目目录：$PROJECT_ROOT"
   echo "将删除："
   echo "  - systemd 服务：$BACKEND_SERVICE"
+  echo "  - SQLite 备份定时任务：$BACKUP_TIMER"
   echo "  - Nginx 站点配置：$NGINX_SITE_DEST"
   echo "  - 已发布前端：$WEB_ROOT"
   echo "将保留："
@@ -135,6 +139,11 @@ if systemctl list-unit-files "$BACKEND_SERVICE" >/dev/null 2>&1; then
   systemctl disable --now "$BACKEND_SERVICE" || true
 fi
 rm -f "/etc/systemd/system/$BACKEND_SERVICE"
+if systemctl list-unit-files "$BACKUP_TIMER" >/dev/null 2>&1; then
+  systemctl disable --now "$BACKUP_TIMER" || true
+fi
+systemctl stop "$BACKUP_SERVICE" 2>/dev/null || true
+rm -f "/etc/systemd/system/$BACKUP_SERVICE" "/etc/systemd/system/$BACKUP_TIMER"
 systemctl daemon-reload
 
 rm -f "$NGINX_SITE_DEST"

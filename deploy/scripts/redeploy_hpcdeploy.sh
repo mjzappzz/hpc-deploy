@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="1.1.0"
+SCRIPT_VERSION="1.2.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common_runtime.sh"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -9,6 +9,8 @@ BACKEND_DIR="$PROJECT_ROOT/backend"
 FRONTEND_DIR="$PROJECT_ROOT/frontend"
 SERVICE_USER="${SUDO_USER:-$(id -un)}"
 LEGACY_FRONTEND_SERVICE_DEST="/etc/systemd/system/hpcdeploy-frontend.service"
+BACKUP_SERVICE_DEST="/etc/systemd/system/hpcdeploy-sqlite-backup.service"
+BACKUP_TIMER_DEST="/etc/systemd/system/hpcdeploy-sqlite-backup.timer"
 NGINX_SITE_DEST="/etc/nginx/conf.d/hpcdeploy.conf"
 WEB_ROOT="/var/www/hpcdeploy"
 
@@ -18,6 +20,25 @@ run_as_service_user() {
   else
     sudo -H -u "$SERVICE_USER" env "PATH=$NODE_BIN_DIR:$PATH" "$@"
   fi
+}
+
+configure_sqlite_backup_timer() {
+  cat > "$BACKUP_SERVICE_DEST" <<EOF
+[Unit]
+Description=HPCDeploy SQLite daily backup
+
+[Service]
+Type=oneshot
+User=$SERVICE_USER
+Group=$(id -gn "$SERVICE_USER")
+WorkingDirectory=$PROJECT_ROOT
+UMask=0077
+ExecStart=$PROJECT_ROOT/scripts/backup_sqlite.sh
+EOF
+
+  install -D -m 644 "$PROJECT_ROOT/deploy/systemd/hpcdeploy-sqlite-backup.timer" "$BACKUP_TIMER_DEST"
+  systemctl daemon-reload
+  systemctl enable --now hpcdeploy-sqlite-backup.timer
 }
 
 assert_no_active_tasks() {
@@ -76,6 +97,8 @@ find "$WEB_ROOT" -type d -exec chmod 755 {} +
 find "$WEB_ROOT" -type f -exec chmod 644 {} +
 install -D -m 644 "$PROJECT_ROOT/deploy/nginx/hpcdeploy.conf" "$NGINX_SITE_DEST"
 nginx -t
+
+configure_sqlite_backup_timer
 
 if systemctl list-unit-files hpcdeploy-frontend.service >/dev/null 2>&1; then
   systemctl disable --now hpcdeploy-frontend.service || true

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run HPCDeploy SQLite backup every day
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+Persistent=true
+Unit=hpcdeploy-sqlite-backup.service
+
+[Install]
+WantedBy=timers.target

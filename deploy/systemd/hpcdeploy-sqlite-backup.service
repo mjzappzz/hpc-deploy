@@ -1,0 +1,10 @@
+[Unit]
+Description=HPCDeploy SQLite daily backup
+
+[Service]
+Type=oneshot
+User=REPLACED_BY_SERVICE_USER
+Group=REPLACED_BY_SERVICE_GROUP
+WorkingDirectory=REPLACED_BY_PROJECT_ROOT
+UMask=0077
+ExecStart=REPLACED_BY_PROJECT_ROOT/scripts/backup_sqlite.sh

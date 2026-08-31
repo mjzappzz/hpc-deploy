@@ -1,4 +1,5 @@
 from pathlib import Path
+import unittest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -7,6 +8,8 @@ COMMON_RUNTIME_SCRIPT = PROJECT_ROOT / "deploy" / "scripts" / "common_runtime.sh
 RESET_SCRIPT = PROJECT_ROOT / "deploy" / "scripts" / "reset_admin_password.sh"
 REDEPLOY_SCRIPT = PROJECT_ROOT / "deploy" / "scripts" / "redeploy_hpcdeploy.sh"
 SERVICE_TEMPLATE = PROJECT_ROOT / "deploy" / "systemd" / "hpcdeploy-backend.service"
+BACKUP_SERVICE_TEMPLATE = PROJECT_ROOT / "deploy" / "systemd" / "hpcdeploy-sqlite-backup.service"
+BACKUP_TIMER_TEMPLATE = PROJECT_ROOT / "deploy" / "systemd" / "hpcdeploy-sqlite-backup.timer"
 
 
 def test_install_creates_protected_environment_file_and_loads_it() -> None:
@@ -64,3 +67,22 @@ def test_root_only_password_reset_rotates_sessions_and_clears_db_override() -> N
     assert "SECRET_KEY" in script
     assert "systemctl restart hpcdeploy-backend" in script
     assert "wait_for_backend_health" in script
+
+
+class SqliteBackupTimerTests(unittest.TestCase):
+    def test_daily_sqlite_backup_timer_is_installed_updated_and_removed_with_the_service(self) -> None:
+        backup_service = BACKUP_SERVICE_TEMPLATE.read_text(encoding="utf-8")
+        backup_timer = BACKUP_TIMER_TEMPLATE.read_text(encoding="utf-8")
+        install_script = INSTALL_SCRIPT.read_text(encoding="utf-8")
+        redeploy_script = REDEPLOY_SCRIPT.read_text(encoding="utf-8")
+        uninstall_script = (PROJECT_ROOT / "deploy" / "scripts" / "uninstall_hpcdeploy.sh").read_text(encoding="utf-8")
+
+        self.assertIn("ExecStart=REPLACED_BY_PROJECT_ROOT/scripts/backup_sqlite.sh", backup_service)
+        self.assertIn("UMask=0077", backup_service)
+        self.assertIn("OnCalendar=*-*-* 02:30:00", backup_timer)
+        self.assertIn("Persistent=true", backup_timer)
+        self.assertIn("Unit=hpcdeploy-sqlite-backup.service", backup_timer)
+        for script in (install_script, redeploy_script):
+            self.assertIn("hpcdeploy-sqlite-backup.timer", script)
+            self.assertIn("enable --now hpcdeploy-sqlite-backup.timer", script)
+        self.assertIn("hpcdeploy-sqlite-backup.timer", uninstall_script)

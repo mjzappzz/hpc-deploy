@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="1.2.0"
+SCRIPT_VERSION="1.3.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common_runtime.sh"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 BACKEND_SERVICE_DEST="/etc/systemd/system/hpcdeploy-backend.service"
+BACKUP_SERVICE_DEST="/etc/systemd/system/hpcdeploy-sqlite-backup.service"
+BACKUP_TIMER_DEST="/etc/systemd/system/hpcdeploy-sqlite-backup.timer"
 LEGACY_FRONTEND_SERVICE_DEST="/etc/systemd/system/hpcdeploy-frontend.service"
 NGINX_SITE_DEST="/etc/nginx/conf.d/hpcdeploy.conf"
 NGINX_DEFAULT_SITE="/etc/nginx/sites-enabled/default"
@@ -78,6 +80,23 @@ run_as_service_user() {
   else
     sudo -H -u "$SERVICE_USER" env "PATH=$NODE_BIN_DIR:$PATH" "$@"
   fi
+}
+
+configure_sqlite_backup_timer() {
+  cat > "$BACKUP_SERVICE_DEST" <<EOF
+[Unit]
+Description=HPCDeploy SQLite daily backup
+
+[Service]
+Type=oneshot
+User=$SERVICE_USER
+Group=$SERVICE_GROUP
+WorkingDirectory=$PROJECT_ROOT
+UMask=0077
+ExecStart=$PROJECT_ROOT/scripts/backup_sqlite.sh
+EOF
+
+  install -D -m 644 "$PROJECT_ROOT/deploy/systemd/hpcdeploy-sqlite-backup.timer" "$BACKUP_TIMER_DEST"
 }
 
 require_cmd() {
@@ -211,8 +230,10 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
 
+configure_sqlite_backup_timer
 systemctl daemon-reload
 systemctl enable hpcdeploy-backend
+systemctl enable --now hpcdeploy-sqlite-backup.timer
 systemctl enable nginx
 systemctl restart hpcdeploy-backend
 wait_for_backend_health
@@ -231,6 +252,7 @@ echo "安装脚本版本：$SCRIPT_VERSION"
 echo "项目目录：$PROJECT_ROOT"
 echo "服务用户：$SERVICE_USER:$SERVICE_GROUP"
 echo "后端服务：systemctl status hpcdeploy-backend"
+echo "数据库备份：systemctl list-timers hpcdeploy-sqlite-backup.timer"
 echo "Web 服务：systemctl status nginx"
 echo "访问地址：http://<server-ip>:10086/"
 if [[ -n "${GENERATED_ADMIN_PASSWORD:-}" ]]; then
