@@ -30,12 +30,36 @@ class SshDetectorTests(unittest.TestCase):
 
         self.assertEqual(media_types["/dev/sda2"], "RAID")
 
-    def test_probe_retries_nvidia_smi_while_driver_is_starting(self) -> None:
-        self.assertIn("for smi_attempt in 1 2 3", CONSOLIDATED_PROBE_SCRIPT)
+    def test_probe_allows_ten_seconds_for_multi_gpu_nvidia_smi(self) -> None:
+        self.assertIn("timeout -k 1 10 nvidia-smi", CONSOLIDATED_PROBE_SCRIPT)
+        self.assertNotIn("for smi_attempt in 1 2 3", CONSOLIDATED_PROBE_SCRIPT)
+
+    def test_gpu_probe_cannot_block_the_complete_hardware_probe(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            fake_binary = Path(temporary_dir) / "nvidia-smi"
+            fake_binary.write_text(
+                "#!/usr/bin/env bash\n"
+                "trap '' TERM\n"
+                "sleep 30\n",
+                encoding="utf-8",
+            )
+            fake_binary.chmod(0o755)
+            env = {**os.environ, "PATH": f"{temporary_dir}:{os.environ['PATH']}"}
+            result = subprocess.run(
+                ["bash", "-c", CONSOLIDATED_PROBE_SCRIPT],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=12,
+                check=False,
+            )
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("__NVIDIA_SMI_FAILED__", result.stdout)
 
     def test_probe_keeps_parseable_nvidia_smi_output_when_command_exceeds_timeout(self) -> None:
         self.assertIn(
-            "if [ -n \"$smi_candidate\" ] && printf '%s\\n' \"$smi_candidate\" | grep -Eq",
+            "if [ -n \"$smi_output\" ] && printf '%s\\n' \"$smi_output\" | grep -Eq",
             CONSOLIDATED_PROBE_SCRIPT,
         )
 

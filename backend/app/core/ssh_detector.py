@@ -29,8 +29,9 @@ CONSOLIDATED_PROBE_TIMEOUT = 16
 # Consolidated bash probe script — runs as a single exec_command.
 # Sections are delimited by unique markers so the output can be split server-side.
 # Using `|| df -h` fallback for systems where df --local is unsupported (e.g. BusyBox).
-# nvidia-smi is retried briefly after reboot; every attempt is bounded so a hung
-# driver cannot stall the probe indefinitely.
+# GPU inventory is optional.  A multi-GPU host may need several seconds to
+# answer nvidia-smi, but a hung driver must not prevent OS/CPU/memory/disk data
+# from being returned.  `-k 1` also terminates a process that ignores SIGTERM.
 CONSOLIDATED_PROBE_SCRIPT = r"""
 echo '__HPROBE_SECT_B__os'
 cat /etc/os-release 2>/dev/null | head -20
@@ -63,17 +64,12 @@ fi
 echo '---GPU-SPLIT---'
 # --- Step 2: nvidia-smi driver detection ---
 if command -v nvidia-smi >/dev/null 2>&1; then
-  smi_output=""
-  for smi_attempt in 1 2 3; do
-    smi_candidate="$(timeout 3 nvidia-smi --query-gpu=index,name,driver_version,memory.total,memory.used,temperature.gpu,utilization.gpu --format=csv,noheader,nounits 2>/dev/null || true)"
-    if [ -n "$smi_candidate" ] && printf '%s\n' "$smi_candidate" | grep -Eq '^[[:space:]]*[0-9]+,[[:space:]]*[^,]+,[[:space:]]*[0-9]+([.][0-9]+)+,[[:space:]]*[0-9]+,'; then
-      smi_output="$smi_candidate"
-      printf '%s\n' "$smi_output"
-      break
-    fi
-    [ "$smi_attempt" -lt 3 ] && sleep 2
-  done
-  [ -n "$smi_output" ] || echo '__NVIDIA_SMI_FAILED__'
+  smi_output="$(timeout -k 1 10 nvidia-smi --query-gpu=index,name,driver_version,memory.total,memory.used,temperature.gpu,utilization.gpu --format=csv,noheader,nounits 2>/dev/null || true)"
+  if [ -n "$smi_output" ] && printf '%s\n' "$smi_output" | grep -Eq '^[[:space:]]*[0-9]+,[[:space:]]*[^,]+,[[:space:]]*[0-9]+([.][0-9]+)+,[[:space:]]*[0-9]+,'; then
+    printf '%s\n' "$smi_output"
+  else
+    echo '__NVIDIA_SMI_FAILED__'
+  fi
 else
   echo '__NVIDIA_SMI_NOT_FOUND__'
 fi
