@@ -16,14 +16,16 @@
 
 - `systemd/hpcdeploy-backend.service`
   - 后端服务示例；实际安装时由脚本按当前路径和用户动态生成
+- `systemd/hpcdeploy-sqlite-backup.service`、`systemd/hpcdeploy-sqlite-backup.timer`
+  - 每日 `02:30` 执行 SQLite 在线备份；服务恢复后补跑错过的备份，常规快照滚动保留最近 7 份
 - `nginx/hpcdeploy.conf`
   - Nginx 站点配置，托管 `/var/www/hpcdeploy` 并代理 `/api/` 与 WebSocket
 - `scripts/install_hpcdeploy_service.sh`
-  - v1.2.0；初始化或保留生产安全配置、安装依赖、自动重建缺少 Python 或 pip 的半成品虚拟环境、生成后端 systemd 服务、构建前端并配置 Nginx
+  - v1.3.0；初始化或保留生产安全配置、安装依赖、自动重建缺少 Python 或 pip 的半成品虚拟环境、生成后端服务和 SQLite 备份定时任务、构建前端并配置 Nginx
 - `scripts/reset_admin_password.sh`
   - v1.0.0；仅限 root 在本机重置管理员密码、备份 SQLite、清除数据库密码覆盖并使旧管理员会话失效
 - `scripts/redeploy_hpcdeploy.sh`
-  - v1.1.0；更新依赖、构建并发布前端、重启后端并重载 Nginx；发布开始及重启前检测活动任务，存在活动任务时拒绝重启，避免切断远端 SSH 执行通道
+  - v1.2.0；更新依赖、构建并发布前端、更新 SQLite 备份定时任务、重启后端并重载 Nginx；发布开始及重启前检测活动任务，存在活动任务时拒绝重启，避免切断远端 SSH 执行通道
 
 ## 首次安装
 
@@ -34,7 +36,7 @@ git clone <repo-url> hpc-deploy && \
 ```
 
 安装脚本会自动识别当前项目路径和 `SUDO_USER`，不要求固定在 `/home/tjzs/projects/hpc-deploy`。
-脚本会自动安装基础系统依赖、创建后端虚拟环境、安装项目依赖、执行前端生产构建、发布静态文件，并注册后端 systemd 服务与 Nginx。若此前因 `python3-venv` 缺失导致 `.deps` 创建不完整，补齐依赖后直接重跑脚本即可；脚本会重建该虚拟环境，无需手工删除。
+脚本会自动安装基础系统依赖、创建后端虚拟环境、安装项目依赖、执行前端生产构建、发布静态文件，并注册后端 systemd 服务、每日 SQLite 备份定时任务与 Nginx。若此前因 `python3-venv` 缺失导致 `.deps` 创建不完整，补齐依赖后直接重跑脚本即可；脚本会重建该虚拟环境，无需手工删除。
 命令使用 `&&`：克隆失败或被中断时不会继续执行后续安装。重试前先确认同名目录不存在或内容可丢弃。
 
 首次安装会交互要求输入两次管理员密码，密码至少 6 位，具体内容由部署人员自行决定。JWT 密钥由脚本自动生成，不显示且无需记忆。安全配置保存到：
@@ -96,6 +98,13 @@ sudo deploy/scripts/redeploy_hpcdeploy.sh
 
 更新脚本会解析受支持的 Node.js、更新后端依赖、构建并发布前端、检查 Nginx 配置、重启后端，然后等待 `http://127.0.0.1:8000/api/health` 返回成功；健康检查未通过时脚本失败退出，不会继续重载 Nginx 或报告发布成功。
 
+更新也会重新写入并启用 SQLite 备份 timer；无需为既有部署另行运行安装脚本。查看下次执行时间和最近执行日志：
+
+```bash
+systemctl list-timers hpcdeploy-sqlite-backup.timer
+journalctl -u hpcdeploy-sqlite-backup.service -n 50 --no-pager
+```
+
 发布开始及后端重启前会查询活动任务。存在 `CONNECTING`、`PREPARING`、`UPLOADING`、`RUNNING` 或 `CANCELING` 任务时，脚本拒绝重启并输出任务 ID；等待任务结束或取消后再执行发布。后端本身不可访问时允许继续发布，用于故障恢复。
 
 从旧版本首次升级到“生产安全配置”版本时，需要重新执行一次安装脚本，而不是只执行更新脚本：
@@ -121,6 +130,7 @@ sudo deploy/scripts/uninstall_hpcdeploy.sh --force
 ```
 
 默认卸载会停止并移除 `hpcdeploy-backend`、移除 HPCDeploy Nginx 站点配置和 `/var/www/hpcdeploy` 静态文件；保留项目源码、SQLite、报告、SSH 密钥及 `/etc/hpcdeploy/hpcdeploy.env`，不会删除受管服务器远端目录，也不会卸载共享系统依赖。
+同时会停止并移除 SQLite 备份 timer，但保留已有备份文件。
 
 若明确弃用运行数据或凭据，才使用以下危险选项（均要求 `--force`）：
 
@@ -136,6 +146,8 @@ sudo deploy/scripts/uninstall_hpcdeploy.sh --purge-runtime-data --purge-secrets 
 
 ```bash
 systemctl status hpcdeploy-backend
+systemctl list-timers hpcdeploy-sqlite-backup.timer
+journalctl -u hpcdeploy-sqlite-backup.service -n 50 --no-pager
 systemctl status nginx
 journalctl -u hpcdeploy-backend -n 200 --no-pager
 journalctl -u nginx -n 200 --no-pager

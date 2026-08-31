@@ -70,6 +70,19 @@ backend/data/hpc_control_panel.db
 
 ## SQLite 备份
 
+生产安装或日常更新会注册 `hpcdeploy-sqlite-backup.timer`，按部署机本地时区每天 `02:30` 执行在线备份；若该时间部署机未运行，systemd 会在恢复后补跑。仅在新快照已完成 SQLite 完整性校验后，才按文件名时间顺序删除最旧的常规快照，始终保留最近 7 份：
+
+```text
+backend/data/backups/hpc_control_panel_<时间>.db
+```
+
+密码重置、恢复或高风险维护操作生成的 `pre_*` 安全快照不属于这 7 份滚动保留范围，需按现场恢复策略另行清理。查看定时任务和执行日志：
+
+```bash
+systemctl list-timers hpcdeploy-sqlite-backup.timer
+journalctl -u hpcdeploy-sqlite-backup.service -n 50 --no-pager
+```
+
 在线备份：
 
 ```bash
@@ -88,7 +101,7 @@ backend/data/backups/
 scripts/backup_sqlite.sh /backup/hpcdeploy
 ```
 
-脚本使用 Python 标准库 `sqlite3.Connection.backup()`，可以在服务运行时备份。
+脚本使用 Python 标准库 `sqlite3.Connection.backup()`，可以在服务运行时备份。手工执行也会遵循同一“常规快照保留最近 7 份”规则。
 
 ## SQLite 恢复
 

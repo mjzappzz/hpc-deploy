@@ -50,6 +50,7 @@ git clone https://github.com/mjzappzz/hpc-deploy.git hpc-deploy && \
 ```
 
 安装脚本会自动安装 Python、Node.js、Nginx 等所需依赖，构建前端并启动服务。
+同时会注册每日 `02:30` 的 SQLite 在线备份任务；常规备份仅保留最近 7 份。
 上述命令仅在克隆成功后才会继续执行；若网络中断，请先确认 `hpc-deploy` 目录不存在或内容可丢弃，再重新执行整条命令。
 
 安装时按提示输入两次管理员密码。看到“`HPCDeploy 服务安装完成`”后，在浏览器打开：
@@ -102,6 +103,7 @@ sudo ./deploy/scripts/redeploy_hpcdeploy.sh
 
 - 想升级版本：执行上面的“日常更新”。
 - 想看服务是否正常：执行下面“页面打不开”中的两条状态命令。
+- 数据库每天 `02:30` 自动在线备份并滚动保留 7 份；执行 `systemctl list-timers hpcdeploy-sqlite-backup.timer` 可查看下次时间。备份、迁移和恢复详见 [部署与卸载完整说明](deploy/README.md)。
 - 想备份或迁移数据库、报告和密钥：查看 [部署与卸载完整说明](deploy/README.md)。
 - 想了解某个脚本、网络、权限或安全细节：到 [docs/](docs/) 中查看对应说明。
 
