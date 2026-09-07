@@ -1098,7 +1098,8 @@ def _stress_poll_loop(
                     _fresh_executor.close()
                 except Exception:
                     pass
-            # 新鲜连接也失败 → 最后一次产物检查 + FAILED
+            # 新鲜连接也失败：SSH 控制面不可用并不能证明已 detach 的远端压测退出。
+            # 保持 RUNNING、续租并交给恢复监控重试，避免把瞬时 SSH 故障误判为 FAILED。
             try:
                 _add_log(db, task_id, "ERROR",
                          "stress async: fresh SSH connection also failed, giving up")
@@ -1109,7 +1110,7 @@ def _stress_poll_loop(
             except Exception:
                 pass
             if not _attempt_stress_recovery(db, task_id, task):
-                _fail_running_stress_task(db, task, task_id, _poll_msg)
+                _defer_stress_task_after_control_plane_loss(db, task, task_id, _poll_msg)
             return
 
 def _stress_recovery_monitor(task_id: str) -> None:
@@ -1228,6 +1229,32 @@ def _schedule_stress_recovery_retry(task_id: str) -> None:
     timer = threading.Timer(STRESS_RECOVERY_SSH_RETRY_DELAY_SECONDS, _retry)
     timer.daemon = True
     timer.start()
+
+
+def _defer_stress_task_after_control_plane_loss(
+    db,
+    task: Task,
+    task_id: str,
+    reason: str,
+) -> None:
+    """Keep a detached stress task alive when SSH cannot prove it stopped.
+
+    The remote workload is independent of the control-plane SSH channel. A
+    failed reconnect is therefore insufficient evidence to mark it FAILED.
+    """
+    task.status = "RUNNING"
+    task.end_time = None
+    task.exit_code = None
+    task.error_message = None
+    _touch_task_heartbeat(task)
+    db.commit()
+    _add_log(
+        db,
+        task_id,
+        "WARNING",
+        f"stress async: SSH control-plane unavailable; remote task remains RUNNING and recovery will retry: {reason}",
+    )
+    _schedule_stress_recovery_retry(task_id)
 
 
 def resume_running_stress_tasks_after_startup() -> int:

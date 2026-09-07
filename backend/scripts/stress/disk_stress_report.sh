@@ -2,7 +2,7 @@
 
 set -e
 
-SCRIPT_VERSION="2026.08.21.5"
+SCRIPT_VERSION="2026.09.07.1"
 
 DNF_MINRATE="${HPCDEPLOY_DNF_MINRATE:-51200}"
 DNF_TIMEOUT="${HPCDEPLOY_DNF_TIMEOUT:-30}"
@@ -143,6 +143,14 @@ PYCHK
         echo "[ERROR] Unsupported OS"
         exit 1
     fi
+
+    python3 - <<'PYCHK' >/dev/null 2>&1
+import openpyxl
+PYCHK
+    if [ $? -ne 0 ]; then
+        echo "ERROR: python3-openpyxl is required to generate the XLSX report"
+        return 1
+    fi
 }
 
 install_deps || exit 1
@@ -204,6 +212,24 @@ resolve_backing_device() {
         resolved=$(basename "$source")
     fi
     printf '%s' "$resolved"
+}
+
+build_kernel_device_pattern() {
+    local source="$1"
+    local devices
+
+    # Match the mounted source and every block layer below it (partition,
+    # dm/MD device, and physical disk). Names are constrained before they are
+    # assembled into an ERE so a mapper name cannot widen the match.
+    devices=$(
+        {
+            basename "$source"
+            lsblk -s -n -r -o NAME "$source" 2>/dev/null
+            printf '%s\n' "$DISK_DEV"
+        } | awk '/^[[:alnum:]_.-]+$/ {print}' | sort -u | paste -sd'|' -
+    )
+    [ -n "$devices" ] || return 1
+    printf '(^|[^[:alnum:]_.-])(%s)([^[:alnum:]_.-]|$)' "$devices"
 }
 
 select_disk_profile() {
@@ -277,6 +303,10 @@ MOUNT_SRC=$(df -P "$TEST_DIR" | awk 'NR==2 {print $1}')
 MOUNT_POINT=$(df -P "$TEST_DIR" | awk 'NR==2 {print $6}')
 FS_TYPE=$(df -T "$TEST_DIR" | awk 'NR==2 {print $2}')
 DISK_DEV=$(resolve_backing_device "$MOUNT_SRC")
+KERNEL_DEVICE_PATTERN=$(build_kernel_device_pattern "$MOUNT_SRC") || {
+    echo "[ERROR] Unable to resolve block-device aliases for ${MOUNT_SRC}."
+    exit 2
+}
 DISK_ROTA=$(lsblk -dn -o ROTA "/dev/${DISK_DEV}" 2>/dev/null | xargs || true)
 DISK_TRAN=$(lsblk -dn -o TRAN "/dev/${DISK_DEV}" 2>/dev/null | xargs || true)
 TOTAL_BYTES=$(df -B1 --output=size "$TEST_DIR" | awk 'NR==2 {print $1}')
@@ -405,8 +435,18 @@ done
 
 MON_PID=$!
 
-dmesg -w | egrep -i "$CRITICAL_ERR_PATTERN" > "$ERR_LOG" &
-ERR_PID=$!
+ERR_PID=""
+KERNEL_MONITOR_STATUS="unavailable"
+if dmesg --help 2>&1 | grep -q -- '--follow-new'; then
+    export CRITICAL_ERR_PATTERN KERNEL_DEVICE_PATTERN ERR_LOG
+    setsid sh -c 'dmesg -W 2>/dev/null \
+        | grep --line-buffered -Ei "$CRITICAL_ERR_PATTERN" \
+        | grep --line-buffered -E "$KERNEL_DEVICE_PATTERN" > "$ERR_LOG"' &
+    ERR_PID=$!
+    KERNEL_MONITOR_STATUS="active"
+else
+    echo "[WARN] dmesg --follow-new is unavailable; kernel event attribution cannot be verified." > "$ERR_LOG"
+fi
 
 sleep 2
 
@@ -516,7 +556,9 @@ printf "\r[%-50s] 100%% (Elapsed: %3ds / %ds)\n" \
 set -e
 
 kill "$MON_PID" >/dev/null 2>&1 || true
-kill "$ERR_PID" >/dev/null 2>&1 || true
+if [ -n "$ERR_PID" ]; then
+    kill -- "-${ERR_PID}" >/dev/null 2>&1 || true
+fi
 sleep 1
 
 FIO_METRICS_ENV="${WORKDIR}/fio_metrics_${TIME_TAG}.env"
@@ -622,6 +664,11 @@ fi
 if [ "$FIO_DURABILITY_STATUS" != "ok" ]; then
     RESULT="FAIL"
     REASON="fio durability JSON result is missing or invalid."
+fi
+
+if [ "$KERNEL_MONITOR_STATUS" != "active" ]; then
+    RESULT="FAIL"
+    REASON="Kernel event monitor is unavailable; disk stability cannot be verified."
 fi
 
 if [ "$ERROR_COUNT" != "0" ]; then
@@ -1006,6 +1053,11 @@ for sheet in wb.worksheets:
 wb.save(xlsx)
 print(f"XLSX Report : {xlsx}")
 PYEOF
+
+test -s "$XLSX_REPORT" || {
+    echo "[ERROR] XLSX report generation failed or produced an empty file"
+    exit 1
+}
 
 echo
 echo "======================================"

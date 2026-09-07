@@ -31,6 +31,18 @@ class CudaToolkitRunnerTests(unittest.TestCase):
         self.assertIn("cuda-toolkit-12-8", script)
         self.assertIn("apt-get -y install --reinstall cuda-toolkit-12-8", script)
 
+    def test_ubuntu_installer_waits_for_apt_locks_and_recovers_stalled_automatic_updates(self) -> None:
+        script = build_cuda_toolkit_install_script("ubuntu2404", "12.8", force_install=False)
+
+        self.assertIn("APT_LOCK_MAX_WAIT_SECONDS=900", script)
+        self.assertIn("APT_STALL_MAX_SECONDS=10", script)
+        self.assertIn("wait_for_apt_dpkg_unlock", script)
+        self.assertIn("recover_stalled_automatic_apt_update", script)
+        self.assertIn("lslocks -n -o PID,PATH", script)
+        self.assertIn("apt-daily-upgrade.service", script)
+        self.assertGreaterEqual(script.count("wait_for_apt_dpkg_unlock"), 4)
+        self.assertNotIn("rm -f /var/lib/dpkg/lock", script)
+
     def test_existing_version_is_only_skipped_without_force_flag(self) -> None:
         self.assertTrue(should_skip_existing_cuda_toolkit(nvcc_available=True, force_install=False))
         self.assertFalse(should_skip_existing_cuda_toolkit(nvcc_available=True, force_install=True))

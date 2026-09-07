@@ -51,6 +51,7 @@
         >
           <span>
             <StatusTag :status="archived ? 'unknown' : row.status" />
+            <span v-if="hasRunningTask(row.id)" class="task-running-dot" aria-label="任务进行中" />
           </span>
         </el-tooltip>
       </template>
@@ -160,12 +161,14 @@ const props = withDefaults(defineProps<{
   probingIds?: number[]
   isDetectingAll?: boolean
   starredIds?: number[]
+  runningTaskIds?: number[]
   archived?: boolean
 }>(), {
   loading: false,
   probingIds: () => [],
   isDetectingAll: false,
   starredIds: () => [],
+  runningTaskIds: () => [],
   archived: false,
 })
 
@@ -190,6 +193,10 @@ function handleMoreCommand(command: string, row: ServerRecord) {
 
 function displayValue(value: string | null | undefined) {
   return value?.trim() || '-'
+}
+
+function hasRunningTask(serverId: number) {
+  return !props.archived && props.runningTaskIds.includes(serverId)
 }
 
 function updateInlineTag(row: ServerRecord, tag: string) {
@@ -252,6 +259,7 @@ function detectButtonTip(row: ServerRecord): string {
 
 @media (prefers-reduced-motion: reduce) {
   .server-star-button .el-icon { transition: none; }
+  .task-running-dot { animation: none; }
 }
 
 .server-table {
@@ -303,6 +311,22 @@ function detectButtonTip(row: ServerRecord): string {
 .server-actions :deep(.server-detect-button.is-probing) {
   color: var(--el-color-warning);
   animation: server-detect-pulse 1.1s ease-in-out infinite;
+}
+
+.task-running-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 5px;
+  vertical-align: middle;
+  border-radius: 50%;
+  background: #10b981;
+  animation: task-running-breathe 1.8s ease-in-out infinite;
+}
+
+@keyframes task-running-breathe {
+  0%, 100% { opacity: 0.45; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.15); }
 }
 
 @keyframes server-detect-pulse {

@@ -1,7 +1,7 @@
 #!/bin/bash
 #set -e  # 不使用 set -e，手工控制每个关键步骤的退出处理
 
-SCRIPT_VERSION="2026.08.20.1"
+SCRIPT_VERSION="2026.09.07.1"
 
 DNF_MINRATE="${HPCDEPLOY_DNF_MINRATE:-51200}"
 DNF_TIMEOUT="${HPCDEPLOY_DNF_TIMEOUT:-30}"
@@ -85,7 +85,7 @@ install_deps() {
         rpm_packages+=(python3)
     fi
 
-    if [ "${#rpm_packages[@]}" -eq 0 ]; then
+    if [ "${#rpm_packages[@]}" -eq 0 ] && python3 -c 'import openpyxl' >/dev/null 2>&1; then
         echo "[INFO] Dependencies already installed, skip install."
         return 0
     fi
@@ -105,12 +105,25 @@ install_deps() {
         echo "[INFO] Detected Debian/Ubuntu"
 
         apt update
-        apt install -y stress-ng python3 python3-pip
+        apt install -y stress-ng python3 python3-pip python3-openpyxl
 
     else
         echo "[ERROR] Unsupported OS"
         exit 1
     fi
+
+    if ! python3 -c 'import openpyxl' >/dev/null 2>&1; then
+        if [ -f /etc/redhat-release ]; then
+            dnf_install_with_retry python3-openpyxl || true
+        fi
+        if ! python3 -c 'import openpyxl' >/dev/null 2>&1; then
+            python3 -m pip install openpyxl || return 1
+        fi
+    fi
+    python3 -c 'import openpyxl' >/dev/null 2>&1 || {
+        echo "ERROR: python3-openpyxl is required to generate the XLSX report"
+        return 1
+    }
 }
 
 install_deps || exit 1
@@ -199,12 +212,11 @@ CRITICAL_ERR_PATTERN="out of memory|oom-killer|killed process|hardware error|mac
 command -v stress-ng >/dev/null || { echo "ERROR: stress-ng not found"; exit 1; }
 command -v python3 >/dev/null || { echo "ERROR: python3 not found"; exit 1; }
 
-XLSX_AVAILABLE=0
-if python3 -c 'import openpyxl' >/dev/null 2>&1; then
-    XLSX_AVAILABLE=1
-else
-    echo "[WARN] XLSX skipped: python3-openpyxl is unavailable; TXT and CSV reports remain available."
-fi
+XLSX_AVAILABLE=1
+python3 -c 'import openpyxl' >/dev/null 2>&1 || {
+    echo "ERROR: python3-openpyxl is required to generate the XLSX report"
+    exit 1
+}
 
 CPU_MODEL=$(lscpu | awk -F: '/Model name/ {gsub(/^ +/,"",$2); print $2; exit}')
 MEM_TOTAL=$(free -h | awk '/Mem:/ {print $2}')
@@ -1452,6 +1464,11 @@ echo "======================================"
 
 FINAL_EXIT=0
 [ "$RESULT" = "PASS" ] || FINAL_EXIT=1
+[ "$XLSX_OK" = "1" ] && [ -s "$XLSX_REPORT" ] || FINAL_EXIT=1
+
+if [ "$FINAL_EXIT" -ne 0 ] && { [ "$XLSX_OK" != "1" ] || [ ! -s "$XLSX_REPORT" ]; }; then
+    echo "ERROR: XLSX report generation failed or produced an empty file"
+fi
 
 echo "[STAGE] script_exit exit_code=${FINAL_EXIT}"
 exit "$FINAL_EXIT"

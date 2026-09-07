@@ -3,7 +3,7 @@
 set -u
 set -o pipefail
 
-SCRIPT_VERSION="2026.08.21.1"
+SCRIPT_VERSION="2026.09.07.1"
 
 DNF_MINRATE="${HPCDEPLOY_DNF_MINRATE:-51200}"
 DNF_TIMEOUT="${HPCDEPLOY_DNF_TIMEOUT:-30}"
@@ -33,6 +33,7 @@ DNF_INSTALL_ATTEMPTS="${HPCDEPLOY_DNF_INSTALL_ATTEMPTS:-3}"
 DURATION="${1:-43200}"
 INTERVAL="${2:-2}"
 GPU_BURN_PRECISION="${GPU_BURN_PRECISION:-fp32}"
+GPU_BURN_TIMEOUT_GRACE_SECONDS="${GPU_BURN_TIMEOUT_GRACE_SECONDS:-300}"
 TIME_TAG="$(date +%F_%H%M%S)"
 
 WORKDIR="$(pwd)"
@@ -41,6 +42,7 @@ GPU_BURN_DIR="/opt/software/gpu-burn"
 GPU_BURN_ARCHIVE_PATH="/opt/software/gpu-burn-master.zip"
 
 BURN_LOG="${WORKDIR}/stress_gpu_${TIME_TAG}.log"
+GPU_FAILURES_FILE="${WORKDIR}/gpu_failures_${TIME_TAG}.txt"
 GPU_BURN_BUILD_LOCK="/opt/software/.hpcdeploy-gpu-burn.lock"
 GPU_BURN_BUILD_STATE="${GPU_BURN_DIR}/.hpcdeploy-gpu-burn-build-state"
 MON_LOG="${WORKDIR}/gpu_monitor_${TIME_TAG}.csv"
@@ -196,6 +198,14 @@ PYCHK
     else
         echo "[ERROR] Unsupported OS"
         exit 1
+    fi
+
+    python3 - <<'PYCHK' >/dev/null 2>&1
+import openpyxl
+PYCHK
+    if [ $? -ne 0 ]; then
+        echo "ERROR: python3-openpyxl is required to generate the XLSX report"
+        return 1
     fi
 }
 
@@ -465,8 +475,21 @@ stop_gpu_burn_process_tree() {
     kill "$pid" >/dev/null 2>&1 || true
 }
 
+gpu_process_is_active() {
+    local pid="$1" state
+    kill -0 "$pid" >/dev/null 2>&1 || return 1
+    state="$(ps -o stat= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+    [ -n "$state" ] && [[ "$state" != Z* ]]
+}
+
+record_gpu_failure() {
+    local index="$1" reason="$2"
+    printf 'GPU %s: %s\n' "$index" "$reason" >> "$GPU_FAILURES_FILE"
+    printf '[ERROR] GPU %s: %s\n' "$index" "$reason" >> "$BURN_LOG"
+}
+
 run_gpu_burn_per_gpu() {
-    local index capability arch gpu_log i
+    local index capability arch gpu_log i deadline active gpu_exit
     local -a gpu_pids=() gpu_indexes=() gpu_arches=() gpu_logs=()
     declare -A gpu_arch_by_index=()
 
@@ -489,6 +512,7 @@ run_gpu_burn_per_gpu() {
     fi
 
     : > "$BURN_LOG"
+    : > "$GPU_FAILURES_FILE"
     BURN_EXIT=0
     prepare_gpu_burn_matched_binary || return 1
 
@@ -505,6 +529,7 @@ run_gpu_burn_per_gpu() {
 
     # fail fast: do not spend the remaining test duration after a confirmed
     # gpu-burn kernel-image mismatch has already made this attempt invalid.
+    deadline=$((SECONDS + DURATION + GPU_BURN_TIMEOUT_GRACE_SECONDS))
     while :; do
         if grep -qi "no kernel image is available for execution on the device" "${WORKDIR}"/stress_gpu_"${TIME_TAG}"_gpu*.log 2>/dev/null; then
             for i in "${!gpu_pids[@]}"; do
@@ -523,23 +548,47 @@ run_gpu_burn_per_gpu() {
             BURN_EXIT=1
             return
         fi
-        local active=0
-        for i in "${!gpu_pids[@]}"; do kill -0 "${gpu_pids[$i]}" >/dev/null 2>&1 && active=1; done
+        active=0
+        for i in "${!gpu_pids[@]}"; do
+            gpu_process_is_active "${gpu_pids[$i]}" && active=1
+        done
         [ "$active" -eq 0 ] && break
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            for i in "${!gpu_pids[@]}"; do
+                if gpu_process_is_active "${gpu_pids[$i]}"; then
+                    record_gpu_failure "${gpu_indexes[$i]}" \
+                        "gpu-burn timed out after configured duration (${DURATION}s + ${GPU_BURN_TIMEOUT_GRACE_SECONDS}s grace); process forcibly terminated"
+                    stop_gpu_burn_process_tree "${gpu_pids[$i]}"
+                fi
+            done
+            BURN_EXIT=1
+            break
+        fi
         sleep 1
     done
 
     for i in "${!gpu_pids[@]}"; do
-        local gpu_exit=0
-        if ! wait "${gpu_pids[$i]}"; then
+        gpu_exit=0
+        if gpu_process_is_active "${gpu_pids[$i]}"; then
+            gpu_exit=124
+            BURN_EXIT=1
+        elif ! wait "${gpu_pids[$i]}"; then
             gpu_exit=1
             BURN_EXIT=1
+        fi
+        if [ "$gpu_exit" -ne 0 ]; then
+            record_gpu_failure "${gpu_indexes[$i]}" "gpu-burn exit=${gpu_exit}"
         fi
         printf '[GPU %s SM %s]\n' "${gpu_indexes[$i]}" "${gpu_arches[$i]}" >> "$BURN_LOG"
         cat "${gpu_logs[$i]}" >> "$BURN_LOG"
         printf '[SUMMARY] GPU %s SM %s exit=%s\n' \
             "${gpu_indexes[$i]}" "${gpu_arches[$i]}" "$gpu_exit" >> "$BURN_LOG"
     done
+
+    if [ -s "$GPU_FAILURES_FILE" ]; then
+        printf '[GPU FAILURE SUMMARY]\n' >> "$BURN_LOG"
+        cat "$GPU_FAILURES_FILE" >> "$BURN_LOG"
+    fi
 
 }
 
@@ -630,7 +679,7 @@ main() {
         REASON="GPU/CUDA/gpu-burn runtime error detected."
     fi
 
-    export DURATION INTERVAL GPU_BURN_PRECISION TIME_TAG WORKDIR GPU_BURN_DIR BURN_LOG MON_LOG GPU_META_CSV REPORT XLSX_REPORT
+    export DURATION INTERVAL GPU_BURN_PRECISION TIME_TAG WORKDIR GPU_BURN_DIR BURN_LOG GPU_FAILURES_FILE MON_LOG GPU_META_CSV REPORT XLSX_REPORT
     export BURN_EXIT ERROR_COUNT RESULT REASON CUDA_TOOLKIT NVIDIA_DRIVER_VERSION NVIDIA_SMI_PATH GPU_COUNT
 
     python3 - <<'PYEOF'
@@ -652,6 +701,7 @@ gpu_burn_precision = os.environ.get("GPU_BURN_PRECISION", "fp32").upper()
 workdir = os.environ.get("WORKDIR", "")
 gpu_burn_dir = os.environ.get("GPU_BURN_DIR", "")
 burn_log = Path(os.environ["BURN_LOG"])
+gpu_failures_file = Path(os.environ["GPU_FAILURES_FILE"])
 mon_log = Path(os.environ["MON_LOG"])
 gpu_meta_csv = Path(os.environ["GPU_META_CSV"])
 report = Path(os.environ["REPORT"])
@@ -809,6 +859,13 @@ for row in mon_rows:
 
 gpu_summary = []
 per_gpu_fail_reasons = []
+per_gpu_failures = {}
+
+if gpu_failures_file.exists():
+    for raw_line in gpu_failures_file.read_text(errors="ignore").splitlines():
+        match = re.match(r"GPU\s+(\d+):\s*(.+)", raw_line.strip())
+        if match:
+            per_gpu_failures.setdefault(match.group(1), []).append(match.group(2))
 
 for idx in sorted(by_gpu.keys(), key=lambda x: int(x) if str(x).isdigit() else 9999):
     item = by_gpu[idx]
@@ -826,7 +883,10 @@ for idx in sorted(by_gpu.keys(), key=lambda x: int(x) if str(x).isdigit() else 9
     gpu_result = "PASS"
     gpu_reason = "Observed normal monitor data."
 
-    if samples <= 0:
+    if str(idx) in per_gpu_failures:
+        gpu_result = "FAIL"
+        gpu_reason = "; ".join(per_gpu_failures[str(idx)])
+    elif samples <= 0:
         gpu_result = "FAIL"
         gpu_reason = "No monitor data for this GPU."
     elif isinstance(max_util, (int, float)) and max_util < 90:
@@ -867,7 +927,7 @@ for idx in sorted(by_gpu.keys(), key=lambda x: int(x) if str(x).isdigit() else 9
 final_result = result
 final_reason = reason
 
-if result == "PASS" and per_gpu_fail_reasons:
+if per_gpu_fail_reasons:
     final_result = "FAIL"
     final_reason = "; ".join(per_gpu_fail_reasons)
 
@@ -1145,6 +1205,12 @@ print(f"XLSX Report : {xlsx}")
 print(f"Final Result: {final_result}")
 print(f"Reason      : {final_reason}")
 PYEOF
+
+    XLSX_EXIT_CODE=$?
+    if [ "$XLSX_EXIT_CODE" -ne 0 ] || [ ! -s "$XLSX_REPORT" ]; then
+        echo "[ERROR] XLSX report generation failed or produced an empty file"
+        return 1
+    fi
 
     echo
     echo "======================================"

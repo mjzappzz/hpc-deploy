@@ -51,7 +51,7 @@ class CpuMemoryPressureSafetyTests(unittest.TestCase):
     def test_pressure_must_reach_cpu_and_memory_targets(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")
 
-        self.assertIn('SCRIPT_VERSION="2026.08.20.1"', source)
+        self.assertIn('SCRIPT_VERSION="2026.09.07.1"', source)
         self.assertIn("CPU_BUSY_FAIL_PERCENT", source)
         self.assertIn("CPU_BUSY_WARMUP_SECONDS", source)
         self.assertIn("CPU_BUSY_WARMUP_SAMPLES", source)
@@ -62,12 +62,13 @@ class CpuMemoryPressureSafetyTests(unittest.TestCase):
         self.assertIn("CPU pressure target was not reached", source)
         self.assertIn("Memory pressure target was not reached", source)
 
-    def test_xlsx_is_optional_and_text_csv_do_not_require_openpyxl(self) -> None:
+    def test_openpyxl_and_a_nonempty_xlsx_are_required_for_success(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")
 
-        self.assertIn("XLSX_AVAILABLE=0", source)
-        self.assertIn("XLSX skipped: python3-openpyxl is unavailable", source)
-        self.assertNotIn('raise SystemExit("ERROR: python3-openpyxl not found', source)
+        self.assertIn("python3-openpyxl", source)
+        self.assertIn("ERROR: python3-openpyxl is required", source)
+        self.assertIn('"$XLSX_OK" != "1"', source)
+        self.assertIn('! -s "$XLSX_REPORT"', source)
 
 
 if __name__ == "__main__":

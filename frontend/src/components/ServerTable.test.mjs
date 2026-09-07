@@ -47,3 +47,10 @@ test('uses the shared vector star treatment for server favorites without a row b
   assert.doesNotMatch(source, /warning-light-[89]/)
   assert.doesNotMatch(source, /\? '★' : '☆'/)
 })
+
+test('shows the running-task indicator to the right of an online server status', async () => {
+  const source = await readFile(new URL('./ServerTable.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /<StatusTag :status="archived \? 'unknown' : row\.status" \/>\s*<span v-if="hasRunningTask\(row\.id\)"[^>]*class="task-running-dot"/)
+  assert.match(source, /runningTaskIds\?: number\[\]/)
+})

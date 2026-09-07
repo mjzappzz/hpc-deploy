@@ -71,6 +71,123 @@ def _log_cuda_toolkit_commands(db, task_id: str, version: str) -> None:
     _log(db, task_id, "SYSTEM", f"/usr/local/cuda-{version}/bin/nvcc --version")
 
 
+def _ubuntu_apt_lock_helpers() -> str:
+    return r'''APT_LOCK_MAX_WAIT_SECONDS=900
+APT_LOCK_POLL_SECONDS=5
+APT_STALL_MAX_SECONDS=10
+APT_MIN_DOWNLOAD_BYTES_PER_SECOND=524288
+APT_LOCK_FILES=(
+    /var/lib/dpkg/lock-frontend
+    /var/lib/dpkg/lock
+    /var/lib/apt/lists/lock
+    /var/cache/apt/archives/lock
+)
+
+apt_dpkg_lock_holders() {
+    if command -v fuser >/dev/null 2>&1; then
+        fuser "${APT_LOCK_FILES[@]}" 2>/dev/null || true
+        return 0
+    fi
+    if ! command -v lslocks >/dev/null 2>&1; then
+        echo "ERROR: 未找到 fuser 或 lslocks，无法安全确认 apt/dpkg 锁状态" >&2
+        return 1
+    fi
+    local lock_file pid path
+    local lock_pids=()
+    while read -r pid path; do
+        [[ "$pid" =~ ^[0-9]+$ ]] || continue
+        for lock_file in "${APT_LOCK_FILES[@]}"; do
+            [[ "$path" == "$lock_file" ]] || continue
+            lock_pids+=("$pid")
+            break
+        done
+    done < <(lslocks -n -o PID,PATH 2>/dev/null || true)
+    (( ${#lock_pids[@]} > 0 )) || return 0
+    printf '%s\n' "${lock_pids[@]}" | sort -u | tr '\n' ' '
+}
+
+apt_update_download_bytes() {
+    find /var/cache/apt/archives/partial -maxdepth 1 -type f -printf '%s\n' 2>/dev/null \
+        | awk '{total += $1} END {print total + 0}'
+}
+
+apt_update_cpu_times() {
+    local holders="$1"
+    local pid
+    for pid in $holders; do
+        [[ "$pid" =~ ^[0-9]+$ ]] || continue
+        ps -o cputime= -p "$pid" 2>/dev/null | tr -d '[:space:]'
+    done
+}
+
+is_stalled_automatic_apt_update() {
+    local holders="$1"
+    local pid command
+    for pid in $holders; do
+        [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+        command="$(ps -o args= -p "$pid" 2>/dev/null || true)"
+        [[ "$command" == *"/usr/bin/unattended-upgrade"* ]] || return 1
+        grep -Fqx '0::/system.slice/apt-daily-upgrade.service' "/proc/${pid}/cgroup" 2>/dev/null || return 1
+    done
+    [[ -n "${holders//[[:space:]]/}" ]]
+}
+
+recover_stalled_automatic_apt_update() {
+    local holders="$1"
+    local attempt remaining_holders
+    echo "[WARN] 检测到无进展的 unattended-upgrade，开始受控恢复"
+    sudo systemctl stop --no-block apt-daily-upgrade.service
+    sudo systemctl kill --kill-who=all --signal=SIGTERM apt-daily-upgrade.service
+    for ((attempt = 1; attempt <= 12; attempt += 1)); do
+        remaining_holders="$(apt_dpkg_lock_holders)"
+        [[ -z "${remaining_holders//[[:space:]]/}" ]] && break
+        sleep "$APT_LOCK_POLL_SECONDS"
+    done
+    [[ -z "${remaining_holders//[[:space:]]/}" ]] || {
+        echo "ERROR: apt/dpkg 锁仍被占用；未强制终止进程，PID：${remaining_holders}" >&2
+        return 1
+    }
+    sudo dpkg --configure -a
+}
+
+wait_for_apt_dpkg_unlock() {
+    local operation="$1"
+    local elapsed=0 stalled_seconds=0 recovered=0
+    local holders download_bytes cpu_times previous_download_bytes="" previous_cpu_times=""
+    while true; do
+        holders="$(apt_dpkg_lock_holders)" || return 1
+        [[ -z "${holders//[[:space:]]/}" ]] && return 0
+        download_bytes="$(apt_update_download_bytes)"
+        cpu_times="$(apt_update_cpu_times "$holders")"
+        if [[ -n "$previous_download_bytes" ]]; then
+            if [[ "$cpu_times" == "$previous_cpu_times" ]] && \
+                (( download_bytes - previous_download_bytes < APT_MIN_DOWNLOAD_BYTES_PER_SECOND * APT_LOCK_POLL_SECONDS )); then
+                ((stalled_seconds += APT_LOCK_POLL_SECONDS))
+            else
+                stalled_seconds=0
+            fi
+        fi
+        previous_download_bytes="$download_bytes"
+        previous_cpu_times="$cpu_times"
+        if (( stalled_seconds >= APT_STALL_MAX_SECONDS && recovered == 0 )) && is_stalled_automatic_apt_update "$holders"; then
+            recover_stalled_automatic_apt_update "$holders" || return 1
+            recovered=1
+            stalled_seconds=0
+            previous_download_bytes=""
+            previous_cpu_times=""
+            continue
+        fi
+        (( elapsed >= APT_LOCK_MAX_WAIT_SECONDS )) && {
+            echo "ERROR: ${operation} 的 apt/dpkg 锁持续占用超过 ${APT_LOCK_MAX_WAIT_SECONDS} 秒，未删除锁文件或终止人工 apt/dpkg；PID：${holders}" >&2
+            return 1
+        }
+        echo "[WARN] ${operation} 等待 apt/dpkg 锁释放（已等待 ${elapsed} 秒；PID：${holders}）"
+        sleep "$APT_LOCK_POLL_SECONDS"
+        ((elapsed += APT_LOCK_POLL_SECONDS))
+    done
+}'''
+
+
 def build_cuda_toolkit_install_script(os_profile: str, version: str, *, force_install: bool) -> str:
     version = validate_cuda_toolkit_version(version)
     package_suffix = version.replace(".", "-")
@@ -87,16 +204,21 @@ sudo dnf clean all"""
     elif os_profile in {"ubuntu2204", "ubuntu2404"}:
         distro = os_profile
         repository_steps = f"""export DEBIAN_FRONTEND=noninteractive
+{_ubuntu_apt_lock_helpers()}
+wait_for_apt_dpkg_unlock "更新 Ubuntu 软件包索引前"
 sudo apt-get update
+wait_for_apt_dpkg_unlock "安装 CUDA 软件源依赖前"
 sudo apt-get install -y ca-certificates curl
 curl -fsSL -o /tmp/cuda-keyring.deb https://developer.download.nvidia.com/compute/cuda/repos/{distro}/x86_64/cuda-keyring_1.1-1_all.deb
+wait_for_apt_dpkg_unlock "安装 CUDA 软件源 keyring 前"
 sudo dpkg -i /tmp/cuda-keyring.deb
 rm -f /tmp/cuda-keyring.deb
+wait_for_apt_dpkg_unlock "刷新 CUDA 软件源索引前"
 sudo apt-get update"""
         install_command = (
-            f"sudo apt-get -y install --reinstall {package_name}"
+            f"wait_for_apt_dpkg_unlock \"安装 CUDA Toolkit 前\"\nsudo apt-get -y install --reinstall {package_name}"
             if force_install
-            else f"sudo apt-get -y install {package_name}"
+            else f"wait_for_apt_dpkg_unlock \"安装 CUDA Toolkit 前\"\nsudo apt-get -y install {package_name}"
         )
     else:
         raise CudaToolkitValidationError(f"unsupported CUDA Toolkit OS profile: {os_profile}")

@@ -107,6 +107,22 @@ class GpuBurnLogCompactionTests(unittest.TestCase):
             ],
         )
 
+    def test_multigpu_timeout_records_the_specific_gpu_and_still_generates_a_fail_report(self) -> None:
+        source = SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn('GPU_BURN_TIMEOUT_GRACE_SECONDS', source)
+        self.assertIn('GPU_FAILURES_FILE', source)
+
+    def test_gpu_report_requires_openpyxl_and_a_complete_xlsx(self) -> None:
+        source = SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn('ERROR: python3-openpyxl is required', source)
+        self.assertIn('! -s "$XLSX_REPORT"', source)
+        self.assertIn('gpu-burn timed out after configured duration', source)
+        self.assertIn('"gpu-burn exit=${gpu_exit}"', source)
+        self.assertIn('per_gpu_failures', source)
+        self.assertIn('GPU_FAILURES_FILE', source)
+
 
 if __name__ == "__main__":
     unittest.main()

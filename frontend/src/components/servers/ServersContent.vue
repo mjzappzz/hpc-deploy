@@ -65,6 +65,7 @@
               :probing-ids="probingIds"
               :is-detecting-all="isDetectingAll"
               :starred-ids="starredServerIds"
+              :running-task-ids="runningTaskIds"
               @edit="openEdit"
               @delete="removeServer"
               @detect="detectOne"
@@ -542,6 +543,7 @@ const servers = ref<ServerRecord[]>(cachedServerList?.servers ?? [])
 const initialLoading = ref(!cachedServerList)
 const STARRED_SERVERS_STORAGE_KEY = 'hpcdeploy.starred-server-ids'
 const starredServerIds = ref<number[]>(loadStarredServerIds())
+const runningTaskIds = ref<number[]>([])
 const ARCHIVED_SERVER_TAG = '已归档服务器'
 const MANAGED_SERVER_TAG_ORDER = ['待压测', '压测完成', '故障待处理', '测试机']
 const MANAGED_SERVER_TAG_RANK = new Map(MANAGED_SERVER_TAG_ORDER.map((tag, index) => [tag, index]))
@@ -757,7 +759,12 @@ async function loadServers() {
     const params: Record<string, string> = {}
     if (filterTag.value) params.tag = filterTag.value
     if (filterKeyword.value) params.keyword = filterKeyword.value
-    servers.value = ((await listServers(params)).data).sort(sortServersByStatus)
+    const [serverResp, activeTasksResp] = await Promise.all([
+      listServers(params),
+      listTasks({ active_only: true, limit: 100 }),
+    ])
+    servers.value = serverResp.data.sort(sortServersByStatus)
+    runningTaskIds.value = activeTasksResp.data.items.map((task) => task.server_id)
     if (!filterTag.value && !filterKeyword.value) {
       saveServerListCache(servers.value)
     }

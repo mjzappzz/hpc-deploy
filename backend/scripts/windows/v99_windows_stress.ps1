@@ -1,10 +1,10 @@
 ﻿#requires -version 5.1
 <#
-NVIDIA GeForce / RTX FurMark2 + y-cruncher + DiskSpd Stability Report v97 CPU Telemetry Fix
+NVIDIA GeForce / RTX FurMark2 + y-cruncher + DiskSpd Stability Report v99 CPU Telemetry Fix
 Windows PowerShell 5.1+
 ASCII-safe script body. Chinese text in HTML is encoded as HTML entities where needed.
 
-V97 CPU telemetry corrections:
+V99 CPU telemetry and proportional-progress corrections:
 - Preserve v96 DiskSpd/report reliability corrections.
 - Fix CPU temperature telemetry diagnostics and Ryzen/Zen sensor selection.
 - Add CPU package power telemetry from LibreHardwareMonitor.
@@ -12,7 +12,7 @@ V97 CPU telemetry corrections:
 - Log CPU temperature/power sensor candidates and administrator privilege state.
 - Add CPU power to monitor.csv, HTML summary, key metrics, and trend charts.
 
-V97 physical-disk test correction:
+V98 physical-disk test correction:
 - Partitions on the same Windows physical disk are deduplicated before DiskSpd starts.
 - A non-system partition is preferred as the representative test location.
 #>
@@ -108,6 +108,7 @@ param(
 
     # y-cruncher CPU phase memory target (fixed policy)
     [int]$YCruncherMemoryPercent = 80,
+    [int]$YCruncherPreparationTimeoutSeconds = 900,
 
     # fallback CPU+Memory worker settings
     [ValidateRange(1,128)]
@@ -381,52 +382,69 @@ function Find-Exe([string[]]$Names,[string[]]$Roots) {
     return $null
 }
 $script:VCRuntimeChecked = $false
-function Ensure-VCRuntime {
-    if ($script:VCRuntimeChecked) { return $true }
-    $script:VCRuntimeChecked = $true
+$script:VCRuntimeReady = $false
+$MinimumVCRedistVersion = [version]"14.51.36247.0"
 
-    $x64Dll = Join-Path $env:WINDIR "System32\VCRUNTIME140.dll"
-    $x86Dll = Join-Path $env:WINDIR "SysWOW64\VCRUNTIME140.dll"
-    $x64Ready = Test-Path $x64Dll
-    $x86Ready = Test-Path $x86Dll
+function Get-VCRuntimeDllVersion([string]$DllPath) {
+    if (!(Test-Path $DllPath)) { return $null }
+    try {
+        $raw = (Get-Item $DllPath -ErrorAction Stop).VersionInfo.FileVersion
+        if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
+        return [version]($raw -replace '[^0-9.]', '')
+    } catch { return $null }
+}
 
-    if ($x64Ready -and $x86Ready) {
-        Log "[VCREDIST] Microsoft Visual C++ runtime is ready."
+function Test-VCRuntimeReady([string]$X64Dll,[string]$X86Dll) {
+    $x64Version = Get-VCRuntimeDllVersion $X64Dll
+    $x86Version = Get-VCRuntimeDllVersion $X86Dll
+    if ($x64Version -and $x86Version -and $x64Version -ge $MinimumVCRedistVersion -and $x86Version -ge $MinimumVCRedistVersion) {
+        Log "[VCREDIST] Verified MSVCP140.dll version: x64=$x64Version x86=$x86Version"
         return $true
     }
+    Log "[VCREDIST] MSVCP140.dll requires update: x64=$x64Version x86=$x86Version minimum=$MinimumVCRedistVersion"
+    return $false
+}
 
-    Log "[VCREDIST] VCRUNTIME140.dll is missing. Installing Microsoft Visual C++ 2015-2022 runtime (x64 + x86)."
-    $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
-    if (!$winget) {
-        Log "[WARN] winget.exe not found. Cannot automatically install Microsoft Visual C++ runtime."
+function Ensure-VCRuntime {
+    if ($script:VCRuntimeChecked) { return $script:VCRuntimeReady }
+    $script:VCRuntimeChecked = $true
+
+    $x64Dll = Join-Path $env:WINDIR "System32\MSVCP140.dll"
+    $x86Dll = Join-Path $env:WINDIR "SysWOW64\MSVCP140.dll"
+    if (Test-VCRuntimeReady $x64Dll $x86Dll) { $script:VCRuntimeReady = $true; return $true }
+
+    if (!(Test-IsAdministrator)) {
+        Log "[WARN] VC++ runtime is outdated and this PowerShell session is not elevated. Run as Administrator to repair it before y-cruncher starts."
         return $false
     }
 
-    $packageIds = @(
-        "Microsoft.VCRedist.2015+.x64",
-        "Microsoft.VCRedist.2015+.x86"
+    $installerRoot = Join-Path $env:TEMP "HPCDeploy-vcredist"
+    New-Item -ItemType Directory -Force -Path $installerRoot | Out-Null
+    $installers = @(
+        @{ Name="x64"; Url="https://aka.ms/vc14/vc_redist.x64.exe"; Path=(Join-Path $installerRoot "vc_redist.x64.exe") },
+        @{ Name="x86"; Url="https://aka.ms/vc14/vc_redist.x86.exe"; Path=(Join-Path $installerRoot "vc_redist.x86.exe") }
     )
-
-    foreach ($packageId in $packageIds) {
+    foreach($entry in $installers) {
         try {
-            Log "[VCREDIST] Installing: $packageId"
-            & $winget.Source install --id $packageId --exact --accept-package-agreements --accept-source-agreements --silent
-            if ($LASTEXITCODE -ne 0) {
-                Log "[WARN] VC++ runtime install returned exit code $LASTEXITCODE for $packageId."
+            Log "[VCREDIST] Downloading latest Microsoft Visual C++ 2015-2022 runtime ($($entry.Name))."
+            Invoke-WebRequest -Uri $entry.Url -OutFile $entry.Path -UseBasicParsing -TimeoutSec 300 -ErrorAction Stop
+            $installer = Get-Item $entry.Path -ErrorAction Stop
+            if ($installer.Length -le 0) { throw "downloaded installer is empty" }
+            $signature = Get-AuthenticodeSignature -FilePath $installer.FullName
+            if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Microsoft Corporation') {
+                throw "installer signature is not a valid Microsoft Corporation signature: $($signature.Status)"
             }
+            $proc = Start-Process -FilePath $installer.FullName -ArgumentList '/install','/quiet','/norestart' -Wait -PassThru
+            if ($proc.ExitCode -notin @(0, 1638, 3010)) { throw "installer exit code $($proc.ExitCode)" }
+            Log "[VCREDIST] $($entry.Name) installer completed with exit code $($proc.ExitCode)."
         } catch {
-            Log "[WARN] VC++ runtime install failed for ${packageId}: $($_.Exception.Message)"
+            Log "[WARN] VC++ runtime $($entry.Name) repair failed: $($_.Exception.Message)"
+            return $false
         }
     }
 
-    $x64Ready = Test-Path $x64Dll
-    $x86Ready = Test-Path $x86Dll
-    if ($x64Ready -and $x86Ready) {
-        Log "[VCREDIST] Microsoft Visual C++ runtime installation completed."
-        return $true
-    }
-
-    Log "[WARN] Microsoft Visual C++ runtime is still incomplete. y-cruncher may fail to start."
+    if (Test-VCRuntimeReady $x64Dll $x86Dll) { $script:VCRuntimeReady = $true; return $true }
+    Log "[WARN] VC++ runtime repair completed but MSVCP140.dll is still below the required version. y-cruncher will not be started."
     return $false
 }
 
@@ -1177,6 +1195,60 @@ function Has-NvidiaGpu {
 function Get-CurrentCpuLoadPercent {
     try { return [math]::Round((Get-Counter '\Processor(_Total)\% Processor Time').CounterSamples.CookedValue,2) } catch { return -1 }
 }
+function Get-CurrentMemoryUsedPercent {
+    try {
+        $os = Get-CimInstance Win32_OperatingSystem
+        if ($os.TotalVisibleMemorySize -le 0) { return -1 }
+        return [math]::Round((($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) * 100.0 / $os.TotalVisibleMemorySize),2)
+    } catch { return -1 }
+}
+function Wait-YCruncherReady([int[]]$ProcessIds,[int]$PhaseDurationSeconds) {
+    $readyCpuPercent = 80
+    $readyMemoryPercent = [math]::Max(1, $YCruncherMemoryPercent - 5)
+    $deadline = (Get-Date).AddSeconds($YCruncherPreparationTimeoutSeconds)
+    $readySamples = 0
+    $missingSamples = 0
+    $lastPreparationMemoryBucket = -1
+
+    Log "[YCRUNCHER] Waiting for effective stress readiness: CPU>=${readyCpuPercent}% memory>=${readyMemoryPercent}% timeout=${YCruncherPreparationTimeoutSeconds}s"
+    while ((Get-Date) -lt $deadline) {
+        $yc = @()
+        foreach($processId in $ProcessIds) {
+            $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
+            if ($process) { $yc += $process }
+        }
+        $cpu = Get-CurrentCpuLoadPercent
+        $memory = Get-CurrentMemoryUsedPercent
+        if ($yc.Count -gt 0 -and $cpu -ge $readyCpuPercent -and $memory -ge $readyMemoryPercent) {
+            $missingSamples = 0
+            $readySamples++
+            Log "[YCRUNCHER] Ready check CPU=${cpu}% Memory=${memory}% consecutive=${readySamples}/2"
+            if ($readySamples -ge 2) {
+                Log "[YCRUNCHER] Effective CPU+memory stress is ready. Configured duration starts now."
+                return $true
+            }
+        } else {
+            $readySamples = 0
+            if ($yc.Count -eq 0) {
+                $missingSamples++
+                if ($missingSamples -ge 2) {
+                    Log "[ERROR] y-cruncher exited before effective CPU/memory stress started"
+                    return $false
+                }
+            } else {
+                $missingSamples = 0
+            }
+            $preparationMemoryBucket = [math]::Floor([math]::Max(0, $memory) / 10)
+            if ($preparationMemoryBucket -gt $lastPreparationMemoryBucket) {
+                Log "[YCRUNCHER] Preparing CPU=${cpu}% Memory=${memory}% processCount=$($yc.Count)"
+                $lastPreparationMemoryBucket = $preparationMemoryBucket
+            }
+        }
+        Start-Sleep -Seconds 10
+    }
+    Log "[ERROR] y-cruncher preparation timed out before effective CPU/memory stress started"
+    return $false
+}
 function Find-LibreHardwareMonitorDll {
     $dll = Get-ChildItem -Path $LocalLibreHardwareMonitorDir -Filter "LibreHardwareMonitorLib.dll" -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($dll) { return $dll.FullName }
@@ -1311,7 +1383,7 @@ function Install-PawnIoSilently {
 }
 function Initialize-CpuTemperatureCollector {
     # Keep the historical function name to avoid changing the workflow.
-    # From v97 onward it initializes both CPU temperature and CPU package-power telemetry.
+    # From v99 onward it initializes both CPU temperature and CPU package-power telemetry.
     if (!$EnableCpuTemperature -and !$EnableCpuPower) { return }
     if ($script:LhmReady) { return }
     try {
@@ -1814,7 +1886,7 @@ function Resolve-YCruncherBackend([string]$YCruncherRoot,[string]$DefaultExe) {
 
     $binaryDir = Join-Path $YCruncherRoot "Binaries"
 
-    if ($cpuName -match "EPYC 95|EPYC 97|Zen 5|9950|9900") {
+    if ($cpuName -match "EPYC 95|EPYC 97|EPYC 9V|Zen 5|9950|9900") {
         $zen5 = Join-Path $binaryDir "24-ZN5 ~ Komari.exe"
         if (Test-Path $zen5) {
             Log "[YCRUNCHER] CPU detected: $cpuName"
@@ -1847,9 +1919,12 @@ function Start-YCruncher([int]$DurationSeconds) {
         $backendExe = Resolve-YCruncherBackend (Split-Path $exe -Parent) $exe
         if ($backendExe) { $exe = $backendExe }
     }
-    Add-ToolInfo "CPU + memory stress" "y-cruncher" $exe "stress / TL=$DurationSeconds / memory target by script" $YCruncherOfficialSource
+    Add-ToolInfo "CPU + memory stress" "y-cruncher" $exe "stress / duration controlled after readiness / memory target by script" $YCruncherOfficialSource
     if (!$exe) { Log "[WARN] y-cruncher not found. Use custom fallback."; return @() }
-    [void](Ensure-VCRuntime)
+    if (!(Ensure-VCRuntime)) {
+        Log "[ERROR] y-cruncher skipped because Microsoft Visual C++ runtime verification failed."
+        return @()
+    }
     # CPU phase: y-cruncher is the only CPU+memory workload.
     # Memory target is controlled directly by y-cruncher -M parameter.
     $targetGB = 0
@@ -1865,7 +1940,7 @@ function Start-YCruncher([int]$DurationSeconds) {
     if ($targetBytes -le 0) { $targetBytes=[int64](1GB) }
 
     Log "[YCRUNCHER] CPU mode memory target=${targetGB}GB (${YCruncherMemoryPercent}% physical RAM policy)"
-    $argText = "pause:-2 skip-warnings stress -M:$targetBytes -D:60 -TL:$DurationSeconds"
+    $argText = "pause:-2 skip-warnings stress -M:$targetBytes -D:60"
     Log "[START] y-cruncher: `"$exe`" $argText"
     try { $p=Start-Process -FilePath $exe -ArgumentList $argText -PassThru; return @($p) } catch { Log "[ERROR] y-cruncher start failed: $($_.Exception.Message)"; return @() }
 }
@@ -2182,71 +2257,17 @@ function Run-Phase([string]$Phase,[int]$DurationSeconds,[bool]$RunGpu,[bool]$Run
             if ($yc.Count -gt 0) {
                 $script:CpuMemBackendUsed = "y-cruncher"
             }
-            # y-cruncher handles CPU and memory pressure directly. No MemoryWorkers in CPU phase.
             if ($yc.Count -eq 0) {
                 $procs += Start-CpuBurners $DurationSeconds
                 if (!$memoryWorkersStarted) { $procs += Start-MemoryWorkers $DurationSeconds; $memoryWorkersStarted = $true }
-            }
-            elseif ($AutoFallbackCustomCpuMem) {
-                # Dynamic fallback check:
-                # Large NUMA servers (EPYC/Xeon, >128 logical processors) need more time
-                # for y-cruncher memory allocation and topology initialization.
-                $logicalCpu = (Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue).NumberOfLogicalProcessors
-                if (!$logicalCpu) { $logicalCpu = 32 }
-
-                $dynamicWait = if ($logicalCpu -gt 128) {
-                    180
-                } elseif ($logicalCpu -gt 32) {
-                    90
-                } else {
-                    30
-                }
-
-                # Fallback detection wait must not consume the CPU phase duration.
-                # Previous logic could consume almost the entire short test duration
-                # (for example 180s test -> 170s wait -> only 10s fallback workload).
-                # Keep detection time bounded and leave enough time for fallback validation.
-                $wait=[math]::Max(10,[math]::Min($dynamicWait,60))
-                if ($DurationSeconds -le 30) {
-                    $wait=[math]::Max(5,[math]::Floor($DurationSeconds/3))
-                }
-
-                $ycProc = Get-Process -Name "y-cruncher" -ErrorAction SilentlyContinue
-                $beforeMemory = 0
-                if ($ycProc) {
-                    $beforeMemory = $ycProc.WorkingSet64
-                }
-
-                Log "[YCRUNCHER] Fallback check logicalCPU=${logicalCpu}; wait=${wait}s threshold=${CpuFallbackLoadThresholdPercent}%"
-                Start-Sleep -Seconds $wait
-
-                $ycProcAfter = Get-Process -Name "y-cruncher" -ErrorAction SilentlyContinue
-                $afterMemory = 0
-                $ycThreads = 0
-                if ($ycProcAfter) {
-                    $afterMemory = $ycProcAfter.WorkingSet64
-                    $ycThreads = $ycProcAfter.Threads.Count
-                }
-
-                $memoryGrowthMB = [math]::Round(($afterMemory-$beforeMemory)/1MB,2)
-                $load=Get-CurrentCpuLoadPercent
-
-                Log "[YCRUNCHER] Check CPU=${load}% Threads=${ycThreads} MemoryGrowthMB=${memoryGrowthMB}"
-
-                # Only fallback when y-cruncher appears inactive:
-                # process missing + no memory growth + low CPU.
-                if (!$ycProcAfter -or (($memoryGrowthMB -le 0) -and ($load -ge 0 -and $load -lt $CpuFallbackLoadThresholdPercent))) {
-                    Log "[FALLBACK] y-cruncher inactive detected. Starting built-in CPU burner."
-                    $script:CpuMemBackendUsed = "Fallback CPU+Memory Worker"
-                    $script:CpuMemBackendReason = "y-cruncher inactive or failed to enter stress state"
-                    # Fallback takeover must not shorten the CPU phase.
-                    # DurationSeconds is the configured CPU phase duration.
-                    # The phase timer below controls the real end time; fallback workers
-                    # should run from activation until that phase end.
-                    Log "[FALLBACK] Starting CPU+MEM fallback workload. phaseDurationSeconds=${DurationSeconds}; detectionWaitSeconds=${wait}"
-                    $procs += Start-CpuBurners $DurationSeconds
-                } else {
-                    Log "[YCRUNCHER] Activity detected. Skip fallback."
+            } else {
+                $ycProcessIds = @($yc | ForEach-Object { $_.Id })
+                if (!(Wait-YCruncherReady $ycProcessIds $DurationSeconds)) {
+                $script:CpuModuleExecuted = $false
+                $script:CpuModuleReason = "y-cruncher preparation timed out before effective CPU/memory stress started"
+                $script:CpuMemBackendReason = $script:CpuModuleReason
+                Stop-Procs $yc
+                return
                 }
             }
         } else { $procs += Start-CpuBurners $DurationSeconds; $procs += Start-MemoryWorkers $DurationSeconds }
@@ -2288,9 +2309,23 @@ function Run-Phase([string]$Phase,[int]$DurationSeconds,[bool]$RunGpu,[bool]$Run
         Log "[PHASE SKIP] $Phase has no runnable workload. Skip monitoring loop immediately."
         return
     }
-    $end=(Get-Date).AddSeconds($DurationSeconds)
-    while((Get-Date) -lt $end) { Write-MonitorSample $Phase; Start-Sleep -Seconds $IntervalSeconds }
+    $phaseStartedAt = Get-Date
+    $end=$phaseStartedAt.AddSeconds($DurationSeconds)
+    $phaseProgressCheckpoints = @(25, 50, 75)
+    $phaseProgressIndex = 0
+    Log "[PHASE RUNNING] $Phase 0% elapsed=0s total=${DurationSeconds}s"
+    while((Get-Date) -lt $end) {
+        Write-MonitorSample $Phase
+        $elapsedSeconds = [int]((Get-Date) - $phaseStartedAt).TotalSeconds
+        while ($phaseProgressIndex -lt $phaseProgressCheckpoints.Count -and $elapsedSeconds -ge [int]($DurationSeconds * $phaseProgressCheckpoints[$phaseProgressIndex] / 100)) {
+            $checkpoint = $phaseProgressCheckpoints[$phaseProgressIndex]
+            Log "[PHASE RUNNING] $Phase ${checkpoint}% elapsed=${elapsedSeconds}s total=${DurationSeconds}s"
+            $phaseProgressIndex++
+        }
+        Start-Sleep -Seconds $IntervalSeconds
+    }
     Write-MonitorSample $Phase
+    Log "[PHASE RUNNING] $Phase 100% elapsed=${DurationSeconds}s total=${DurationSeconds}s"
     Log "[PHASE STOP] $Phase"
     if ($RunDisk) { Wait-DiskSpdFlush $procs 180 }
     Log "[PHASE CLEANUP] Cleaning workload processes after $Phase"
@@ -2504,7 +2539,7 @@ function Merge-BaseReportNonDiskSamples {
         $baseRows = @(Import-Csv $baseMonitor)
         $newRows  = @(Import-Csv $MonitorCsv)
 
-        # v97: normalize old monitor.csv schemas before merging so new CPU power
+        # v99: normalize old monitor.csv schemas before merging so new CPU power
         # columns are not dropped when supplementing a v96 base report.
         $newProps = @()
         if($newRows.Count -gt 0){ $newProps = @($newRows[0].PSObject.Properties.Name) }
@@ -3034,6 +3069,7 @@ function Build-Report {
         else{ Add-Status "Cooling / Fan" "PASS" ("GPU fan max: {0}%; effective avg: {1}%; fan telemetry is reference only" -f $gpuFan,$gpuFanAvg) $false }
     }
     if(!$cpuEnabled){ Add-Status $L.CpuPressure "NOT_TESTED" "CPU stage disabled" $false }
+    elseif(!$script:CpuModuleExecuted){ Add-Status $L.CpuPressure "FAIL" $script:CpuModuleReason $true }
     elseif($cpuTemp -ne $null -and $cpuTemp -ge $CpuTempFailC){ Add-Status $L.CpuPressure "FAIL" ("CPU temp {0} C >= {1} C; critical thermal limit exceeded" -f $cpuTemp,$CpuTempFailC) $true }
     elseif($cpuMax -ne $null -and $cpuMax -lt 80){ Add-Status $L.CpuPressure "FAIL" ("CPU max utilization {0}% < 80%; CPU stress load did not start correctly" -f $cpuMax) $true }
     elseif($cpuAvg -ne $null -and $cpuAvg -lt 50){ Add-Status $L.CpuPressure "FAIL" ("Stable-window CPU avg utilization {0}% < 50%; CPU stress load was insufficient" -f $cpuAvg) $true }

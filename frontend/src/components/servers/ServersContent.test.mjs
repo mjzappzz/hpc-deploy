@@ -36,3 +36,11 @@ test('separates mounted filesystems from unmounted physical disks in server deta
   assert.match(source, /挂载点/)
   assert.match(source, /总容量/)
 })
+
+test('passes active task server ids to the managed server table', async () => {
+  const source = await readFile(new URL('./ServersContent.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /listTasks\(\{ active_only: true, limit: 100 \}\)/)
+  assert.match(source, /runningTaskIds\.value = activeTasksResp\.data\.items\.map\(\(task\) => task\.server_id\)/)
+  assert.equal((source.match(/:running-task-ids="runningTaskIds"/g) ?? []).length, 1)
+})

@@ -60,6 +60,7 @@ from app.core.cuda_toolkit_runner import (
     CudaToolkitValidationError,
     resolve_cuda_toolkit_os_profile,
     run_cuda_toolkit_task,
+    validate_cuda_toolkit_version,
 )
 from app.core.time_utils import format_beijing_time
 from app.core.artifact_collector import ARTIFACTS_DIR
@@ -1932,6 +1933,39 @@ def retry_single_task(
         db.add(TaskLog(task_id=retry_task_id, level="SYSTEM", message=f"GPU driver retry task created from {original.task_id}"))
         db.commit()
         background_tasks.add_task(run_rocky9_gpu_driver_task, retry_task_id)
+        return TaskRetryResponse(original_task_id=original.task_id, retry_task_id=retry_task_id, status="PENDING")
+
+    if original.task_type == CUDA_TOOLKIT_TASK_TYPE:
+        original_params = original.params or {}
+        try:
+            cuda_version = validate_cuda_toolkit_version(str(original_params.get("cuda_version", "")))
+            os_profile = str(original_params.get("os_profile", "")) or resolve_cuda_toolkit_os_profile(server.os_info)
+        except CudaToolkitValidationError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="original CUDA Toolkit task parameters are unavailable") from exc
+        retry_task_id = _generate_task_id()
+        retry_task = _create_cuda_toolkit_task(
+            task_id=retry_task_id,
+            server=server,
+            cuda_version=cuda_version,
+            force_install=bool(original_params.get("force_install", False)),
+            os_profile=os_profile,
+        )
+        retry_task.params = {
+            **(retry_task.params or {}),
+            "__retry_of_task_id": original.task_id,
+            "__retry_created_at": datetime.utcnow().isoformat(timespec="seconds"),
+        }
+        db.add(retry_task)
+        db.add(TaskLog(task_id=retry_task_id, level="SYSTEM", message=f"CUDA Toolkit retry task created from {original.task_id}"))
+        db.commit()
+        write_audit_log(
+            db, action="task.retry", target_type="task", status="success", actor="visitor",
+            target_id=retry_task_id, target_name=f"{server.name} · CUDA Toolkit {cuda_version}",
+            server_id=server.id, server_name=server.name, task_id=retry_task_id,
+            message=f"retry CUDA Toolkit task {original.task_id} as {retry_task_id}",
+            detail={"original_task_id": original.task_id, "retry_task_id": retry_task_id, "cuda_version": cuda_version},
+        )
+        background_tasks.add_task(run_cuda_toolkit_task, retry_task_id)
         return TaskRetryResponse(original_task_id=original.task_id, retry_task_id=retry_task_id, status="PENDING")
 
     file_record = _get_library_file_or_400(original.file_path)

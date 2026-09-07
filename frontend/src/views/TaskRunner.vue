@@ -103,6 +103,7 @@
                               </div>
                               <div class="s-card-state">
                                 <el-tag size="small" :type="server.status === 'online' ? 'success' : 'info'" effect="plain">{{ server.status === 'online' ? '在线' : '离线' }}</el-tag>
+                                <span v-if="hasRunningTask(server.id)" class="task-running-dot" aria-label="任务进行中" />
                                 <span v-if="selectedServerIds.includes(server.id)" class="s-card-check">✓</span>
                               </div>
                             </div>
@@ -661,6 +662,7 @@ import {
   runCudaToolkitTask,
   runCudaToolkitBatchTask,
   listGpuDriverLibrary,
+  listTasks,
   uploadGpuDriverFile,
   type RunTaskPayload,
   type TaskLogRecord,
@@ -911,6 +913,7 @@ const managedServers = computed(() => servers.value
   .sort(sortTaskServers))
 
 const probeTargetServersList = computed(() => managedServers.value)
+const runningTaskServerIds = ref<number[]>([])
 
 const filteredManagedServers = computed(() => {
   let list = managedServers.value
@@ -974,6 +977,10 @@ function toggleServerCard(id: number) {
   } else {
     selectedServerIds.value.push(id)
   }
+}
+
+function hasRunningTask(serverId: number) {
+  return runningTaskServerIds.value.includes(serverId)
 }
 
 function isServerGroupFullySelected(groupServers: ServerRecord[]): boolean {
@@ -1588,8 +1595,14 @@ function notifyTaskCreated() {
 }
 
 async function loadOptions() {
-  const [serverResp, fileResp, gpuDriverResp] = await Promise.all([listServers(), listScriptFiles(), listGpuDriverLibrary()])
+  const [serverResp, fileResp, gpuDriverResp, activeTasksResp] = await Promise.all([
+    listServers(),
+    listScriptFiles(),
+    listGpuDriverLibrary(),
+    listTasks({ active_only: true, limit: 100 }),
+  ])
   servers.value = serverResp.data
+  runningTaskServerIds.value = activeTasksResp.data.items.map((task) => task.server_id)
   files.value = fileResp.data.map((file) => ({
     ...file,
     displayCategory: file.display_category
@@ -2566,6 +2579,22 @@ onBeforeUnmount(() => {
   padding: 16px;
 }
 
+.task-running-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 5px;
+  vertical-align: middle;
+  border-radius: 50%;
+  background: #10b981;
+  animation: task-running-breathe 1.8s ease-in-out infinite;
+}
+
+@keyframes task-running-breathe {
+  0%, 100% { opacity: 0.45; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+
 .runner-header {
   display: flex;
   justify-content: space-between;
@@ -2752,6 +2781,7 @@ onBeforeUnmount(() => {
 
 @media (prefers-reduced-motion: reduce) {
   .s-card-star .el-icon { transition: none; }
+  .task-running-dot { animation: none; }
 }
 
 .s-card-name {

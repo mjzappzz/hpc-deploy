@@ -2,6 +2,30 @@
 
 > 维护流水与会话交接材料。它记录变化背景和待办，不替代 [architecture.md](architecture.md) 中的当前架构、安全边界或 [../deploy/README.md](../deploy/README.md) 中的可执行部署步骤。
 
+- 2026-09-07：压测任务已进入远端 detach 运行后，若 SSH 控制面重连失败，不再以该现象直接判定远端压测已退出；任务保持 `RUNNING`、续租并进入恢复监控重试，仅在能继续取证时收敛结果，避免短暂 SSH 故障误报 FAIL。未发布。
+
+- 2026-09-07：服务器管理与任务执行目标列表同步查询活跃任务；服务器状态右侧以绿色呼吸点标示“任务进行中”，并遵从减少动效偏好设置。未发布。
+
+- 2026-09-07：`cpu_mem_stress_report.sh`、`gpu_stress_report.sh`、`disk_stress_report.sh` 统一要求 `openpyxl` 和非空 XLSX 为成功必要条件。CPU 脚本补齐缺失的 `openpyxl` 预检安装；三类脚本均在安装后复核模块可导入，并在 XLSX 生成失败或文件为空时以明确错误退出，平台不得再将 TXT/CSV-only 压测判为成功。版本统一升级至 `v2026.09.07.1`；未发布。
+
+- 2026-09-07：`gpu_stress_report.sh` 升级为 `v2026.09.07.1`。多卡压测为每张卡记录独立退出结果；任一卡在配置时长加 300 秒宽限后仍存活时，记录对应 GPU 编号和“进程超时”原因、终止该进程树并继续生成完整 FAIL 报告。报告的逐卡汇总与总判定均使用该原因，避免 GPU GSP/驱动卡死时整个任务永久阻塞在 `wait` 且无报告。未发布。
+
+- 2026-09-04：Windows 压测资料升级为唯一的 `v99_windows_stress.ps1`。正式阶段进度按所选总时长的 0/25/50/75/100% 换算，不写死小时数：12 小时为每 3 小时、24 小时为每 6 小时。准备期仍仅在内存跨越 10% 时记录。未发布。
+
+- 2026-09-04：修复 Zen 5 专用 y-cruncher 后端被错误按固定 `y-cruncher.exe` 名称监控，导致实际 `Komari.exe` 已满载仍被识别为未启动、外层持续等待的问题。就绪判断改为启动返回的实际 PID，移除从启动即开始倒计时的 `-TL`，有效压力确认后才由外层计时。新增回归断言；未发布。
+
+- 2026-09-04：Windows 压测资料升级为唯一的 `v99_windows_stress.ps1`，替代并移除 `v97_windows_stress.ps1`，避免同名构建无法辨别新旧行为。脚本按文件名自动写入报告构建版本，因此新报告会明确显示 `v99`；资料库下载入口只保留该最新文件。未发布。
+
+- 2026-09-04：修复 Windows `v97_windows_stress.ps1` 把 y-cruncher 大 NUMA 主机的线程/内存准备期计入用户设定 CPU 压测时长的问题。现在仅在 CPU 连续两次达到 80%、内存达到策略目标减 5 个百分点后开始正式计时；默认准备超时 900 秒，超时明确记录为准备失败而非 CPU 性能不合格。AMD EPYC `9Vxx` 同时纳入 Zen 5 后端选择。新增回归断言；未发布。
+
+- 2026-09-03：修复 Windows `v97_windows_stress.ps1` 将旧版 VC++ Runtime 仅因 `VCRUNTIME140.dll` 存在而误判为可用的问题。启动 y-cruncher 前改为同时核验 x64/x86 `MSVCP140.dll` 至少为 `14.51.36247.0`；不足时，管理员 PowerShell 从微软官方固定 `aka.ms/vc14` x64/x86 地址下载并静默修复，接受 0/1638/3010 后重新核验版本。非管理员或修复失败不会启动 y-cruncher，保留明确错误并沿用既有 fallback。新增 Windows 脚本回归断言；未发布。
+
+- 2026-09-03：修复 Ubuntu CUDA Toolkit 安装遇到 apt/dpkg 锁立即以退出码 100 失败的问题。安装器在更新索引、安装 CUDA 软件源依赖/keyring 及 Toolkit 前等待锁释放；人工 apt/dpkg、cloud-init 或未识别持锁进程不被终止，最长等待 900 秒。仅 `apt-daily-upgrade.service` 的 unattended-upgrade 连续约 10 秒无下载和 CPU 进展时，才受控停止、以 SIGTERM 结束并执行 `dpkg --configure -a` 后继续。新增生成安装器的回归测试和 Shell 语法验证；未发布。
+
+- 2026-09-03：修复 CUDA Toolkit 单次任务重跑误将内部 `cuda-toolkit/auto` 送入资产库路径校验，导致返回“file_path must stay under backend/scripts or backend/apptainer”。重跑现在按原任务保存的 CUDA 版本、强制安装选项和 OS profile 创建 CUDA 专用任务，直接交给 CUDA runner；新增回归测试，未发布。
+
+- 2026-09-02：`disk_stress_report.sh` 升级为 `v2026.09.02.1`。内核错误从读取全量 dmesg 改为仅监听压测开始后的新增事件，并以测试目录的块设备及父链过滤，避免并发数据盘故障被错误归因到根盘；监控不可用时明确 FAIL。已更正 `batch-20260831-142653-10e21b` 中根盘任务 `task-20260831-142653-edcdf0` 的 TXT/XLSX 报告、报告摘要与历史记录为 PASS；`/data1` 任务 `task-20260831-142653-9ac9e7` 的真实 I/O 失败及其全部文件保持不变。未发布。
+
 - 2026-08-31：SQLite 备份改为每日 `02:30` 由 `hpcdeploy-sqlite-backup.timer` 自动执行，服务离线错过时间后恢复会补跑；在线快照通过 `PRAGMA integrity_check` 后，仅保留最近 7 份 `hpc_control_panel_<时间>.db`，再删除最旧常规快照。安装与日常更新都会写入并启用 timer，卸载会停止并移除 timer 但保留已有备份；`pre_*` 操作保护快照不参与自动清理。新增真实 SQLite 滚动保留回归测试及 systemd/部署脚本契约测试，未发布。
 
 - 2026-08-31：修复多卡服务器的硬件信息探测被卡住的 `nvidia-smi` 拖垮的问题。GPU 查询由 3 次短重试改为单次最多 10 秒，并在额外 1 秒后强制结束；超时仅写入 GPU 驱动不可用标记，OS、CPU、内存和磁盘信息继续回填。单台检测和批量检测共用该规则。新增“忽略终止信号的 nvidia-smi 不得阻塞整次探测”回归测试；已强制发布，后端和 Nginx 健康检查通过，运行中的 GPU 压测保持恢复运行。生产 API 已验证 `10.87.89.199` 回填 CPU、内存及 8 卡 RTX 4090 驱动信息。

@@ -77,9 +77,17 @@ class TaskRecoveryTests(unittest.TestCase):
             batch_id="batch-1",
             server_id=8,
             sequence_index=2,
+            file_name="cpu_mem_stress_report.sh",
+            depends_on_task_id=None,
         )
         follower = SimpleNamespace(
+            id=11,
             task_id="task-follower",
+            batch_id="batch-1",
+            server_id=8,
+            sequence_index=3,
+            file_name="gpu_stress_report.sh",
+            depends_on_task_id=None,
             status="PENDING",
             end_time=None,
             exit_code=None,
@@ -205,6 +213,41 @@ class TaskRecoveryTests(unittest.TestCase):
         self.assertEqual(task.status, "RUNNING")
         schedule_retry.assert_called_once_with(task.task_id)
         self.assertTrue(any(call.args[2] == "WARNING" for call in add_log.call_args_list))
+
+    @patch("app.core.task_runner._schedule_stress_recovery_retry")
+    @patch("app.core.task_runner._add_log")
+    def test_poll_ssh_control_plane_loss_keeps_remote_stress_task_running_for_retry(
+        self,
+        add_log: Mock,
+        schedule_retry: Mock,
+    ) -> None:
+        task = SimpleNamespace(
+            task_id="task-poll-ssh",
+            status="RUNNING",
+            end_time=None,
+            exit_code=None,
+            error_message=None,
+            worker_id="old-worker",
+            lease_expire_time=datetime.utcnow() - timedelta(seconds=1),
+            last_heartbeat=datetime.utcnow() - timedelta(seconds=1),
+        )
+        db = Mock()
+
+        task_runner._defer_stress_task_after_control_plane_loss(
+            db,
+            task,
+            task.task_id,
+            "remote command failed to start: Timeout opening channel",
+        )
+
+        self.assertEqual(task.status, "RUNNING")
+        self.assertIsNone(task.end_time)
+        self.assertIsNone(task.exit_code)
+        self.assertIsNone(task.error_message)
+        self.assertGreater(task.lease_expire_time, datetime.utcnow())
+        db.commit.assert_called_once()
+        schedule_retry.assert_called_once_with(task.task_id)
+        self.assertIn("remote task remains RUNNING", add_log.call_args.args[3])
 
     @patch("app.core.task_runner._schedule_command_recovery_retry")
     @patch("app.core.task_runner._fail_running_stress_task")

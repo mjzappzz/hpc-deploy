@@ -66,6 +66,17 @@ class DiskStressDirectoryContractTests(unittest.TestCase):
         self.assertNotIn('--runtime=', durability_command)
         self.assertIn('disk_stress_report_${TIME_TAG}_${REPORT_TARGET_SUFFIX}.xlsx', source)
         self.assertIn('REPORT_TARGET_SUFFIX="root"', source)
+        self.assertIn('ERROR: python3-openpyxl is required', source)
+        self.assertIn('test -s "$XLSX_REPORT"', source)
+
+    def test_kernel_errors_are_limited_to_new_events_for_the_tested_block_device(self) -> None:
+        source = (Path(__file__).resolve().parents[1] / "scripts" / "stress" / "disk_stress_report.sh").read_text(encoding="utf-8")
+
+        self.assertIn('build_kernel_device_pattern', source)
+        self.assertIn('dmesg -W 2>/dev/null', source)
+        self.assertIn('KERNEL_DEVICE_PATTERN', source)
+        self.assertIn('grep --line-buffered -E "$KERNEL_DEVICE_PATTERN"', source)
+        self.assertNotIn('dmesg -w | egrep -i "$CRITICAL_ERR_PATTERN"', source)
 
     def test_disk_test_directory_is_the_script_third_argument(self) -> None:
         params = {

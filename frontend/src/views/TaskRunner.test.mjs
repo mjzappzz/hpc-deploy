@@ -91,6 +91,14 @@ test('lets target server favorites be changed with vector stars without a warnin
   assert.doesNotMatch(source, /\? '★' : '☆'/)
 })
 
+test('shows the shared running-task indicator to the right of an online target server', async () => {
+  const source = await readFile(new URL('./TaskRunner.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /listTasks/)
+  assert.match(source, /active_only:\s*true/)
+  assert.match(source, /<el-tag size="small" :type="server\.status === 'online' \? 'success' : 'info'" effect="plain">\{\{ server\.status === 'online' \? '在线' : '离线' \}\}<\/el-tag>\s*<span v-if="hasRunningTask\(server\.id\)"[^>]*class="task-running-dot"/)
+})
+
 test('probes every managed server before refreshing the target list', async () => {
   const source = await readFile(new URL('./TaskRunner.vue', import.meta.url), 'utf8')
 
