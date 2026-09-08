@@ -46,6 +46,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 
 ### servers API (`/api/servers`)
 - 服务器 CRUD
+- 服务器新增和编辑均按 `host` 拦截在管服务器已使用的 IP；归档服务器释放其 IP 供新服务器使用。恢复归档服务器时若该 IP 已被在管服务器使用，则返回 HTTP 409 并保持归档。历史记录与任务证据始终按 `server_id` 关联，不因 IP 复用改变归属。
 - 创建服务器后立即执行首次 SSH/环境探测；首次探测失败时保留服务器记录和错误信息
 - SSH 测试（`/test`、`/test-ssh-all`）
 - 信息探测（`/probe`、`/detect`、`/probe-all`）

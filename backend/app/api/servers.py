@@ -105,6 +105,18 @@ def _get_server_or_404(db: Session, server_id: int) -> Server:
     return server
 
 
+def _reject_duplicate_server_host(db: Session, host: str, *, exclude_server_id: int | None = None) -> None:
+    query = db.query(Server).filter(Server.host == host)
+    if exclude_server_id is not None:
+        query = query.filter(Server.id != exclude_server_id)
+    for duplicate in query.all():
+        if not is_server_archived(duplicate):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"IP 地址已录入服务器：{duplicate.name}",
+            )
+
+
 def _require_server_not_archived(server: Server) -> None:
     if is_server_archived(server):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="已归档服务器已冻结，请先恢复管理")
@@ -264,6 +276,7 @@ def create_server(
     db: Session = Depends(get_db),
 ) -> Server:
     data = payload.model_dump()
+    _reject_duplicate_server_host(db, data["host"])
     tags_list = data.pop("tags", [])
     data["tags_json"] = json.dumps(tags_list, ensure_ascii=False)
     server = Server(**data)
@@ -659,6 +672,8 @@ def update_server(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="已归档服务器仅可通过恢复管理操作解除冻结")
     if will_be_archived:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="请使用归档操作")
+    if "host" in data:
+        _reject_duplicate_server_host(db, data["host"], exclude_server_id=server.id)
     # Handle tags: convert list to json string for db column
     if "tags" in data:
         tags_list = data.pop("tags")
@@ -708,6 +723,7 @@ def restore_server(server_id: int, db: Session = Depends(get_db), _: str = Depen
     server = _get_server_or_404(db, server_id)
     if not is_server_archived(server):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="服务器未归档，无需恢复")
+    _reject_duplicate_server_host(db, server.host, exclude_server_id=server.id)
     server.tags_json = json.dumps(["待压测"], ensure_ascii=False)
     db.commit()
     db.refresh(server)

@@ -10,8 +10,21 @@ from app.schemas.server import ServerCreate
 
 
 class _FakeSession:
+    class _EmptyQuery:
+        def filter(self, *_args):
+            return self
+
+        def first(self):
+            return None
+
+        def all(self):
+            return []
+
     def get(self, _model, _key):
         return None
+
+    def query(self, _model):
+        return self._EmptyQuery()
 
     def add(self, _item) -> None:
         pass
