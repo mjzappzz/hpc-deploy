@@ -999,6 +999,31 @@
                       />
                     </el-tab-pane>
 
+                    <el-tab-pane v-if="detailShowMonitorGpu" label="GPU" name="gpu">
+                      <div v-if="detailMonitorLoading && !detailMonitorData" class="detail-panel-loading-inline">
+                        <el-icon class="is-loading"><Loading /></el-icon>
+                        <span>正在获取 GPU 快照...</span>
+                      </div>
+                      <div v-else-if="!detailMonitorData?.gpu.available" class="detail-panel-empty-action">
+                        <el-empty description="暂无 GPU 实时监控数据" :image-size="40" />
+                        <div v-if="detailMonitorData?.gpu.message" class="detail-monitor-msg">{{ detailMonitorData.gpu.message }}</div>
+                      </div>
+                      <div v-else class="detail-monitor-gpu-grid">
+                        <div v-for="gpu in detailMonitorData.gpu.items" :key="gpu.index" class="detail-monitor-gpu-card">
+                          <div class="detail-gpu-name">{{ gpu.name }}<span class="detail-gpu-idx"> #{{ gpu.index }}</span></div>
+                          <div class="detail-gpu-metrics">
+                            <span>GPU {{ gpu.utilization_gpu ?? '-' }}%</span>
+                            <span>显存 {{ gpu.memory_used ?? '-' }}/{{ gpu.memory_total ?? '-' }} MiB</span>
+                            <span>🌡 {{ gpu.temperature ?? '-' }}°C</span>
+                            <span>🌀 风扇 {{ gpu.fan_speed ?? '-' }}%</span>
+                            <span>⚡ 功耗 {{ gpu.power_draw ?? '-' }}/{{ gpu.power_limit ?? '-' }} W</span>
+                            <span>状态 {{ gpu.performance_state ?? '-' }}</span>
+                            <span>Bus {{ gpu.bus_id ?? '-' }}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </el-tab-pane>
+
                     <el-tab-pane v-if="detailShowMonitorCpuMem" label="CPU与内存" name="cpu_mem">
                       <div v-if="detailMonitorLoading && !detailMonitorData" class="detail-panel-loading-inline">
                         <el-icon class="is-loading"><Loading /></el-icon>
@@ -1061,30 +1086,6 @@
                       </el-table>
                     </el-tab-pane>
 
-                    <el-tab-pane v-if="detailShowMonitorGpu" label="GPU" name="gpu">
-                      <div v-if="detailMonitorLoading && !detailMonitorData" class="detail-panel-loading-inline">
-                        <el-icon class="is-loading"><Loading /></el-icon>
-                        <span>正在获取 GPU 快照...</span>
-                      </div>
-                      <div v-else-if="!detailMonitorData?.gpu.available" class="detail-panel-empty-action">
-                        <el-empty description="暂无 GPU 实时监控数据" :image-size="40" />
-                        <div v-if="detailMonitorData?.gpu.message" class="detail-monitor-msg">{{ detailMonitorData.gpu.message }}</div>
-                      </div>
-                      <div v-else class="detail-monitor-gpu-grid">
-                        <div v-for="gpu in detailMonitorData.gpu.items" :key="gpu.index" class="detail-monitor-gpu-card">
-                          <div class="detail-gpu-name">{{ gpu.name }}<span class="detail-gpu-idx"> #{{ gpu.index }}</span></div>
-                          <div class="detail-gpu-metrics">
-                            <span>GPU {{ gpu.utilization_gpu ?? '-' }}%</span>
-                            <span>显存 {{ gpu.memory_used ?? '-' }}/{{ gpu.memory_total ?? '-' }} MiB</span>
-                            <span>🌡 {{ gpu.temperature ?? '-' }}°C</span>
-                            <span>🌀 风扇 {{ gpu.fan_speed ?? '-' }}%</span>
-                            <span>⚡ 功耗 {{ gpu.power_draw ?? '-' }}/{{ gpu.power_limit ?? '-' }} W</span>
-                            <span>状态 {{ gpu.performance_state ?? '-' }}</span>
-                            <span>Bus {{ gpu.bus_id ?? '-' }}</span>
-                          </div>
-                        </div>
-                      </div>
-                    </el-tab-pane>
                   </el-tabs>
 
                   <div v-if="detailMonitorData?.sampled_at && detailActivePanel !== 'logs' && detailActivePanel !== 'summary'" class="detail-sampled-at">

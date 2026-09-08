@@ -1533,9 +1533,9 @@ const visibleMonitorTabs = computed<Array<{ name: MonitorPanel; label: string; m
   if (currentTaskType.value === 'stress') {
     return [
       { name: 'logs', label: '执行日志' },
-      { name: 'cpu_mem', label: 'CPU/内存', monitorType: 'cpu_mem' },
-      { name: 'disk', label: '磁盘', monitorType: 'disk' },
-      { name: 'gpu', label: 'GPU', monitorType: 'gpu' }
+      { name: 'gpu', label: 'GPU', monitorType: 'gpu' },
+      { name: 'cpu_mem', label: 'CPU与内存', monitorType: 'cpu_mem' },
+      { name: 'disk', label: '磁盘 I/O', monitorType: 'disk' }
     ]
   }
   if (currentTaskType.value === 'apptainer') {

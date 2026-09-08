@@ -13,17 +13,3 @@ export function adminVerify(password: string, durationMinutes: AdminSessionDurat
     tab_id: tabId,
   })
 }
-
-export interface AdminTemporarySessionAvailability {
-  enabled: boolean
-}
-
-export async function adminTemporarySessionAvailable(): Promise<boolean> {
-  const response = await request.get<AdminTemporarySessionAvailability>('/auth/admin/temporary-session-available')
-  return response.data.enabled
-}
-
-/** The server keeps this passwordless, single-use grant behind an explicit enable switch. */
-export function adminTemporarySession(tabId: string) {
-  return request.post<AdminSessionResponse>('/auth/admin/temporary-session', { tab_id: tabId })
-}

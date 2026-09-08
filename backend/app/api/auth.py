@@ -7,14 +7,11 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import (
     ADMIN_SESSION_DURATION_MINUTES,
-    ONE_TIME_ADMIN_TOKEN_SECONDS,
     create_admin_token,
-    create_one_time_admin_token,
     decode_admin_token,
     require_admin_token,
     verify_admin_password,
 )
-from app.core.config import settings
 from app.db.database import get_db
 
 logger = logging.getLogger(__name__)
@@ -43,42 +40,12 @@ class AdminVerifyRequest(BaseModel):
         return normalized
 
 
-class AdminTemporarySessionRequest(BaseModel):
-    tab_id: str
-
-    @field_validator("tab_id")
-    @classmethod
-    def validate_tab_id(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized or len(normalized) > 128:
-            raise ValueError("invalid admin tab id")
-        return normalized
-
-
 class AdminVerifyResponse(BaseModel):
     expires_in: int | None
 
 
-class AdminSessionGrant(AdminVerifyResponse):
-    token: str
-
-
 def should_secure_admin_cookie(request: Request) -> bool:
     return request.url.scheme.lower() == "https"
-
-
-def temporary_admin_session_enabled() -> bool:
-    return settings.app_env == "development" or settings.hpcdeploy_temporary_admin_mode_enabled
-
-
-def issue_temporary_admin_session(tab_id: str) -> AdminSessionGrant:
-    """Issue the fixed, short-lived administrator grant when explicitly enabled."""
-    if not temporary_admin_session_enabled():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
-    return AdminSessionGrant(
-        expires_in=ONE_TIME_ADMIN_TOKEN_SECONDS,
-        token=create_one_time_admin_token(tab_id=tab_id),
-    )
 
 
 def set_admin_session_cookie(response: Response, *, token: str, expires_in: int | None, request: Request) -> None:
@@ -93,18 +60,6 @@ def set_admin_session_cookie(response: Response, *, token: str, expires_in: int 
     if expires_in is not None:
         cookie_kwargs["max_age"] = expires_in
     response.set_cookie(**cookie_kwargs)
-
-
-def set_one_time_admin_cookie(response: Response, *, token: str, request: Request) -> None:
-    response.set_cookie(
-        key="admin_once_token",
-        value=token,
-        max_age=ONE_TIME_ADMIN_TOKEN_SECONDS,
-        httponly=True,
-        samesite="lax",
-        secure=should_secure_admin_cookie(request),
-        path="/api",
-    )
 
 
 @router.post("/admin/verify", response_model=AdminVerifyResponse)
@@ -128,24 +83,6 @@ def admin_verify(
     return AdminVerifyResponse(expires_in=expires_in)
 
 
-@router.get("/admin/temporary-session-available")
-def get_temporary_admin_session_availability() -> dict[str, bool]:
-    return {"enabled": temporary_admin_session_enabled()}
-
-
-@router.post("/admin/temporary-session", response_model=AdminVerifyResponse)
-def admin_temporary_session(
-    payload: AdminTemporarySessionRequest,
-    request: Request,
-    response: Response,
-) -> AdminVerifyResponse:
-    """Create a short-lived, single-use passwordless administrator grant when enabled."""
-    grant = issue_temporary_admin_session(payload.tab_id)
-    set_one_time_admin_cookie(response, token=grant.token, request=request)
-    logger.warning("[auth] one-time passwordless admin grant issued, expires_in=%s", grant.expires_in)
-    return AdminVerifyResponse(expires_in=grant.expires_in)
-
-
 class AdminStatusResponse(BaseModel):
     expires_in: int | None
 
@@ -164,5 +101,4 @@ def admin_status(token: str = Depends(require_admin_token)) -> AdminStatusRespon
 def admin_logout(response: Response) -> Response:
     """Clear the browser's admin session cookie."""
     response.delete_cookie(key="admin_token", path="/api")
-    response.delete_cookie(key="admin_once_token", path="/api")
     return response

@@ -2,7 +2,7 @@ import { h, nextTick, ref } from 'vue'
 import { ElIcon, ElInput, ElMessageBox, ElMessage, ElRadio, ElRadioButton, ElRadioGroup } from 'element-plus'
 import { Lock, Timer, WarningFilled } from '@element-plus/icons-vue'
 import { request } from '@/api/request'
-import { adminTemporarySession, adminTemporarySessionAvailable, adminVerify, type AdminSessionDuration } from '@/api/auth'
+import { adminVerify, type AdminSessionDuration } from '@/api/auth'
 
 /**
  * Admin confirm composable.
@@ -140,26 +140,18 @@ export async function requireAdminConfirm(actionName: string): Promise<boolean> 
   // Expired — clear stale state
   exitAdminMode(false)
 
-  let temporarySessionEnabled = false
-  let temporarySessionRequested = false
   try {
-    temporarySessionEnabled = await adminTemporarySessionAvailable().catch(() => false)
     const password = ref('')
     const passwordInput = ref<{ focus: () => void } | null>(null)
     const durationMinutes = ref<AdminSessionDuration>(5)
     await ElMessageBox({
-      message: ({ close }) => h('div', { class: 'admin-confirm-form' }, [
+      message: () => h('div', { class: 'admin-confirm-form' }, [
         h('div', { class: 'admin-confirm-ascension', 'aria-hidden': 'true' }, [
           h('span', { class: 'admin-confirm-ascension__rays' }),
           h('img', {
             class: 'admin-confirm-ascension__mascot',
             src: '/assets/hpcdeploy-admin-mascot.png',
             alt: '',
-            onClick: (event: MouseEvent) => {
-              if (!temporarySessionEnabled || event.detail !== 3) return
-              temporarySessionRequested = true
-              close()
-            },
           }),
           h('span', { class: 'admin-confirm-ascension__label' }, '权限飞升仪式'),
         ]),
@@ -249,18 +241,6 @@ export async function requireAdminConfirm(actionName: string): Promise<boolean> 
 
     return true
   } catch (error: any) {
-    if (temporarySessionRequested && temporarySessionEnabled) {
-      try {
-        const tabId = getOrCreateAdminTabId()
-        await adminTemporarySession(tabId)
-        setAdminTabHeader(tabId)
-        ElMessage.success('已授权当前操作')
-        return true
-      } catch (devError: any) {
-        ElMessage.warning(devError?.response?.data?.detail || '当前操作的快速授权未启用')
-        return false
-      }
-    }
     if (error === 'cancel' || error === 'close') {
       return false
     }
