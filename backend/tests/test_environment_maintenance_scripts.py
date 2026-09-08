@@ -52,7 +52,7 @@ class EnvironmentMaintenanceScriptTests(unittest.TestCase):
     def test_lock_linux_release_has_safe_scope(self) -> None:
         content = _script("lock_linux_release.sh")
 
-        self.assertIn('SCRIPT_VERSION="1.7.6"', content)
+        self.assertIn('SCRIPT_VERSION="1.7.7"', content)
         self.assertIn('[[ "$VERSION_ID" =~ ^9\\.[0-9]+$ ]]', content)
         self.assertIn('select_rocky_repo_root', content)
         self.assertIn('"--setopt=reposdir=${probe_root}"', content)
@@ -137,7 +137,14 @@ class EnvironmentMaintenanceScriptTests(unittest.TestCase):
         self.assertNotIn("dnf update", content)
         self.assertNotIn("yum update", content)
         self.assertNotIn("sudo ", content)
-        self.assertEqual(extract_content_version(content), "v1.7.6")
+        self.assertEqual(extract_content_version(content), "v1.7.7")
+
+    def test_lock_linux_release_disables_legacy_rocky_extras_repo(self) -> None:
+        content = _script("lock_linux_release.sh")
+
+        self.assertIn("disable_rocky_repo_id", content)
+        self.assertIn('disable_rocky_repo_id "extras"', content)
+        self.assertIn('grep -Fxq "extras" <<< "$enabled_repo_ids"', content)
 
     def test_lock_linux_release_accepts_held_installed_ubuntu_packages(self) -> None:
         content = _script("lock_linux_release.sh")

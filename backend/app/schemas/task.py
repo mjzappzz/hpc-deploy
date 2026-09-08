@@ -29,6 +29,7 @@ class GpuDriverRunRequest(BaseModel):
     driver_id: str | None = Field(default=None, min_length=24, max_length=24, pattern="^[a-f0-9]{24}$")
     driver_upload_id: str | None = Field(default=None, min_length=24, max_length=24, pattern="^[a-f0-9]{24}$")
     force_install_if_driver_exists: bool = False
+    allow_kernel_maintenance: bool = False
 
 
 class GpuDriverUploadResponse(BaseModel):
@@ -44,6 +45,7 @@ class GpuDriverBatchRunRequest(BaseModel):
     driver_id: str | None = Field(default=None, min_length=24, max_length=24, pattern="^[a-f0-9]{24}$")
     driver_upload_id: str | None = Field(default=None, min_length=24, max_length=24, pattern="^[a-f0-9]{24}$")
     force_install_if_driver_exists: bool = False
+    allow_kernel_maintenance: bool = False
 
 
 class CudaToolkitRunRequest(BaseModel):
@@ -66,6 +68,7 @@ class ManagedSuiteCreateRequest(BaseModel):
     driver_id: str | None = Field(default=None, min_length=24, max_length=24, pattern="^[a-f0-9]{24}$")
     driver_upload_id: str | None = Field(default=None, min_length=24, max_length=24, pattern="^[a-f0-9]{24}$")
     force_install_if_driver_exists: bool = False
+    allow_kernel_maintenance: bool = False
     cuda_version: Literal["11.8", "12.0", "12.1", "12.2", "12.3", "12.4", "12.5", "12.6", "12.8", "12.9", "13.0"] = "12.8"
     force_install_cuda: bool = False
 

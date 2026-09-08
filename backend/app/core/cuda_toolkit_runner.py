@@ -209,7 +209,7 @@ wait_for_apt_dpkg_unlock "更新 Ubuntu 软件包索引前"
 sudo apt-get update
 wait_for_apt_dpkg_unlock "安装 CUDA 软件源依赖前"
 sudo apt-get install -y ca-certificates curl
-curl -fsSL -o /tmp/cuda-keyring.deb https://developer.download.nvidia.com/compute/cuda/repos/{distro}/x86_64/cuda-keyring_1.1-1_all.deb
+curl --http1.1 --fail --show-error --location --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 20 --max-time 120 -o /tmp/cuda-keyring.deb https://developer.download.nvidia.com/compute/cuda/repos/{distro}/x86_64/cuda-keyring_1.1-1_all.deb
 wait_for_apt_dpkg_unlock "安装 CUDA 软件源 keyring 前"
 sudo dpkg -i /tmp/cuda-keyring.deb
 rm -f /tmp/cuda-keyring.deb

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.7.6"
+SCRIPT_VERSION="1.7.7"
 BACKUP_ROOT="/var/backups/hpcdeploy"
 RUN_ID="$(date +%Y%m%d-%H%M%S-%N)-${BASHPID}"
 BACKUP_DIR="${BACKUP_ROOT}/linux-release-lock-${RUN_ID}"
@@ -405,6 +405,46 @@ remove_managed_repo_files() {
     shopt -u nullglob
 }
 
+disable_rocky_repo_id() {
+    local repo_id="$1"
+    local repo
+    local rewritten
+    shopt -s nullglob
+    for repo in /etc/yum.repos.d/*.repo; do
+        grep -Eq "^[[:space:]]*\\[${repo_id}\\][[:space:]]*$" "$repo" || continue
+        rewritten="$(mktemp "${repo}.hpcdeploy.XXXXXX")"
+        awk -v target="$repo_id" '
+            function finalize_section() {
+                if (in_target && !enabled_written) print "enabled=0"
+            }
+            /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
+                finalize_section()
+                header = $0
+                gsub(/[[:space:]]/, "", header)
+                in_target = (header == "[" target "]")
+                enabled_written = 0
+                print
+                next
+            }
+            in_target && /^[[:space:]]*enabled[[:space:]]*=/ {
+                print "enabled=0"
+                enabled_written = 1
+                next
+            }
+            { print }
+            END { finalize_section() }
+        ' "$repo" > "$rewritten" || {
+            rm -f "$rewritten"
+            shopt -u nullglob
+            return 1
+        }
+        chmod --reference="$repo" "$rewritten"
+        mv -f "$rewritten" "$repo"
+        log INFO "已禁用遗留 Rocky 仓库：${repo_id}（${repo}）"
+    done
+    shopt -u nullglob
+}
+
 verify_repo_backup_restored() {
     local repo
     local current
@@ -541,6 +581,7 @@ lock_rocky_release() {
 
     ROCKY_MUTATION_STARTED=1
     remove_managed_repo_files
+    disable_rocky_repo_id "extras"
     install -m 0644 "$rocky_repo_tmp" "/etc/yum.repos.d/rocky-${VERSION_ID}-hpcdeploy.repo"
     install -m 0644 "$epel_repo_tmp" /etc/yum.repos.d/epel.repo
     rm -f "$rocky_repo_tmp" "$epel_repo_tmp"
@@ -578,6 +619,8 @@ lock_rocky_release() {
         [[ "$repo_id_count" == "1" ]] \
             || fail "锁定后仓库 ID ${required_repo} 定义数量异常：${repo_id_count}"
     done
+    grep -Fxq "extras" <<< "$enabled_repo_ids" \
+        && fail "锁定后遗留 Rocky extras 仓库仍处于启用状态"
     grep -Fqx "baseurl=${repo_root}/BaseOS/x86_64/os/" "/etc/yum.repos.d/rocky-${VERSION_ID}-hpcdeploy.repo" \
         || fail "BaseOS 固定版本地址验证失败"
     grep -Fqx "baseurl=${repo_root}/AppStream/x86_64/os/" "/etc/yum.repos.d/rocky-${VERSION_ID}-hpcdeploy.repo" \

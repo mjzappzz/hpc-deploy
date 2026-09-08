@@ -6,14 +6,20 @@ from unittest.mock import Mock, patch
 
 from app.core.gpu_driver_runner import (
     _optional_param_text,
+    _prepare_rocky_kernel_maintenance_reboot,
+    _run_rocky_release_lock,
     _start_remote_install,
+    build_rocky9_kernel_maintenance_script,
     build_rocky9_install_script,
     build_rocky9_pre_reboot_script,
     installed_driver_matches_target,
+    kernel_maintenance_boot_matches,
     list_library_drivers,
     driver_version_from_filename,
     should_reboot_for_gpu_driver,
     should_reboot_after_driver_install,
+    should_run_kernel_maintenance,
+    should_schedule_post_install_reboot,
     should_skip_existing_driver,
     resolve_gpu_driver_os_profile,
     build_ubuntu_pre_reboot_script,
@@ -54,11 +60,105 @@ class GpuDriverRunnerTests(unittest.TestCase):
         self.assertIn("</dev/null > gpu-driver-install.log 2>&1", command)
         self.assertIn("echo $! > .gpu-driver.pid", command)
 
-    def test_pre_reboot_script_updates_and_disables_nouveau(self) -> None:
+    def test_pre_reboot_script_does_not_mutate_missing_kernel_dependencies(self) -> None:
         script = build_rocky9_pre_reboot_script()
-        self.assertIn('sudo yum update -y', script)
+        self.assertIn('running_kernel="$(uname -r)"', script)
+        self.assertNotIn('kernel-devel-${running_kernel}', script)
+        self.assertNotIn('kernel-headers-${running_kernel}', script)
+        self.assertNotIn('yum update', script)
         self.assertIn('blacklist nouveau', script)
         self.assertIn('sudo dracut --force', script)
+
+    def test_kernel_maintenance_requires_explicit_authorization(self) -> None:
+        self.assertFalse(should_run_kernel_maintenance(
+            exact_development_packages_available=False,
+            allowed=False,
+        ))
+        self.assertTrue(should_run_kernel_maintenance(
+            exact_development_packages_available=False,
+            allowed=True,
+        ))
+        self.assertFalse(should_run_kernel_maintenance(
+            exact_development_packages_available=True,
+            allowed=True,
+        ))
+
+    def test_kernel_maintenance_uses_exact_packages_without_a_full_update(self) -> None:
+        script = build_rocky9_kernel_maintenance_script()
+        self.assertIn("dnf -q repoquery --latest-limit=1", script)
+        self.assertIn('"kernel-${candidate}"', script)
+        self.assertIn('"kernel-core-${candidate}"', script)
+        self.assertIn('"kernel-modules-${candidate}"', script)
+        self.assertIn('"kernel-devel-${candidate}"', script)
+        self.assertIn('"kernel-headers-${candidate}"', script)
+        self.assertIn("dnf versionlock delete 'kernel*'", script)
+        self.assertNotIn("yum update", script)
+        self.assertNotIn("dnf update", script)
+
+    def test_kernel_maintenance_validates_initramfs_before_changing_default_boot(self) -> None:
+        script = build_rocky9_kernel_maintenance_script()
+        self.assertIn('sudo dracut --force --kver "$candidate"', script)
+        self.assertIn('test -s "$image"', script)
+        self.assertIn('root_source="$(findmnt -n -o SOURCE /)"', script)
+        self.assertIn('required_modules+=(dm-mod lvm)', script)
+        self.assertIn('required_modules+=(nvme)', script)
+        self.assertIn('sudo lsinitrd "$image"', script)
+        self.assertIn('restore_before_boot', script)
+        self.assertIn('sudo grubby --set-default "/boot/vmlinuz-${candidate}"', script)
+        self.assertLess(
+            script.index('test -s "$image"'),
+            script.index('sudo grubby --set-default "/boot/vmlinuz-${candidate}"'),
+        )
+
+    def test_kernel_maintenance_only_resumes_after_booting_the_candidate(self) -> None:
+        self.assertTrue(kernel_maintenance_boot_matches(
+            candidate="5.14.0-427.42.1.el9_4.x86_64",
+            running_kernel="5.14.0-427.42.1.el9_4.x86_64",
+        ))
+        self.assertFalse(kernel_maintenance_boot_matches(
+            candidate="5.14.0-427.42.1.el9_4.x86_64",
+            running_kernel="5.14.0-427.13.1.el9_4.x86_64",
+        ))
+
+    def test_kernel_maintenance_persists_candidate_and_waiting_reboot_phase(self) -> None:
+        task = Mock(task_id="task-kernel", remote_work_dir="/tmp/task-kernel", params={})
+        task.params = {}
+        params_updates: list[dict[str, object]] = []
+
+        with (
+            patch("app.core.gpu_driver_runner._run_script", return_value=0),
+            patch("app.core.gpu_driver_runner._read_remote_required_file", side_effect=[
+                "5.14.0-427.42.1.el9_4.x86_64",
+                "/boot/vmlinuz-5.14.0-427.13.1.el9_4.x86_64",
+            ]),
+            patch("app.core.gpu_driver_runner._read_boot_id", return_value="boot-before"),
+            patch("app.core.gpu_driver_runner._update_params", side_effect=lambda _db, _task, **values: params_updates.append(values)),
+            patch("app.core.gpu_driver_runner._set_status"),
+            patch("app.core.gpu_driver_runner._schedule_reboot") as schedule_reboot,
+            patch("app.core.gpu_driver_runner._log"),
+        ):
+            candidate, previous_default = _prepare_rocky_kernel_maintenance_reboot(Mock(), task, Mock())
+
+        self.assertEqual(candidate, "5.14.0-427.42.1.el9_4.x86_64")
+        self.assertEqual(previous_default, "/boot/vmlinuz-5.14.0-427.13.1.el9_4.x86_64")
+        self.assertEqual(params_updates[0]["gpu_driver_phase"], "waiting_kernel_maintenance_reboot")
+        self.assertEqual(params_updates[0]["gpu_driver_kernel_candidate"], candidate)
+        schedule_reboot.assert_called_once()
+
+    def test_kernel_maintenance_relocks_the_verified_kernel_with_sudo(self) -> None:
+        executor = Mock()
+        executor.exec_command_in_dir.return_value = 0
+        with TemporaryDirectory() as temp_dir:
+            release_lock = Path(temp_dir) / "lock_linux_release.sh"
+            release_lock.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+            with (
+                patch("app.core.gpu_driver_runner.GPU_DRIVER_RELEASE_LOCK_SCRIPT", release_lock),
+                patch("app.core.gpu_driver_runner._log"),
+            ):
+                _run_rocky_release_lock(executor, "/tmp/task-kernel", "task-kernel", Mock())
+
+        command = executor.exec_command_in_dir.call_args.args[0]
+        self.assertIn("sudo -n bash", command)
 
     def test_preparation_skips_reboot_steps_when_nouveau_is_absent(self) -> None:
         script = build_rocky9_pre_reboot_script(disable_nouveau=False)
@@ -119,6 +219,25 @@ class GpuDriverRunnerTests(unittest.TestCase):
         self.assertTrue(should_reboot_after_driver_install(force_install=True, nvidia_smi_available=True))
         self.assertFalse(should_reboot_after_driver_install(force_install=False, nvidia_smi_available=True))
         self.assertFalse(should_reboot_after_driver_install(force_install=True, nvidia_smi_available=False))
+
+    def test_successful_install_with_inactive_driver_reboots_before_verification(self) -> None:
+        self.assertTrue(should_schedule_post_install_reboot(
+            force_install=False,
+            activation_reboot_required=True,
+        ))
+        self.assertTrue(should_schedule_post_install_reboot(
+            force_install=True,
+            activation_reboot_required=False,
+        ))
+        self.assertFalse(should_schedule_post_install_reboot(
+            force_install=False,
+            activation_reboot_required=False,
+        ))
+
+    def test_install_scripts_mark_driver_activation_reboot_requirement(self) -> None:
+        for script in (build_rocky9_install_script(), build_ubuntu_install_script()):
+            self.assertIn(".gpu-driver.activation-reboot-required", script)
+            self.assertIn("NVIDIA driver installed but is not active until reboot", script)
 
     def test_driver_os_profile_supports_rocky9_and_supported_ubuntu_releases(self) -> None:
         self.assertEqual(resolve_gpu_driver_os_profile("Rocky Linux 9.4 (Blue Onyx)"), "rocky9")

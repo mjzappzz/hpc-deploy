@@ -135,6 +135,16 @@ test('describes the active GPU driver install policy instead of always showing t
   assert.match(source, /forceInstallIfDriverExists \? '将覆盖安装所选版本' : '默认检测到 nvidia-smi 后跳过安装。'/)
 })
 
+test('requires explicit opt-in before a GPU task may maintain a Rocky kernel', async () => {
+  const source = await readFile(new URL('./TaskRunner.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /v-model="allowKernelMaintenance"/)
+  assert.match(source, /允许 Rocky 9 内核维护（同小版本）/)
+  assert.match(source, /会安装同一 Rocky 小版本内可用的新内核，并自动重启/)
+  assert.match(source, /\.{3}\(allowKernelMaintenance\.value \? \{ allow_kernel_maintenance: true \} : \{\}\)/)
+  assert.match(source, /selectedTaskCategory\.value === 'gpu_software'[\s\S]*allow_kernel_maintenance: true/)
+})
+
 test('describes GPU driver installation as OS-aware rather than Rocky-only', async () => {
   const source = await readFile(new URL('./TaskRunner.vue', import.meta.url), 'utf8')
 

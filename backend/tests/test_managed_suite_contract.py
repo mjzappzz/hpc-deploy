@@ -2,7 +2,7 @@ from types import SimpleNamespace
 import unittest
 
 from app.api.tasks import MANAGED_SUITE_ACTIONS, _build_managed_suite_batch_ids, _managed_suite_effective_tasks
-from app.schemas.task import ManagedSuiteCreateRequest
+from app.schemas.task import GpuDriverBatchRunRequest, GpuDriverRunRequest, ManagedSuiteCreateRequest
 
 
 class ManagedSuiteContractTests(unittest.TestCase):
@@ -43,6 +43,29 @@ class ManagedSuiteContractTests(unittest.TestCase):
             [action for action, _path in MANAGED_SUITE_ACTIONS["gpu_software"]],
             request.actions,
         )
+
+    def test_kernel_maintenance_is_disabled_when_gpu_request_omits_it(self) -> None:
+        single = GpuDriverRunRequest(
+            server_id=1,
+            driver_type="geforce",
+            driver_id="a" * 24,
+        )
+        batch = GpuDriverBatchRunRequest(
+            server_ids=[1, 2],
+            driver_type="geforce",
+            driver_id="a" * 24,
+        )
+        suite = ManagedSuiteCreateRequest(
+            suite_type="gpu_software",
+            server_ids=[1],
+            actions=["gpu_driver", "cuda_toolkit"],
+            driver_type="geforce",
+            driver_id="a" * 24,
+        )
+
+        self.assertFalse(single.allow_kernel_maintenance)
+        self.assertFalse(batch.allow_kernel_maintenance)
+        self.assertFalse(suite.allow_kernel_maintenance)
 
     def test_managed_suite_retry_replaces_the_failed_step_for_scheduling(self) -> None:
         tasks = [

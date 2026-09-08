@@ -2,6 +2,8 @@
 
 > 维护流水与会话交接材料。它记录变化背景和待办，不替代 [architecture.md](architecture.md) 中的当前架构、安全边界或 [../deploy/README.md](../deploy/README.md) 中的可执行部署步骤。
 
+- 2026-09-07：Rocky GPU 驱动预检移除隐式 `yum update -y`。当前 `uname -r` 缺少精确 `kernel-devel`/`kernel-headers` 时默认只提示维护窗口；显式启用同小版本内核维护后，才在锁定仓库中安装候选内核、校验 initramfs、重启验证并重新锁定，不以全量更新绕过版本锁。未发布。
+
 - 2026-09-07：压测任务已进入远端 detach 运行后，若 SSH 控制面重连失败，不再以该现象直接判定远端压测已退出；任务保持 `RUNNING`、续租并进入恢复监控重试，仅在能继续取证时收敛结果，避免短暂 SSH 故障误报 FAIL。未发布。
 
 - 2026-09-07：服务器管理与任务执行目标列表同步查询活跃任务；服务器状态右侧以绿色呼吸点标示“任务进行中”，并遵从减少动效偏好设置。未发布。
@@ -1017,3 +1019,12 @@ HPCDeploy 已形成完整闭环，端到端链路全部打通：
 - batchFailureReasons 新增 CANCELED 分支
 - 执行顺序分子用位置索引 / 分母用同服务器任务数
 ```
+## 2026-09-07 Rocky 旧版本 extras 仓库禁用
+
+- `lock_linux_release.sh` 升级至 `v1.7.7`：Rocky 固定 BaseOS/AppStream/CRB 与 EPEL 后，按 repo 段显式禁用遗留 `[extras]`，并校验其不在 enabled repo 列表中；避免 Rocky 9.4 等旧小版本的官方 `extras` mirrorlist 返回 404，阻断后续 NVIDIA 驱动依赖安装。原仓库配置仍先完整备份，失败时自动回滚。
+
+## 2026-09-07 Rocky GPU 内核维护恢复
+
+- GPU 驱动单机、批量、托管套件和重跑任务新增可选 `allow_kernel_maintenance`，默认 `false`；任务页仅在 GPU 驱动流程中提供明确授权开关及维护/重启警告。省略或关闭时，Rocky 9 当前内核缺少精确开发包会直接给出维护窗口指引，不安装内核包、不改默认启动项、不重启。
+- 授权后仅从已锁定的同一 Rocky 小版本仓库解析候选内核，并按精确包名安装 `kernel`、`kernel-core`、`kernel-modules`、`kernel-devel`、`kernel-headers`；安装期间仅临时解除内核 versionlock，不执行全量 `yum update`/`dnf update`。候选 initramfs 必须先生成并按当前根目录依赖验证 NVMe、device-mapper/LVM 与 XFS/ext4 组件，失败自动恢复旧 versionlock 与默认启动项并停止。
+- 重启恢复持久化候选内核、旧默认启动项与 boot ID；恢复连接后仅当 `uname -r` 与候选完全一致时才重新执行 Rocky 版本锁定并继续原 Nouveau/驱动流程。若未启动到候选则恢复旧默认项并报失败。驱动安装器成功但内核模块尚未激活时也会自动重启并在恢复后用 `nvidia-smi` 验证，避免误判安装失败。

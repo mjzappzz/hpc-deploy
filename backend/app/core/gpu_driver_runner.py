@@ -31,14 +31,20 @@ GPU_DRIVER_DISPLAY_FILE_NAME = "nvidia-linux-driver.run"
 GPU_DRIVER_PHASE_KEY = "gpu_driver_phase"
 GPU_DRIVER_BOOT_ID_KEY = "gpu_driver_boot_id"
 GPU_DRIVER_PHASE_INITIAL = "initial"
+GPU_DRIVER_PHASE_KERNEL_MAINTENANCE = "kernel_maintenance"
+GPU_DRIVER_PHASE_WAITING_KERNEL_MAINTENANCE_REBOOT = "waiting_kernel_maintenance_reboot"
 GPU_DRIVER_PHASE_WAITING_REBOOT = "waiting_reboot"
 GPU_DRIVER_PHASE_INSTALLING = "installing"
 GPU_DRIVER_PHASE_WAITING_POST_INSTALL_REBOOT = "waiting_post_install_reboot"
 GPU_DRIVER_REBOOT_AFTER_INSTALL_KEY = "gpu_driver_reboot_after_install"
+GPU_DRIVER_KERNEL_CANDIDATE_KEY = "gpu_driver_kernel_candidate"
+GPU_DRIVER_KERNEL_PREVIOUS_DEFAULT_KEY = "gpu_driver_kernel_previous_default"
 GPU_DRIVER_WAIT_REBOOT_SECONDS = 1800
 GPU_DRIVER_RECONNECT_INTERVAL_SECONDS = 10
 GPU_DRIVER_UPLOAD_ROOT = BACKEND_ROOT / "data" / "gpu_driver_uploads"
 GPU_DRIVER_LIBRARY_ROOT = BACKEND_ROOT / "data" / "gpu_driver_library"
+GPU_DRIVER_RELEASE_LOCK_SCRIPT = BACKEND_ROOT / "scripts" / "mpi" / "lock_linux_release.sh"
+GPU_DRIVER_RELEASE_LOCK_FILE_NAME = "lock_linux_release.sh"
 GPU_DRIVER_LIBRARY_TYPES = {
     "geforce": "GeForce",
     "datacenter": "Data Center（RTX Enterprise）",
@@ -83,6 +89,16 @@ def should_reboot_for_gpu_driver(*, nouveau_loaded: bool, kernel_reboot_required
 def should_reboot_after_driver_install(*, force_install: bool, nvidia_smi_available: bool) -> bool:
     """A running driver must be rebooted before its replacement can be verified."""
     return force_install and nvidia_smi_available
+
+
+def should_schedule_post_install_reboot(*, force_install: bool, activation_reboot_required: bool) -> bool:
+    """Activate a successful install after reboot when its module is not live yet."""
+    return force_install or activation_reboot_required
+
+
+def should_run_kernel_maintenance(*, exact_development_packages_available: bool, allowed: bool) -> bool:
+    """Only an explicit operator authorization may turn a missing package into maintenance."""
+    return not exact_development_packages_available and allowed
 
 
 def resolve_gpu_driver_os_profile(os_info: str | None) -> str:
@@ -161,7 +177,8 @@ echo '========== [5/6] Nouveau 未加载，跳过禁用与重启 =========='
 set -euo pipefail
 sudo -n true
 echo '========== [1/6] 检查 NVIDIA 显卡 =========='
-echo '========== [1/6] 安装构建依赖 =========='
+running_kernel="$(uname -r)"
+echo '========== [2/6] 安装构建依赖 =========='
 epel_repo_enabled() {
     sudo dnf -q repolist --enabled 2>/dev/null |
         awk 'NR > 1 {print $1}' |
@@ -173,13 +190,88 @@ else
     sudo yum install -y epel-release
 fi
 sudo yum install -y gcc make dkms elfutils-libelf-devel libglvnd-devel pciutils pkgconfig curl
-echo '========== [2/6] 检查 NVIDIA 显卡 =========='
+echo '========== [3/6] 检查 NVIDIA 显卡 =========='
 lspci | grep -i nvidia || { echo 'ERROR: 未检测到 NVIDIA GPU'; exit 20; }
-echo '========== [3/6] 更新系统及内核 =========='
-sudo yum update -y
 echo '========== [4/6] 当前运行内核 =========='
-uname -r
+printf '%s\n' "$running_kernel"
 """ + nouveau_steps
+
+
+def build_rocky9_kernel_maintenance_script() -> str:
+    """Build a boot-safe same-minor Rocky kernel candidate without a full update."""
+    return """#!/usr/bin/env bash
+set -euo pipefail
+sudo -n true
+. /etc/os-release
+[[ "${ID,,}" == "rocky" && "$VERSION_ID" =~ ^9\\.[0-9]+$ ]] || {
+  echo "ERROR: kernel maintenance is limited to Rocky Linux 9.x"; exit 41;
+}
+[[ -r /etc/dnf/vars/releasever && "$(tr -d '[:space:]' < /etc/dnf/vars/releasever)" == "$VERSION_ID" ]] || {
+  echo "ERROR: Rocky ${VERSION_ID} fixed-version repositories are not locked"; exit 41;
+}
+running_kernel="$(uname -r)"
+minor_tag="el${VERSION_ID/./_}"
+previous_default="$(sudo grubby --default-kernel)"
+test -n "$previous_default"
+lock_file="/etc/dnf/plugins/versionlock.list"
+lock_backup=".gpu-driver.versionlock.before"
+candidate_file=".gpu-driver.kernel-candidate"
+previous_default_file=".gpu-driver.kernel-default-before"
+restore_before_boot() {
+  local status="$?"
+  if [ "$status" -ne 0 ]; then
+    if [ -s "$lock_backup" ]; then sudo cp -f "$lock_backup" "$lock_file"; fi
+    sudo grubby --set-default "$previous_default" >/dev/null 2>&1 || true
+  fi
+  exit "$status"
+}
+trap restore_before_boot EXIT
+
+echo '========== Rocky 同小版本内核维护：解析候选内核 =========='
+candidate_full="$(sudo dnf -q repoquery --latest-limit=1 --qf '%{VERSION}-%{RELEASE}.%{ARCH}' kernel-core | sort -V | tail -n1)"
+test -n "$candidate_full"
+case "$candidate_full" in *".${minor_tag}."*) ;; *) echo "ERROR: candidate is outside Rocky ${VERSION_ID}: $candidate_full"; exit 42;; esac
+candidate="${candidate_full%.*}"
+printf '%s\\n' "$candidate" > "$candidate_file"
+printf '%s\\n' "$previous_default" > "$previous_default_file"
+
+echo '========== 暂时解除内核 versionlock 并安装精确包 =========='
+if [ -e "$lock_file" ]; then sudo cp -a "$lock_file" "$lock_backup"; fi
+sudo dnf versionlock delete 'kernel*' || true
+sudo dnf install -y \\
+  "kernel-${candidate}" \\
+  "kernel-core-${candidate}" \\
+  "kernel-modules-${candidate}" \\
+  "kernel-devel-${candidate}" \\
+  "kernel-headers-${candidate}"
+
+echo '========== 构建候选 initramfs =========='
+sudo dracut --force --kver "$candidate"
+image="/boot/initramfs-${candidate}.img"
+test -s "$image" || { echo "ERROR: candidate initramfs is missing: $image"; exit 43; }
+required_modules=()
+root_source="$(findmnt -n -o SOURCE /)"
+root_fstype="$(findmnt -n -o FSTYPE /)"
+if [[ "$root_source" == /dev/mapper/* ]] || lsblk -s -n -o TYPE "$root_source" 2>/dev/null | grep -qx 'lvm'; then
+  required_modules+=(dm-mod lvm)
+fi
+if lsblk -s -n -o TRAN "$root_source" 2>/dev/null | grep -qx 'nvme'; then required_modules+=(nvme); fi
+case "$root_fstype" in xfs|ext4) required_modules+=("$root_fstype");; esac
+for required in "${required_modules[@]}"; do
+  if [[ "$required" == lvm ]]; then
+    sudo lsinitrd "$image" | grep -Eq '(/lvm|lvm2)' || { echo "ERROR: initramfs missing root-storage component: lvm"; exit 44; }
+  else
+    sudo lsinitrd "$image" | grep -Eq "/${required}(\\.ko|\\.xz|\\.zst)?" || { echo "ERROR: initramfs missing root-storage module: $required"; exit 44; }
+  fi
+done
+
+echo '========== 验证后切换默认启动项 =========='
+sudo grubby --set-default "/boot/vmlinuz-${candidate}"
+[[ "$(sudo grubby --default-kernel)" == "/boot/vmlinuz-${candidate}" ]] || { echo "ERROR: failed to set candidate as default"; exit 45; }
+if [ -s "$lock_backup" ]; then sudo cp -f "$lock_backup" "$lock_file"; fi
+trap - EXIT
+echo "Kernel candidate is boot-safe: $candidate"
+"""
 
 
 def build_ubuntu_pre_reboot_script(disable_nouveau: bool = True) -> str:
@@ -245,7 +337,11 @@ sudo "./{GPU_DRIVER_FILE_NAME}" \\
   --allow-installation-with-running-driver \\
   --no-questions --accept-license --ui=none
 echo '========== 验证 NVIDIA 驱动 =========='
-nvidia-smi
+if ! nvidia-smi; then
+  echo 'NVIDIA driver installed but is not active until reboot'
+  touch .gpu-driver.activation-reboot-required
+  exit 9
+fi
 """
 
 
@@ -276,7 +372,11 @@ sudo "./{GPU_DRIVER_FILE_NAME}" \\
   --kernel-module-type="$kernel_module_type" \\
   --allow-installation-with-running-driver
 echo '========== 验证 NVIDIA 驱动 =========='
-nvidia-smi
+if ! nvidia-smi; then
+  echo 'NVIDIA driver installed but is not active until reboot'
+  touch .gpu-driver.activation-reboot-required
+  exit 9
+fi
 """
 
 
@@ -339,6 +439,67 @@ def _read_boot_id(executor: SSHExecutor) -> str:
     return executor.exec_simple("cat /proc/sys/kernel/random/boot_id").strip()
 
 
+def _read_remote_required_file(executor: SSHExecutor, path: str) -> str:
+    code, output, error = executor.exec_capture(f"cat {shell_quote(path)}", timeout_seconds=15)
+    value = output.strip()
+    if code != 0 or not value:
+        raise RuntimeError(f"kernel maintenance metadata is missing: {path}: {error or output}")
+    return value
+
+
+def _run_rocky_release_lock(executor: SSHExecutor, remote_dir: str, task_id: str, db) -> None:
+    if not GPU_DRIVER_RELEASE_LOCK_SCRIPT.is_file():
+        raise RuntimeError("Rocky release lock script is unavailable")
+    script = GPU_DRIVER_RELEASE_LOCK_SCRIPT.read_text(encoding="utf-8")
+    _log(db, task_id, "SYSTEM", "relocking Rocky release and the verified running kernel")
+    encoded = base64.b64encode(script.encode("utf-8")).decode("ascii")
+    command = f"printf %s {shell_quote(encoded)} | base64 -d | sudo -n bash"
+    result = executor.exec_command_in_dir(
+        command,
+        remote_dir,
+        timeout_seconds=1800,
+        on_stdout_line=lambda line: _log(db, task_id, "INFO", line),
+        on_stderr_line=lambda line: _log(db, task_id, "INFO", line),
+    )
+    if result != 0:
+        raise RuntimeError(f"Rocky release lock exited with code {result}")
+
+
+def kernel_maintenance_boot_matches(*, candidate: str, running_kernel: str) -> bool:
+    return bool(candidate) and candidate == running_kernel
+
+
+def _prepare_rocky_kernel_maintenance_reboot(db, task: Task, executor: SSHExecutor) -> tuple[str, str]:
+    if not task.remote_work_dir:
+        raise RuntimeError("remote work directory is missing")
+    result = _run_script(
+        executor,
+        task.remote_work_dir,
+        build_rocky9_kernel_maintenance_script(),
+        7200,
+        lambda line: _log(db, task.task_id, "INFO", line),
+    )
+    if result != 0:
+        raise RuntimeError(f"Rocky kernel maintenance exited with code {result}")
+    candidate = _read_remote_required_file(executor, f"{task.remote_work_dir.rstrip('/')}/.gpu-driver.kernel-candidate")
+    previous_default = _read_remote_required_file(executor, f"{task.remote_work_dir.rstrip('/')}/.gpu-driver.kernel-default-before")
+    boot_id = _read_boot_id(executor)
+    _update_params(
+        db,
+        task,
+        **{
+            GPU_DRIVER_PHASE_KEY: GPU_DRIVER_PHASE_WAITING_KERNEL_MAINTENANCE_REBOOT,
+            GPU_DRIVER_KERNEL_CANDIDATE_KEY: candidate,
+            GPU_DRIVER_KERNEL_PREVIOUS_DEFAULT_KEY: previous_default,
+            GPU_DRIVER_BOOT_ID_KEY: boot_id,
+        },
+    )
+    _set_status(db, task, "WAITING_REBOOT")
+    _log(db, task.task_id, "SYSTEM", f"boot-safe Rocky kernel {candidate} prepared; rebooting to verify it")
+    _schedule_reboot(executor)
+    return candidate, previous_default
+
+
 def _wait_for_reboot(db, task: Task, server: Server, executor: SSHExecutor) -> bool:
     expected_boot_id = str((task.params or {}).get(GPU_DRIVER_BOOT_ID_KEY, ""))
     started = monotonic()
@@ -366,6 +527,7 @@ def _monitor_remote_install(db, task: Task, executor: SSHExecutor) -> bool:
     exit_file = f"{task.remote_work_dir.rstrip('/')}/.gpu-driver.exit"
     pid_file = f"{task.remote_work_dir.rstrip('/')}/.gpu-driver.pid"
     log_file = f"{task.remote_work_dir.rstrip('/')}/gpu-driver-install.log"
+    activation_reboot_marker = f"{task.remote_work_dir.rstrip('/')}/.gpu-driver.activation-reboot-required"
     while True:
         db.refresh(task)
         if task.status in {"CANCELED", "CANCELING"}:
@@ -382,12 +544,21 @@ def _monitor_remote_install(db, task: Task, executor: SSHExecutor) -> bool:
         if state == "RUNNING":
             sleep(5)
             continue
+        marker_code, _marker_output, _marker_error = executor.exec_capture(
+            f"test -f {shell_quote(activation_reboot_marker)}",
+            timeout_seconds=15,
+        )
+        activation_reboot_required = marker_code == 0
         tail_code, tail, _ = executor.exec_capture(f"tail -80 {shell_quote(log_file)} 2>/dev/null || true", timeout_seconds=15)
         if tail:
-            _log(db, task.task_id, "INFO" if state == "0" else "ERROR", tail[-4096:])
+            _log(db, task.task_id, "INFO" if state == "0" or activation_reboot_required else "ERROR", tail[-4096:])
         task.end_time = datetime.utcnow()
-        if state == "0":
-            if bool((task.params or {}).get(GPU_DRIVER_REBOOT_AFTER_INSTALL_KEY, False)):
+        if state == "0" or activation_reboot_required:
+            force_install = bool((task.params or {}).get(GPU_DRIVER_REBOOT_AFTER_INSTALL_KEY, False))
+            if should_schedule_post_install_reboot(
+                force_install=force_install,
+                activation_reboot_required=activation_reboot_required,
+            ):
                 boot_id = _read_boot_id(executor)
                 _update_params(
                     db,
@@ -398,7 +569,8 @@ def _monitor_remote_install(db, task: Task, executor: SSHExecutor) -> bool:
                     },
                 )
                 _set_status(db, task, "WAITING_REBOOT")
-                _log(db, task.task_id, "SYSTEM", "NVIDIA driver installation completed; rebooting to activate replacement kernel modules before verification")
+                reason = "NVIDIA driver module is not active" if activation_reboot_required else "NVIDIA driver is replacing a running driver"
+                _log(db, task.task_id, "SYSTEM", f"{reason}; rebooting before final NVIDIA verification")
                 _schedule_reboot(executor)
                 return True
             task.status = "SUCCESS"
@@ -474,6 +646,7 @@ def run_rocky9_gpu_driver_task(task_id: str) -> None:
         driver_id = _optional_param_text(params.get("driver_id"))
         upload_id = _optional_param_text(params.get("driver_upload_id"))
         force_install = bool(params.get("force_install_if_driver_exists", False))
+        allow_kernel_maintenance = bool(params.get("allow_kernel_maintenance", False))
         os_profile = str(params.get("os_profile", "")) or resolve_gpu_driver_os_profile(server.os_info)
         install_script = build_rocky9_install_script() if os_profile == "rocky9" else build_ubuntu_install_script()
         target_version: str | None = None
@@ -499,6 +672,33 @@ def run_rocky9_gpu_driver_task(task_id: str) -> None:
             db.commit()
         executor.mkdir_p(task.remote_work_dir)
 
+        if phase == GPU_DRIVER_PHASE_KERNEL_MAINTENANCE:
+            if os_profile != "rocky9":
+                raise RuntimeError("kernel maintenance is only supported on Rocky Linux 9")
+            _set_status(db, task, "PREPARING")
+            _log(db, task_id, "SYSTEM", "current kernel development packages are unavailable; starting authorized same-minor kernel maintenance")
+            _prepare_rocky_kernel_maintenance_reboot(db, task, executor)
+            phase = GPU_DRIVER_PHASE_WAITING_KERNEL_MAINTENANCE_REBOOT
+
+        if phase == GPU_DRIVER_PHASE_WAITING_KERNEL_MAINTENANCE_REBOOT:
+            _set_status(db, task, "WAITING_REBOOT")
+            if not _wait_for_reboot(db, task, server, executor):
+                db.refresh(task)
+                if task.status in {"CANCELED", "CANCELING"}:
+                    return
+                raise RuntimeError("server did not reconnect after Rocky kernel maintenance reboot within 30 minutes")
+            candidate = _optional_param_text((task.params or {}).get(GPU_DRIVER_KERNEL_CANDIDATE_KEY))
+            previous_default = _optional_param_text((task.params or {}).get(GPU_DRIVER_KERNEL_PREVIOUS_DEFAULT_KEY))
+            running_kernel = executor.exec_simple("uname -r").strip()
+            if not kernel_maintenance_boot_matches(candidate=candidate, running_kernel=running_kernel):
+                if previous_default:
+                    executor.exec_simple(f"sudo grubby --set-default {shell_quote(previous_default)}")
+                raise RuntimeError(f"Rocky kernel maintenance boot verification failed: expected {candidate or 'candidate'}, got {running_kernel or 'unknown'}")
+            _run_rocky_release_lock(executor, task.remote_work_dir, task_id, db)
+            _update_params(db, task, **{GPU_DRIVER_PHASE_KEY: GPU_DRIVER_PHASE_INITIAL})
+            _log(db, task_id, "SYSTEM", f"Rocky kernel maintenance verified: {running_kernel}; resuming NVIDIA driver installation")
+            phase = GPU_DRIVER_PHASE_INITIAL
+
         if phase == GPU_DRIVER_PHASE_INITIAL:
             _set_status(db, task, "PREPARING")
             nvidia_smi_code, installed_versions, _nvidia_smi_error = executor.exec_capture(
@@ -518,6 +718,41 @@ def run_rocky9_gpu_driver_task(task_id: str) -> None:
                 except Exception:
                     pass
                 return
+            if os_profile == "rocky9":
+                exact_kernel_packages_code, _kernel_packages_output, _kernel_packages_error = executor.exec_capture(
+                    'rpm -q "kernel-devel-$(uname -r)" "kernel-headers-$(uname -r)"',
+                    timeout_seconds=15,
+                )
+                exact_kernel_packages_available = exact_kernel_packages_code == 0
+                if not exact_kernel_packages_available:
+                    if not should_run_kernel_maintenance(
+                        exact_development_packages_available=exact_kernel_packages_available,
+                        allowed=allow_kernel_maintenance,
+                    ):
+                        _update_params(db, task, **{GPU_DRIVER_PHASE_KEY: GPU_DRIVER_PHASE_KERNEL_MAINTENANCE})
+                        raise RuntimeError(
+                            "current Rocky kernel lacks matching kernel-devel/kernel-headers; "
+                            "enable kernel maintenance in an approved maintenance window to recover without a full system update"
+                        )
+                    _update_params(db, task, **{GPU_DRIVER_PHASE_KEY: GPU_DRIVER_PHASE_KERNEL_MAINTENANCE})
+                    _log(db, task_id, "SYSTEM", "matching current-kernel development packages are unavailable; kernel maintenance is authorized")
+                    phase = GPU_DRIVER_PHASE_KERNEL_MAINTENANCE
+                    _set_status(db, task, "PREPARING")
+                    candidate, previous_default = _prepare_rocky_kernel_maintenance_reboot(db, task, executor)
+                    phase = GPU_DRIVER_PHASE_WAITING_KERNEL_MAINTENANCE_REBOOT
+                    if not _wait_for_reboot(db, task, server, executor):
+                        db.refresh(task)
+                        if task.status in {"CANCELED", "CANCELING"}:
+                            return
+                        raise RuntimeError("server did not reconnect after Rocky kernel maintenance reboot within 30 minutes")
+                    running_kernel = executor.exec_simple("uname -r").strip()
+                    if not kernel_maintenance_boot_matches(candidate=candidate, running_kernel=running_kernel):
+                        if previous_default:
+                            executor.exec_simple(f"sudo grubby --set-default {shell_quote(previous_default)}")
+                        raise RuntimeError(f"Rocky kernel maintenance boot verification failed: expected {candidate}, got {running_kernel or 'unknown'}")
+                    _run_rocky_release_lock(executor, task.remote_work_dir, task_id, db)
+                    _update_params(db, task, **{GPU_DRIVER_PHASE_KEY: GPU_DRIVER_PHASE_INITIAL})
+                    _log(db, task_id, "SYSTEM", f"Rocky kernel maintenance verified: {running_kernel}; resuming NVIDIA driver installation")
             if nvidia_smi_code == 0 and force_install:
                 _log(db, task_id, "SYSTEM", f"nvidia-smi is available; force installing selected driver (installed: {installed_versions.strip() or 'unknown'}, target: {target_version or 'custom'})")
             if should_reboot_after_driver_install(force_install=force_install, nvidia_smi_available=nvidia_smi_code == 0):
@@ -601,6 +836,8 @@ def run_rocky9_gpu_driver_task(task_id: str) -> None:
             _verify_driver_after_reboot(db, task, executor, target_version)
     except (GpuDriverValidationError, SSHExecutorError, RuntimeError) as exc:
         if isinstance(exc, SSHExecutorError) and task is not None and phase in {
+            GPU_DRIVER_PHASE_KERNEL_MAINTENANCE,
+            GPU_DRIVER_PHASE_WAITING_KERNEL_MAINTENANCE_REBOOT,
             GPU_DRIVER_PHASE_WAITING_REBOOT,
             GPU_DRIVER_PHASE_WAITING_POST_INSTALL_REBOOT,
             GPU_DRIVER_PHASE_INSTALLING,

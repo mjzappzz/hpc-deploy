@@ -62,6 +62,7 @@ export interface RockyGpuDriverPayload {
   driver_id?: string
   driver_upload_id?: string
   force_install_if_driver_exists: boolean
+  allow_kernel_maintenance?: boolean
 }
 
 export interface GpuDriverBatchPayload {
@@ -70,6 +71,7 @@ export interface GpuDriverBatchPayload {
   driver_id?: string
   driver_upload_id?: string
   force_install_if_driver_exists: boolean
+  allow_kernel_maintenance?: boolean
 }
 
 export type CudaToolkitVersion = '11.8' | '12.0' | '12.1' | '12.2' | '12.3' | '12.4' | '12.5' | '12.6' | '12.8' | '12.9' | '13.0'
@@ -453,6 +455,7 @@ export interface ManagedSuitePayload {
   driver_id?: string
   driver_upload_id?: string
   force_install_if_driver_exists?: boolean
+  allow_kernel_maintenance?: boolean
   cuda_version?: CudaToolkitVersion
   force_install_cuda?: boolean
 }

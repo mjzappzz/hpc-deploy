@@ -31,6 +31,13 @@ class CudaToolkitRunnerTests(unittest.TestCase):
         self.assertIn("cuda-toolkit-12-8", script)
         self.assertIn("apt-get -y install --reinstall cuda-toolkit-12-8", script)
 
+    def test_ubuntu_keyring_download_avoids_http2_and_retries_transient_failures(self) -> None:
+        script = build_cuda_toolkit_install_script("ubuntu2204", "12.8", force_install=False)
+
+        self.assertIn("curl --http1.1 --fail --show-error --location", script)
+        self.assertIn("--retry 3 --retry-delay 2 --retry-all-errors", script)
+        self.assertIn("--connect-timeout 20 --max-time 120", script)
+
     def test_ubuntu_installer_waits_for_apt_locks_and_recovers_stalled_automatic_updates(self) -> None:
         script = build_cuda_toolkit_install_script("ubuntu2404", "12.8", force_install=False)
 
