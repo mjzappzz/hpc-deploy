@@ -1,10 +1,12 @@
 ﻿#requires -version 5.1
 <#
-NVIDIA GeForce / RTX FurMark2 + y-cruncher + DiskSpd Stability Report v99 CPU Telemetry Fix
+NVIDIA GeForce / RTX FurMark2 + y-cruncher + DiskSpd Stability Report v100
 Windows PowerShell 5.1+
 ASCII-safe script body. Chinese text in HTML is encoded as HTML entities where needed.
 
-V99 CPU telemetry and proportional-progress corrections:
+V100 distribution revision:
+- New filename forces Windows browsers and Downloads folders to use the fixed release.
+- Retains the v99 CPU telemetry and proportional-progress corrections.
 - Preserve v96 DiskSpd/report reliability corrections.
 - Fix CPU temperature telemetry diagnostics and Ryzen/Zen sensor selection.
 - Add CPU package power telemetry from LibreHardwareMonitor.
@@ -1182,11 +1184,23 @@ function Assert-TestDrives([string[]]$Drives) {
         return
     }
     $need = Convert-SizeToBytes $DiskFileSize
+    $required = $need + 5GB
+    $eligible = @()
     foreach ($d in $Drives) {
         $ps = Get-PSDrive -Name $d.TrimEnd(':') -ErrorAction SilentlyContinue
         if (!$ps) { Log "[WARN] Disk target not found: $d"; continue }
-        Log ("[CHECK] {0} free={1}GB required={2}GB" -f $d,(ToGB $ps.Free),(ToGB $need))
-        if ($ps.Free -lt ($need + 5GB)) { Log "[ERROR] $d free space is not enough for DiskFileSize=$DiskFileSize"; exit 2 }
+        Log ("[CHECK] {0} free={1}GB required={2}GB (DiskFileSize={3} + 5GB safety reserve)" -f $d,(ToGB $ps.Free),(ToGB $required),$DiskFileSize)
+        if ($ps.Free -lt $required) {
+            Log ("[DISK SKIP] {0} free={1}GB is below required={2}GB; this disk will not be stressed." -f $d,(ToGB $ps.Free),(ToGB $required))
+            continue
+        }
+        $eligible += $d
+    }
+    $script:ResolvedTestDrives = @($eligible)
+    if ($script:ResolvedTestDrives.Count -eq 0) {
+        Log "[WARN] No test drive has enough free space. Disk phase will be skipped."
+        $script:SkipDiskPhase = $true
+        $script:DiskModuleReason = "没有满足测试文件和 5GB 安全余量的磁盘"
     }
 }
 function Has-NvidiaGpu {

@@ -88,7 +88,7 @@
     </el-row>
 
     <!-- active tasks -->
-    <el-card shadow="never" class="section-card">
+    <el-card shadow="never" class="section-card" data-soot-companion-host>
       <template #header>运行中任务</template>
       <el-table
         :data="summary.recent_tasks"
@@ -148,7 +148,7 @@
     </el-card>
 
     <!-- recently completed tasks -->
-    <el-card shadow="never" class="section-card">
+    <el-card shadow="never" class="section-card" data-soot-companion-host>
       <template #header>
         <div class="recent-completed-header">
           <span>近期已完成任务</span>

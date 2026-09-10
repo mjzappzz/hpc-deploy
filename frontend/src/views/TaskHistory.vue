@@ -1146,7 +1146,7 @@ import {
   getTaskModuleLabel,
 } from '@/utils/taskPresentation'
 import { requireAdminConfirm } from '@/composables/useAdminConfirm'
-import { TASK_STATE_REFRESHED_EVENT } from '@/utils/trailingRefresh'
+import { dispatchTaskStateRefreshed, type TaskTerminalStatus } from '@/utils/trailingRefresh'
 import { beginTaskSubmitting, endTaskSubmitting } from '@/utils/taskSubmitting'
 import { getServer, type ServerRecord } from '@/api/server'
 import StatusTag from '@/components/StatusTag.vue'
@@ -1160,6 +1160,7 @@ const router = useRouter()
 
 const loading = ref(false)
 const tasks = ref<TaskRecord[]>([])
+const knownTaskStatuses = new Map<string, string>()
 
 const artDialogVisible = ref(false)
 const artLoading = ref(false)
@@ -2409,9 +2410,16 @@ async function loadTasks(silent = false) {
       ...filters,
       ...activityQuery,
     })).data
+    for (const task of resp.items) {
+      const status = task.status?.toUpperCase() ?? ''
+      const previousStatus = knownTaskStatuses.get(task.task_id)
+      if (previousStatus && previousStatus !== status && ['SUCCESS', 'FAILED', 'CANCELED'].includes(status)) {
+        dispatchTaskStateRefreshed({ status: status as TaskTerminalStatus, taskId: task.task_id })
+      }
+      knownTaskStatuses.set(task.task_id, status)
+    }
     tasks.value = resp.items
     total.value = resp.total
-    window.dispatchEvent(new Event(TASK_STATE_REFRESHED_EVENT))
 
     // "Running tasks" is a live entry point, not a permanent empty filter.
     // Once all matching tasks finish, return to normal history automatically.

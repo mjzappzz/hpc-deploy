@@ -123,7 +123,6 @@ const adminCountdown = computed(() => {
   const seconds = adminRemainingSeconds.value % 60
   return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
 })
-
 async function handleAdminModeChange(enabled: boolean | string | number) {
   if (enabled === true) {
     const ok = await enterAdminMode()

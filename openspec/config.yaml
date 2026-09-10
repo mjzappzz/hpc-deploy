@@ -1,0 +1,33 @@
+schema: spec-driven
+
+context: |
+  语言：中文（简体）
+  所有产出物必须用简体中文撰写。
+
+  技术术语保持英文，例如 API、REST、WebSocket、SQLite、NVIDIA、CUDA、Linux、kernel、initramfs、systemd、Nginx。
+  代码示例、Shell 命令、文件路径、函数名、类名和变量名保持英文。
+
+  项目：HPCDeploy
+  项目类型：HPC / AI 算力平台运维与自动化管理平台。
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always include a "Non-goals" section
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
+
+# Per-operation guidance (optional)
+# Add advisory guidance for how apply and archive work should be conducted.
+# This is separate from artifact rules above.
+# Example:
+#   operations:
+#     apply:
+#       guidance:
+#         - Keep test summaries concise
+#     archive:
+#       guidance:
+#         - Summarize the archive outcome before finishing

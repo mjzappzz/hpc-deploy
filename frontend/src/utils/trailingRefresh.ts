@@ -1,5 +1,16 @@
 export const TASK_STATE_REFRESHED_EVENT = 'hpcdeploy:task-state-refreshed'
 
+export type TaskTerminalStatus = 'SUCCESS' | 'FAILED' | 'CANCELED'
+
+export interface TaskStateEventDetail {
+  status: TaskTerminalStatus
+  taskId?: string
+}
+
+export function dispatchTaskStateRefreshed(detail: TaskStateEventDetail): void {
+  window.dispatchEvent(new CustomEvent<TaskStateEventDetail>(TASK_STATE_REFRESHED_EVENT, { detail }))
+}
+
 export function createTrailingRefresh(run: () => Promise<void>): () => Promise<void> {
   let running = false
   let queued = false

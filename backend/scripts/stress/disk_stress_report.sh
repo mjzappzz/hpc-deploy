@@ -2,7 +2,7 @@
 
 set -e
 
-SCRIPT_VERSION="2026.09.07.1"
+SCRIPT_VERSION="2026.09.09.1"
 
 DNF_MINRATE="${HPCDEPLOY_DNF_MINRATE:-51200}"
 DNF_TIMEOUT="${HPCDEPLOY_DNF_TIMEOUT:-30}"
@@ -346,9 +346,12 @@ if [ "$DURATION" -le 180 ]; then
 elif [ "$DURATION" -le 3600 ]; then
     FIO_DURABILITY_BYTES="32M"
     FIO_DURABILITY_PROFILE="3-60 minutes"
+elif [[ "$DISK_PROFILE" == hdd* ]]; then
+    FIO_DURABILITY_BYTES="32M"
+    FIO_DURABILITY_PROFILE="HDD > 60 minutes (capped)"
 else
     FIO_DURABILITY_BYTES="256M"
-    FIO_DURABILITY_PROFILE="> 60 minutes"
+    FIO_DURABILITY_PROFILE="> 60 minutes (SSD/NVMe/unknown)"
 fi
 
 DISK_MODEL=$(cat /sys/block/${DISK_DEV}/device/model 2>/dev/null | xargs || true)
@@ -491,6 +494,8 @@ echo "[STAGE] stress_start"
   echo "Performance Exit Code : ${PERFORMANCE_RET}"
   echo "===== fio performance test end ====="
 
+  echo "[STAGE] durability_verify_start"
+  echo "[INFO] 耐久校验中：${FIO_DURABILITY_PROFILE}；${FIO_DURABILITY_BYTES}/worker；逐写落盘 + ${FIO_VERIFY} 回读。"
   echo "===== fio durability test start ====="
   stdbuf -oL -eL fio \
     --name=hpcdeploy-durability \
