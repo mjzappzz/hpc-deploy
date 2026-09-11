@@ -2,7 +2,7 @@
 
 set -e
 
-SCRIPT_VERSION="2026.09.09.1"
+SCRIPT_VERSION="2026.09.11.1"
 
 DNF_MINRATE="${HPCDEPLOY_DNF_MINRATE:-51200}"
 DNF_TIMEOUT="${HPCDEPLOY_DNF_TIMEOUT:-30}"
@@ -70,6 +70,62 @@ ensure_epel_repo() {
     fi
 }
 
+is_centos_linux_8() {
+    [ -r /etc/os-release ] || return 1
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    [ "${ID:-}" = "centos" ] && [ "${NAME:-}" = "CentOS Linux" ] && [ "${VERSION_ID:-}" = "8" ]
+}
+
+repair_centos_linux_8_repos() {
+    local backup_dir repo_dir
+
+    is_centos_linux_8 || return 0
+    repo_dir=/etc/yum.repos.d
+    grep -qs '^mirrorlist=.*mirrorlist\.centos\.org' \
+        "$repo_dir/CentOS-Linux-BaseOS.repo" \
+        "$repo_dir/CentOS-Linux-AppStream.repo" \
+        "$repo_dir/CentOS-Linux-Extras.repo" 2>/dev/null || return 0
+
+    if dnf -q makecache --refresh; then
+        return 0
+    fi
+
+    backup_dir="/root/hpcdeploy-centos8-repo-backup-$(date +%Y%m%d-%H%M%S)"
+    echo "[WARN] CentOS Linux 8 mirrorlist is unavailable; switching BaseOS/AppStream/Extras to the 8.5.2111 archive. Backup: ${backup_dir}"
+    mkdir -p "$backup_dir" || return 1
+    cp -a \
+        "$repo_dir/CentOS-Linux-BaseOS.repo" \
+        "$repo_dir/CentOS-Linux-AppStream.repo" \
+        "$repo_dir/CentOS-Linux-Extras.repo" \
+        "$backup_dir/" || return 1
+
+    sed -i \
+        -e 's|^mirrorlist=|#mirrorlist=|' \
+        -e 's|^#baseurl=http://mirror.centos.org/\$contentdir/\$releasever/BaseOS/\$basearch/os/|baseurl=https://mirrors.aliyun.com/centos-vault/8.5.2111/BaseOS/\$basearch/os/|' \
+        "$repo_dir/CentOS-Linux-BaseOS.repo"
+    sed -i \
+        -e 's|^mirrorlist=|#mirrorlist=|' \
+        -e 's|^#baseurl=http://mirror.centos.org/\$contentdir/\$releasever/AppStream/\$basearch/os/|baseurl=https://mirrors.aliyun.com/centos-vault/8.5.2111/AppStream/\$basearch/os/|' \
+        "$repo_dir/CentOS-Linux-AppStream.repo"
+    sed -i \
+        -e 's|^mirrorlist=|#mirrorlist=|' \
+        -e 's|^#baseurl=http://mirror.centos.org/\$contentdir/\$releasever/extras/\$basearch/os/|baseurl=https://mirrors.aliyun.com/centos-vault/8.5.2111/extras/\$basearch/os/|' \
+        "$repo_dir/CentOS-Linux-Extras.repo"
+
+    if dnf -q makecache --refresh; then
+        return 0
+    fi
+
+    echo "[ERROR] CentOS Linux 8 archive repo verification failed; restoring ${backup_dir}."
+    cp -a \
+        "$backup_dir/CentOS-Linux-BaseOS.repo" \
+        "$backup_dir/CentOS-Linux-AppStream.repo" \
+        "$backup_dir/CentOS-Linux-Extras.repo" \
+        "$repo_dir/" || true
+    return 1
+}
+
 install_deps() {
     if [ "$(id -u)" -ne 0 ]; then
         echo "[ERROR] 请使用 root 用户运行，或使用 sudo"
@@ -110,6 +166,7 @@ PYCHK
 
     if [ -f /etc/redhat-release ]; then
         echo "[INFO] Detected RHEL/CentOS/Rocky/Alma"
+        repair_centos_linux_8_repos || return 1
         ensure_epel_repo || return 1
         if [ "${#rpm_packages[@]}" -gt 0 ] && ! dnf_install_with_retry "${rpm_packages[@]}"; then
             echo "[ERROR] Dependency installation failed after ${DNF_INSTALL_ATTEMPTS} attempts: ${rpm_packages[*]}"
@@ -440,9 +497,21 @@ MON_PID=$!
 
 ERR_PID=""
 KERNEL_MONITOR_STATUS="unavailable"
+DMESG_MONITOR_START_UPTIME=$(awk '{print $1}' /proc/uptime)
 if dmesg --help 2>&1 | grep -q -- '--follow-new'; then
     export CRITICAL_ERR_PATTERN KERNEL_DEVICE_PATTERN ERR_LOG
     setsid sh -c 'dmesg -W 2>/dev/null \
+        | grep --line-buffered -Ei "$CRITICAL_ERR_PATTERN" \
+        | grep --line-buffered -E "$KERNEL_DEVICE_PATTERN" > "$ERR_LOG"' &
+    ERR_PID=$!
+    KERNEL_MONITOR_STATUS="active"
+elif dmesg --help 2>&1 | grep -q -- '--follow'; then
+    export CRITICAL_ERR_PATTERN KERNEL_DEVICE_PATTERN ERR_LOG DMESG_MONITOR_START_UPTIME
+    setsid sh -c 'dmesg -w 2>/dev/null \
+        | awk -v start="$DMESG_MONITOR_START_UPTIME" '\''{
+            ts=$0; sub(/^\[[[:space:]]*/, "", ts); sub(/[[:space:]]*\].*$/, "", ts)
+            if (ts ~ /^[0-9]+(\.[0-9]+)?$/ && ts + 0 >= start + 0) print
+          }'\'' \
         | grep --line-buffered -Ei "$CRITICAL_ERR_PATTERN" \
         | grep --line-buffered -E "$KERNEL_DEVICE_PATTERN" > "$ERR_LOG"' &
     ERR_PID=$!

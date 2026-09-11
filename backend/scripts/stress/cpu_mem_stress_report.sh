@@ -1,7 +1,7 @@
 #!/bin/bash
 #set -e  # 不使用 set -e，手工控制每个关键步骤的退出处理
 
-SCRIPT_VERSION="2026.09.07.1"
+SCRIPT_VERSION="2026.09.11.4"
 
 DNF_MINRATE="${HPCDEPLOY_DNF_MINRATE:-51200}"
 DNF_TIMEOUT="${HPCDEPLOY_DNF_TIMEOUT:-30}"
@@ -69,13 +69,120 @@ ensure_epel_repo() {
     fi
 }
 
+is_centos_linux_8() {
+    [ -r /etc/os-release ] || return 1
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    [ "${ID:-}" = "centos" ] && [ "${NAME:-}" = "CentOS Linux" ] && [ "${VERSION_ID:-}" = "8" ]
+}
+
+repair_centos_linux_8_repos() {
+    local backup_dir repo_dir
+
+    is_centos_linux_8 || return 0
+    repo_dir=/etc/yum.repos.d
+    grep -qs '^mirrorlist=.*mirrorlist\.centos\.org' \
+        "$repo_dir/CentOS-Linux-BaseOS.repo" \
+        "$repo_dir/CentOS-Linux-AppStream.repo" \
+        "$repo_dir/CentOS-Linux-Extras.repo" 2>/dev/null || return 0
+
+    if dnf -q makecache --refresh; then
+        return 0
+    fi
+
+    backup_dir="/root/hpcdeploy-centos8-repo-backup-$(date +%Y%m%d-%H%M%S)"
+    echo "[WARN] CentOS Linux 8 mirrorlist is unavailable; switching BaseOS/AppStream/Extras to the 8.5.2111 archive. Backup: ${backup_dir}"
+    mkdir -p "$backup_dir" || return 1
+    cp -a \
+        "$repo_dir/CentOS-Linux-BaseOS.repo" \
+        "$repo_dir/CentOS-Linux-AppStream.repo" \
+        "$repo_dir/CentOS-Linux-Extras.repo" \
+        "$backup_dir/" || return 1
+
+    sed -i \
+        -e 's|^mirrorlist=|#mirrorlist=|' \
+        -e 's|^#baseurl=http://mirror.centos.org/\$contentdir/\$releasever/BaseOS/\$basearch/os/|baseurl=https://mirrors.aliyun.com/centos-vault/8.5.2111/BaseOS/\$basearch/os/|' \
+        "$repo_dir/CentOS-Linux-BaseOS.repo"
+    sed -i \
+        -e 's|^mirrorlist=|#mirrorlist=|' \
+        -e 's|^#baseurl=http://mirror.centos.org/\$contentdir/\$releasever/AppStream/\$basearch/os/|baseurl=https://mirrors.aliyun.com/centos-vault/8.5.2111/AppStream/\$basearch/os/|' \
+        "$repo_dir/CentOS-Linux-AppStream.repo"
+    sed -i \
+        -e 's|^mirrorlist=|#mirrorlist=|' \
+        -e 's|^#baseurl=http://mirror.centos.org/\$contentdir/\$releasever/extras/\$basearch/os/|baseurl=https://mirrors.aliyun.com/centos-vault/8.5.2111/extras/\$basearch/os/|' \
+        "$repo_dir/CentOS-Linux-Extras.repo"
+
+    if dnf -q makecache --refresh; then
+        return 0
+    fi
+
+    echo "[ERROR] CentOS Linux 8 archive repo verification failed; restoring ${backup_dir}."
+    cp -a \
+        "$backup_dir/CentOS-Linux-BaseOS.repo" \
+        "$backup_dir/CentOS-Linux-AppStream.repo" \
+        "$backup_dir/CentOS-Linux-Extras.repo" \
+        "$repo_dir/" || true
+    return 1
+}
+
+stress_ng_build_jobs() {
+    local cpu_count build_jobs
+
+    if [ -n "${HPCDEPLOY_STRESS_NG_BUILD_JOBS:-}" ]; then
+        build_jobs="$HPCDEPLOY_STRESS_NG_BUILD_JOBS"
+    else
+        cpu_count="$(nproc 2>/dev/null || printf '1')"
+        case "$cpu_count" in
+            ''|*[!0-9]*) cpu_count=1 ;;
+        esac
+        [ "$cpu_count" -lt 1 ] && cpu_count=1
+        build_jobs="$cpu_count"
+    fi
+
+    case "$build_jobs" in
+        ''|*[!0-9]*|0)
+            echo "[ERROR] HPCDEPLOY_STRESS_NG_BUILD_JOBS must be a positive integer" >&2
+            return 1
+            ;;
+    esac
+    printf '%s\n' "$build_jobs"
+}
+
+install_centos_linux_8_stress_ng() {
+    local source_dir source_tarball build_jobs
+    local stress_ng_version="0.22.00"
+
+    is_centos_linux_8 || return 1
+    command -v stress-ng >/dev/null 2>&1 && return 0
+    echo "[INFO] CentOS Linux 8 has no stress-ng RPM in the enabled repositories; building stress-ng ${stress_ng_version} from the upstream tagged source."
+    dnf_install_with_retry gcc make curl tar || return 1
+
+    source_dir="/opt/hpcdeploy/stress-ng-${stress_ng_version}"
+    source_tarball="${source_dir}/stress-ng-${stress_ng_version}.tar.gz"
+    if [ ! -x /usr/local/bin/stress-ng ]; then
+        build_jobs="$(stress_ng_build_jobs)" || return 1
+        echo "[INFO] Building stress-ng with ${build_jobs} parallel jobs."
+        rm -rf "$source_dir"
+        mkdir -p "$source_dir" || return 1
+        curl -fsSL --retry 3 \
+            "https://github.com/ColinIanKing/stress-ng/archive/refs/tags/V${stress_ng_version}.tar.gz" \
+            -o "$source_tarball" || return 1
+        tar -xzf "$source_tarball" --strip-components=1 -C "$source_dir" || return 1
+        (cd "$source_dir" && make -j"$build_jobs") || return 1
+        install -m 0755 "$source_dir/stress-ng" /usr/local/bin/stress-ng || return 1
+    fi
+    /usr/local/bin/stress-ng --version >/dev/null
+}
+
 install_deps() {
     if [ "$(id -u)" -ne 0 ]; then
         echo "[ERROR] 请使用 root 用户运行，或使用 sudo"
         exit 1
     fi
 
+    local package
     local -a rpm_packages=()
+    local -a remaining_rpm_packages=()
 
     if ! command -v stress-ng >/dev/null 2>&1; then
         rpm_packages+=(stress-ng)
@@ -95,10 +202,23 @@ install_deps() {
     if [ -f /etc/redhat-release ]; then
         echo "[INFO] Detected RHEL/CentOS/Rocky/Alma"
 
+        repair_centos_linux_8_repos || return 1
         ensure_epel_repo || return 1
         if [ "${#rpm_packages[@]}" -gt 0 ] && ! dnf_install_with_retry "${rpm_packages[@]}"; then
-            echo "[ERROR] Dependency installation failed after ${DNF_INSTALL_ATTEMPTS} attempts: ${rpm_packages[*]}"
-            return 1
+            if [[ " ${rpm_packages[*]} " == *" stress-ng " ]] && install_centos_linux_8_stress_ng; then
+                remaining_rpm_packages=()
+                for package in "${rpm_packages[@]}"; do
+                    [ "$package" = "stress-ng" ] || remaining_rpm_packages+=("$package")
+                done
+                rpm_packages=("${remaining_rpm_packages[@]}")
+                if [ "${#rpm_packages[@]}" -gt 0 ] && ! dnf_install_with_retry "${rpm_packages[@]}"; then
+                    echo "[ERROR] Dependency installation failed after ${DNF_INSTALL_ATTEMPTS} attempts: ${rpm_packages[*]}"
+                    return 1
+                fi
+            else
+                echo "[ERROR] Dependency installation failed after ${DNF_INSTALL_ATTEMPTS} attempts: ${rpm_packages[*]}"
+                return 1
+            fi
         fi
 
     elif [ -f /etc/debian_version ]; then
@@ -486,27 +606,57 @@ MON_PID=$!
 # 仅监听测试开始后的内核消息；`dmesg -w` 会先输出历史 ring buffer，不能使用。
 DMESG_MONITOR_TIMEOUT=$((DURATION + 300))
 
+DMESG_MONITOR_START_UPTIME=$(awk '{print $1}' /proc/uptime)
 if dmesg --help 2>&1 | grep -q -- '--follow-new'; then
-if command -v setsid >/dev/null 2>&1; then
-  CRITICAL_ERR_PATTERN="$CRITICAL_ERR_PATTERN" \
-  ERR_LOG="$ERR_LOG" \
-  DMESG_MONITOR_TIMEOUT="$DMESG_MONITOR_TIMEOUT" \
-    setsid bash -c '
-      timeout "$DMESG_MONITOR_TIMEOUT" dmesg -W 2>/dev/null \
-      | grep --line-buffered -Ei "$CRITICAL_ERR_PATTERN" >> "$ERR_LOG"
-    ' &
-else
-  CRITICAL_ERR_PATTERN="$CRITICAL_ERR_PATTERN" \
-  ERR_LOG="$ERR_LOG" \
-  DMESG_MONITOR_TIMEOUT="$DMESG_MONITOR_TIMEOUT" \
-    bash -c '
-      timeout "$DMESG_MONITOR_TIMEOUT" dmesg -W 2>/dev/null \
-      | grep --line-buffered -Ei "$CRITICAL_ERR_PATTERN" >> "$ERR_LOG"
-    ' &
-fi
-
-ERR_PID=$!
-ERR_PGID=$(ps -o pgid= "$ERR_PID" 2>/dev/null | tr -d ' ')
+    if command -v setsid >/dev/null 2>&1; then
+      CRITICAL_ERR_PATTERN="$CRITICAL_ERR_PATTERN" \
+      ERR_LOG="$ERR_LOG" \
+      DMESG_MONITOR_TIMEOUT="$DMESG_MONITOR_TIMEOUT" \
+        setsid bash -c '
+          timeout "$DMESG_MONITOR_TIMEOUT" dmesg -W 2>/dev/null \
+          | grep --line-buffered -Ei "$CRITICAL_ERR_PATTERN" >> "$ERR_LOG"
+        ' &
+    else
+      CRITICAL_ERR_PATTERN="$CRITICAL_ERR_PATTERN" \
+      ERR_LOG="$ERR_LOG" \
+      DMESG_MONITOR_TIMEOUT="$DMESG_MONITOR_TIMEOUT" \
+        bash -c '
+          timeout "$DMESG_MONITOR_TIMEOUT" dmesg -W 2>/dev/null \
+          | grep --line-buffered -Ei "$CRITICAL_ERR_PATTERN" >> "$ERR_LOG"
+        ' &
+    fi
+    ERR_PID=$!
+    ERR_PGID=$(ps -o pgid= "$ERR_PID" 2>/dev/null | tr -d ' ')
+elif dmesg --help 2>&1 | grep -q -- '--follow'; then
+    if command -v setsid >/dev/null 2>&1; then
+      CRITICAL_ERR_PATTERN="$CRITICAL_ERR_PATTERN" \
+      ERR_LOG="$ERR_LOG" \
+      DMESG_MONITOR_TIMEOUT="$DMESG_MONITOR_TIMEOUT" \
+      DMESG_MONITOR_START_UPTIME="$DMESG_MONITOR_START_UPTIME" \
+        setsid bash -c '
+          timeout "$DMESG_MONITOR_TIMEOUT" dmesg -w 2>/dev/null \
+          | awk -v start="$DMESG_MONITOR_START_UPTIME" '\''{
+              ts=$0; sub(/^\[[[:space:]]*/, "", ts); sub(/[[:space:]]*\].*$/, "", ts)
+              if (ts ~ /^[0-9]+(\.[0-9]+)?$/ && ts + 0 >= start + 0) print
+            }'\'' \
+          | grep --line-buffered -Ei "$CRITICAL_ERR_PATTERN" >> "$ERR_LOG"
+        ' &
+    else
+      CRITICAL_ERR_PATTERN="$CRITICAL_ERR_PATTERN" \
+      ERR_LOG="$ERR_LOG" \
+      DMESG_MONITOR_TIMEOUT="$DMESG_MONITOR_TIMEOUT" \
+      DMESG_MONITOR_START_UPTIME="$DMESG_MONITOR_START_UPTIME" \
+        bash -c '
+          timeout "$DMESG_MONITOR_TIMEOUT" dmesg -w 2>/dev/null \
+          | awk -v start="$DMESG_MONITOR_START_UPTIME" '\''{
+              ts=$0; sub(/^\[[[:space:]]*/, "", ts); sub(/[[:space:]]*\].*$/, "", ts)
+              if (ts ~ /^[0-9]+(\.[0-9]+)?$/ && ts + 0 >= start + 0) print
+            }'\'' \
+          | grep --line-buffered -Ei "$CRITICAL_ERR_PATTERN" >> "$ERR_LOG"
+        ' &
+    fi
+    ERR_PID=$!
+    ERR_PGID=$(ps -o pgid= "$ERR_PID" 2>/dev/null | tr -d ' ')
 else
     # 没有 follow-new 时不读取无时间边界的 ring buffer，避免历史告警误判；
     # 结束时由本次时间窗口的 journalctl -k 兜底。

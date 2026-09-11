@@ -78,6 +78,9 @@ class DiskStressDirectoryContractTests(unittest.TestCase):
 
         self.assertIn('build_kernel_device_pattern', source)
         self.assertIn('dmesg -W 2>/dev/null', source)
+        self.assertIn('DMESG_MONITOR_START_UPTIME=', source)
+        self.assertIn('dmesg -w 2>/dev/null', source)
+        self.assertIn('ts + 0 >= start + 0', source)
         self.assertIn('KERNEL_DEVICE_PATTERN', source)
         self.assertIn('grep --line-buffered -E "$KERNEL_DEVICE_PATTERN"', source)
         self.assertNotIn('dmesg -w | egrep -i "$CRITICAL_ERR_PATTERN"', source)

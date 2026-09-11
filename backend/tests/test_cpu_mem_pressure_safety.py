@@ -51,7 +51,7 @@ class CpuMemoryPressureSafetyTests(unittest.TestCase):
     def test_pressure_must_reach_cpu_and_memory_targets(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")
 
-        self.assertIn('SCRIPT_VERSION="2026.09.07.1"', source)
+        self.assertIn('SCRIPT_VERSION="2026.09.11.4"', source)
         self.assertIn("CPU_BUSY_FAIL_PERCENT", source)
         self.assertIn("CPU_BUSY_WARMUP_SECONDS", source)
         self.assertIn("CPU_BUSY_WARMUP_SAMPLES", source)

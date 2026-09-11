@@ -16,14 +16,16 @@ class CpuMemoryUeDetectionTests(unittest.TestCase):
         self.assertIn("UE_ERROR_COUNT=", source)
         self.assertIn("Uncorrectable ECC memory error detected (UE/UECC).", source)
 
-    def test_kernel_monitor_uses_follow_new_and_excludes_generic_verification_text(self) -> None:
+    def test_kernel_monitor_uses_follow_new_or_a_timestamp_filtered_follow_fallback(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")
 
         critical_pattern = next(
             line for line in source.splitlines() if line.startswith("CRITICAL_ERR_PATTERN=")
         )
         self.assertIn("dmesg -W 2>/dev/null", source)
-        self.assertNotIn("dmesg -w 2>/dev/null", source)
+        self.assertIn("DMESG_MONITOR_START_UPTIME=", source)
+        self.assertIn("dmesg -w 2>/dev/null", source)
+        self.assertIn("ts + 0 >= start + 0", source)
         self.assertNotIn("verification failed", critical_pattern)
         self.assertIn('journalctl -k --no-pager --since "$KERNEL_LOG_START_AT"', source)
 

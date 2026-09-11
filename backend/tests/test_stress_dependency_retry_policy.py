@@ -105,6 +105,55 @@ dnf_install_with_retry stress-ng
                 self.assertIn('ensure_epel_repo || return 1', source)
                 self.assertIn('install_deps || exit 1', source)
 
+    def test_centos_linux_8_mirrorlist_recovery_is_narrow_and_reversible(self) -> None:
+        for script_name in ("cpu_mem_stress_report.sh", "disk_stress_report.sh"):
+            with self.subTest(script=script_name):
+                source = (STRESS_SCRIPTS_DIR / script_name).read_text(encoding="utf-8")
+
+                self.assertIn("repair_centos_linux_8_repos", source)
+                self.assertIn('[ "${ID:-}" = "centos" ]', source)
+                self.assertIn('[ "${VERSION_ID:-}" = "8" ]', source)
+                self.assertIn('mirrorlist=', source)
+                self.assertIn('centos', source)
+                self.assertIn('dnf -q makecache --refresh', source)
+                self.assertIn('hpcdeploy-centos8-repo-backup-', source)
+                self.assertIn('https://mirrors.aliyun.com/centos-vault/8.5.2111/BaseOS/', source)
+                self.assertIn('https://mirrors.aliyun.com/centos-vault/8.5.2111/AppStream/', source)
+                self.assertIn('https://mirrors.aliyun.com/centos-vault/8.5.2111/extras/', source)
+                self.assertIn('repair_centos_linux_8_repos || return 1', source)
+
+    def test_centos_source_fallback_does_not_retry_dnf_with_an_empty_package_name(self) -> None:
+        source = (STRESS_SCRIPTS_DIR / "cpu_mem_stress_report.sh").read_text(encoding="utf-8")
+
+        self.assertIn('local -a remaining_rpm_packages=()', source)
+        self.assertIn('for package in "${rpm_packages[@]}"; do', source)
+        self.assertIn('[ "$package" = "stress-ng" ] || remaining_rpm_packages+=("$package")', source)
+        self.assertIn('rpm_packages=("${remaining_rpm_packages[@]}")', source)
+
+    def test_centos_source_build_parallelism_is_capped_and_can_be_overridden(self) -> None:
+        source = (STRESS_SCRIPTS_DIR / "cpu_mem_stress_report.sh").read_text(encoding="utf-8")
+        function_source = source[
+            source.index("stress_ng_build_jobs()") : source.index("\ninstall_centos_linux_8_stress_ng()")
+        ]
+
+        for cpu_count, override, expected in (("96", None, "96"), ("2", None, "2"), ("96", "12", "12")):
+            with self.subTest(cpu_count=cpu_count, override=override):
+                env = os.environ.copy()
+                env["HPCDEPLOY_TEST_NPROC"] = cpu_count
+                if override is not None:
+                    env["HPCDEPLOY_STRESS_NG_BUILD_JOBS"] = override
+                else:
+                    env.pop("HPCDEPLOY_STRESS_NG_BUILD_JOBS", None)
+                result = subprocess.run(
+                    ["bash", "-c", f"{function_source}\nnproc() {{ printf '%s\\n' \"$HPCDEPLOY_TEST_NPROC\"; }}\nstress_ng_build_jobs"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(result.stdout.strip(), expected)
+
 
 if __name__ == "__main__":
     unittest.main()

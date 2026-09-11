@@ -2,6 +2,14 @@
 
 > 维护流水与会话交接材料。它记录变化背景和待办，不替代 [architecture.md](architecture.md) 中的当前架构、安全边界或 [../deploy/README.md](../deploy/README.md) 中的可执行部署步骤。
 
+- 2026-09-11：`cpu_mem_stress_report.sh` 升级为 `v2026.09.11.4`。按操作员确认，CentOS Linux 8 首次编译 `stress-ng V0.22.00` 默认直接使用 `nproc` 所返回的全部可调度线程，不再限制为 8；`HPCDEPLOY_STRESS_NG_BUILD_JOBS` 保留为共享机器的显式覆盖。96 线程服务器将使用 `make -j96`。新增回归将 96 线程默认值锁定为 96；已强制发布，后端与 Nginx 健康检查通过，5 个运行中任务恢复为 `RUNNING`。
+
+- 2026-09-11：`cpu_mem_stress_report.sh` 升级为 `v2026.09.11.3`。CentOS Linux 8 在无 RPM 可用而首次编译 `stress-ng V0.22.00` 时，不再固定 `make -j2`；默认并行度为 `min(nproc, 8)`，可通过 `HPCDEPLOY_STRESS_NG_BUILD_JOBS` 覆盖。96 线程服务器会使用 8 个编译任务，低核机器仍不会被放大并发。新增回归覆盖默认上限、低核取值与显式覆盖；未发布。
+
+- 2026-09-11：`cpu_mem_stress_report.sh` 升级为 `v2026.09.11.2`，修复另一台 CentOS Linux 8 主机在 `stress-ng V0.22.00` 源码回退成功后仍卡在 CPU/内存压测准备阶段的问题。此前 Bash 数组替换会保留空元素，脚本随即向 DNF 传入空包名并在三次重试后退出；现在显式重建剩余 RPM 包列表，仅在确有包名时重试安装，仍会安装实际缺失的 `python3`。新增回归断言，相关 21 项测试及 Shell 语法检查通过；工作区已更新，尚未执行本轮完整 redeploy 或 Git 提交。
+
+- 2026-09-11：`cpu_mem_stress_report.sh` 与 `disk_stress_report.sh` 升级为 `v2026.09.11.1`。仅对 DNF 刷新失败且仍使用失效 mirrorlist 的 CentOS Linux 8，备份 BaseOS/AppStream/Extras repo 后切换至固定 `8.5.2111` archive；archive 校验失败自动恢复原 repo，其他发行版与可用 repo 不变。CPU 脚本仅在该系统无 `stress-ng` RPM 时构建固定上游 tag `V0.22.00`；磁盘与 CPU 内核事件监听均保留 `dmesg --follow-new` 首选，并对旧版 util-linux 使用按 `/proc/uptime` 过滤历史 ring buffer 的 `dmesg -w` 回退，避免误将历史事件或监听器参数不兼容判作本次压测失败。定向回归与 Shell 语法验证通过；已强制发布，后端与 Nginx 健康检查通过，两个运行中磁盘任务恢复为 `RUNNING`。
+
 - 2026-09-09：Windows 压测资料由 `v99_windows_stress.ps1` 升级为唯一的 `v100_windows_stress.ps1`，强制改变下载文件名，避免浏览器重命名下载后命令仍执行 Downloads 中的旧同名 v99 文件。v100 保留逐盘容量准入：空间不足的盘记录 `[DISK SKIP]` 并跳过，其他合格盘以及 GPU/CPU 阶段继续；旧 v99 从资料库移除。已强制发布，后端和 Nginx 健康检查通过，运行任务恢复为 RUNNING。
 
 - 2026-09-09：Windows `v99_windows_stress.ps1` 的候选磁盘改为逐盘容量准入：每盘要求满足 `DiskFileSize + 5GB` 安全余量，空间不足时写入 `[DISK SKIP]`（含实际可用和所需容量）并从 DiskSpd 实际测试列表移除，不再以 `exit 2` 中止整套 staged/all 流程。仍有合格盘时继续测试该盘及 GPU/CPU；所有候选盘均不足时仅跳过磁盘阶段，最终报告明确原因。物理盘去重、非系统分区优先、DiskSpd 参数、清理范围及结果判定保持不变；已强制发布，后端和 Nginx 健康检查通过，运行任务恢复为 RUNNING。
