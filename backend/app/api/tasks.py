@@ -1344,6 +1344,27 @@ def _create_task_for_server(
     params: dict[str, object] | None = None,
     batch_id: str | None = None,
 ) -> str:
+    submission_lock = _get_server_submission_lock(server.id)
+    if not submission_lock.acquire(timeout=5):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="server submission is already being checked; retry shortly")
+    try:
+        return _create_task_for_server_locked(
+            db, server, task_type, file_path, file_name, file_record, params, batch_id,
+        )
+    finally:
+        submission_lock.release()
+
+
+def _create_task_for_server_locked(
+    db: Session,
+    server: Server,
+    task_type: str,
+    file_path: str,
+    file_name: str,
+    file_record: dict[str, object],
+    params: dict[str, object] | None = None,
+    batch_id: str | None = None,
+) -> str:
     """Create a single task record for a server. Raises HTTPException on conflict.
     Does NOT start the task runner — caller is responsible for that.
     """
