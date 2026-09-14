@@ -10,6 +10,8 @@ from app.api.tasks import _extreme_preflight_snapshot
 from app.api.tasks import _task_resource_domains
 from app.api.tasks import _resource_conflicts
 from app.api.tasks import _read_remote_extreme_preflight_checks
+from app.api.tasks import run_task
+from app.schemas.task import ExtremePreflightResponse, ExtremePreflightCheck, TaskRunRequest
 from app.models.server import Server
 
 
@@ -101,6 +103,33 @@ class ServerSshIdentityModelTests(unittest.TestCase):
         self.assertEqual(by_key["memory_headroom"].status, "blocked")
         self.assertEqual(by_key["remote_storage"].status, "pass")
         self.assertEqual(by_key["temperature_monitor"].status, "warning")
+
+    @patch("app.api.tasks._extreme_preflight")
+    def test_extreme_submission_runs_fresh_server_side_preflight(self, preflight: MagicMock) -> None:
+        preflight.return_value = ExtremePreflightResponse(
+            server_id=1,
+            can_submit=False,
+            checks=[ExtremePreflightCheck(key="memory_headroom", status="blocked", message="insufficient")],
+        )
+        server = SimpleNamespace(id=1, ssh_host_fingerprint="SHA256:confirmed")
+        db = MagicMock()
+        db.get.return_value = server
+
+        with self.assertRaises(HTTPException) as raised:
+            run_task(
+                TaskRunRequest(
+                    server_id=1,
+                    task_type="stress",
+                    file_path="scripts/stress/extreme_stress_report.sh",
+                    params={"duration_seconds": 60, "extreme_mode": True},
+                ),
+                MagicMock(),
+                db,
+            )
+
+        self.assertEqual(raised.exception.status_code, 409)
+        preflight.assert_called_once_with(server, db)
+        db.add.assert_not_called()
 
 
 if __name__ == "__main__":
