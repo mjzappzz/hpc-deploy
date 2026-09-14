@@ -1074,6 +1074,11 @@ def deploy_public_key_all(
                     success=False,
                     message="请先完成服务器首次探测并确认在线后再部署公钥",
                 )
+            if not server.ssh_host_fingerprint:
+                return DeployPublicKeyAllItem(
+                    server_id=server.id, server_name=server.name, success=False,
+                    message="SSH 主机指纹尚未确认，请先在服务器详情中确认",
+                )
             try:
                 _deploy_public_key_to_server(thread_db, server, private_key_file, public_key)
                 write_audit_log(
