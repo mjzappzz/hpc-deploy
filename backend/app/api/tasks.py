@@ -304,6 +304,101 @@ def _resource_conflict_detail(conflicts: list[tuple[Task, set[str]]]) -> dict[st
     }
 
 
+EXTREME_REMOTE_STORAGE_MIN_BYTES = 1024 * 1024 * 1024
+
+
+def _read_remote_extreme_preflight_checks(server: Server) -> list[ExtremePreflightCheck]:
+    """Collect read-only, point-in-time readiness facts using the trusted SSH key."""
+    executor = SSHExecutor(timeout=10)
+    try:
+        executor.connect(
+            host=server.host,
+            port=server.port,
+            username=server.username,
+            key_path=server.key_path,
+            password=server.password,
+            expected_host_fingerprint=server.ssh_host_fingerprint,
+        )
+        command = """
+printf 'mem_total_mb=%s\\n' "$(free -m | awk '/Mem:/ {print $2}')"
+printf 'mem_available_mb=%s\\n' "$(free -m | awk '/Mem:/ {print $7}')"
+printf 'remote_free_kb=%s\\n' "$(df -Pk \"$HOME\" | awk 'NR==2 {print $4}')"
+command -v stress-ng >/dev/null 2>&1 && echo 'stress_ng=1' || echo 'stress_ng=0'
+command -v python3 >/dev/null 2>&1 && echo 'python3=1' || echo 'python3=0'
+if command -v nvidia-smi >/dev/null 2>&1; then
+  echo 'nvidia_smi=1'
+  nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits 2>/dev/null | head -n 1 | grep -Eq '^[0-9]+$' && echo 'gpu_temperature=1' || echo 'gpu_temperature=0'
+else
+  echo 'nvidia_smi=0'
+  echo 'gpu_temperature=0'
+fi
+"""
+        exit_code, output, error = executor.exec_capture(command, timeout_seconds=15)
+        if exit_code != 0:
+            raise SSHExecutorError(error or "remote readiness command failed")
+    except SSHExecutorError as exc:
+        return [ExtremePreflightCheck(
+            key="connectivity", status="blocked",
+            message=f"无法完成受信 SSH 只读预检：{str(exc)[:200]}",
+        )]
+    finally:
+        executor.close()
+
+    values: dict[str, str] = {}
+    for line in output.splitlines():
+        key, separator, value = line.partition("=")
+        if separator:
+            values[key.strip()] = value.strip()
+
+    checks = [ExtremePreflightCheck(key="connectivity", status="pass", message="受信 SSH 连接与只读预检成功")]
+    try:
+        total_mb = int(values["mem_total_mb"])
+        available_mb = int(values["mem_available_mb"])
+        reserve_mb = max(total_mb * 15 // 100, min(total_mb * 25 // 100, 4096))
+        margin_mb = min(max(total_mb * 2 // 100, 128), 2048)
+        minimum_available_mb = reserve_mb + margin_mb + 256
+        memory_ok = available_mb >= minimum_available_mb
+        checks.append(ExtremePreflightCheck(
+            key="memory_headroom", status="pass" if memory_ok else "blocked",
+            message=(
+                f"可用内存 {available_mb} MiB，满足极限压测保留余量 {minimum_available_mb} MiB"
+                if memory_ok else
+                f"可用内存 {available_mb} MiB，低于极限压测所需保留余量 {minimum_available_mb} MiB"
+            ),
+        ))
+    except (KeyError, ValueError):
+        checks.append(ExtremePreflightCheck(key="memory_headroom", status="blocked", message="无法读取远端可用内存，拒绝启动极限压测"))
+
+    try:
+        remote_free_bytes = int(values["remote_free_kb"]) * 1024
+        storage_ok = remote_free_bytes >= EXTREME_REMOTE_STORAGE_MIN_BYTES
+        checks.append(ExtremePreflightCheck(
+            key="remote_storage", status="pass" if storage_ok else "blocked",
+            message=(f"远端工作目录所在分区可用 {remote_free_bytes // (1024 * 1024)} MiB"
+                     if storage_ok else "远端工作目录所在分区可用空间不足 1 GiB"),
+        ))
+    except (KeyError, ValueError):
+        checks.append(ExtremePreflightCheck(key="remote_storage", status="blocked", message="无法读取远端工作目录空间，拒绝启动极限压测"))
+
+    missing_dependencies = [
+        name for name, key in (("stress-ng", "stress_ng"), ("python3", "python3"), ("nvidia-smi", "nvidia_smi"))
+        if values.get(key) != "1"
+    ]
+    checks.append(ExtremePreflightCheck(
+        key="dependencies",
+        status="pass" if not missing_dependencies else "warning",
+        message=("GPU/CPU 内存压测依赖已就绪" if not missing_dependencies
+                 else f"任务准备阶段将自动检查并按需安装：{', '.join(missing_dependencies)}"),
+    ))
+    checks.append(ExtremePreflightCheck(
+        key="temperature_monitor",
+        status="pass" if values.get("gpu_temperature") == "1" else "warning",
+        message=("GPU 温度采样可用" if values.get("gpu_temperature") == "1"
+                 else "未获得可信 GPU 温度采样；不阻断任务，但不提供温度保护结论"),
+    ))
+    return checks
+
+
 def _extreme_preflight(server: Server, db: Session) -> ExtremePreflightResponse:
     checks: list[ExtremePreflightCheck] = []
     checks.append(ExtremePreflightCheck(
@@ -311,8 +406,8 @@ def _extreme_preflight(server: Server, db: Session) -> ExtremePreflightResponse:
         message="SSH 主机指纹已确认" if server.ssh_host_fingerprint else "请先在服务器详情确认 SSH 主机指纹",
     ))
     checks.append(ExtremePreflightCheck(
-        key="connectivity", status="pass" if server.status == "online" else "blocked",
-        message="服务器在线" if server.status == "online" else "服务器未处于在线状态，请先探测",
+        key="server_inventory", status="pass" if server.status == "online" else "warning",
+        message="最近服务器探测结果为在线" if server.status == "online" else "最近服务器探测未显示在线；将以受信 SSH 实测为准",
     ))
     checks.append(ExtremePreflightCheck(
         key="gpu", status="pass" if server.gpu_status == "driver_ok" else "blocked",
@@ -334,10 +429,12 @@ def _extreme_preflight(server: Server, db: Session) -> ExtremePreflightResponse:
         key="controller_storage", status="pass" if free_bytes >= minimum else "blocked",
         message=f"控制器可用空间 {free_bytes // (1024 * 1024)} MiB" if free_bytes >= minimum else "控制器可用空间不足 5 GiB",
     ))
-    checks.append(ExtremePreflightCheck(
-        key="dependencies", status="warning",
-        message="GPU/CPU 内存压测依赖将在任务准备阶段自动检查并按需安装",
-    ))
+    if server.ssh_host_fingerprint:
+        checks.extend(_read_remote_extreme_preflight_checks(server))
+    else:
+        checks.append(ExtremePreflightCheck(
+            key="connectivity", status="blocked", message="SSH 主机身份未确认，不能执行远端只读预检",
+        ))
     return ExtremePreflightResponse(server_id=server.id, checks=checks, can_submit=not any(check.status == "blocked" for check in checks))
 
 

@@ -1,6 +1,6 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from fastapi import HTTPException
 
@@ -9,6 +9,7 @@ from app.api.tasks import _extreme_preflight
 from app.api.tasks import _extreme_preflight_snapshot
 from app.api.tasks import _task_resource_domains
 from app.api.tasks import _resource_conflicts
+from app.api.tasks import _read_remote_extreme_preflight_checks
 from app.models.server import Server
 
 
@@ -35,9 +36,12 @@ class ServerSshIdentityModelTests(unittest.TestCase):
         result = _extreme_preflight(server, db)
 
         self.assertFalse(result.can_submit)
-        self.assertEqual({check.key for check in result.checks if check.status == "blocked"}, {"ssh_identity", "gpu"})
+        self.assertTrue({"ssh_identity", "gpu", "connectivity"}.issubset(
+            {check.key for check in result.checks if check.status == "blocked"}
+        ))
 
-    def test_extreme_preflight_snapshot_is_json_safe_and_keeps_each_check(self) -> None:
+    @patch("app.api.tasks._read_remote_extreme_preflight_checks", return_value=[])
+    def test_extreme_preflight_snapshot_is_json_safe_and_keeps_each_check(self, _remote_checks: MagicMock) -> None:
         db = MagicMock()
         db.query.return_value.filter.return_value.first.return_value = None
         result = _extreme_preflight(
@@ -74,6 +78,29 @@ class ServerSshIdentityModelTests(unittest.TestCase):
         conflicts = _resource_conflicts(db, server_id=1, target_domains={"gpu", "cpu_mem"})
 
         self.assertEqual([(task.task_id, domains) for task, domains in conflicts], [("task-gpu", {"gpu"})])
+
+    @patch("app.api.tasks.SSHExecutor")
+    def test_remote_preflight_blocks_low_memory_and_warns_when_temperature_is_unavailable(
+        self,
+        executor_class: MagicMock,
+    ) -> None:
+        executor_class.return_value.exec_capture.return_value = (
+            0,
+            "mem_total_mb=32768\nmem_available_mb=1000\nremote_free_kb=2097152\nstress_ng=1\npython3=1\nnvidia_smi=1\ngpu_temperature=0",
+            "",
+        )
+        server = SimpleNamespace(
+            host="10.0.0.1", port=22, username="root", key_path="/tmp/key", password=None,
+            ssh_host_fingerprint="SHA256:confirmed",
+        )
+
+        checks = _read_remote_extreme_preflight_checks(server)
+        by_key = {check.key: check for check in checks}
+
+        self.assertEqual(by_key["connectivity"].status, "pass")
+        self.assertEqual(by_key["memory_headroom"].status, "blocked")
+        self.assertEqual(by_key["remote_storage"].status, "pass")
+        self.assertEqual(by_key["temperature_monitor"].status, "warning")
 
 
 if __name__ == "__main__":
