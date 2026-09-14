@@ -27,3 +27,11 @@ The system SHALL list and search task and batch history, expose collected artifa
 #### Scenario: A task completed but its report says FAIL
 - **WHEN** task execution reaches a completed state while report parsing finds a failed stress result
 - **THEN** history and diagnosis distinguish execution completion from the report-level validation failure
+
+### Requirement: 极限压测以原子任务展示
+
+系统 SHALL 在历史任务中将极限压测展示为一个不可拆分的任务，显示整体状态、GPU 与 CPU/内存结果、同步偏差和失败原因，并提供模块报告下载。
+
+#### Scenario: 极限压测模块失败
+- **WHEN** 极限压测的任一模块或同步校验失败
+- **THEN** 历史任务显示整体失败，不将任一模块显示为可独立成功的任务

@@ -189,6 +189,13 @@ def resolve_task_final_status(task: Task, db: Session) -> str:
 def serialize_task_record(task: Task, db: Session) -> dict[str, object]:
     server = db.get(Server, task.server_id)
     final_status, report_status, failure_reason = get_task_report_fields(task, db)
+    extreme_summary = None
+    if task.file_name == "extreme_stress_report.sh":
+        cache = get_cached_report_summary(db, task.task_id)
+        if cache and isinstance(cache.summary_json, dict):
+            value = cache.summary_json.get("extreme")
+            if isinstance(value, dict):
+                extreme_summary = value
     return {
         "id": task.id,
         "task_id": task.task_id,
@@ -225,4 +232,5 @@ def serialize_task_record(task: Task, db: Session) -> dict[str, object]:
             failure_reason=failure_reason,
             report_status=report_status,
         ),
+        "extreme_summary": extreme_summary,
     }

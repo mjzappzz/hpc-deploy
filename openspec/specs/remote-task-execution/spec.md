@@ -27,3 +27,11 @@ The system SHALL expose task and batch status, cancellation, permitted retries, 
 #### Scenario: An operator retries a failed task
 - **WHEN** a retryable failed or canceled task is retried
 - **THEN** a new task attempt is created with the supported original execution settings and the prior attempt remains historical evidence
+
+### Requirement: 原子极限任务按整体处理
+
+系统 SHALL 将极限压测的取消、重试和后端恢复作为单一远端任务处理，不得单独重新下发或恢复其 GPU、CPU/内存模块。
+
+#### Scenario: 后端恢复极限压测
+- **WHEN** 后端重启时发现仍在运行的极限压测
+- **THEN** 系统恢复对已有远端任务的监控，不重复启动组合负载

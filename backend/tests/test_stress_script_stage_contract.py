@@ -8,6 +8,12 @@ STRESS_SCRIPTS = (
     "cpu_mem_stress_report.sh",
     "disk_stress_report.sh",
 )
+EXTREME_SYNC_MARKERS = (
+    'HPCDEPLOY_EXTREME_PREPARE_ONLY',
+    'HPCDEPLOY_EXTREME_SYNC_DIR',
+    'ready',
+    'start',
+)
 
 
 class StressScriptStageContractTests(unittest.TestCase):
@@ -22,6 +28,13 @@ class StressScriptStageContractTests(unittest.TestCase):
 
                 self.assertLess(dependency_start, dependency_done)
                 self.assertLess(dependency_done, stress_start)
+
+    def test_gpu_and_cpu_scripts_expose_the_extreme_sync_contract(self) -> None:
+        for script_name in ("gpu_stress_report.sh", "cpu_mem_stress_report.sh"):
+            with self.subTest(script=script_name):
+                source = (STRESS_SCRIPTS_DIR / script_name).read_text(encoding="utf-8")
+                for marker in EXTREME_SYNC_MARKERS:
+                    self.assertIn(marker, source)
 
 
 if __name__ == "__main__":

@@ -249,12 +249,18 @@ install_deps() {
 install_deps || exit 1
 echo "[STAGE] dependency_check_done"
 
+if [ "${HPCDEPLOY_EXTREME_PREPARE_ONLY:-0}" = "1" ]; then
+    echo "[STAGE] extreme_prepare_done module=cpu_mem"
+    exit 0
+fi
+
 STRESS_NG_VERSION=$(stress-ng --version 2>/dev/null | awk '{print $3}' | tr -d ',')
 echo "[INFO] stress-ng version: ${STRESS_NG_VERSION:-unknown}"
 echo "[INFO] VM method: write64 (override with VM_METHOD=<method>)"
 
 DURATION=${1:-43200}
 INTERVAL=${2:-2}
+HPCDEPLOY_EXTREME_SYNC_DIR="${HPCDEPLOY_EXTREME_SYNC_DIR:-}"
 CPU_BUSY_WARMUP_SECONDS=${CPU_BUSY_WARMUP_SECONDS:-15}
 TIME_TAG=$(date +%F_%H%M%S)
 WORKDIR=$(pwd)
@@ -668,6 +674,14 @@ fi
 echo "[STAGE] monitor_started pids=mon:$MON_PID err:$ERR_PID err_pgid:${ERR_PGID:-N/A}"
 
 sleep 2
+
+if [ -n "$HPCDEPLOY_EXTREME_SYNC_DIR" ]; then
+    mkdir -p "$HPCDEPLOY_EXTREME_SYNC_DIR"
+    : > "$HPCDEPLOY_EXTREME_SYNC_DIR/cpu_mem.ready"
+    echo "[STAGE] extreme_ready module=cpu_mem"
+    while [ ! -f "$HPCDEPLOY_EXTREME_SYNC_DIR/start" ]; do sleep 0.05; done
+    date +%s%N > "$HPCDEPLOY_EXTREME_SYNC_DIR/cpu_mem.started"
+fi
 
 # ===== 执行 stress-ng 压测 =====
 echo "[STAGE] stress_start"

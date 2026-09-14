@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import json
 from datetime import datetime
 from threading import Lock, Thread
 from typing import Any
@@ -243,13 +244,18 @@ def generate_report_summary(task_id: str) -> TaskReportSummary | None:
                     for item in artifact_dir.iterdir()
                 )
                 txt_reports = list(artifact_dir.glob("*report*.txt"))
-                if txt_reports:
+                extreme_result = artifact_dir / "extreme_stress_result.json"
+                if txt_reports and task.file_name != "extreme_stress_report.sh":
                     content = txt_reports[0].read_text(errors="replace", encoding="utf-8")
                     if "测试结果              : PASS" in content:
                         report_result = "PASS"
                     elif "测试结果              : FAIL" in content:
                         report_result = "FAIL"
                         report_failure_reason = extract_report_failure_reason(content)
+                if task.file_name == "extreme_stress_report.sh" and extreme_result.is_file():
+                    payload = json.loads(extreme_result.read_text(encoding="utf-8"))
+                    report_result = str(payload.get("report_status") or "UNKNOWN").upper()
+                    report_failure_reason = str(payload.get("reason") or "") or None
         except Exception:
             artifacts_present = False
             report_result = None
@@ -287,6 +293,11 @@ def generate_report_summary(task_id: str) -> TaskReportSummary | None:
             "artifacts_present": artifacts_present,
             "diagnosis": diagnosis,
         }
+        if task.file_name == "extreme_stress_report.sh":
+            try:
+                summary_json["extreme"] = json.loads((ARTIFACTS_DIR / task_id / "extreme_stress_result.json").read_text(encoding="utf-8"))
+            except Exception:
+                pass
         return upsert_report_summary(
             db,
             task=task,

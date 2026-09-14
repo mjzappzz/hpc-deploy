@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 from pathlib import Path
+import json
 import os
 import re
 import threading
@@ -207,6 +208,14 @@ def run_task_stage8b(task_id: str) -> None:
         executor.upload_file(str(local_path), remote_path)
         _ensure_task_not_canceled(db, task)
         _add_log(db, task_id, "SYSTEM", f"uploaded to {remote_path}")
+
+        if task.file_name == "extreme_stress_report.sh":
+            for companion in ("scripts/stress/gpu_stress_report.sh", "scripts/stress/cpu_mem_stress_report.sh"):
+                companion_path = resolve_library_path(companion)
+                companion_remote = _build_remote_path(remote_dir, Path(companion).name)
+                executor.upload_file(str(companion_path), companion_remote)
+                executor.chmod(companion_remote, 0o755)
+            _add_log(db, task_id, "SYSTEM", "uploaded extreme stress companion scripts")
 
         if _should_chmod(local_path):
             _ensure_task_not_canceled(db, task)
@@ -972,7 +981,26 @@ def _stress_poll_loop(
                     _fail_running_stress_task(db, task, task_id, startup_stall_reason)
                     return
 
-            # 3. 检查报告是否生成（含连接失败自动重连）
+            # 3. 极限压测以其原子结果清单作为唯一终态依据，不能把任一
+            # 子模块的 XLSX 当作整个组合任务成功。
+            if task.file_name == "extreme_stress_report.sh":
+                _extreme_result = _exec_with_reconnect(
+                    executor,
+                    f"cat {shell_quote(task.remote_work_dir)}/extreme_stress_result.json 2>/dev/null || true",
+                )
+                if _extreme_result.strip():
+                    _downloaded = collect_artifacts(db, task_id, task.remote_work_dir, executor)
+                    if "extreme_stress_result.json" not in _downloaded:
+                        _add_log(db, task_id, "SYSTEM", "extreme result is not complete locally yet; retrying collection")
+                        _broadcast_status_safe(task_id, task.status)
+                        continue
+                    if _attempt_extreme_stress_recovery(db, task_id, task):
+                        _add_log(db, task_id, "SYSTEM", "extreme stress: completed via atomic result manifest")
+                    else:
+                        _fail_running_stress_task(db, task, task_id, "invalid extreme stress result manifest")
+                    return
+
+            # 4. 检查常规压测报告是否生成（含连接失败自动重连）
             _rx_raw = _exec_with_reconnect(
                 executor, f"ls {shell_quote(task.remote_work_dir)}/*report*.xlsx 2>/dev/null | head -1"
             )
@@ -1390,6 +1418,29 @@ def resume_running_script_tasks_after_startup() -> int:
     for task_id in task_ids:
         threading.Thread(target=_command_recovery_monitor, args=(task_id,), daemon=True).start()
     return len(task_ids)
+
+
+def _attempt_extreme_stress_recovery(db, task_id: str, task: Task) -> bool:
+    """Finalize an atomic extreme-stress task from its coordinator manifest."""
+    manifest = Path(__file__).resolve().parents[2] / "data" / "artifacts" / task_id / "extreme_stress_result.json"
+    try:
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+
+    report_status = str(payload.get("report_status") or "").upper()
+    if report_status not in {"PASS", "FAIL"}:
+        return False
+
+    task.status = "SUCCESS" if report_status == "PASS" else "FAILED"
+    task.exit_code = 0 if report_status == "PASS" else 1
+    task.end_time = datetime.utcnow()
+    task.error_message = None if report_status == "PASS" else str(payload.get("reason") or "extreme stress failed")
+    db.commit()
+    _broadcast_done_safe(task_id, task.status)
+    schedule_report_summary_generation(task_id)
+    _add_log(db, task_id, "SYSTEM", f"extreme stress recovery: atomic report {report_status}")
+    return True
 
 
 def _attempt_stress_recovery(db, task_id: str, task: Task) -> bool:

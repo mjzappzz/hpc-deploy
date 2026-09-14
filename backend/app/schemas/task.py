@@ -171,6 +171,7 @@ class TaskRead(BaseModel):
     failure_reason: str | None = None
     outcome_message: str | None = None
     outcome_title: str | None = None
+    extreme_summary: dict[str, Any] | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -34,6 +34,8 @@ function getManagedSuiteTaskLabel(task: TaskPresentationSource): string {
   const kind = task.params?.__managed_suite_kind
   const name = taskSourceName(task)
 
+  if (name.includes('extreme_stress_report')) return '极限压测 · GPU + CPU/内存'
+
   if (kind === 'base_system') {
     if (name.includes('disable_linux_lock_sleep')) return '关闭锁屏与休眠'
     if (name.includes('lock_linux_release')) return '锁定当前系统版本'

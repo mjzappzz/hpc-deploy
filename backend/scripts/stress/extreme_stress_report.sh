@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+set -u
+set -o pipefail
+
+# Atomic GPU + CPU/memory stress coordinator. Child scripts are uploaded by the
+# controller into this work directory and retain their normal report formats.
+DURATION="${1:-43200}"
+INTERVAL="${2:-2}"
+WORKDIR="$(pwd)"
+SYNC_DIR="${WORKDIR}/.extreme-sync"
+RESULT_FILE="${WORKDIR}/extreme_stress_result.json"
+GPU_DIR="${WORKDIR}/gpu"
+CPU_DIR="${WORKDIR}/cpu_mem"
+mkdir -p "$SYNC_DIR" "$GPU_DIR" "$CPU_DIR"
+
+gpu_pid=""; cpu_pid=""
+collect_module_artifacts() {
+  local module_dir="$1" prefix="$2" artifact
+  # The artifact collector intentionally downloads only the task root. Publish
+  # child reports there so each module remains independently downloadable.
+  for artifact in "$module_dir"/*.txt "$module_dir"/*.csv "$module_dir"/*.xlsx "$module_dir"/*.json "$module_dir"/*.log; do
+    [ -f "$artifact" ] || continue
+    cp "$artifact" "$WORKDIR/${prefix}_$(basename "$artifact")"
+  done
+}
+
+stop_children() {
+  for pid in "$gpu_pid" "$cpu_pid"; do
+    [ -n "$pid" ] && kill -TERM "-$pid" 2>/dev/null || true
+  done
+}
+trap stop_children EXIT INT TERM
+
+prepare() {
+  echo "[STAGE] dependency_check_start"
+  (cd "$GPU_DIR" && HPCDEPLOY_EXTREME_PREPARE_ONLY=1 ../gpu_stress_report.sh "$DURATION" "$INTERVAL")
+  (cd "$CPU_DIR" && HPCDEPLOY_EXTREME_PREPARE_ONLY=1 ../cpu_mem_stress_report.sh "$DURATION" "$INTERVAL")
+  echo "[STAGE] dependency_check_done"
+}
+
+prepare
+
+(cd "$GPU_DIR" && exec setsid env HPCDEPLOY_EXTREME_SYNC_DIR="$SYNC_DIR" ../gpu_stress_report.sh "$DURATION" "$INTERVAL") & gpu_pid=$!
+(cd "$CPU_DIR" && exec setsid env HPCDEPLOY_EXTREME_SYNC_DIR="$SYNC_DIR" MEMORY_SAFETY_RESERVE_PERCENT=15 ../cpu_mem_stress_report.sh "$DURATION" "$INTERVAL") & cpu_pid=$!
+
+deadline=$(( $(date +%s) + 600 ))
+while [ ! -f "$SYNC_DIR/gpu.ready" ] || [ ! -f "$SYNC_DIR/cpu_mem.ready" ]; do
+  if ! kill -0 "$gpu_pid" 2>/dev/null || ! kill -0 "$cpu_pid" 2>/dev/null || [ "$(date +%s)" -ge "$deadline" ]; then
+    echo "[ERROR] extreme preparation did not reach both ready markers"
+    exit 1
+  fi
+  sleep 0.05
+done
+
+echo "[STAGE] stress_start"
+: > "$SYNC_DIR/start"
+while [ ! -f "$SYNC_DIR/gpu.started" ] || [ ! -f "$SYNC_DIR/cpu_mem.started" ]; do sleep 0.05; done
+gpu_start=$(cat "$SYNC_DIR/gpu.started"); cpu_start=$(cat "$SYNC_DIR/cpu_mem.started")
+skew_ms=$(( (${gpu_start} - ${cpu_start}) / 1000000 )); [ "$skew_ms" -lt 0 ] && skew_ms=$(( -skew_ms ))
+if [ "$skew_ms" -gt 2000 ]; then echo "[ERROR] extreme start skew ${skew_ms}ms exceeds 2000ms"; exit 1; fi
+while kill -0 "$gpu_pid" 2>/dev/null && kill -0 "$cpu_pid" 2>/dev/null; do sleep 1; done
+if ! kill -0 "$cpu_pid" 2>/dev/null && kill -0 "$gpu_pid" 2>/dev/null; then
+  wait "$cpu_pid"; cpu_rc=$?
+  if [ "$cpu_rc" -ne 0 ]; then
+    echo "[ERROR] CPU/memory module failed; stopping GPU peer."
+    kill -TERM "-$gpu_pid" 2>/dev/null || true
+  fi
+  wait "$gpu_pid"; gpu_rc=$?
+elif ! kill -0 "$gpu_pid" 2>/dev/null && kill -0 "$cpu_pid" 2>/dev/null; then
+  wait "$gpu_pid"; gpu_rc=$?
+  if [ "$gpu_rc" -ne 0 ]; then
+    echo "[ERROR] GPU module failed; stopping CPU/memory peer."
+    kill -TERM "-$cpu_pid" 2>/dev/null || true
+  fi
+  wait "$cpu_pid"; cpu_rc=$?
+else
+  wait "$gpu_pid"; gpu_rc=$?
+  wait "$cpu_pid"; cpu_rc=$?
+fi
+collect_module_artifacts "$GPU_DIR" "gpu"
+collect_module_artifacts "$CPU_DIR" "cpu_mem"
+result=PASS; reason="GPU and CPU/memory stress passed with synchronized start."
+if [ "$gpu_rc" -ne 0 ] || [ "$cpu_rc" -ne 0 ]; then result=FAIL; reason="GPU or CPU/memory stress failed."; fi
+printf '{"report_status":"%s","gpu_exit":%s,"cpu_mem_exit":%s,"start_skew_ms":%s,"reason":"%s"}\n' "$result" "$gpu_rc" "$cpu_rc" "$skew_ms" "$reason" > "$RESULT_FILE"
+echo "[SUMMARY] Result: $result"
+echo "Reason: $reason"
+echo "[STAGE] script_exit exit_code=$([ "$result" = PASS ] && echo 0 || echo 1)"
+[ "$result" = PASS ]

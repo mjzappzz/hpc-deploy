@@ -34,6 +34,8 @@ DURATION="${1:-43200}"
 INTERVAL="${2:-2}"
 GPU_BURN_PRECISION="${GPU_BURN_PRECISION:-fp32}"
 GPU_BURN_TIMEOUT_GRACE_SECONDS="${GPU_BURN_TIMEOUT_GRACE_SECONDS:-300}"
+HPCDEPLOY_EXTREME_PREPARE_ONLY="${HPCDEPLOY_EXTREME_PREPARE_ONLY:-0}"
+HPCDEPLOY_EXTREME_SYNC_DIR="${HPCDEPLOY_EXTREME_SYNC_DIR:-}"
 TIME_TAG="$(date +%F_%H%M%S)"
 
 WORKDIR="$(pwd)"
@@ -609,6 +611,11 @@ main() {
     detect_gpu_metadata
     build_gpu_burn_if_needed
 
+    if [ "$HPCDEPLOY_EXTREME_PREPARE_ONLY" = "1" ]; then
+        echo "[STAGE] extreme_prepare_done module=gpu"
+        return 0
+    fi
+
     if command -v nvcc >/dev/null 2>&1; then
         CUDA_TOOLKIT="$(nvcc --version | grep release | sed -E 's/.*V([0-9.]+).*/\1/' || true)"
     else
@@ -639,6 +646,13 @@ main() {
     BURN_ARGS=("$DURATION")
     if [ "$GPU_BURN_PRECISION" = "fp64" ]; then
         BURN_ARGS=(-d "$DURATION")
+    fi
+    if [ -n "$HPCDEPLOY_EXTREME_SYNC_DIR" ]; then
+        mkdir -p "$HPCDEPLOY_EXTREME_SYNC_DIR"
+        : > "$HPCDEPLOY_EXTREME_SYNC_DIR/gpu.ready"
+        echo "[STAGE] extreme_ready module=gpu"
+        while [ ! -f "$HPCDEPLOY_EXTREME_SYNC_DIR/start" ]; do sleep 0.05; done
+        date +%s%N > "$HPCDEPLOY_EXTREME_SYNC_DIR/gpu.started"
     fi
     echo "[STAGE] stress_start"
     echo "[INFO] Start gpu-burn (${GPU_BURN_PRECISION^^}) with one process per GPU."

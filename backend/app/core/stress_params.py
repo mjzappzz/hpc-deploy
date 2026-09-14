@@ -12,6 +12,7 @@ STRESS_ALL_PARAM_KEYS: set[str] = {
     "memory_percent", "workers",
     "disk_file_size", "disk_path", "disk_test_dir", "disk_test_dirs",
     "gpu_ids", "gpu_memory_percent", "gpu_backend", "gpu_precision",
+    "extreme_mode",
 }
 
 _SAFE_DISK_DIR_PREFIXES: tuple[str, ...] = (
@@ -110,6 +111,11 @@ def validate_stress_params(raw: dict[str, object], script_name: str) -> dict[str
         )
     validated["duration_seconds"] = dur
     validated["interval_seconds"] = validate_stress_interval(raw, dur)
+
+    if script_name == "extreme_stress_report.sh":
+        if raw.get("extreme_mode") is not True:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="extreme_mode=true is required")
+        validated["extreme_mode"] = True
 
     if script_name == "cpu_mem_stress_report.sh":
         if "memory_percent" in raw:

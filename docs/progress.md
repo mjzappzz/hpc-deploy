@@ -2,6 +2,8 @@
 
 > 维护流水与会话交接材料。它记录变化背景和待办，不替代 [architecture.md](architecture.md) 中的当前架构、安全边界或 [../deploy/README.md](../deploy/README.md) 中的可执行部署步骤。
 
+- 2026-09-14：新增 Linux“极限压测”能力：单一编排任务准备 GPU 与 CPU/内存依赖后以共享屏障同步启动，不包含磁盘；CPU/内存安全保留线为物理内存 15%，整体结果要求两个模块与同步校验均通过。任务下发页提供独立“Linux 服务器极限压测”入口，历史详情展示模块状态和启动偏差。已在“测试246”完成 60 秒 GPU 实机验证（启动偏差 19ms，整体 PASS），并完成发布与 OpenSpec 归档。
+
 - 2026-09-11：`cpu_mem_stress_report.sh` 升级为 `v2026.09.11.4`。按操作员确认，CentOS Linux 8 首次编译 `stress-ng V0.22.00` 默认直接使用 `nproc` 所返回的全部可调度线程，不再限制为 8；`HPCDEPLOY_STRESS_NG_BUILD_JOBS` 保留为共享机器的显式覆盖。96 线程服务器将使用 `make -j96`。新增回归将 96 线程默认值锁定为 96；已强制发布，后端与 Nginx 健康检查通过，5 个运行中任务恢复为 `RUNNING`。
 
 - 2026-09-11：`cpu_mem_stress_report.sh` 升级为 `v2026.09.11.3`。CentOS Linux 8 在无 RPM 可用而首次编译 `stress-ng V0.22.00` 时，不再固定 `make -j2`；默认并行度为 `min(nproc, 8)`，可通过 `HPCDEPLOY_STRESS_NG_BUILD_JOBS` 覆盖。96 线程服务器会使用 8 个编译任务，低核机器仍不会被放大并发。新增回归覆盖默认上限、低核取值与显式覆盖；未发布。
@@ -1037,6 +1039,13 @@ HPCDeploy 已形成完整闭环，端到端链路全部打通：
 - batchFailureReasons 新增 CANCELED 分支
 - 执行顺序分子用位置索引 / 分母用同服务器任务数
 ```
+## 2026-09-14 极限压测模式
+
+- 任务下发页新增互斥的“常规压测 / 极限压测”模式。极限模式固定 GPU 与 CPU/内存同步压测，不包含磁盘；常规模式的全选及 GPU → CPU/内存 → 磁盘串行行为保持不变。
+- 新增 `extreme_stress_report.sh` 原子编排器：首次运行仍顺序安装/检查依赖，实际负载通过共享屏障启动；CPU/内存模块固定保留至少 15% 物理内存。任一模块运行失败会终止另一模块；正常模块先后完成不会被误判为失败。
+- 极限任务以 `extreme_stress_result.json` 作为唯一最终状态依据，历史详情展示 GPU/CPU 内存退出码、启动偏差和原因；GPU、CPU/内存的原始 TXT/XLSX/CSV/LOG 都以模块前缀归档并可独立下载。
+- 已在非生产服务器“测试246”（RTX 6000 Ada）完成 60 秒实机验证：GPU 与 CPU/内存同步启动偏差 19ms，两个模块及原子结果均 PASS，子模块报告已归档。
+
 ## 2026-09-07 Rocky 旧版本 extras 仓库禁用
 
 - `lock_linux_release.sh` 升级至 `v1.7.7`：Rocky 固定 BaseOS/AppStream/CRB 与 EPEL 后，按 repo 段显式禁用遗留 `[extras]`，并校验其不在 enabled repo 列表中；避免 Rocky 9.4 等旧小版本的官方 `extras` mirrorlist 返回 404，阻断后续 NVIDIA 驱动依赖安装。原仓库配置仍先完整备份，失败时自动回滚。

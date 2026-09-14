@@ -39,6 +39,20 @@ test('lays task type modules side by side with vertically stacked cards', async 
   assert.match(source, /\.task-type-card-check\s*\{[\s\S]*?background: var\(--el-color-primary\)/)
 })
 
+test('selects extreme stress from the task-type card and fixes its atomic script', async () => {
+  const source = await readFile(new URL('./TaskRunner.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /\{ label: 'Linux 服务器极限压测', value: 'extreme_stress' \}/)
+  assert.match(source, /const isExtremeStress = computed\(\(\) => selectedTaskCategory\.value === 'extreme_stress'\)/)
+  assert.match(source, /value === 'stress' \|\| value === 'extreme_stress' \? 'stress'/)
+  assert.match(source, /file\.name === 'extreme_stress_report\.sh'/)
+  assert.match(source, /if \(isExtremeStress\.value\) params\.extreme_mode = true/)
+  assert.match(source, /<template v-if="isExtremeStress">/)
+  assert.match(source, /\.filter\(\(file\) => file\.name !== 'extreme_stress_report\.sh'\)/)
+  assert.match(source, /watch\(selectedTaskType, \(\) => \{[\s\S]*?if \(isExtremeStress\.value\) \{[\s\S]*?selectedFilePath\.value = files\.value\.find\(file => file\.name === 'extreme_stress_report\.sh'\)\?\.path \?\? ''/)
+  assert.doesNotMatch(source, /el-radio-button label="extreme"/)
+})
+
 test('uses danger styling when a target server has no CUDA Toolkit installed', async () => {
   const source = await readFile(new URL('./TaskRunner.vue', import.meta.url), 'utf8')
 

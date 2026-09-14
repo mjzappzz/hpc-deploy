@@ -180,7 +180,7 @@
 
               <div :class="['selection-card', { 'is-step-disabled': !hasSelectedServer || !selectedTaskType }]">
                 <div class="selection-label-row step-header-band">
-                  <span class="selection-label step-label">③ 选择脚本/镜像</span>
+                  <span class="selection-label step-label">{{ isExtremeStress ? '③ 极限压测配置' : '③ 选择脚本' }}</span>
                   <el-tag v-if="isFileSelected" type="success" size="small" effect="dark" class="step-complete-tag">已完成</el-tag>
                 </div>
 
@@ -233,38 +233,44 @@
 
                 <!-- Stress type: card grid (single select or auto suite by selection count) -->
                 <template v-else-if="selectedTaskType === 'stress'">
-                  <div class="stress-mode-header">
-                    <div class="stress-mode-desc">
-                      可选择 1-3 个服务器压测脚本；选择 1 个执行单任务，选择多个自动按 GPU → CPU/内存 → 磁盘顺序串行执行。
+                  <template v-if="isExtremeStress">
+                    <el-alert title="极限压测将同步运行 GPU 与 CPU/内存，不包含磁盘；任一模块异常会终止整体任务。" type="warning" :closable="false" show-icon />
+                    <div class="stress-mode-header">
+                      <div class="stress-mode-desc">GPU 与 CPU/内存将在同一有效压力窗口同步运行，已固定为单个原子任务。</div>
                     </div>
-                    <div class="stress-select-actions">
+                  </template>
+                  <template v-else>
+                    <div class="stress-mode-header">
+                      <div class="stress-mode-desc">可选择 1-3 个服务器压测脚本；选择 1 个执行单任务，选择多个自动按 GPU → CPU/内存 → 磁盘顺序串行执行。</div>
+                      <div class="stress-select-actions">
                       <el-checkbox
                         :model-value="allStressScriptsSelected"
                         :indeterminate="someStressScriptsSelected"
                         :disabled="!canSelectFile || filteredFiles.length === 0"
                         @change="toggleAllStressScripts"
                       >全选压测脚本（{{ filteredFiles.length }}）</el-checkbox>
+                      </div>
                     </div>
-                  </div>
-                  <div class="file-card-grid stress-cards">
-                    <div
-                      :class="['file-select-card', 'stress-card', 'hpc-interactive-pulse', { 'is-active': isStressCardActive(file.path), 'hpc-selected-pulse': isStressCardActive(file.path) }]"
-                      v-for="file in filteredFiles"
-                      :key="file.path"
-                      @click="canSelectFile && onStressCardClick(file.path)"
-                    >
-                      <div class="stress-card-check" v-if="selectedStressScripts.includes(file.path)">✓</div>
-                      <div class="f-card-name">{{ file.name }}</div>
-                      <div class="f-card-desc">{{ stressCardDesc(file.name) }}</div>
+                    <div class="file-card-grid stress-cards">
+                      <div
+                        :class="['file-select-card', 'stress-card', 'hpc-interactive-pulse', { 'is-active': isStressCardActive(file.path), 'hpc-selected-pulse': isStressCardActive(file.path) }]"
+                        v-for="file in filteredFiles"
+                        :key="file.path"
+                        @click="canSelectFile && onStressCardClick(file.path)"
+                      >
+                        <div class="stress-card-check" v-if="selectedStressScripts.includes(file.path)">✓</div>
+                        <div class="f-card-name">{{ file.name }}</div>
+                        <div class="f-card-desc">{{ stressCardDesc(file.name) }}</div>
+                      </div>
                     </div>
-                  </div>
-                  <div class="stress-suite-hint" v-if="selectedStressScripts.length === 1">
-                    已选择 1 个服务器压测脚本，将按单次执行。
-                  </div>
-                  <div class="stress-suite-hint" v-else-if="selectedStressScripts.length >= 2">
-                    已选择 {{ selectedStressScripts.length }} 个服务器压测脚本，
-                    将按 GPU → CPU/内存 → 磁盘顺序执行并生成 {{ selectedStressScripts.length }} 份报告
-                  </div>
+                    <div class="stress-suite-hint" v-if="selectedStressScripts.length === 1">
+                      已选择 1 个服务器压测脚本，将按单次执行。
+                    </div>
+                    <div class="stress-suite-hint" v-else-if="selectedStressScripts.length >= 2">
+                      已选择 {{ selectedStressScripts.length }} 个服务器压测脚本，
+                      将按 GPU → CPU/内存 → 磁盘顺序执行并生成 {{ selectedStressScripts.length }} 份报告
+                    </div>
+                  </template>
                 </template>
 
                 <!-- Apptainer: dropdown -->
@@ -731,12 +737,13 @@ type TaskRunnerFile = ScriptFileRecord & {
 type MonitorPanel = 'logs' | 'cpu_mem' | 'disk' | 'gpu'
 
 type PageMode = 'config' | 'summary' | 'config-readonly'
-type RunnerTaskCategory = 'base_system' | 'gpu_software' | 'compiler_mpi' | 'stress' | 'apptainer'
+type RunnerTaskCategory = 'base_system' | 'gpu_software' | 'compiler_mpi' | 'stress' | 'extreme_stress' | 'apptainer'
 const taskTypes: Array<{ label: string; value: RunnerTaskCategory }> = [
   { label: '基础环境配置', value: 'base_system' },
   { label: 'GPU 驱动安装', value: 'gpu_software' },
   { label: 'MPI 编译环境配置', value: 'compiler_mpi' },
   { label: 'Linux 服务器压测', value: 'stress' },
+  { label: 'Linux 服务器极限压测', value: 'extreme_stress' },
 ]
 const taskTypeGroups: Array<{
   label: string
@@ -744,7 +751,7 @@ const taskTypeGroups: Array<{
   items: Array<{ label: string; value: RunnerTaskCategory }>
 }> = [
   { label: '环境部署', description: '初始化系统与软件栈', items: taskTypes.slice(0, 3) },
-  { label: '稳定性验证', description: '验证服务器负载稳定性', items: taskTypes.slice(3, 4) },
+  { label: '稳定性验证', description: '验证服务器负载稳定性', items: taskTypes.slice(3, 5) },
 ]
 
 function runnerTaskCategoryLabel(value: RunnerTaskCategory): string {
@@ -757,6 +764,7 @@ function taskTypeCardDesc(value: RunnerTaskCategory): string {
     gpu_software: 'NVIDIA 驱动与 CUDA Toolkit 部署',
     compiler_mpi: 'Intel/AMD 编译器、数学库与 MPI 工具链',
     stress: 'CPU/内存、磁盘、GPU 压测，支持参数化配置',
+    extreme_stress: '同步运行 GPU 与 CPU/内存，不包含磁盘',
     apptainer: '仅上传分发 .sif 镜像，不执行容器',
   }
   return descs[value] ?? ''
@@ -823,11 +831,14 @@ function cudaStatus(server: ServerRecord): string {
 
 function selectTaskType(value: RunnerTaskCategory) {
   selectedTaskCategory.value = value
-  selectedTaskType.value = value === 'stress' || value === 'apptainer' ? value : 'script'
+  selectedTaskType.value = value === 'stress' || value === 'extreme_stress' ? 'stress' : value === 'apptainer' ? value : 'script'
   selectedFilePath.value = ''
   selectedStressScripts.value = []
-  selectedManagedActions.value = []
   stressSuiteMode.value = false
+  if (value === 'extreme_stress') {
+    selectedFilePath.value = files.value.find(file => file.name === 'extreme_stress_report.sh')?.path ?? ''
+  }
+  selectedManagedActions.value = []
   resetParamsForFile()
 }
 
@@ -1157,6 +1168,7 @@ const filteredFiles = computed(() => {
   if (selectedTaskType.value === 'stress') {
     return files.value
       .filter((file) => file.physical_category === 'stress')
+      .filter((file) => file.name !== 'extreme_stress_report.sh')
       .sort((a, b) => stressOrderForPath(a.path) - stressOrderForPath(b.path))
   }
   return files.value.filter((file) => file.physical_category === selectedTaskType.value)
@@ -1169,6 +1181,7 @@ const selectedServers = computed(() => {
 })
 const hasSelectedServer = computed(() => selectedServerIds.value.length > 0)
 const canSelectFile = computed(() => hasSelectedServer.value && !!selectedTaskType.value)
+const isExtremeStress = computed(() => selectedTaskCategory.value === 'extreme_stress')
 const allStressScriptsSelected = computed(() => {
   const available = filteredFiles.value.map(file => file.path)
   return available.length > 0 && available.every(path => selectedStressScripts.value.includes(path))
@@ -1236,7 +1249,10 @@ watch(gpuDriverSource, (source) => {
   if (source === 'library') selectDefaultGpuDriver()
 })
 const canConfigureTask = computed(() => canSelectFile.value && isFileSelected.value)
-const selectedFile = computed(() => filteredFiles.value.find((file) => file.path === selectedFilePath.value) ?? null)
+const selectedFile = computed(() => {
+  const candidates = isExtremeStress.value ? files.value : filteredFiles.value
+  return candidates.find((file) => file.path === selectedFilePath.value) ?? null
+})
 const showDiskTestDir = computed(() => {
   if (selectedTaskType.value !== 'stress') return false
   // Multi-select: check if disk_stress_report.sh is in selected paths
@@ -1345,6 +1361,7 @@ const showParamCard = computed(() => {
   if ((selectedTaskCategory.value === 'base_system' || selectedTaskCategory.value === 'gpu_software') && selectedManagedActions.value.length > 0) return true
   if (isGpuDriverSelected.value || isCudaToolkitSelected.value) return true
   if (selectedTaskType.value !== 'stress') return !!selectedFile.value
+  if (isExtremeStress.value) return !!selectedFile.value
   return selectedStressScripts.value.length > 0
 })
 const activeTaskDisplayName = computed(() => {
@@ -1380,6 +1397,7 @@ const stressDurationSeconds = computed(() => {
 const stressDurationError = computed(() => validateStressDurationSeconds(stressDurationSeconds.value))
 const stressIntervalMax = computed(() => Math.max(1, Math.min(stressDurationSeconds.value, 3600)))
 const hasGpuStressSelected = computed(() =>
+  isExtremeStress.value ||
   selectedFile.value?.name === 'gpu_stress_report.sh' ||
   selectedStressScripts.value.some(path => path.includes('gpu_stress_report.sh'))
 )
@@ -1717,6 +1735,7 @@ function buildStressParams(): Record<string, unknown> {
     duration_seconds: dur,
     interval_seconds: stressIntervalSeconds.value,
   }
+  if (isExtremeStress.value) params.extreme_mode = true
   const hasDisk = selectedFile.value?.name === 'disk_stress_report.sh' ||
     selectedStressScripts.value.some(p => p.includes('disk_stress_report.sh'))
   if (hasDisk && !createsMultipleDiskTasks.value) {
@@ -2497,6 +2516,9 @@ watch(selectedTaskType, () => {
   selectedStressScripts.value = []
   stressSuiteMode.value = false
   resetParamsForFile()
+  if (isExtremeStress.value) {
+    selectedFilePath.value = files.value.find(file => file.name === 'extreme_stress_report.sh')?.path ?? ''
+  }
   activePanel.value = 'logs'
 })
 

@@ -655,6 +655,11 @@
                 <span>失败原因</span>
                 <strong>{{ drawerFailureReason }}</strong>
               </div>
+              <template v-if="drawerTask.extreme_summary">
+                <div class="task-drawer-overview__row"><span>GPU 模块</span><strong>{{ drawerTask.extreme_summary.gpu_exit === 0 ? 'PASS' : 'FAIL' }}</strong></div>
+                <div class="task-drawer-overview__row"><span>CPU/内存模块</span><strong>{{ drawerTask.extreme_summary.cpu_mem_exit === 0 ? 'PASS' : 'FAIL' }}</strong></div>
+                <div class="task-drawer-overview__row"><span>同步偏差</span><strong>{{ drawerTask.extreme_summary.start_skew_ms ?? '-' }} ms</strong></div>
+              </template>
             </div>
           </template>
           <template v-else-if="drawerActivePanel === 'logs'">

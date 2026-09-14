@@ -33,6 +33,7 @@ export interface TaskRecord {
   failure_reason?: string | null
   outcome_message?: string | null
   outcome_title?: string | null
+  extreme_summary?: { gpu_exit?: number, cpu_mem_exit?: number, start_skew_ms?: number, reason?: string } | null
 }
 
 export interface TaskLogRecord {
