@@ -12,6 +12,7 @@ from app.api.tasks import _resource_conflicts
 from app.api.tasks import _read_remote_extreme_preflight_checks
 from app.api.tasks import run_task
 from app.api.tasks import _get_server_submission_lock
+from app.core.task_runner import _connect_recovery_executor
 from app.schemas.task import ExtremePreflightResponse, ExtremePreflightCheck, TaskRunRequest
 from app.models.server import Server
 
@@ -135,6 +136,27 @@ class ServerSshIdentityModelTests(unittest.TestCase):
     def test_server_submission_lock_is_shared_by_server_id_only(self) -> None:
         self.assertIs(_get_server_submission_lock(101), _get_server_submission_lock(101))
         self.assertIsNot(_get_server_submission_lock(101), _get_server_submission_lock(102))
+
+    @patch("app.core.task_runner.SSHExecutor")
+    @patch("app.db.database.SessionLocal")
+    def test_recovery_ssh_connection_keeps_the_confirmed_host_fingerprint(
+        self,
+        _session_local: MagicMock,
+        executor_class: MagicMock,
+    ) -> None:
+        # The recovery helper imports SessionLocal lazily from app.db.database.
+        server = SimpleNamespace(
+            host="10.0.0.1", port=22, username="root", key_path="/tmp/key", password=None,
+            ssh_host_fingerprint="SHA256:confirmed",
+        )
+        _session_local.return_value.get.return_value = server
+
+        _connect_recovery_executor(SimpleNamespace(server_id=1))
+
+        executor_class.return_value.connect.assert_called_once_with(
+            host="10.0.0.1", port=22, username="root", key_path="/tmp/key", password=None,
+            expected_host_fingerprint="SHA256:confirmed",
+        )
 
 
 if __name__ == "__main__":
