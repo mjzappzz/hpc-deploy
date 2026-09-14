@@ -7,6 +7,8 @@ from fastapi import HTTPException
 from app.api.tasks import _require_server_ssh_identity_confirmed
 from app.api.tasks import _extreme_preflight
 from app.api.tasks import _extreme_preflight_snapshot
+from app.api.tasks import _task_resource_domains
+from app.api.tasks import _resource_conflicts
 from app.models.server import Server
 
 
@@ -49,6 +51,29 @@ class ServerSshIdentityModelTests(unittest.TestCase):
         self.assertIsInstance(snapshot["checked_at"], str)
         self.assertEqual([item["key"] for item in snapshot["checks"]], [check.key for check in result.checks])
         self.assertNotIn("password", str(snapshot))
+
+    def test_resource_domains_keep_disk_and_read_only_tasks_out_of_gpu_cpu_mutex(self) -> None:
+        self.assertEqual(_task_resource_domains("stress", "extreme_stress_report.sh"), {"gpu", "cpu_mem"})
+        self.assertEqual(_task_resource_domains("stress", "gpu_stress_report.sh"), {"gpu"})
+        self.assertEqual(_task_resource_domains("stress", "cpu_mem_stress_report.sh"), {"cpu_mem"})
+        self.assertEqual(_task_resource_domains("stress", "disk_stress_report.sh"), set())
+        self.assertEqual(_task_resource_domains("script", "collect_inventory.sh"), set())
+
+    def test_resource_conflicts_only_returns_overlapping_domains(self) -> None:
+        gpu_task = SimpleNamespace(
+            task_id="task-gpu", task_type="stress", file_name="gpu_stress_report.sh",
+            status="RUNNING", batch_id=None,
+        )
+        disk_task = SimpleNamespace(
+            task_id="task-disk", task_type="stress", file_name="disk_stress_report.sh",
+            status="RUNNING", batch_id=None,
+        )
+        db = MagicMock()
+        db.query.return_value.filter.return_value.all.return_value = [gpu_task, disk_task]
+
+        conflicts = _resource_conflicts(db, server_id=1, target_domains={"gpu", "cpu_mem"})
+
+        self.assertEqual([(task.task_id, domains) for task, domains in conflicts], [("task-gpu", {"gpu"})])
 
 
 if __name__ == "__main__":

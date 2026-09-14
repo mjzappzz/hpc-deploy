@@ -249,6 +249,61 @@ def _require_server_ssh_identity_confirmed(server: Server) -> None:
         )
 
 
+def _task_resource_domains(task_type: str | None, file_name: str | None) -> set[str]:
+    """Return the GPU/CPU-memory domains consumed by a task.
+
+    Disk stress and read-only/ordinary tasks deliberately return an empty set so
+    they are not rejected merely because a pressure task is active.
+    """
+    if task_type != "stress" or not file_name:
+        return set()
+    script_name = Path(file_name).name
+    if script_name == "extreme_stress_report.sh":
+        return {"gpu", "cpu_mem"}
+    if script_name == "gpu_stress_report.sh":
+        return {"gpu"}
+    if script_name == "cpu_mem_stress_report.sh":
+        return {"cpu_mem"}
+    return set()
+
+
+def _resource_conflicts(
+    db: Session,
+    *,
+    server_id: int,
+    target_domains: set[str],
+    exclude_batch_id: str | None = None,
+) -> list[tuple[Task, set[str]]]:
+    if not target_domains:
+        return []
+    active_tasks = (
+        db.query(Task)
+        .filter(Task.server_id == server_id, Task.status.in_(UNFINISHED_TASK_STATUSES))
+        .all()
+    )
+    return [
+        (task, target_domains & _task_resource_domains(task.task_type, task.file_name))
+        for task in active_tasks
+        if (exclude_batch_id is None or task.batch_id != exclude_batch_id)
+        and target_domains & _task_resource_domains(task.task_type, task.file_name)
+    ]
+
+
+def _resource_conflict_detail(conflicts: list[tuple[Task, set[str]]]) -> dict[str, object]:
+    return {
+        "message": "server has conflicting active stress task",
+        "conflicts": [
+            {
+                "task_id": task.task_id,
+                "file_name": task.file_name,
+                "status": task.status,
+                "resource_domains": sorted(domains),
+            }
+            for task, domains in conflicts
+        ],
+    }
+
+
 def _extreme_preflight(server: Server, db: Session) -> ExtremePreflightResponse:
     checks: list[ExtremePreflightCheck] = []
     checks.append(ExtremePreflightCheck(
@@ -263,10 +318,15 @@ def _extreme_preflight(server: Server, db: Session) -> ExtremePreflightResponse:
         key="gpu", status="pass" if server.gpu_status == "driver_ok" else "blocked",
         message="NVIDIA GPU 驱动可用" if server.gpu_status == "driver_ok" else "未检测到可用 NVIDIA GPU 驱动",
     ))
-    conflict = db.query(Task).filter(Task.server_id == server.id, Task.status.in_(UNFINISHED_TASK_STATUSES)).first()
+    conflicts = _resource_conflicts(db, server_id=server.id, target_domains={"gpu", "cpu_mem"})
+    conflict_message = "无 GPU/CPU/内存资源冲突"
+    if conflicts:
+        conflict_message = "资源冲突：" + "；".join(
+            f"{task.task_id}（{', '.join(sorted(domains))}）" for task, domains in conflicts
+        )
     checks.append(ExtremePreflightCheck(
-        key="resource_conflict", status="blocked" if conflict else "pass",
-        message=f"存在活动任务：{conflict.task_id}" if conflict else "无同机活动任务",
+        key="resource_conflict", status="blocked" if conflicts else "pass",
+        message=conflict_message,
     ))
     free_bytes = shutil.disk_usage(ARTIFACTS_DIR).free
     minimum = 5 * 1024 * 1024 * 1024
@@ -448,22 +508,6 @@ def run_task(
         if not preflight.can_submit:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"message": "极限压测预检未通过", "checks": [check.model_dump() for check in preflight.checks]})
         extreme_preflight_snapshot = _extreme_preflight_snapshot(preflight)
-    _require_server_ssh_identity_confirmed(server)
-    running_task = (
-        db.query(Task)
-        .filter(Task.server_id == payload.server_id, Task.status.in_(UNFINISHED_TASK_STATUSES))
-        .first()
-    )
-    if running_task is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "message": "server already has a running task",
-                "running_task_id": running_task.task_id,
-                "running_status": running_task.status,
-            },
-        )
-
     file_record = _get_library_file_or_400(payload.file_path)
 
     physical = file_record["physical_category"]
@@ -478,6 +522,12 @@ def run_task(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="task_type does not match knowledge base file category",
         )
+
+    _require_server_ssh_identity_confirmed(server)
+    target_domains = _task_resource_domains(payload.task_type, str(file_record["name"]))
+    conflicts = _resource_conflicts(db, server_id=server.id, target_domains=target_domains)
+    if conflicts:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=_resource_conflict_detail(conflicts))
 
     params: dict[str, object] | None = None
     if payload.task_type == "stress":
@@ -1180,16 +1230,14 @@ def _create_task_for_server(
     """
     if is_server_archived(server):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="server is archived; restore management before operating it")
-    running_task = (
-        db.query(Task)
-        .filter(Task.server_id == server.id, Task.status.in_(UNFINISHED_TASK_STATUSES))
-        .first()
+    conflicts = _resource_conflicts(
+        db,
+        server_id=server.id,
+        target_domains=_task_resource_domains(task_type, file_name),
+        exclude_batch_id=batch_id,
     )
-    if running_task is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="server already has unfinished task",
-        )
+    if conflicts:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=_resource_conflict_detail(conflicts))
 
     remote_work_dir = _build_remote_work_dir(task_type)
     command_preview = _build_command_preview(
@@ -1823,13 +1871,11 @@ def create_stress_suite(
                 ))
             continue
 
-        # Check for unfinished tasks on this server
-        running = (
-            db.query(Task)
-            .filter(Task.server_id == sid, Task.status.in_(UNFINISHED_TASK_STATUSES))
-            .first()
-        )
-        if running is not None:
+        suite_domains = set().union(*(
+            _task_resource_domains("stress", str(spec["name"]))
+            for spec, _disk_test_dir in selected_task_specs
+        ))
+        if _resource_conflicts(db, server_id=sid, target_domains=suite_domains):
             for s, disk_test_dir in selected_task_specs:
                 task_name = str(s["label"])
                 if disk_test_dir:
@@ -2110,17 +2156,15 @@ def retry_batch_task(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="server is archived; restore management before operating it")
     if server.status != "online":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="server is not online")
-    other_unfinished = (
-        db.query(Task)
-        .filter(
-            Task.server_id == original.server_id,
-            Task.status.in_(UNFINISHED_TASK_STATUSES),
-            (Task.batch_id != original.batch_id) | (Task.batch_id.is_(None)),
-        )
-        .first()
+    retry_domains = _task_resource_domains(original.task_type, original.file_name)
+    retry_conflicts = _resource_conflicts(
+        db,
+        server_id=original.server_id,
+        target_domains=retry_domains,
+        exclude_batch_id=original.batch_id,
     )
-    if other_unfinished is not None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="server has unfinished task outside this batch")
+    if retry_conflicts:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=_resource_conflict_detail(retry_conflicts))
     existing_retry = (
         db.query(Task)
         .filter(
