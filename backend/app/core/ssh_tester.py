@@ -4,6 +4,7 @@ from socket import timeout as SocketTimeout
 import paramiko
 
 from app.core.ssh_detector import DEFAULT_DETECT_TIMEOUT
+from app.core.ssh_host_identity import SSHHostIdentityError, require_expected_host_identity
 
 
 class SSHTestError(Exception):
@@ -17,6 +18,7 @@ def test_ssh_connection(
     username: str,
     key_path: str | None,
     password: str | None = None,
+    expected_host_fingerprint: str | None = None,
     timeout: int = DEFAULT_DETECT_TIMEOUT,
 ) -> dict[str, str]:
     connect_kwargs: dict[str, object] = {}
@@ -44,6 +46,7 @@ def test_ssh_connection(
             allow_agent=False,
             **connect_kwargs,
         )
+        require_expected_host_identity(client, expected_host_fingerprint)
         hostname = _run_fixed_command(client, "hostname", timeout)
         uname = _run_fixed_command(client, "uname -a", timeout)
         return {"hostname": hostname, "uname": uname}
@@ -53,6 +56,8 @@ def test_ssh_connection(
         raise SSHTestError("SSH authentication failed") from exc
     except paramiko.SSHException as exc:
         raise SSHTestError(f"SSH connection failed: {exc}") from exc
+    except SSHHostIdentityError as exc:
+        raise SSHTestError(str(exc)) from exc
     except OSError as exc:
         raise SSHTestError(f"SSH network error: {exc}") from exc
     finally:

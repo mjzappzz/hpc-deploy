@@ -84,6 +84,21 @@ class SSHExecutorSftpTests(unittest.TestCase):
         client.close.assert_called()
 
     @patch("app.core.ssh_executor.paramiko.SSHClient")
+    def test_connected_executor_exposes_remote_host_identity(self, ssh_client_cls: MagicMock) -> None:
+        client = ssh_client_cls.return_value
+        host_key = MagicMock()
+        host_key.asbytes.return_value = b"known-host-key"
+        host_key.get_name.return_value = "ssh-ed25519"
+        client.get_transport.return_value.get_remote_server_key.return_value = host_key
+
+        executor = SSHExecutor()
+        executor.connect(host="10.0.0.1", port=22, username="root", key_path=None, password="secret")
+
+        identity = executor.host_identity()
+        self.assertEqual(identity["algorithm"], "ssh-ed25519")
+        self.assertTrue(identity["fingerprint"].startswith("SHA256:"))
+
+    @patch("app.core.ssh_executor.paramiko.SSHClient")
     def test_upload_opens_sftp_lazily(self, ssh_client_cls: MagicMock) -> None:
         client = ssh_client_cls.return_value
         sftp = client.open_sftp.return_value

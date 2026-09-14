@@ -162,6 +162,18 @@ class DeployPublicKeyRequest(BaseModel):
     private_key_path: str = Field(min_length=1, max_length=255)
 
 
+class SSHHostIdentityConfirmRequest(BaseModel):
+    fingerprint: str = Field(min_length=10, max_length=255)
+
+
+class SSHHostIdentityResponse(BaseModel):
+    server_id: int
+    fingerprint: str
+    algorithm: str
+    trusted_fingerprint: str | None = None
+    status: str
+
+
 class DeployPublicKeyAllRequest(DeployPublicKeyRequest):
     server_ids: list[int] = Field(default_factory=list)
 

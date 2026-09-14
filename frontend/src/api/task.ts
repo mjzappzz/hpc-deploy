@@ -57,6 +57,18 @@ export interface RunTaskResult {
   status: string
 }
 
+export interface ExtremePreflightCheck {
+  key: string
+  status: 'pass' | 'warning' | 'blocked'
+  message: string
+}
+
+export interface ExtremePreflightResult {
+  server_id: number
+  checks: ExtremePreflightCheck[]
+  can_submit: boolean
+}
+
 export interface RockyGpuDriverPayload {
   server_id: number
   driver_type: 'geforce' | 'datacenter'
@@ -279,6 +291,10 @@ export interface ArtifactListResponse {
 
 export function runTask(data: RunTaskPayload) {
   return request.post<RunTaskResult>('/tasks/run', data)
+}
+
+export function getExtremePreflight(serverId: number) {
+  return request.get<ExtremePreflightResult>(`/tasks/extreme-preflight/${serverId}`)
 }
 
 export function runRockyGpuDriverTask(data: RockyGpuDriverPayload) {

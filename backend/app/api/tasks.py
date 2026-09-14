@@ -109,6 +109,8 @@ from app.schemas.task import (
     TaskMonitorRequest,
     TaskMonitorResponse,
     TaskMonitorResponseStructured,
+    ExtremePreflightCheck,
+    ExtremePreflightResponse,
     TaskRead,
     TaskRetryResponse,
     TaskRunRequest,
@@ -237,6 +239,51 @@ def _get_server_or_400(db: Session, server_id: int) -> Server:
     if is_server_archived(server):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="server is archived; restore management before operating it")
     return server
+
+
+def _require_server_ssh_identity_confirmed(server: Server) -> None:
+    if not server.ssh_host_fingerprint:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="SSH 主机指纹尚未确认，请在服务器详情中读取并确认后再下发任务",
+        )
+
+
+def _extreme_preflight(server: Server, db: Session) -> ExtremePreflightResponse:
+    checks: list[ExtremePreflightCheck] = []
+    checks.append(ExtremePreflightCheck(
+        key="ssh_identity", status="pass" if server.ssh_host_fingerprint else "blocked",
+        message="SSH 主机指纹已确认" if server.ssh_host_fingerprint else "请先在服务器详情确认 SSH 主机指纹",
+    ))
+    checks.append(ExtremePreflightCheck(
+        key="connectivity", status="pass" if server.status == "online" else "blocked",
+        message="服务器在线" if server.status == "online" else "服务器未处于在线状态，请先探测",
+    ))
+    checks.append(ExtremePreflightCheck(
+        key="gpu", status="pass" if server.gpu_status == "driver_ok" else "blocked",
+        message="NVIDIA GPU 驱动可用" if server.gpu_status == "driver_ok" else "未检测到可用 NVIDIA GPU 驱动",
+    ))
+    conflict = db.query(Task).filter(Task.server_id == server.id, Task.status.in_(UNFINISHED_TASK_STATUSES)).first()
+    checks.append(ExtremePreflightCheck(
+        key="resource_conflict", status="blocked" if conflict else "pass",
+        message=f"存在活动任务：{conflict.task_id}" if conflict else "无同机活动任务",
+    ))
+    free_bytes = shutil.disk_usage(ARTIFACTS_DIR).free
+    minimum = 5 * 1024 * 1024 * 1024
+    checks.append(ExtremePreflightCheck(
+        key="controller_storage", status="pass" if free_bytes >= minimum else "blocked",
+        message=f"控制器可用空间 {free_bytes // (1024 * 1024)} MiB" if free_bytes >= minimum else "控制器可用空间不足 5 GiB",
+    ))
+    checks.append(ExtremePreflightCheck(
+        key="dependencies", status="warning",
+        message="GPU/CPU 内存压测依赖将在任务准备阶段自动检查并按需安装",
+    ))
+    return ExtremePreflightResponse(server_id=server.id, checks=checks, can_submit=not any(check.status == "blocked" for check in checks))
+
+
+@router.get("/extreme-preflight/{server_id}", response_model=ExtremePreflightResponse)
+def get_extreme_preflight(server_id: int, db: Session = Depends(get_db)) -> ExtremePreflightResponse:
+    return _extreme_preflight(_get_server_or_400(db, server_id), db)
 
 
 @router.get("", response_model=TaskListResponse)
@@ -386,6 +433,11 @@ def run_task(
     db: Session = Depends(get_db),
 ) -> TaskRunResponse:
     server = _get_server_or_400(db, payload.server_id)
+    if payload.params and payload.params.get("extreme_mode") is True:
+        preflight = _extreme_preflight(server, db)
+        if not preflight.can_submit:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"message": "极限压测预检未通过", "checks": [check.model_dump() for check in preflight.checks]})
+    _require_server_ssh_identity_confirmed(server)
     running_task = (
         db.query(Task)
         .filter(Task.server_id == payload.server_id, Task.status.in_(UNFINISHED_TASK_STATUSES))

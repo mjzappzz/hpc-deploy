@@ -132,6 +132,18 @@ class TaskMonitorRequest(BaseModel):
     type: MonitorType
 
 
+class ExtremePreflightCheck(BaseModel):
+    key: str
+    status: str
+    message: str
+
+
+class ExtremePreflightResponse(BaseModel):
+    server_id: int
+    checks: list[ExtremePreflightCheck]
+    can_submit: bool
+
+
 class TaskMonitorResponse(BaseModel):
     success: bool
     type: MonitorType

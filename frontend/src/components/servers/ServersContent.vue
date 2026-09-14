@@ -301,7 +301,17 @@
               <el-descriptions-item v-if="activeServer.last_error" label="SSH 错误">
                 <span class="detail-error-text">{{ activeServer.last_error }}</span>
               </el-descriptions-item>
+              <el-descriptions-item label="主机指纹">
+                <template v-if="activeServer.ssh_host_fingerprint">
+                  <code>{{ activeServer.ssh_host_fingerprint }}</code>
+                  <el-tag size="small" type="success" style="margin-left:6px">已确认</el-tag>
+                </template>
+                <el-tag v-else size="small" type="warning">待确认</el-tag>
+              </el-descriptions-item>
             </el-descriptions>
+            <div class="detail-actions">
+              <el-button size="small" :loading="detailActionsLoading" @click="confirmActiveServerHostIdentity">读取并确认主机指纹</el-button>
+            </div>
           </div>
 
           <!-- Section 3: Health Status -->
@@ -493,6 +503,8 @@ import {
   checkPublicKey,
   deleteServer,
   detectServer,
+  observeSshHostIdentity,
+  confirmSshHostIdentity,
   deployPublicKeyAll,
   getServer,
   listServers,
@@ -1289,6 +1301,27 @@ async function refreshDetail() {
     // Also refresh server list to sync state
     servers.value = servers.value.map((s) => (s.id === resp.id ? resp : s))
     loadRecentTasks(currentServerId.value)
+  } finally {
+    detailActionsLoading.value = false
+  }
+}
+
+async function confirmActiveServerHostIdentity() {
+  if (!activeServer.value) return
+  detailActionsLoading.value = true
+  try {
+    const identity = (await observeSshHostIdentity(activeServer.value.id)).data
+    const prior = identity.trusted_fingerprint ? `\n已保存：${identity.trusted_fingerprint}` : ''
+    await ElMessageBox.confirm(
+      `当前：${identity.fingerprint}\n算法：${identity.algorithm}${prior}\n\n确认后，后续任务会校验该服务器身份。`,
+      identity.status === 'changed' ? '检测到主机身份变化' : '确认 SSH 主机指纹',
+      { confirmButtonText: '确认保存', cancelButtonText: '取消', type: identity.status === 'changed' ? 'warning' : 'info' },
+    )
+    await confirmSshHostIdentity(activeServer.value.id, identity.fingerprint)
+    ElMessage.success('SSH 主机指纹已确认')
+    await refreshDetail()
+  } catch (error: unknown) {
+    if (error !== 'cancel' && error !== 'close') ElMessage.error(getApiErrorMessage(error))
   } finally {
     detailActionsLoading.value = false
   }

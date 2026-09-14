@@ -8,6 +8,10 @@ export interface ServerRecord {
   username: string
   auth_type: string
   key_path: string | null
+  ssh_host_fingerprint: string | null
+  ssh_host_key_algorithm: string | null
+  ssh_host_key_confirmed_at: string | null
+  key_auth_verified_at: string | null
   status: string
   last_check_at: string | null
   last_error: string | null
@@ -125,6 +129,14 @@ export interface SSHTestResult {
   hostname: string | null
   uname: string | null
   error: string | null
+}
+
+export interface SSHHostIdentityResult {
+  server_id: number
+  fingerprint: string
+  algorithm: string
+  trusted_fingerprint: string | null
+  status: 'pending' | 'matched' | 'changed'
 }
 
 export interface SSHTestAllResult {
@@ -293,6 +305,14 @@ export function testAllServerSsh(serverIds: number[]) {
 
 export function detectServer(id: number) {
   return request.post<ServerDetectResult>(`/servers/${id}/probe`)
+}
+
+export function observeSshHostIdentity(id: number) {
+  return request.post<SSHHostIdentityResult>(`/servers/${id}/ssh-host-identity`)
+}
+
+export function confirmSshHostIdentity(id: number, fingerprint: string) {
+  return request.post<SSHHostIdentityResult>(`/servers/${id}/ssh-host-identity/confirm`, { fingerprint })
 }
 
 export function probeAllServers(serverIds: number[]) {

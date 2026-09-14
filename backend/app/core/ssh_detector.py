@@ -7,6 +7,7 @@ from socket import timeout as SocketTimeout
 from time import monotonic as time_monotonic
 
 import paramiko
+from app.core.ssh_host_identity import SSHHostIdentityError, require_expected_host_identity
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +122,7 @@ def detect_server_info(
     username: str,
     key_path: str | None,
     password: str | None = None,
+    expected_host_fingerprint: str | None = None,
     timeout: int = DEFAULT_DETECT_TIMEOUT,
 ) -> tuple[dict[str, str], dict[str, float]]:
     """
@@ -158,6 +160,7 @@ def detect_server_info(
             allow_agent=False,
             **connect_kwargs,
         )
+        require_expected_host_identity(client, expected_host_fingerprint)
         timings["connect"] = round(time_monotonic() - connect_start, 3)
         logger.info(
             "[probe-timing] %s:%d connect elapsed=%.3fs",
@@ -227,6 +230,8 @@ def detect_server_info(
         raise ServerDetectError("SSH authentication failed") from exc
     except paramiko.SSHException as exc:
         raise ServerDetectError(f"SSH connection failed: {exc}") from exc
+    except SSHHostIdentityError as exc:
+        raise ServerDetectError(str(exc)) from exc
     except OSError as exc:
         raise ServerDetectError(f"SSH network error: {exc}") from exc
     finally:

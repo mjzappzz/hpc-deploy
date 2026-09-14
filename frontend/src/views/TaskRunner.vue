@@ -668,6 +668,7 @@ import {
   cancelTask,
   createStressSuite,
   createManagedSuite,
+  getExtremePreflight,
   getTask,
   getTaskLogs,
   getTaskMonitor,
@@ -1856,6 +1857,17 @@ async function validateRunner() {
     }
     if (selectedTaskType.value === 'apptainer') {
       ElMessage.success('参数校验通过。Apptainer 任务只会上传 .sif 容器文件到固定远端目录，不执行容器。')
+      return
+    }
+    if (isExtremeStress.value) {
+      const results = await Promise.all(selectedServerIds.value.map((serverId) => getExtremePreflight(serverId)))
+      const blocked = results.flatMap((result) => result.data.checks.filter((check) => check.status === 'blocked').map((check) => `服务器 ${result.data.server_id}：${check.message}`))
+      const warnings = results.flatMap((result) => result.data.checks.filter((check) => check.status === 'warning').map((check) => check.message))
+      if (blocked.length) {
+        ElMessage.error(`极限压测预检未通过：${blocked.join('；')}`)
+        return
+      }
+      ElMessage.success(`极限压测预检通过${warnings.length ? `；注意：${warnings.join('；')}` : ''}`)
       return
     }
     ElMessage.success('参数校验通过。')

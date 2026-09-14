@@ -24,6 +24,8 @@ from app.schemas.server import (
     DeployPublicKeyAllResponse,
     DeployPublicKeyRequest,
     DeployPublicKeyResponse,
+    SSHHostIdentityConfirmRequest,
+    SSHHostIdentityResponse,
     ServerCreate,
     ServerRead,
     ServerUpdate,
@@ -142,18 +144,18 @@ def _resolve_server_key_path(key_path: str | None) -> str | None:
 
 def _server_auth_kwargs(server: Server) -> dict[str, str | None]:
     if server.auth_type == "password":
-        return {"key_path": None, "password": server.password}
-    return {"key_path": _resolve_server_key_path(server.key_path), "password": None}
+        return {"key_path": None, "password": server.password, "expected_host_fingerprint": server.ssh_host_fingerprint}
+    return {"key_path": _resolve_server_key_path(server.key_path), "password": None, "expected_host_fingerprint": server.ssh_host_fingerprint}
 
 
 def _server_public_key_auth_kwargs(server: Server) -> dict[str, str | None]:
     if server.auth_type == "password":
         if not server.password:
             raise SSHExecutorError("密码为空，无法登录")
-        return {"key_path": None, "password": server.password}
+        return {"key_path": None, "password": server.password, "expected_host_fingerprint": server.ssh_host_fingerprint}
     if not server.key_path:
         raise SSHExecutorError("私钥文件未配置，无法登录")
-    return {"key_path": _resolve_server_key_path(server.key_path), "password": None}
+    return {"key_path": _resolve_server_key_path(server.key_path), "password": None, "expected_host_fingerprint": server.ssh_host_fingerprint}
 
 
 def server_ready_for_public_key_deploy(server: Server) -> bool:
@@ -167,6 +169,25 @@ def _require_server_ready_for_public_key_deploy(server: Server) -> None:
             status_code=status.HTTP_409_CONFLICT,
             detail="请先完成服务器首次探测并确认在线后再部署公钥",
         )
+
+
+def _require_server_ssh_identity_confirmed(server: Server) -> None:
+    if not server.ssh_host_fingerprint:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="SSH 主机指纹尚未确认，请先在服务器详情中确认")
+
+
+def _read_server_ssh_host_identity(server: Server) -> dict[str, str]:
+    executor = SSHExecutor(timeout=10)
+    try:
+        executor.connect(
+            host=server.host,
+            port=server.port,
+            username=server.username,
+            **_server_auth_kwargs(server),
+        )
+        return executor.host_identity()
+    finally:
+        executor.close()
 
 
 def _build_probe_response(server: Server, *, success: bool, error: str | None = None, timings: dict[str, float] | None = None) -> ServerDetectResponse:
@@ -656,6 +677,56 @@ def get_server(server_id: int, db: Session = Depends(get_db)) -> Server:
     return _get_server_or_404(db, server_id)
 
 
+@router.post("/{server_id}/ssh-host-identity", response_model=SSHHostIdentityResponse)
+def observe_ssh_host_identity(server_id: int, db: Session = Depends(get_db)) -> SSHHostIdentityResponse:
+    """Read the current SSH host key without changing the trusted identity."""
+    server = _get_server_or_404(db, server_id)
+    _require_server_not_archived(server)
+    try:
+        identity = _read_server_ssh_host_identity(server)
+    except SSHExecutorError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return SSHHostIdentityResponse(
+        server_id=server.id,
+        fingerprint=identity["fingerprint"],
+        algorithm=identity["algorithm"],
+        trusted_fingerprint=server.ssh_host_fingerprint,
+        status="matched" if server.ssh_host_fingerprint == identity["fingerprint"] else "pending" if not server.ssh_host_fingerprint else "changed",
+    )
+
+
+@router.post("/{server_id}/ssh-host-identity/confirm", response_model=SSHHostIdentityResponse)
+def confirm_ssh_host_identity(
+    server_id: int,
+    payload: SSHHostIdentityConfirmRequest,
+    db: Session = Depends(get_db),
+    _: str = Depends(require_admin_token),
+) -> SSHHostIdentityResponse:
+    server = _get_server_or_404(db, server_id)
+    _require_server_not_archived(server)
+    try:
+        identity = _read_server_ssh_host_identity(server)
+    except SSHExecutorError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    if identity["fingerprint"] != payload.fingerprint:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="SSH 主机指纹已变化，请重新读取后确认")
+    previous = server.ssh_host_fingerprint
+    server.ssh_host_fingerprint = identity["fingerprint"]
+    server.ssh_host_key_algorithm = identity["algorithm"]
+    server.ssh_host_key_confirmed_at = datetime.utcnow()
+    db.commit()
+    write_audit_log(
+        db, action="server.ssh_host_identity.confirm", target_type="server", status="success", actor="admin",
+        target_id=str(server.id), target_name=server.name, server_id=server.id, server_name=server.name,
+        message="confirmed SSH host identity",
+        detail={"previous_confirmed": bool(previous), "algorithm": identity["algorithm"]},
+    )
+    return SSHHostIdentityResponse(
+        server_id=server.id, fingerprint=identity["fingerprint"], algorithm=identity["algorithm"],
+        trusted_fingerprint=server.ssh_host_fingerprint, status="matched",
+    )
+
+
 @router.put("/{server_id}", response_model=ServerRead)
 def update_server(
     server_id: int,
@@ -881,7 +952,6 @@ def _deploy_public_key_to_server(db: Session, server: Server, private_key_file: 
             host=server.host,
             port=server.port,
             username=server.username,
-            expected_host_fingerprint=server.ssh_host_fingerprint,
             **_server_public_key_auth_kwargs(server),
         )
         quoted_key = shell_quote(public_key)
@@ -909,7 +979,6 @@ def _check_public_key_on_server(server: Server, public_key: str) -> tuple[bool, 
             host=server.host,
             port=server.port,
             username=server.username,
-            expected_host_fingerprint=server.ssh_host_fingerprint,
             **_server_public_key_auth_kwargs(server),
         )
         # 使用 exec_capture 避免非零退出码抛异常，使用 || true 确保退出码 0
@@ -947,6 +1016,7 @@ def deploy_public_key(
     server = _get_server_or_404(db, server_id)
     _require_server_not_archived(server)
     _require_server_ready_for_public_key_deploy(server)
+    _require_server_ssh_identity_confirmed(server)
     private_key_file, public_key = _load_public_key(payload.private_key_path)
     try:
         _deploy_public_key_to_server(db, server, private_key_file, public_key)

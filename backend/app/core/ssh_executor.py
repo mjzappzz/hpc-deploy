@@ -7,6 +7,7 @@ from typing import Callable
 import paramiko
 
 from app.core.ssh_host_identity import SSHHostIdentityError, require_expected_host_identity
+from app.core.ssh_host_identity import remote_host_identity
 
 
 REMOTE_HOME_MARKER = "__HPCDEPLOY_HOME__="
@@ -120,6 +121,15 @@ class SSHExecutor:
             raise SSHExecutorError("no stored connection params, cannot reconnect")
         self.close()
         self.connect(**self._connect_params)
+
+    def host_identity(self) -> dict[str, str]:
+        if self.client is None:
+            raise SSHExecutorError("SSH client is not connected")
+        try:
+            fingerprint, algorithm = remote_host_identity(self.client)
+        except SSHHostIdentityError as exc:
+            raise SSHExecutorError(str(exc)) from exc
+        return {"fingerprint": fingerprint, "algorithm": algorithm}
 
     def mkdir_p(self, remote_dir: str) -> None:
         self.exec_simple(f"mkdir -p {shell_quote(remote_dir)}")
