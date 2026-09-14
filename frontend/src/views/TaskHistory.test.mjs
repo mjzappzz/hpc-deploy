@@ -2,6 +2,15 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
+test('shows retained extreme preflight evidence without breaking legacy tasks', async () => {
+  const source = await readFile(new URL('./TaskHistory.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /const drawerExtremePreflight = computed/)
+  assert.match(source, /drawerTask\.value\?\.params\?\.extreme_preflight/)
+  assert.match(source, /v-if="drawerExtremePreflight"/)
+  assert.match(source, /提交前已通过/)
+})
+
 test('labels stress preparation states distinctly from runtime', async () => {
   const source = await readFile(new URL('../composables/useTaskProgress.ts', import.meta.url), 'utf8')
 

@@ -660,6 +660,13 @@
                 <div class="task-drawer-overview__row"><span>CPU/内存模块</span><strong>{{ drawerTask.extreme_summary.cpu_mem_exit === 0 ? 'PASS' : 'FAIL' }}</strong></div>
                 <div class="task-drawer-overview__row"><span>同步偏差</span><strong>{{ drawerTask.extreme_summary.start_skew_ms ?? '-' }} ms</strong></div>
               </template>
+              <template v-if="drawerExtremePreflight">
+                <div class="task-drawer-overview__row"><span>极限预检</span><strong>提交前已通过</strong></div>
+                <div class="task-drawer-overview__row"><span>预检时间</span><strong>{{ drawerExtremePreflight.checked_at }}</strong></div>
+                <div v-for="check in drawerExtremePreflight.checks" :key="check.key" class="task-drawer-overview__row">
+                  <span>{{ check.key }}</span><strong>{{ check.status }} · {{ check.message }}</strong>
+                </div>
+              </template>
             </div>
           </template>
           <template v-else-if="drawerActivePanel === 'logs'">
@@ -1239,6 +1246,21 @@ const drawerLogs = ref<TaskLogRecord[]>([])
 const drawerLogsLoaded = ref(false)
 const drawerLogsLoading = ref(false)
 const drawerTaskLoading = ref(false)
+const drawerExtremePreflight = computed(() => {
+  const value = drawerTask.value?.params?.extreme_preflight
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const evidence = value as { checked_at?: unknown; checks?: unknown }
+  if (typeof evidence.checked_at !== 'string' || !Array.isArray(evidence.checks)) return null
+  return {
+    checked_at: evidence.checked_at,
+    checks: evidence.checks.filter((check): check is { key: string; status: string; message: string } => (
+      typeof check === 'object' && check !== null && !Array.isArray(check)
+      && typeof (check as Record<string, unknown>).key === 'string'
+      && typeof (check as Record<string, unknown>).status === 'string'
+      && typeof (check as Record<string, unknown>).message === 'string'
+    )),
+  }
+})
 const localArtifactsCleaning = ref(false)
 const drawerRetrySubmitting = ref(false)
 const drawerActivePanel = ref<DrawerMonitorPanel>('summary')
