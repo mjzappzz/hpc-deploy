@@ -110,6 +110,10 @@ class ServerRead(ServerBase):
     cpu_physical_cores: int | None = Field(default=None, ge=1)
     cpu_logical_threads: int | None = Field(default=None, ge=1)
     disk_inventory: dict[str, list[dict[str, str]]] | None = None
+    ssh_host_fingerprint: str | None = None
+    ssh_host_key_algorithm: str | None = None
+    ssh_host_key_confirmed_at: datetime | None = None
+    key_auth_verified_at: datetime | None = None
     tags: list[str] = []
     created_at: datetime
     updated_at: datetime

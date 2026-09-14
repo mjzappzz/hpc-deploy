@@ -154,6 +154,7 @@ def run_task_stage8b(task_id: str) -> None:
             username=server.username,
             key_path=server.key_path,
             password=server.password,
+            expected_host_fingerprint=server.ssh_host_fingerprint,
         )
         _ensure_task_not_canceled(db, task)
         _add_log(db, task_id, "SYSTEM", "connected")

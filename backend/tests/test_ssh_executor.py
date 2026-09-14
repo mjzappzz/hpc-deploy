@@ -67,6 +67,23 @@ class SSHExecutorSftpTests(unittest.TestCase):
         self.assertIs(executor.client, client)
 
     @patch("app.core.ssh_executor.paramiko.SSHClient")
+    def test_connect_rejects_a_changed_trusted_host_fingerprint(self, ssh_client_cls: MagicMock) -> None:
+        client = ssh_client_cls.return_value
+        host_key = MagicMock()
+        host_key.asbytes.return_value = b"replacement-host-key"
+        host_key.get_name.return_value = "ssh-ed25519"
+        client.get_transport.return_value.get_remote_server_key.return_value = host_key
+
+        executor = SSHExecutor()
+        with self.assertRaisesRegex(SSHExecutorError, "SSH host identity changed"):
+            executor.connect(
+                host="10.0.0.1", port=22, username="root", key_path=None,
+                password="secret", expected_host_fingerprint="SHA256:not-the-current-key",
+            )
+
+        client.close.assert_called()
+
+    @patch("app.core.ssh_executor.paramiko.SSHClient")
     def test_upload_opens_sftp_lazily(self, ssh_client_cls: MagicMock) -> None:
         client = ssh_client_cls.return_value
         sftp = client.open_sftp.return_value

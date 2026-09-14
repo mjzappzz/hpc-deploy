@@ -881,6 +881,7 @@ def _deploy_public_key_to_server(db: Session, server: Server, private_key_file: 
             host=server.host,
             port=server.port,
             username=server.username,
+            expected_host_fingerprint=server.ssh_host_fingerprint,
             **_server_public_key_auth_kwargs(server),
         )
         quoted_key = shell_quote(public_key)
@@ -908,6 +909,7 @@ def _check_public_key_on_server(server: Server, public_key: str) -> tuple[bool, 
             host=server.host,
             port=server.port,
             username=server.username,
+            expected_host_fingerprint=server.ssh_host_fingerprint,
             **_server_public_key_auth_kwargs(server),
         )
         # 使用 exec_capture 避免非零退出码抛异常，使用 || true 确保退出码 0

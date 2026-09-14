@@ -7,6 +7,7 @@ INSTALL_SCRIPT = PROJECT_ROOT / "deploy" / "scripts" / "install_hpcdeploy_servic
 COMMON_RUNTIME_SCRIPT = PROJECT_ROOT / "deploy" / "scripts" / "common_runtime.sh"
 RESET_SCRIPT = PROJECT_ROOT / "deploy" / "scripts" / "reset_admin_password.sh"
 REDEPLOY_SCRIPT = PROJECT_ROOT / "deploy" / "scripts" / "redeploy_hpcdeploy.sh"
+FRONTEND_REDEPLOY_SCRIPT = PROJECT_ROOT / "deploy" / "scripts" / "redeploy_frontend_only.sh"
 SERVICE_TEMPLATE = PROJECT_ROOT / "deploy" / "systemd" / "hpcdeploy-backend.service"
 BACKUP_SERVICE_TEMPLATE = PROJECT_ROOT / "deploy" / "systemd" / "hpcdeploy-sqlite-backup.service"
 BACKUP_TIMER_TEMPLATE = PROJECT_ROOT / "deploy" / "systemd" / "hpcdeploy-sqlite-backup.timer"
@@ -56,6 +57,15 @@ def test_redeploy_refuses_to_restart_backend_with_active_tasks() -> None:
     assert "/api/tasks?active_only=true&limit=1" in script
     assert "检测到活动任务，拒绝重启后端" in script
     assert script.count("assert_no_active_tasks") >= 3
+
+
+def test_frontend_only_redeploy_never_restarts_backend_and_keeps_a_rollback_target() -> None:
+    script = FRONTEND_REDEPLOY_SCRIPT.read_text(encoding="utf-8")
+
+    assert "npm run build" in script
+    assert "nginx -t" in script
+    assert "ln -sfn" in script
+    assert "systemctl restart hpcdeploy-backend" not in script
 
 
 def test_root_only_password_reset_rotates_sessions_and_clears_db_override() -> None:

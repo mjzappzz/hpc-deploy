@@ -6,6 +6,8 @@ from typing import Callable
 
 import paramiko
 
+from app.core.ssh_host_identity import SSHHostIdentityError, require_expected_host_identity
+
 
 REMOTE_HOME_MARKER = "__HPCDEPLOY_HOME__="
 COMMAND_OUTPUT_BEGIN = "__HPCDEPLOY_OUTPUT_BEGIN__"
@@ -54,6 +56,7 @@ class SSHExecutor:
         username: str,
         key_path: str | None,
         password: str | None = None,
+        expected_host_fingerprint: str | None = None,
     ) -> None:
         connect_kwargs: dict[str, object] = {}
         if password:
@@ -80,6 +83,12 @@ class SSHExecutor:
                 allow_agent=False,
                 **connect_kwargs,
             )
+            if expected_host_fingerprint:
+                try:
+                    require_expected_host_identity(client, expected_host_fingerprint)
+                except SSHHostIdentityError as exc:
+                    client.close()
+                    raise SSHExecutorError(str(exc)) from exc
             self.client = client
             self._connect_params = {
                 "host": host,
@@ -87,6 +96,7 @@ class SSHExecutor:
                 "username": username,
                 "key_path": key_path,
                 "password": password,
+                "expected_host_fingerprint": expected_host_fingerprint,
             }
         except (SocketTimeout, TimeoutError) as exc:
             client.close()

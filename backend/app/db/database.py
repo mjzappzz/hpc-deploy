@@ -59,6 +59,7 @@ def init_db() -> None:
     _ensure_server_cpu_topology_columns()
     _ensure_server_disk_inventory_column()
     _ensure_server_auth_columns()
+    _ensure_server_ssh_identity_columns()
     _ensure_server_health_columns()
     _ensure_server_group_tags_columns()
     _ensure_stage8_task_columns()
@@ -152,6 +153,27 @@ def _ensure_server_auth_columns() -> None:
 
     with engine.begin() as connection:
         connection.execute(text("ALTER TABLE servers ADD COLUMN password VARCHAR(255)"))
+
+
+def _ensure_server_ssh_identity_columns() -> None:
+    if not normalized_database_url.startswith("sqlite"):
+        return
+
+    inspector = inspect(engine)
+    if "servers" not in inspector.get_table_names():
+        return
+
+    existing = {column["name"] for column in inspector.get_columns("servers")}
+    required = {
+        "ssh_host_fingerprint": "VARCHAR(255)",
+        "ssh_host_key_algorithm": "VARCHAR(80)",
+        "ssh_host_key_confirmed_at": "DATETIME",
+        "key_auth_verified_at": "DATETIME",
+    }
+    with engine.begin() as connection:
+        for name, column_type in required.items():
+            if name not in existing:
+                connection.execute(text(f"ALTER TABLE servers ADD COLUMN {name} {column_type}"))
 
 
 def _ensure_server_health_columns() -> None:
