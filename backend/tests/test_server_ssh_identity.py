@@ -12,6 +12,7 @@ from app.api.tasks import _resource_conflicts
 from app.api.tasks import _read_remote_extreme_preflight_checks
 from app.api.tasks import run_task
 from app.api.tasks import _get_server_submission_lock
+from app.api.tasks import _audit_resource_conflict
 from app.core.task_runner import _connect_recovery_executor
 from app.api.servers import clear_saved_password
 from app.schemas.task import ExtremePreflightResponse, ExtremePreflightCheck, TaskRunRequest
@@ -137,6 +138,53 @@ class ServerSshIdentityModelTests(unittest.TestCase):
     def test_server_submission_lock_is_shared_by_server_id_only(self) -> None:
         self.assertIs(_get_server_submission_lock(101), _get_server_submission_lock(101))
         self.assertIsNot(_get_server_submission_lock(101), _get_server_submission_lock(102))
+
+    @patch("app.api.tasks.write_audit_log")
+    def test_resource_conflict_audit_keeps_task_and_domain_evidence(self, write_audit: MagicMock) -> None:
+        conflict = SimpleNamespace(
+            task_id="task-gpu", file_name="gpu_stress_report.sh", status="RUNNING",
+        )
+        server = SimpleNamespace(id=1, name="测试246")
+
+        _audit_resource_conflict(
+            MagicMock(), server=server, target_domains={"gpu", "cpu_mem"},
+            conflicts=[(conflict, {"gpu"})], entrypoint="single",
+        )
+
+        self.assertEqual(write_audit.call_args.kwargs["action"], "task.resource_conflict")
+        self.assertEqual(write_audit.call_args.kwargs["detail"]["requested_domains"], ["cpu_mem", "gpu"])
+        self.assertEqual(write_audit.call_args.kwargs["detail"]["conflicts"][0]["task_id"], "task-gpu")
+
+    @patch("app.api.tasks.write_audit_log")
+    @patch("app.api.tasks._get_library_file_or_400")
+    def test_resource_conflict_rejects_submission_before_task_or_remote_work(
+        self,
+        get_file: MagicMock,
+        write_audit: MagicMock,
+    ) -> None:
+        get_file.return_value = {"physical_category": "stress", "name": "extreme_stress_report.sh"}
+        server = SimpleNamespace(id=1, name="测试246", ssh_host_fingerprint="SHA256:confirmed")
+        active_gpu = SimpleNamespace(
+            task_id="task-gpu", task_type="stress", file_name="gpu_stress_report.sh",
+            status="RUNNING", batch_id=None,
+        )
+        db = MagicMock()
+        db.get.return_value = server
+        db.query.return_value.filter.return_value.all.return_value = [active_gpu]
+
+        with self.assertRaises(HTTPException) as raised:
+            run_task(
+                TaskRunRequest(
+                    server_id=1, task_type="stress", file_path="scripts/stress/extreme_stress_report.sh",
+                    params={"duration_seconds": 60, "extreme_mode": False},
+                ),
+                MagicMock(), db,
+            )
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(raised.exception.detail["conflicts"][0]["resource_domains"], ["gpu"])
+        db.add.assert_not_called()
+        write_audit.assert_called_once()
 
     @patch("app.core.task_runner.SSHExecutor")
     @patch("app.db.database.SessionLocal")

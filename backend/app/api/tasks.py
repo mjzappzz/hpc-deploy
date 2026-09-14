@@ -312,6 +312,30 @@ def _resource_conflict_detail(conflicts: list[tuple[Task, set[str]]]) -> dict[st
     }
 
 
+def _audit_resource_conflict(
+    db: Session,
+    *,
+    server: Server,
+    target_domains: set[str],
+    conflicts: list[tuple[Task, set[str]]],
+    entrypoint: str,
+) -> None:
+    detail = _resource_conflict_detail(conflicts)
+    write_audit_log(
+        db,
+        action="task.resource_conflict",
+        target_type="task",
+        status="rejected",
+        actor="visitor",
+        target_id=str(server.id),
+        target_name=server.name,
+        server_id=server.id,
+        server_name=server.name,
+        message=f"rejected {entrypoint} task submission due to resource conflict",
+        detail={"entrypoint": entrypoint, "requested_domains": sorted(target_domains), **detail},
+    )
+
+
 EXTREME_REMOTE_STORAGE_MIN_BYTES = 1024 * 1024 * 1024
 
 
@@ -646,6 +670,9 @@ def _run_task_with_server_submission_lock(
     target_domains = _task_resource_domains(payload.task_type, str(file_record["name"]))
     conflicts = _resource_conflicts(db, server_id=server.id, target_domains=target_domains)
     if conflicts:
+        _audit_resource_conflict(
+            db, server=server, target_domains=target_domains, conflicts=conflicts, entrypoint="single",
+        )
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=_resource_conflict_detail(conflicts))
 
     params: dict[str, object] | None = None
@@ -1377,6 +1404,13 @@ def _create_task_for_server_locked(
         exclude_batch_id=batch_id,
     )
     if conflicts:
+        _audit_resource_conflict(
+            db,
+            server=server,
+            target_domains=_task_resource_domains(task_type, file_name),
+            conflicts=conflicts,
+            entrypoint="batch",
+        )
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=_resource_conflict_detail(conflicts))
 
     remote_work_dir = _build_remote_work_dir(task_type)
@@ -2304,6 +2338,9 @@ def retry_batch_task(
         exclude_batch_id=original.batch_id,
     )
     if retry_conflicts:
+        _audit_resource_conflict(
+            db, server=server, target_domains=retry_domains, conflicts=retry_conflicts, entrypoint="retry",
+        )
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=_resource_conflict_detail(retry_conflicts))
     existing_retry = (
         db.query(Task)
