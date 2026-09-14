@@ -127,6 +127,8 @@ from starlette.background import BackgroundTask
 
 _task_monitor_locks: dict[str, LockType] = {}
 _task_monitor_locks_guard = threading.Lock()
+_server_submission_locks: dict[int, LockType] = {}
+_server_submission_locks_guard = threading.Lock()
 
 
 def _try_acquire_task_monitor_lock(task_id: str) -> LockType | None:
@@ -143,6 +145,12 @@ def _release_task_monitor_lock(task_id: str, lock: LockType) -> None:
     with _task_monitor_locks_guard:
         if _task_monitor_locks.get(task_id) is lock and not lock.locked():
             _task_monitor_locks.pop(task_id, None)
+
+
+def _get_server_submission_lock(server_id: int) -> LockType:
+    """Serialize the short submit/check window for one managed server."""
+    with _server_submission_locks_guard:
+        return _server_submission_locks.setdefault(server_id, threading.Lock())
 
 
 WS_DB_POLL_INTERVAL_SECONDS = 1.0
@@ -597,6 +605,20 @@ def run_task(
     payload: TaskRunRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
+) -> TaskRunResponse:
+    submission_lock = _get_server_submission_lock(payload.server_id)
+    if not submission_lock.acquire(timeout=5):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="server submission is already being checked; retry shortly")
+    try:
+        return _run_task_with_server_submission_lock(payload, background_tasks, db)
+    finally:
+        submission_lock.release()
+
+
+def _run_task_with_server_submission_lock(
+    payload: TaskRunRequest,
+    background_tasks: BackgroundTasks,
+    db: Session,
 ) -> TaskRunResponse:
     server = _get_server_or_400(db, payload.server_id)
     extreme_preflight_snapshot: dict[str, object] | None = None

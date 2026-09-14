@@ -11,6 +11,7 @@ from app.api.tasks import _task_resource_domains
 from app.api.tasks import _resource_conflicts
 from app.api.tasks import _read_remote_extreme_preflight_checks
 from app.api.tasks import run_task
+from app.api.tasks import _get_server_submission_lock
 from app.schemas.task import ExtremePreflightResponse, ExtremePreflightCheck, TaskRunRequest
 from app.models.server import Server
 
@@ -130,6 +131,10 @@ class ServerSshIdentityModelTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 409)
         preflight.assert_called_once_with(server, db)
         db.add.assert_not_called()
+
+    def test_server_submission_lock_is_shared_by_server_id_only(self) -> None:
+        self.assertIs(_get_server_submission_lock(101), _get_server_submission_lock(101))
+        self.assertIsNot(_get_server_submission_lock(101), _get_server_submission_lock(102))
 
 
 if __name__ == "__main__":
