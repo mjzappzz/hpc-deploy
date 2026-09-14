@@ -53,6 +53,16 @@ test('selects extreme stress from the task-type card and fixes its atomic script
   assert.doesNotMatch(source, /el-radio-button label="extreme"/)
 })
 
+test('links resource-domain conflicts to the conflicting task history', async () => {
+  const source = await readFile(new URL('./TaskRunner.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /conflicts\?: Array<\{ task_id: string; resource_domains: string\[\] \}>/)
+  assert.match(source, /const conflict = detail\.conflicts\?\.at\(0\)/)
+  assert.match(source, /资源冲突：\$\{conflict\.resource_domains\.join\('、'\)\}/)
+  assert.match(source, /const conflictTaskId = conflict\?\.task_id \|\| detail\.running_task_id/)
+  assert.match(source, /task_id: conflictTaskId/)
+})
+
 test('uses danger styling when a target server has no CUDA Toolkit installed', async () => {
   const source = await readFile(new URL('./TaskRunner.vue', import.meta.url), 'utf8')
 

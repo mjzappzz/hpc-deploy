@@ -2045,7 +2045,7 @@ async function createTask() {
       query: getRunningTaskHistoryQuery(),
     })
   } catch (error: unknown) {
-    // Handle 409 conflict — server already has a running task
+    // Handle 409 conflict — legacy single-task and resource-domain responses.
     if (
       typeof error === 'object' &&
       error !== null &&
@@ -2053,9 +2053,17 @@ async function createTask() {
     ) {
       const resp = (error as { response: { status?: number; data?: { detail?: Record<string, unknown> } } }).response
       if (resp.status === 409 && resp.data?.detail && typeof resp.data.detail === 'object') {
-        const detail = resp.data.detail as { message?: string; running_task_id?: string }
-        const msg = detail.message || '当前服务器已有任务正在执行，请到历史任务继续查看。'
-        if (detail.running_task_id) {
+        const detail = resp.data.detail as {
+          message?: string
+          running_task_id?: string
+          conflicts?: Array<{ task_id: string; resource_domains: string[] }>
+        }
+        const conflict = detail.conflicts?.at(0)
+        const msg = conflict
+          ? `资源冲突：${conflict.resource_domains.join('、')} 正被任务 ${conflict.task_id} 占用。`
+          : (detail.message || '当前服务器已有任务正在执行，请到历史任务继续查看。')
+        const conflictTaskId = conflict?.task_id || detail.running_task_id
+        if (conflictTaskId) {
           ElMessageBox.alert(msg, '任务冲突', {
             confirmButtonText: '跳转查看',
             type: 'warning',
@@ -2064,7 +2072,7 @@ async function createTask() {
                 path: '/history',
                 query: {
                   view: 'tasks',
-                  task_id: detail.running_task_id!,
+                  task_id: conflictTaskId,
                 },
               })
             }
