@@ -315,6 +315,10 @@ export function confirmSshHostIdentity(id: number, fingerprint: string) {
   return request.post<SSHHostIdentityResult>(`/servers/${id}/ssh-host-identity/confirm`, { fingerprint })
 }
 
+export function clearSavedServerPassword(id: number) {
+  return request.post<ServerRecord>(`/servers/${id}/clear-saved-password`)
+}
+
 export function probeAllServers(serverIds: number[]) {
   return request.post<ProbeAllResponse>('/servers/probe-all', { server_ids: serverIds }, {
     timeout: 120000

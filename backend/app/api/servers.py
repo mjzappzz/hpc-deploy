@@ -965,11 +965,44 @@ def _deploy_public_key_to_server(db: Session, server: Server, private_key_file: 
     finally:
         executor.close()
 
+    verifier = SSHExecutor(timeout=10)
+    try:
+        verifier.connect(
+            host=server.host,
+            port=server.port,
+            username=server.username,
+            key_path=str(private_key_file),
+            password=None,
+            expected_host_fingerprint=server.ssh_host_fingerprint,
+        )
+    finally:
+        verifier.close()
+
     server.auth_type = "key"
     server.key_path = str(private_key_file)
-    server.password = None
+    server.key_auth_verified_at = datetime.utcnow()
     db.commit()
     db.refresh(server)
+
+
+@router.post("/{server_id}/clear-saved-password", response_model=ServerRead)
+def clear_saved_password(
+    server_id: int,
+    db: Session = Depends(get_db),
+    _: str = Depends(require_admin_token),
+) -> Server:
+    server = _get_server_or_404(db, server_id)
+    _require_server_not_archived(server)
+    if server.auth_type != "key" or server.key_auth_verified_at is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="请先完成密钥认证验证后再清除平台保存的密码")
+    server.password = None
+    db.commit()
+    write_audit_log(
+        db, action="server.password.clear", target_type="server", status="success", actor="admin",
+        target_id=str(server.id), target_name=server.name, server_id=server.id, server_name=server.name,
+        message="cleared saved server password after key authentication verification", detail={},
+    )
+    return server
 
 
 def _check_public_key_on_server(server: Server, public_key: str) -> tuple[bool, str]:

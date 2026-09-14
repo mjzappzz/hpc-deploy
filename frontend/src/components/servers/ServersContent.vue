@@ -311,6 +311,7 @@
             </el-descriptions>
             <div class="detail-actions">
               <el-button size="small" :loading="detailActionsLoading" @click="confirmActiveServerHostIdentity">读取并确认主机指纹</el-button>
+              <el-button v-if="activeServer.auth_type === 'key' && activeServer.key_auth_verified_at" size="small" type="warning" plain :loading="detailActionsLoading" @click="clearActiveServerPassword">清除平台保存的密码</el-button>
             </div>
           </div>
 
@@ -499,6 +500,7 @@ import { getDetectMessage } from '@/composables/useFunMessages'
 import { getTaskCategoryLabel, getTaskNameLabel } from '@/utils/taskPresentation'
 import {
   archiveServer,
+  clearSavedServerPassword,
   createServer,
   checkPublicKey,
   deleteServer,
@@ -1320,6 +1322,22 @@ async function confirmActiveServerHostIdentity() {
     await confirmSshHostIdentity(activeServer.value.id, identity.fingerprint)
     ElMessage.success('SSH 主机指纹已确认')
     await refreshDetail()
+  } catch (error: unknown) {
+    if (error !== 'cancel' && error !== 'close') ElMessage.error(getApiErrorMessage(error))
+  } finally {
+    detailActionsLoading.value = false
+  }
+}
+
+async function clearActiveServerPassword() {
+  if (!activeServer.value) return
+  try {
+    await ElMessageBox.confirm('只删除平台保存的这台服务器密码；不会修改远端密码或已部署公钥。', '清除平台保存的密码', { type: 'warning' })
+    detailActionsLoading.value = true
+    const server = (await clearSavedServerPassword(activeServer.value.id)).data
+    activeServer.value = server
+    servers.value = servers.value.map((item) => item.id === server.id ? server : item)
+    ElMessage.success('平台保存的密码已清除')
   } catch (error: unknown) {
     if (error !== 'cancel' && error !== 'close') ElMessage.error(getApiErrorMessage(error))
   } finally {
