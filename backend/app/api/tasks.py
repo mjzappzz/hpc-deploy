@@ -281,6 +281,15 @@ def _extreme_preflight(server: Server, db: Session) -> ExtremePreflightResponse:
     return ExtremePreflightResponse(server_id=server.id, checks=checks, can_submit=not any(check.status == "blocked" for check in checks))
 
 
+def _extreme_preflight_snapshot(preflight: ExtremePreflightResponse) -> dict[str, object]:
+    """Return durable, non-sensitive submission evidence for an extreme task."""
+    return {
+        "checked_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "can_submit": preflight.can_submit,
+        "checks": [check.model_dump() for check in preflight.checks],
+    }
+
+
 @router.get("/extreme-preflight/{server_id}", response_model=ExtremePreflightResponse)
 def get_extreme_preflight(server_id: int, db: Session = Depends(get_db)) -> ExtremePreflightResponse:
     return _extreme_preflight(_get_server_or_400(db, server_id), db)
@@ -433,10 +442,12 @@ def run_task(
     db: Session = Depends(get_db),
 ) -> TaskRunResponse:
     server = _get_server_or_400(db, payload.server_id)
+    extreme_preflight_snapshot: dict[str, object] | None = None
     if payload.params and payload.params.get("extreme_mode") is True:
         preflight = _extreme_preflight(server, db)
         if not preflight.can_submit:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"message": "极限压测预检未通过", "checks": [check.model_dump() for check in preflight.checks]})
+        extreme_preflight_snapshot = _extreme_preflight_snapshot(preflight)
     _require_server_ssh_identity_confirmed(server)
     running_task = (
         db.query(Task)
@@ -497,6 +508,9 @@ def run_task(
         params=params,
         remote_work_dir=remote_work_dir,
     )
+    if extreme_preflight_snapshot is not None:
+        # Keep execution parameters intact; this is controller-side evidence only.
+        params = {**(params or {}), "extreme_preflight": extreme_preflight_snapshot}
     task_id = _generate_task_id()
 
     task = Task(
@@ -521,6 +535,20 @@ def run_task(
             message="task created",
         )
     )
+    if extreme_preflight_snapshot is not None:
+        warning_keys = [
+            str(check["key"])
+            for check in extreme_preflight_snapshot["checks"]
+            if isinstance(check, dict) and check.get("status") == "warning"
+        ]
+        db.add(TaskLog(
+            task_id=task_id,
+            level="SYSTEM",
+            message=(
+                "极限压测预检通过并已固化提交证据"
+                + (f"；自动准备/风险提示：{', '.join(warning_keys)}" if warning_keys else "")
+            ),
+        ))
     db.commit()
     write_audit_log(
         db, action="task.create", target_type="task", status="success",
@@ -529,7 +557,11 @@ def run_task(
         server_id=server.id, server_name=server.name,
         task_id=task_id,
         message=f"created {payload.task_type} task on {server.name}",
-        detail={"task_type": payload.task_type, "file_name": str(file_record["name"])},
+        detail={
+            "task_type": payload.task_type,
+            "file_name": str(file_record["name"]),
+            **({"extreme_preflight": extreme_preflight_snapshot} if extreme_preflight_snapshot is not None else {}),
+        },
     )
     background_tasks.add_task(run_task_stage8b, task_id)
     return TaskRunResponse(task_id=task_id, status="PENDING")
