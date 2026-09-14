@@ -13,6 +13,7 @@ from app.api.tasks import _read_remote_extreme_preflight_checks
 from app.api.tasks import run_task
 from app.api.tasks import _get_server_submission_lock
 from app.core.task_runner import _connect_recovery_executor
+from app.api.servers import clear_saved_password
 from app.schemas.task import ExtremePreflightResponse, ExtremePreflightCheck, TaskRunRequest
 from app.models.server import Server
 
@@ -157,6 +158,26 @@ class ServerSshIdentityModelTests(unittest.TestCase):
             host="10.0.0.1", port=22, username="root", key_path="/tmp/key", password=None,
             expected_host_fingerprint="SHA256:confirmed",
         )
+
+    @patch("app.api.servers.write_audit_log")
+    @patch("app.api.servers._get_server_or_404")
+    def test_clear_saved_password_only_removes_the_controller_copy(
+        self,
+        get_server: MagicMock,
+        _audit: MagicMock,
+    ) -> None:
+        server = SimpleNamespace(
+            id=1, name="测试246", auth_type="key", key_auth_verified_at=object(),
+            password="controller-only-password", key_path="/tmp/key",
+        )
+        get_server.return_value = server
+        db = MagicMock()
+
+        result = clear_saved_password(1, db, "admin")
+
+        self.assertIsNone(result.password)
+        self.assertEqual(result.key_path, "/tmp/key")
+        db.commit.assert_called_once()
 
 
 if __name__ == "__main__":

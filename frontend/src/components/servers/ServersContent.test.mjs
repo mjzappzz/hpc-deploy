@@ -44,3 +44,13 @@ test('passes active task server ids to the managed server table', async () => {
   assert.match(source, /runningTaskIds\.value = activeTasksResp\.data\.items\.map\(\(task\) => task\.server_id\)/)
   assert.equal((source.match(/:running-task-ids="runningTaskIds"/g) ?? []).length, 1)
 })
+
+test('keeps SSH identity confirmation and local-password clearing as separate guarded actions', async () => {
+  const source = await readFile(new URL('./ServersContent.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /activeServer\.ssh_host_fingerprint/)
+  assert.match(source, /@click="confirmActiveServerHostIdentity">读取并确认主机指纹/)
+  assert.match(source, /activeServer\.auth_type === 'key' && activeServer\.key_auth_verified_at/)
+  assert.match(source, /@click="clearActiveServerPassword">清除平台保存的密码/)
+  assert.match(source, /不会修改远端密码或已部署公钥/)
+})
