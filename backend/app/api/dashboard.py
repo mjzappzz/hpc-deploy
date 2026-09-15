@@ -94,9 +94,13 @@ def get_dashboard_summary(db: Session = Depends(get_db)) -> DashboardSummary:
         usage = shutil.disk_usage(ARTIFACTS_DIR)
         db_bytes = sqlite_path.stat().st_size if sqlite_path and sqlite_path.exists() else 0
         cleanup = db.query(SystemSetting).filter(SystemSetting.key == "auto_cleanup_last_status").first()
+        warning_bytes = 10 * 1024**3
+        block_bytes = 5 * 1024**3
+        capacity_status = "pass" if usage.free >= warning_bytes else "warning" if usage.free >= block_bytes else "blocked"
         storage = StorageStats(total_bytes=usage.total, free_bytes=usage.free, used_bytes=usage.used,
                                artifacts_bytes=artifacts_size, database_bytes=db_bytes,
-                               cleanup_status=cleanup.value if cleanup else "unknown")
+                               cleanup_status=cleanup.value if cleanup else "unknown",
+                               capacity_status=capacity_status)
     except OSError:
         pass
 

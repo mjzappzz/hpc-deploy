@@ -1,4 +1,5 @@
 import asyncio
+import os
 import shutil
 import re
 import threading
@@ -337,6 +338,8 @@ def _audit_resource_conflict(
 
 
 EXTREME_REMOTE_STORAGE_MIN_BYTES = 1024 * 1024 * 1024
+EXTREME_CONTROLLER_STORAGE_WARNING_BYTES = int(os.getenv("HPCDEPLOY_CONTROLLER_STORAGE_WARNING_BYTES", str(10 * 1024**3)))
+EXTREME_CONTROLLER_STORAGE_BLOCK_BYTES = int(os.getenv("HPCDEPLOY_CONTROLLER_STORAGE_BLOCK_BYTES", str(5 * 1024**3)))
 
 
 def _read_remote_extreme_preflight_checks(server: Server) -> list[ExtremePreflightCheck]:
@@ -456,10 +459,16 @@ def _extreme_preflight(server: Server, db: Session) -> ExtremePreflightResponse:
         message=conflict_message,
     ))
     free_bytes = shutil.disk_usage(ARTIFACTS_DIR).free
-    minimum = 5 * 1024 * 1024 * 1024
+    minimum = EXTREME_CONTROLLER_STORAGE_BLOCK_BYTES
+    warning = EXTREME_CONTROLLER_STORAGE_WARNING_BYTES
+    storage_status = "pass" if free_bytes >= warning else "warning" if free_bytes >= minimum else "blocked"
     checks.append(ExtremePreflightCheck(
-        key="controller_storage", status="pass" if free_bytes >= minimum else "blocked",
-        message=f"控制器可用空间 {free_bytes // (1024 * 1024)} MiB" if free_bytes >= minimum else "控制器可用空间不足 5 GiB",
+        key="controller_storage", status=storage_status,
+        message=(f"控制器可用空间 {free_bytes // (1024 * 1024)} MiB"
+                 if storage_status == "pass" else
+                 f"控制器可用空间 {free_bytes // (1024 * 1024)} MiB，低于建议 warning 阈值 {warning // (1024 * 1024)} MiB"
+                 if storage_status == "warning" else
+                 f"控制器可用空间不足阻断阈值 {minimum // (1024 * 1024)} MiB"),
     ))
     if server.ssh_host_fingerprint:
         checks.extend(_read_remote_extreme_preflight_checks(server))

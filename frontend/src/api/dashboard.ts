@@ -40,12 +40,23 @@ export interface ArtifactStats {
   local_artifacts_size_bytes: number
 }
 
+export interface StorageStats {
+  total_bytes: number
+  free_bytes: number
+  used_bytes: number
+  artifacts_bytes: number
+  database_bytes: number
+  cleanup_status: string
+  capacity_status: string
+}
+
 export interface DashboardSummary {
   servers: ServerStats
   tasks: TaskStats
   recent_tasks: RecentTaskItem[]
   recent_completed_tasks: RecentTaskItem[]
   artifacts: ArtifactStats
+  storage: StorageStats
 }
 
 export interface ArtifactTreeNode {

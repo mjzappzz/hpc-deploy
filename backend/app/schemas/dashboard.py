@@ -51,6 +51,7 @@ class StorageStats(BaseModel):
     artifacts_bytes: int = 0
     database_bytes: int = 0
     cleanup_status: str = "unknown"
+    capacity_status: str = "unknown"
 
 
 class ArtifactTreeNode(BaseModel):

@@ -247,6 +247,7 @@ const summary = reactive<DashboardSummary>({
   recent_tasks: [],
   recent_completed_tasks: [],
   artifacts: { local_artifacts_count: 0, local_artifacts_size_bytes: 0 },
+  storage: { total_bytes: 0, free_bytes: 0, used_bytes: 0, artifacts_bytes: 0, database_bytes: 0, cleanup_status: 'unknown', capacity_status: 'unknown' },
 })
 
 const visibleCompletedTasks = computed(() => summary.recent_completed_tasks.slice(0, completedTaskDisplayLimit.value))
