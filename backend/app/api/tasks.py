@@ -3352,7 +3352,9 @@ def cancel_task(
             # Another worker might have finalized it while we were best-effort stopping remote work.
             _add_task_log(db, task_id, "SYSTEM", f"cancel: task already finalized as {task.status}")
 
+        cleanup_ok = True
         if remote_unreachable:
+            cleanup_ok = False
             _add_task_log(db, task_id, "SYSTEM", "cancel: remote unreachable, skip artifact collection and temp cleanup")
         else:
             # Phase 3: Best-effort artifact collection
@@ -3365,7 +3367,15 @@ def cancel_task(
                 _add_task_log(db, task_id, "SYSTEM", "cancel: artifact collection skipped (best effort)")
 
             # Phase 4: Cleanup temp download dirs for known whitelist scripts (best effort)
-            _cleanup_temp_dirs(executor, task, db)
+            cleanup_ok = _cleanup_temp_dirs(executor, task, db)
+
+        if task.file_name == "extreme_stress_report.sh" and task.params:
+            evidence = dict(task.params.get("extreme_stop_evidence") or {})
+            if not cleanup_ok:
+                evidence["state"] = "cleanup_failed"
+            evidence["cleanup_confirmed"] = cleanup_ok
+            task.params = {**task.params, "extreme_stop_evidence": evidence}
+            db.commit()
 
         _cancel_following_batch_tasks(db, task, reason="canceled because previous batch task was canceled")
 
@@ -4482,17 +4492,19 @@ def _is_safe_temp_dir(tmp_dir: str) -> bool:
     return True
 
 
-def _cleanup_temp_dirs(executor: SSHExecutor, task: Task, db: Session) -> None:
-    """Clean up temp download dirs for known whitelist scripts. Best effort — never raises."""
+def _cleanup_temp_dirs(executor: SSHExecutor, task: Task, db: Session) -> bool:
+    """Clean up temp download dirs and report whether every attempt was confirmed."""
     script_name = task.file_name or ""
     temp_dirs = _get_temp_dirs_for_script(script_name)
     if not temp_dirs:
-        return
+        return True
 
+    cleanup_ok = True
     _add_task_log(db, task.task_id, "SYSTEM", "cleanup temp download dir requested")
     for tmp_dir in temp_dirs:
         if not _is_safe_temp_dir(tmp_dir):
             _add_task_log(db, task.task_id, "ERROR", f"temp download dir cleanup refused: unsafe path {tmp_dir}")
+            cleanup_ok = False
             continue
 
         try:
@@ -4508,6 +4520,7 @@ def _cleanup_temp_dirs(executor: SSHExecutor, task: Task, db: Session) -> None:
             ec, _out, err = executor.exec_capture(cmd, timeout_seconds=CLEANUP_TIMEOUT_SECONDS)
             if ec != 0:
                 _add_task_log(db, task.task_id, "ERROR", f"temp download dir cleanup failed: {err or ec}")
+                cleanup_ok = False
                 continue
 
             # Verify removal
@@ -4517,5 +4530,8 @@ def _cleanup_temp_dirs(executor: SSHExecutor, task: Task, db: Session) -> None:
                 _add_task_log(db, task.task_id, "SYSTEM", f"temp download dir removed: {tmp_dir}")
             else:
                 _add_task_log(db, task.task_id, "WARN", f"temp download dir may not be fully removed: {tmp_dir}")
+                cleanup_ok = False
         except (SSHExecutorError, SSHCommandTimeoutError) as exc:
             _add_task_log(db, task.task_id, "ERROR", f"temp download dir cleanup failed: {exc}")
+            cleanup_ok = False
+    return cleanup_ok

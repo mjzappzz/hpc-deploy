@@ -670,7 +670,7 @@
               <template v-if="drawerTask.extreme_stop_evidence">
                 <div class="task-drawer-overview__row">
                   <span>异常收尾</span>
-                  <strong>{{ drawerTask.extreme_stop_evidence.state === 'stopped_confirmed' ? '已确认停止' : '远端状态未确认' }}</strong>
+                  <strong>{{ drawerTask.extreme_stop_evidence.state === 'stopped_confirmed' ? '已确认停止' : drawerTask.extreme_stop_evidence.state === 'cleanup_failed' ? '远端清理失败' : '远端状态未确认' }}</strong>
                 </div>
                 <div class="task-drawer-overview__row">
                   <span>处置触发</span>
