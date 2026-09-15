@@ -35,3 +35,15 @@ The system SHALL support verified SQLite backup rotation and guarded restoration
 #### Scenario: A restore is requested without force
 - **WHEN** an operator invokes the restore workflow without its explicit force flag
 - **THEN** the workflow reports the planned target and does not overwrite the active database
+
+### Requirement: 控制器运行数据容量和清理状态可见且可告警
+
+系统 SHALL 显示控制器数据分区可用空间、任务产物占用、SQLite 备份占用、自动清理启用状态和最近一次清理结果。当可用空间或占用达到已配置阈值时，系统 SHALL 在仪表盘和任务提交前给出明确告警；空间不足以安全保存任务证据时 SHALL 阻断新建高产物任务。
+
+#### Scenario: 控制器存储空间低于告警阈值
+- **WHEN** 控制器运行数据所在分区的可用空间低于配置的告警阈值
+- **THEN** 系统显示容量告警和当前占用构成，同时不影响已运行任务
+
+#### Scenario: 空间不足以创建极限压测
+- **WHEN** 控制器可用空间低于极限压测所需的最小安全空间
+- **THEN** 系统拒绝创建该任务并说明需清理或扩容后再试
