@@ -49,6 +49,15 @@ class StressScriptStageContractTests(unittest.TestCase):
         ):
             self.assertIn(marker, source)
 
+    def test_extreme_script_has_one_atomic_stop_path_for_both_module_groups(self) -> None:
+        source = (STRESS_SCRIPTS_DIR / "extreme_stress_report.sh").read_text(encoding="utf-8")
+
+        self.assertIn("request_atomic_stop", source)
+        self.assertIn('thermal.stop', source)
+        self.assertIn('kill -TERM "-$pid"', source)
+        self.assertIn('kill -KILL "-$pid"', source)
+        self.assertIn('reason":"%s"', source)
+
 
 if __name__ == "__main__":
     unittest.main()

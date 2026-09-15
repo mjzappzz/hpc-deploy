@@ -56,6 +56,9 @@ printf '{"gpu_temperature_limit_c":%s,"gpu_temperature_consecutive_samples":%s,"
   "$GPU_TEMP_LIMIT_C" "$GPU_TEMP_CONSECUTIVE_SAMPLES" "$SSH_FAILURE_THRESHOLD" "$TEMPERATURE_MONITOR_STATUS" "$TEMPERATURE_MONITOR_SOURCE" > "$WORKDIR/extreme_stress_config.json"
 
 gpu_pid=""; cpu_pid=""
+STOP_REASON=""
+STOP_TRIGGERED=0
+STOP_CLEANUP_DONE=0
 collect_module_artifacts() {
   local module_dir="$1" prefix="$2" artifact
   # The artifact collector intentionally downloads only the task root. Publish
@@ -67,11 +70,30 @@ collect_module_artifacts() {
 }
 
 stop_children() {
+  [ "$STOP_CLEANUP_DONE" -eq 1 ] && return 0
+  STOP_CLEANUP_DONE=1
   for pid in "$gpu_pid" "$cpu_pid"; do
     [ -n "$pid" ] && kill -TERM "-$pid" 2>/dev/null || true
   done
+  sleep 2
+  for pid in "$gpu_pid" "$cpu_pid"; do
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && kill -KILL "-$pid" 2>/dev/null || true
+  done
 }
-trap stop_children EXIT INT TERM
+
+request_atomic_stop() {
+  STOP_TRIGGERED=1
+  STOP_REASON="${1:-operator cancellation}"
+  stop_children
+}
+
+handle_signal() {
+  request_atomic_stop "operator cancellation"
+  exit 130
+}
+
+trap 'request_atomic_stop "coordinator cleanup"' EXIT
+trap handle_signal INT TERM
 
 prepare() {
   echo "[STAGE] dependency_check_start"
@@ -100,7 +122,30 @@ while [ ! -f "$SYNC_DIR/gpu.started" ] || [ ! -f "$SYNC_DIR/cpu_mem.started" ]; 
 gpu_start=$(cat "$SYNC_DIR/gpu.started"); cpu_start=$(cat "$SYNC_DIR/cpu_mem.started")
 skew_ms=$(( (${gpu_start} - ${cpu_start}) / 1000000 )); [ "$skew_ms" -lt 0 ] && skew_ms=$(( -skew_ms ))
 if [ "$skew_ms" -gt 2000 ]; then echo "[ERROR] extreme start skew ${skew_ms}ms exceeds 2000ms"; exit 1; fi
-while kill -0 "$gpu_pid" 2>/dev/null && kill -0 "$cpu_pid" 2>/dev/null; do sleep 1; done
+while kill -0 "$gpu_pid" 2>/dev/null && kill -0 "$cpu_pid" 2>/dev/null; do
+  if [ -f "$SYNC_DIR/thermal.stop" ]; then
+    request_atomic_stop "continuous GPU over-temperature threshold reached"
+    break
+  fi
+  if [ -f "$SYNC_DIR/stop" ]; then
+    request_atomic_stop "atomic stop requested"
+    break
+  fi
+  sleep 1
+done
+if [ "$STOP_TRIGGERED" -eq 1 ]; then
+  wait "$gpu_pid" 2>/dev/null || gpu_rc=$?
+  wait "$cpu_pid" 2>/dev/null || cpu_rc=$?
+  gpu_rc="${gpu_rc:-143}"
+  cpu_rc="${cpu_rc:-143}"
+  collect_module_artifacts "$GPU_DIR" "gpu"
+  collect_module_artifacts "$CPU_DIR" "cpu_mem"
+  printf '{"report_status":"FAIL","gpu_exit":%s,"cpu_mem_exit":%s,"start_skew_ms":%s,"reason":"%s"}\n' "$gpu_rc" "$cpu_rc" "$skew_ms" "$STOP_REASON" > "$RESULT_FILE"
+  echo "[SUMMARY] Result: FAIL"
+  echo "Reason: $STOP_REASON"
+  echo "[STAGE] script_exit exit_code=1"
+  exit 1
+fi
 if ! kill -0 "$cpu_pid" 2>/dev/null && kill -0 "$gpu_pid" 2>/dev/null; then
   wait "$cpu_pid"; cpu_rc=$?
   if [ "$cpu_rc" -ne 0 ]; then
