@@ -1436,6 +1436,17 @@ def _attempt_extreme_stress_recovery(db, task_id: str, task: Task) -> bool:
     if report_status not in {"PASS", "FAIL"}:
         return False
 
+    if task.file_name == "extreme_stress_report.sh":
+        params = dict(task.params or {})
+        params["extreme_result_manifest"] = {
+            key: payload[key]
+            for key in (
+                "gpu_pid", "cpu_mem_pid", "start_skew_ms", "temperature_monitor",
+                "temperature_limit_c", "ssh_failure_threshold", "reason",
+            )
+            if key in payload
+        }
+        task.params = params
     task.status = "SUCCESS" if report_status == "PASS" else "FAILED"
     task.exit_code = 0 if report_status == "PASS" else 1
     task.end_time = datetime.utcnow()

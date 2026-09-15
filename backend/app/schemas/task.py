@@ -185,6 +185,7 @@ class TaskRead(BaseModel):
     outcome_title: str | None = None
     extreme_summary: dict[str, Any] | None = None
     extreme_stop_evidence: dict[str, Any] | None = None
+    extreme_result_manifest: dict[str, Any] | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

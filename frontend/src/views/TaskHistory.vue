@@ -677,6 +677,11 @@
                   <strong>{{ drawerTask.extreme_stop_evidence.trigger || '-' }}</strong>
                 </div>
               </template>
+              <template v-if="drawerTask.extreme_result_manifest">
+                <div class="task-drawer-overview__row"><span>远端结果清单</span><strong>已归档</strong></div>
+                <div class="task-drawer-overview__row"><span>远端 PID</span><code>GPU {{ drawerTask.extreme_result_manifest.gpu_pid || '-' }} · CPU/内存 {{ drawerTask.extreme_result_manifest.cpu_mem_pid || '-' }}</code></div>
+                <div class="task-drawer-overview__row"><span>温度监控</span><strong>{{ drawerTask.extreme_result_manifest.temperature_monitor || '未记录' }}</strong></div>
+              </template>
             </div>
           </template>
           <template v-else-if="drawerActivePanel === 'logs'">
