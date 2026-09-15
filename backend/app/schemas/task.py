@@ -454,6 +454,11 @@ class TaskDiagnosisItem(BaseModel):
     risk_tips: list[str] = []
     matched_patterns: list[str]
     evidence: list[str]
+    failure_phase: str = "unknown"
+    confidence: str = "unknown"
+    confirmed_facts: list[str] = []
+    investigation_hints: list[str] = []
+    next_actions: list[str] = []
 
 
 class TaskDiagnosisResponse(BaseModel):

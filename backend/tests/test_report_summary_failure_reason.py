@@ -4,6 +4,15 @@ from app.core.report_summary import extract_report_failure_reason, resolve_failu
 
 
 class ReportSummaryFailureReasonTests(unittest.TestCase):
+    def test_unknown_report_preserves_concrete_dependency_failure(self) -> None:
+        self.assertEqual(
+            resolve_failure_reason(
+                "Dependency installation failed after 3 attempts: epel-release",
+                "UNKNOWN",
+                {"category": "stress_preflight_failed", "conclusion": "前置检查失败"},
+            ),
+            "Dependency installation failed after 3 attempts: epel-release",
+        )
     def test_extracts_the_actual_failure_reason_from_each_stress_report_format(self) -> None:
         self.assertEqual(
             extract_report_failure_reason("测试结果              : FAIL\n判定原因              : GPU 2 温度超过安全阈值。"),

@@ -64,6 +64,22 @@ test('silently refreshes the visible dashboard every five seconds', async () => 
   assert.match(source, /window\.setInterval\(\(\) => void loadDashboard\(true\), DASHBOARD_REFRESH_INTERVAL_MS\)/)
 })
 
+test('renders controller storage from the dashboard response and only alerts on explicit low-capacity states', async () => {
+  const source = await readFile(new URL('./Dashboard.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /summary\.storage = resp\.data\.storage/)
+  assert.match(source, /v-if="summary\.storage\.capacity_status === 'warning' \|\| summary\.storage\.capacity_status === 'blocked'"/)
+  assert.doesNotMatch(source, /v-if="summary\.storage\.capacity_status !== 'pass'"/)
+})
+
+test('keeps available storage visible and gives unknown storage a non-capacity placeholder', async () => {
+  const source = await readFile(new URL('./Dashboard.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /<el-card v-if="summary\.storage\.capacity_status !== 'unknown'"[^>]*>\n\s*<template #header>控制器空间<\/template>/)
+  assert.match(source, /title="控制器空间统计暂不可用"/)
+  assert.match(source, /v-if="summary\.storage\.capacity_status === 'unknown'"/)
+})
+
 test('uses the same five-second fill progress tag as task history', async () => {
   const source = await readFile(new URL('./Dashboard.vue', import.meta.url), 'utf8')
 

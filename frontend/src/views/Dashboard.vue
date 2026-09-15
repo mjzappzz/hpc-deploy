@@ -87,19 +87,31 @@
       </el-col>
     </el-row>
 
+    <el-card v-if="summary.storage.capacity_status !== 'unknown'" shadow="never" class="dashboard-storage-card">
+      <template #header>控制器空间</template>
+      <div class="dashboard-storage-summary">
+        可用 {{ formatStorageBytes(summary.storage.free_bytes) }}；产物占用 {{ formatStorageBytes(summary.storage.artifacts_bytes) }}；SQLite 占用 {{ formatStorageBytes(summary.storage.database_bytes) }}。
+        最近清理：{{ summary.storage.cleanup_status || '暂无记录' }}。
+      </div>
+    </el-card>
+
     <el-alert
-      v-if="summary.storage.capacity_status !== 'pass'"
+      v-if="summary.storage.capacity_status === 'warning' || summary.storage.capacity_status === 'blocked'"
       :type="summary.storage.capacity_status === 'blocked' ? 'error' : 'warning'"
       show-icon
       :closable="false"
       class="dashboard-storage-alert"
       :title="summary.storage.capacity_status === 'blocked' ? '控制器空间不足：极限压测已阻断新提交' : '控制器空间偏低：建议清理历史产物或扩容'"
-    >
-      <template #default>
-        可用 {{ formatStorageBytes(summary.storage.free_bytes) }}；产物占用 {{ formatStorageBytes(summary.storage.artifacts_bytes) }}；SQLite 占用 {{ formatStorageBytes(summary.storage.database_bytes) }}。
-        最近清理：{{ summary.storage.cleanup_status || '暂无记录' }}。
-      </template>
-    </el-alert>
+    />
+
+    <el-alert
+      v-if="summary.storage.capacity_status === 'unknown'"
+      type="info"
+      show-icon
+      :closable="false"
+      class="dashboard-storage-alert"
+      title="控制器空间统计暂不可用"
+    />
 
     <!-- active tasks -->
     <el-card shadow="never" class="section-card" data-soot-companion-host>
@@ -298,6 +310,7 @@ async function loadDashboard(silent = false) {
     summary.tasks = resp.data.tasks
     summary.recent_tasks = resp.data.recent_tasks
     summary.recent_completed_tasks = resp.data.recent_completed_tasks
+    summary.storage = resp.data.storage
   } catch {
     if (!silent) loadError.value = true
   } finally {

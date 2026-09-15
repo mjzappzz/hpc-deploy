@@ -12,6 +12,11 @@ export interface TaskDiagnosisItem {
   risk_tips: string[]
   matched_patterns: string[]
   evidence: string[]
+  failure_phase?: string
+  confidence?: string
+  confirmed_facts?: string[]
+  investigation_hints?: string[]
+  next_actions?: string[]
 }
 
 export interface TaskDiagnosisResponse {

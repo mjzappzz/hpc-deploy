@@ -14,6 +14,7 @@ New metadata-based pre-check rules run before pattern matching:
 """
 
 import logging
+import json
 import re
 from datetime import datetime, timezone
 from typing import Any
@@ -45,6 +46,30 @@ def _filter_sensitive(text: str) -> str:
     for pattern in _SENSITIVE_PATTERNS:
         result = pattern.sub("***", result)
     return result
+
+
+def parse_diagnostic_events(logs: list[str] | None) -> list[dict[str, Any]]:
+    """Parse versioned, line-oriented events emitted by controlled runners/scripts."""
+    events: list[dict[str, Any]] = []
+    for line in logs or []:
+        marker = "[DIAG_EVENT]"
+        if marker not in line:
+            continue
+        try:
+            payload = json.loads(line.split(marker, 1)[1].strip())
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(payload, dict) or payload.get("version") != 1:
+            continue
+        event = {}
+        for key, value in payload.items():
+            key_text = str(key)
+            if any(pattern.search(key_text) for pattern in _SENSITIVE_PATTERNS):
+                event[key_text] = "***"
+            else:
+                event[key_text] = _filter_sensitive(value) if isinstance(value, str) else value
+        events.append(event)
+    return events
 
 
 # ── Category definitions ─────────────────────────────────────────────
@@ -517,6 +542,8 @@ def _precheck_canceled_remote_unreachable(
         return None
 
     text = "\n".join(filter(None, [error_message, logs_joined])).lower()
+    if "dependency installation failed" in text or "依赖安装失败" in text:
+        return None
     markers = (
         "remote server unreachable",
         "ssh unreachable",
@@ -791,6 +818,8 @@ def _precheck_stress_interrupted_before_report(
         return None
 
     text = "\n".join(filter(None, [error_message, logs_joined])).lower()
+    if "dependency installation failed" in text or "依赖安装失败" in text:
+        return None
     started = "[stage] stress_start" in text or bool((params or {}).get("stress_remote_started"))
     exited_without_report = "stress script exited before report generation" in text
     if not (started and exited_without_report):
@@ -802,8 +831,8 @@ def _precheck_stress_interrupted_before_report(
         "attribution": "server",
         "title": "压测运行异常中断",
         "conclusion": (
-            "压测已进入实际负载，但在生成报告前远端进程整体中断；"
-            "疑似服务器重启或异常中断（如掉电、内核异常），不能视为压测正常完成。"
+            "压测已进入实际负载，但在生成报告前远端进程退出；"
+            "中断原因待核查，不能据此确认服务器重启或硬件故障；不能视为压测正常完成。"
         ),
         "summary": (
             "已检测到 stress_start，但未检测到脚本正常结束或报告生成记录。"
@@ -820,6 +849,9 @@ def _precheck_stress_interrupted_before_report(
             "检查 journalctl -b -1 -k 的上一启动内核日志",
             "有 BMC/IPMI 时检查 SEL/System Event Log 中的掉电、内存或 watchdog 事件",
             "确认硬件和系统稳定后，再使用较短时长复测",
+        ],
+        "investigation_hints": [
+            "可能与服务器重启、内核异常、OOM、人工终止或 SSH 失联有关，当前证据不足以定论。",
         ],
         "risk_tips": [
             "该任务没有完成报告，不能据此判定压测通过或失败",
@@ -1281,6 +1313,45 @@ _PRE_CHECKS = [
 _EVIDENCE_MAX_COUNT = 5
 _EVIDENCE_MAX_LENGTH = 300
 
+_PHASE_BY_CATEGORY = {
+    "user_canceled": "canceled",
+    "user_canceled_remote_unreachable": "canceled",
+    "artifact_recovery_failed": "artifact_collection",
+    "ssh_auth_failed": "connection",
+    "ssh_connection_failed": "connection",
+    "stress_preflight_failed": "preflight",
+    "stress_interrupted_before_report": "stress_execution",
+    "stress_startup_marker_mismatch": "stress_start",
+    "stress_stuck": "stress_execution",
+    "completed": "report_validation",
+    "report_not_ready": "report_generation",
+}
+
+
+def _finalize_result(result: dict[str, Any], *, error_message: str | None = None) -> dict[str, Any]:
+    """Add the additive, evidence-oriented diagnosis contract."""
+    category = str(result.get("category") or "unknown")
+    result.setdefault("failure_phase", _PHASE_BY_CATEGORY.get(category, "unknown"))
+    result.setdefault("confirmed_facts", [])
+    result.setdefault("investigation_hints", [])
+    result.setdefault("next_actions", list(result.get("suggestions") or []))
+    if category in {"unknown", "no_logs", "stress_interrupted_before_report", "report_not_ready"}:
+        result.setdefault("confidence", "unknown")
+    elif result.get("evidence"):
+        result.setdefault("confidence", "confirmed")
+    else:
+        result.setdefault("confidence", "inferred")
+    if category == "stress_interrupted_before_report":
+        result["confirmed_facts"] = ["压测已启动，但未生成最终报告。"]
+        result["investigation_hints"] = ["需结合上一启动内核日志、BMC/IPMI 和远端进程记录核查中断原因。"]
+    elif category not in {"unknown", "no_logs", "report_not_ready", "completed"}:
+        fact = result.get("conclusion")
+        if isinstance(fact, str) and fact.strip():
+            result["confirmed_facts"] = [fact.strip()]
+    if category == "unknown" and error_message:
+        result["investigation_hints"] = ["任务错误信息未能与已知签名匹配，请查看终态日志窗口。"]
+    return result
+
 
 def _extract_evidence(
     log_lines: list[str],
@@ -1405,7 +1476,7 @@ def diagnose_task_failure(
         matched_patterns, evidence.
     """
     if not logs:
-        return _build_no_logs_result()
+        return _finalize_result(_build_no_logs_result(), error_message=error_message)
 
     # Build joined text for matching
     full_text = "\n".join(logs)
@@ -1413,6 +1484,46 @@ def diagnose_task_failure(
 
     # Also filter individual lines for evidence
     filtered_logs = [_filter_sensitive(line) for line in logs]
+
+    if "continuous gpu over-temperature threshold reached" in "\n".join(filter(None, [error_message, full_text_filtered])).lower():
+        return _finalize_result({
+            "level": "error", "category": "gpu_overtemperature", "attribution": "hardware",
+            "title": "GPU 持续高温保护触发",
+            "conclusion": "检测到 GPU 连续温度超过安全阈值，系统触发原子停止；这是已确认的压测终止原因。",
+            "summary": "极限压测因 GPU 温度保护触发而停止，GPU 与 CPU/内存子任务随后被终止。",
+            "possible_causes": ["GPU 散热能力不足", "风扇、散热器或机箱风道异常", "功耗墙或环境温度过高"],
+            "suggestions": ["检查 GPU 温度、风扇转速和机箱风道", "确认功耗限制与散热策略后再复测"],
+            "risk_tips": ["在确认散热与硬件状态前，不建议重复高负载压测"],
+            "matched_patterns": ["continuous GPU over-temperature threshold reached"],
+            "evidence": [line[:_EVIDENCE_MAX_LENGTH] for line in filtered_logs if "over-temperature" in line.lower() or "temperature" in line.lower()][-3:],
+            "failure_phase": "orchestration", "confidence": "confirmed",
+            "confirmed_facts": ["GPU 温度保护触发并终止极限压测。"],
+            "investigation_hints": [], "next_actions": ["检查 GPU 散热与温度传感器", "确认后再复测"],
+        }, error_message=error_message)
+
+    events = parse_diagnostic_events(filtered_logs)
+    terminal_event = next((event for event in reversed(events) if event.get("result") == "FAIL"), None)
+    if terminal_event:
+        message = str(terminal_event.get("message") or "结构化诊断事件报告失败。")
+        result = {
+            "level": "error",
+            "category": str(terminal_event.get("category") or "structured_failure"),
+            "attribution": str(terminal_event.get("attribution") or "environment"),
+            "title": str(terminal_event.get("title") or "任务失败"),
+            "conclusion": message,
+            "summary": message,
+            "possible_causes": [],
+            "suggestions": ["查看该阶段日志和结果文件"],
+            "risk_tips": [],
+            "matched_patterns": ["[DIAG_EVENT]"],
+            "evidence": [line[:_EVIDENCE_MAX_LENGTH] for line in filtered_logs if "[DIAG_EVENT]" in line][-1:],
+            "failure_phase": str(terminal_event.get("phase") or "unknown"),
+            "confidence": "confirmed",
+            "confirmed_facts": [message],
+            "investigation_hints": [],
+            "next_actions": ["查看该阶段日志和结果文件"],
+        }
+        return _finalize_result(result, error_message=error_message)
 
     # ── Phase 1: Pre-check rules (metadata-based) ──
     # These run before pattern matching and can return early results.
@@ -1438,11 +1549,28 @@ def diagnose_task_failure(
                     result["evidence"] = _extract_evidence(
                         filtered_logs, result["matched_patterns"]
                     )
-                return result
+                return _finalize_result(result, error_message=error_message)
         except Exception:
             logger.warning("[diagnosis] pre-check %s failed", _name, exc_info=True)
 
     # ── Phase 2: Pattern matching (existing rules) ──
+    # A concrete task-level error is stronger than incidental text earlier in logs.
+    direct_text = _filter_sensitive(error_message or "")
+    if direct_text:
+        for cat in CATEGORIES:
+            if cat["category"] == "unknown":
+                continue
+            if cat["category"] in {"command_exit_nonzero", "shell_syntax_error"}:
+                continue
+            if cat["category"] == "apptainer_upload_failed" and task_type != "apptainer":
+                continue
+            matched = [pattern for pattern in cat["patterns"] if pattern.lower() in direct_text.lower()]
+            if matched:
+                return _finalize_result(
+                    _build_result(cat, matched, _extract_evidence(filtered_logs, matched), task_status),
+                    error_message=error_message,
+                )
+
     for cat in CATEGORIES:
         if cat["category"] == "unknown":
             continue
@@ -1456,9 +1584,9 @@ def diagnose_task_failure(
 
         if matched:
             evidence = _extract_evidence(filtered_logs, matched)
-            return _build_result(cat, matched, evidence, task_status)
+            return _finalize_result(_build_result(cat, matched, evidence, task_status), error_message=error_message)
 
     # ── No match fallback ──
     unknown_cat = CATEGORIES[-1]
     evidence = _extract_evidence(filtered_logs, [])
-    return _build_result(unknown_cat, [], evidence, task_status)
+    return _finalize_result(_build_result(unknown_cat, [], evidence, task_status), error_message=error_message)

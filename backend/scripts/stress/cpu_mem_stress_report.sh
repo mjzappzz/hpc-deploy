@@ -8,8 +8,19 @@ DNF_TIMEOUT="${HPCDEPLOY_DNF_TIMEOUT:-30}"
 DNF_RETRIES="${HPCDEPLOY_DNF_RETRIES:-2}"
 DNF_INSTALL_ATTEMPTS="${HPCDEPLOY_DNF_INSTALL_ATTEMPTS:-3}"
 
+WORKDIR="$(pwd)"
+DIAGNOSIS_FILE="${WORKDIR}/diagnosis.jsonl"
+: > "$DIAGNOSIS_FILE"
+emit_diagnosis_event() {
+    local phase="$1" result="$2" category="$3" message="$4"
+    printf '{"version":1,"phase":"%s","result":"%s","category":"%s","message":"%s"}\n' "$phase" "$result" "$category" "$message" >> "$DIAGNOSIS_FILE"
+}
+emit_diagnosis_event "startup" "START" "cpu_memory_stress" "CPU/内存压测脚本启动"
+trap 'rc=$?; emit_diagnosis_event "script_exit" "$([ "$rc" -eq 0 ] && echo PASS || echo FAIL)" "cpu_memory_stress" "CPU/内存压测脚本退出码 $rc"' EXIT
+
 # ===== 自动检测系统并安装依赖 =====
 echo "[STAGE] dependency_check_start"
+emit_diagnosis_event "dependency" "START" "dependency_check" "开始依赖检查"
 
 epel_repo_enabled() {
     dnf -q repolist --enabled 2>/dev/null |
@@ -248,6 +259,7 @@ install_deps() {
 
 install_deps || exit 1
 echo "[STAGE] dependency_check_done"
+emit_diagnosis_event "dependency" "PASS" "dependency_check" "依赖检查完成"
 
 if [ "${HPCDEPLOY_EXTREME_PREPARE_ONLY:-0}" = "1" ]; then
     echo "[STAGE] extreme_prepare_done module=cpu_mem"
@@ -685,6 +697,7 @@ fi
 
 # ===== 执行 stress-ng 压测 =====
 echo "[STAGE] stress_start"
+emit_diagnosis_event "stress_execution" "START" "stress_start" "CPU/内存负载已启动"
 
 STRESS_GRACE_SECONDS=${STRESS_GRACE_SECONDS:-30}
 STRESS_FORCE_KILL_AFTER=$((DURATION + STRESS_GRACE_SECONDS))
@@ -1052,6 +1065,7 @@ Excel报告             : ${XLSX_REPORT}
 EOR
 
 echo "[STAGE] report_txt_done"
+emit_diagnosis_event "report_generation" "PASS" "report_txt" "文本报告生成完成"
 
 # ===== 生成 XLSX 报告 =====
 echo "[STAGE] report_xlsx_start"

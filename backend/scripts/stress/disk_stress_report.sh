@@ -9,7 +9,18 @@ DNF_TIMEOUT="${HPCDEPLOY_DNF_TIMEOUT:-30}"
 DNF_RETRIES="${HPCDEPLOY_DNF_RETRIES:-2}"
 DNF_INSTALL_ATTEMPTS="${HPCDEPLOY_DNF_INSTALL_ATTEMPTS:-3}"
 
+WORKDIR="$(pwd)"
+DIAGNOSIS_FILE="${WORKDIR}/diagnosis.jsonl"
+: > "$DIAGNOSIS_FILE"
+emit_diagnosis_event() {
+    local phase="$1" result="$2" category="$3" message="$4"
+    printf '{"version":1,"phase":"%s","result":"%s","category":"%s","message":"%s"}\n' "$phase" "$result" "$category" "$message" >> "$DIAGNOSIS_FILE"
+}
+emit_diagnosis_event "startup" "START" "disk_stress" "磁盘压测脚本启动"
+trap 'rc=$?; emit_diagnosis_event "script_exit" "$([ "$rc" -eq 0 ] && echo PASS || echo FAIL)" "disk_stress" "磁盘压测脚本退出码 $rc"' EXIT
+
 echo "[STAGE] dependency_check_start"
+emit_diagnosis_event "dependency" "START" "dependency_check" "开始依赖检查"
 echo "[INFO] Checking and installing dependencies..."
 
 epel_repo_enabled() {
@@ -213,6 +224,7 @@ PYCHK
 install_deps || exit 1
 
 echo "[STAGE] dependency_check_done"
+emit_diagnosis_event "dependency" "PASS" "dependency_check" "依赖检查完成"
 echo "[INFO] Dependency check done."
 
 DURATION=${1:-43200}
@@ -525,6 +537,7 @@ sleep 2
 set +e
 
 echo "[STAGE] stress_start"
+emit_diagnosis_event "stress_execution" "START" "stress_start" "磁盘负载已启动"
 (
   cd "$TEST_DIR" || exit 1
 
@@ -564,6 +577,7 @@ echo "[STAGE] stress_start"
   echo "===== fio performance test end ====="
 
   echo "[STAGE] durability_verify_start"
+  emit_diagnosis_event "report_validation" "START" "durability_verify" "开始持久化校验"
   echo "[INFO] 耐久校验中：${FIO_DURABILITY_PROFILE}；${FIO_DURABILITY_BYTES}/worker；逐写落盘 + ${FIO_VERIFY} 回读。"
   echo "===== fio durability test start ====="
   stdbuf -oL -eL fio \
@@ -596,6 +610,7 @@ echo "[STAGE] stress_start"
   echo "End Time   : $(date '+%F %T')"
   echo "Exit Code  : ${RET}"
   echo "===== fio disk test end ====="
+  emit_diagnosis_event "report_generation" "PASS" "report" "磁盘性能与持久化报告数据生成完成"
 
   exit ${RET}
 ) > "$STRESS_LOG" 2>&1 &

@@ -12,9 +12,17 @@ SSH_FAILURE_THRESHOLD="${HPCDEPLOY_EXTREME_SSH_FAILURE_THRESHOLD:-3}"
 WORKDIR="$(pwd)"
 SYNC_DIR="${WORKDIR}/.extreme-sync"
 RESULT_FILE="${WORKDIR}/extreme_stress_result.json"
+DIAGNOSIS_FILE="${WORKDIR}/diagnosis.jsonl"
 GPU_DIR="${WORKDIR}/gpu"
 CPU_DIR="${WORKDIR}/cpu_mem"
 mkdir -p "$SYNC_DIR" "$GPU_DIR" "$CPU_DIR"
+: > "$DIAGNOSIS_FILE"
+
+emit_diagnosis_event() {
+  local phase="$1" result="$2" category="$3" message="$4"
+  printf '{"version":1,"phase":"%s","result":"%s","category":"%s","message":"%s"}\n' \
+    "$phase" "$result" "$category" "$message" >> "$DIAGNOSIS_FILE"
+}
 
 validate_positive_integer() {
   case "$1" in
@@ -96,10 +104,12 @@ trap 'request_atomic_stop "coordinator cleanup"' EXIT
 trap handle_signal INT TERM
 
 prepare() {
+  emit_diagnosis_event "dependency" "START" "dependency_check" "开始依赖检查"
   echo "[STAGE] dependency_check_start"
   (cd "$GPU_DIR" && HPCDEPLOY_EXTREME_PREPARE_ONLY=1 ../gpu_stress_report.sh "$DURATION" "$INTERVAL")
   (cd "$CPU_DIR" && HPCDEPLOY_EXTREME_PREPARE_ONLY=1 ../cpu_mem_stress_report.sh "$DURATION" "$INTERVAL")
   echo "[STAGE] dependency_check_done"
+  emit_diagnosis_event "dependency" "PASS" "dependency_check" "依赖检查完成"
 }
 
 prepare
@@ -117,6 +127,7 @@ while [ ! -f "$SYNC_DIR/gpu.ready" ] || [ ! -f "$SYNC_DIR/cpu_mem.ready" ]; do
 done
 
 echo "[STAGE] stress_start"
+emit_diagnosis_event "stress_execution" "START" "stress_start" "GPU 与 CPU/内存负载已启动"
 : > "$SYNC_DIR/start"
 while [ ! -f "$SYNC_DIR/gpu.started" ] || [ ! -f "$SYNC_DIR/cpu_mem.started" ]; do sleep 0.05; done
 gpu_start=$(cat "$SYNC_DIR/gpu.started"); cpu_start=$(cat "$SYNC_DIR/cpu_mem.started")
@@ -134,6 +145,7 @@ while kill -0 "$gpu_pid" 2>/dev/null && kill -0 "$cpu_pid" 2>/dev/null; do
   sleep 1
 done
 if [ "$STOP_TRIGGERED" -eq 1 ]; then
+  emit_diagnosis_event "orchestration" "FAIL" "atomic_stop" "$STOP_REASON"
   wait "$gpu_pid" 2>/dev/null || gpu_rc=$?
   wait "$cpu_pid" 2>/dev/null || cpu_rc=$?
   gpu_rc="${gpu_rc:-143}"
@@ -168,6 +180,7 @@ collect_module_artifacts "$GPU_DIR" "gpu"
 collect_module_artifacts "$CPU_DIR" "cpu_mem"
 result=PASS; reason="GPU and CPU/memory stress passed with synchronized start."
 if [ "$gpu_rc" -ne 0 ] || [ "$cpu_rc" -ne 0 ]; then result=FAIL; reason="GPU or CPU/memory stress failed."; fi
+emit_diagnosis_event "stress_execution" "$result" "extreme_module_result" "$reason"
 printf '{"report_status":"%s","gpu_exit":%s,"cpu_mem_exit":%s,"gpu_pid":%s,"cpu_mem_pid":%s,"start_skew_ms":%s,"temperature_monitor":"%s","temperature_limit_c":%s,"ssh_failure_threshold":%s,"reason":"%s"}\n' "$result" "$gpu_rc" "$cpu_rc" "$gpu_pid" "$cpu_pid" "$skew_ms" "$TEMPERATURE_MONITOR_STATUS" "$GPU_TEMP_LIMIT_C" "$SSH_FAILURE_THRESHOLD" "$reason" > "$RESULT_FILE"
 echo "[SUMMARY] Result: $result"
 echo "Reason: $reason"

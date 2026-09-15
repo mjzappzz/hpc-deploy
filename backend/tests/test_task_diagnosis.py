@@ -1,9 +1,57 @@
 import unittest
 
-from app.core.task_diagnosis import diagnose_task_failure
+from app.core.task_diagnosis import diagnose_task_failure, parse_diagnostic_events
 
 
 class TaskDiagnosisTests(unittest.TestCase):
+    def test_versioned_diagnostic_event_is_used_as_confirmed_fact(self) -> None:
+        logs = ['[DIAG_EVENT] {"version":1,"phase":"dependency","result":"FAIL","category":"dependency_install_failed","message":"无法安装 stress-ng"}']
+        self.assertEqual(parse_diagnostic_events(logs)[0]["phase"], "dependency")
+        diagnosis = diagnose_task_failure("FAILED", None, logs, task_type="stress")
+        self.assertEqual(diagnosis["category"], "dependency_install_failed")
+        self.assertEqual(diagnosis["confidence"], "confirmed")
+
+    def test_diagnostic_event_masks_sensitive_fields(self) -> None:
+        event = parse_diagnostic_events(['[DIAG_EVENT] {"version":1,"phase":"x","password":"dont-store"}'])[0]
+        self.assertEqual(event["password"], "***")
+
+    def test_extreme_overtemperature_reason_precedes_gpu_environment_keywords(self) -> None:
+        diagnosis = diagnose_task_failure(
+            "FAILED", "continuous GPU over-temperature threshold reached",
+            ["nvidia-smi path: /usr/bin/nvidia-smi", "Reason: continuous GPU over-temperature threshold reached"],
+            task_type="stress", file_name="extreme_stress_report.sh", report_result="FAIL",
+        )
+        self.assertEqual(diagnosis["category"], "gpu_overtemperature")
+        self.assertEqual(diagnosis["failure_phase"], "orchestration")
+    def test_diagnosis_exposes_layered_evidence_contract(self) -> None:
+        diagnosis = diagnose_task_failure(
+            task_status="FAILED",
+            error_message="Dependency installation failed after 3 attempts: epel-release",
+            logs=["[ERROR] Failed to download metadata for repo 'baseos': Could not resolve host"],
+            task_type="stress",
+            file_name="disk_stress_report.sh",
+        )
+
+        self.assertIn(diagnosis["confidence"], {"confirmed", "inferred", "unknown"})
+        self.assertIn("failure_phase", diagnosis)
+        self.assertIsInstance(diagnosis["confirmed_facts"], list)
+        self.assertIsInstance(diagnosis["investigation_hints"], list)
+        self.assertIsInstance(diagnosis["next_actions"], list)
+        self.assertTrue(all("password" not in item.lower() for item in diagnosis["evidence"]))
+
+    def test_interruption_does_not_claim_server_restart_as_confirmed(self) -> None:
+        diagnosis = diagnose_task_failure(
+            task_status="FAILED",
+            error_message="stress script exited before report generation, no report found",
+            logs=["[STAGE] stress_start", "stress async: remote script exited without report"],
+            task_type="stress",
+            file_name="cpu_mem_stress_report.sh",
+            params={"stress_remote_started": True},
+        )
+
+        self.assertEqual(diagnosis["confidence"], "unknown")
+        self.assertIn("待核查", diagnosis["conclusion"])
+        self.assertNotIn("疑似服务器重启", diagnosis["conclusion"])
     def test_bash_unbound_variable_after_stress_start_is_reported_as_script_bug(self) -> None:
         diagnosis = diagnose_task_failure(
             task_status="FAILED",
@@ -54,7 +102,7 @@ class TaskDiagnosisTests(unittest.TestCase):
         self.assertIn("root", diagnosis["conclusion"])
         self.assertTrue(any("SSH 用户" in item for item in diagnosis["possible_causes"]))
 
-    def test_stress_started_then_exited_without_report_is_suspected_server_interruption(self) -> None:
+    def test_stress_started_then_exited_without_report_is_marked_for_investigation(self) -> None:
         diagnosis = diagnose_task_failure(
             task_status="FAILED",
             error_message="stress script exited before report generation, no report found",
@@ -70,7 +118,7 @@ class TaskDiagnosisTests(unittest.TestCase):
         )
 
         self.assertEqual(diagnosis["category"], "stress_interrupted_before_report")
-        self.assertIn("疑似服务器重启或异常中断", diagnosis["conclusion"])
+        self.assertIn("待核查", diagnosis["conclusion"])
         self.assertIn("不能视为压测正常完成", diagnosis["conclusion"])
 
     def test_uncorrected_memory_error_overrides_generic_missing_report_diagnosis(self) -> None:
@@ -131,6 +179,20 @@ class TaskDiagnosisTests(unittest.TestCase):
         )
 
         self.assertEqual(diagnosis["category"], "ssh_connection_failed")
+
+    def test_direct_task_error_has_priority_over_earlier_log_keyword(self) -> None:
+        diagnosis = diagnose_task_failure(
+            task_status="FAILED",
+            error_message="artifact recovery failed: permission denied",
+            logs=[
+                "[INFO] nvidia-smi path: /usr/bin/nvidia-smi",
+                "[INFO] CUDA Toolkit Version: 12.8.61",
+            ],
+            task_type="stress",
+            file_name="gpu_stress_report.sh",
+        )
+
+        self.assertEqual(diagnosis["category"], "artifact_recovery_failed")
 
     def test_gpu_kernel_image_failure_overrides_generic_successful_task_status(self) -> None:
         diagnosis = diagnose_task_failure(

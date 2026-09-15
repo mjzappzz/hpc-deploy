@@ -63,6 +63,8 @@ def resolve_card_outcome_title(
 ) -> str | None:
     """Return a compact, evidence-backed card label without replacing details."""
     title = diagnosis.get("title") if isinstance(diagnosis, dict) else None
+    if isinstance(diagnosis, dict) and diagnosis.get("confidence") == "unknown":
+        return "原因待核查"
     if isinstance(title, str) and title.strip() and title not in {"任务执行成功", "未知失败类型"}:
         return title.strip()
     if report_status.upper() == "FAIL":

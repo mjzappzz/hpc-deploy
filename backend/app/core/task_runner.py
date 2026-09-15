@@ -17,6 +17,19 @@ from app.models.server import Server
 from app.models.task import Task
 from app.models.task_log import TaskLog
 
+_LOCAL_ARTIFACTS_DIR = Path(__file__).resolve().parents[2] / "data" / "artifacts"
+
+
+def _write_diagnosis_event(task_id: str, phase: str, result: str, category: str, message: str) -> None:
+    """Persist a small runner event without exposing commands or credentials."""
+    try:
+        target = _LOCAL_ARTIFACTS_DIR / task_id
+        target.mkdir(parents=True, exist_ok=True)
+        with (target / "diagnosis.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"version": 1, "phase": phase, "result": result, "category": category, "message": message}, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
 TASK_STATUSES = (
     "PENDING",
     "CONNECTING",
@@ -1025,6 +1038,7 @@ def _stress_poll_loop(
                         if _attempt_stress_recovery(db, task_id, task):
                             _add_log(db, task_id, "SYSTEM", "stress async: completed via report detection")
                         else:
+                            _write_diagnosis_event(task_id, "artifact_collection", "FAIL", "artifact_recovery_failed", "远端报告已发现，但本地 artifact 回收失败")
                             _add_log(
                                 db, task_id, "ERROR",
                                 "stress async: remote report detected but local artifact recovery failed",
@@ -1175,6 +1189,7 @@ def _stress_recovery_monitor(task_id: str) -> None:
                 last_connect_error = None
                 break
             except Exception as exc:
+                _write_diagnosis_event(task_id, "connection", "FAIL", "ssh_connection_failed", "恢复连接失败，正在重试")
                 last_connect_error = exc
                 if attempt < STRESS_RECOVERY_SSH_CONNECT_RETRIES:
                     _add_log(
@@ -1922,6 +1937,7 @@ def _mark_task_canceled(db, task: Task, message: str) -> None:
     task.error_message = message
     _clear_task_lease(task)
     db.commit()
+    _write_diagnosis_event(task.task_id, "canceled", "FAIL", "task_canceled", message)
     _add_log(db, task.task_id, "SYSTEM", message)
     schedule_report_summary_generation(task.task_id)
 
@@ -1967,6 +1983,7 @@ def _fail_task(db, task_id: str, message: str) -> None:
         db.add(TaskLog(task_id=task_id, level="ERROR", message=message[:1000]))
         db.commit()
     if final_status:
+        _write_diagnosis_event(task_id, "runner", "FAIL", "task_failed", message)
         schedule_report_summary_generation(task_id)
         try:
             ws_manager.broadcast_status_sync(task_id, final_status)

@@ -169,6 +169,7 @@
         <div class="deploy-hint">
           <div class="deploy-hint__title">公钥部署说明</div>
           <div>选择本机 <code>backend/keys/</code> 下带 <code>.pub</code> 的 SSH 密钥对，将公钥写入远端登录用户的 <code>~/.ssh/authorized_keys</code>。</div>
+          <div>首次部署前，请在下方读取并确认每台服务器的 SSH 主机指纹；确认后才可安装公钥。</div>
           <div class="deploy-path">没有可用密钥时，点击右侧“生成默认密钥”创建 <code>id_ed25519</code> 和 <code>id_ed25519.pub</code>。</div>
         </div>
         <div class="public-key-summary">
@@ -218,6 +219,12 @@
         <el-table-column label="SSH 状态" width="90">
           <template #default="{ row }"><StatusTag :status="row.server.status" /></template>
         </el-table-column>
+        <el-table-column label="主机指纹" width="110">
+          <template #default="{ row }">
+            <el-tag v-if="row.server.ssh_host_fingerprint" size="small" type="success">已确认</el-tag>
+            <el-tag v-else size="small" type="warning">待确认</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column label="公钥状态" width="110">
           <template #default="{ row }">
             <el-tag size="small" :type="publicKeyStatusType(row.status)">{{ publicKeyStatusLabel(row.status) }}</el-tag>
@@ -231,10 +238,17 @@
             <span class="public-key-message">{{ row.message || '-' }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="90" fixed="right">
+        <el-table-column label="操作" width="110" fixed="right">
           <template #default="{ row }">
             <el-button
-              v-if="canDeployPublicKeyRow(row)"
+              v-if="!row.server.ssh_host_fingerprint"
+              link
+              type="warning"
+              :loading="confirmingFingerprintServerId === row.server.id"
+              @click="confirmPublicKeyRowHostIdentity(row)"
+            >确认指纹</el-button>
+            <el-button
+              v-else-if="canDeployPublicKeyRow(row)"
               link
               type="primary"
               :loading="row.status === 'DEPLOYING' || row.status === 'CHECKING'"
@@ -310,7 +324,6 @@
               </el-descriptions-item>
             </el-descriptions>
             <div class="detail-actions">
-              <el-button size="small" :loading="detailActionsLoading" @click="confirmActiveServerHostIdentity">读取并确认主机指纹</el-button>
               <el-button v-if="activeServer.auth_type === 'key' && activeServer.key_auth_verified_at" size="small" type="warning" plain :loading="detailActionsLoading" @click="clearActiveServerPassword">清除平台保存的密码</el-button>
             </div>
           </div>
@@ -586,6 +599,7 @@ const deployDialogVisible = ref(false)
 const deployPrivateKeyPath = ref('')
 const publicKeyChecking = ref(false)
 const publicKeyDeploying = ref(false)
+const confirmingFingerprintServerId = ref<number | null>(null)
 const publicKeyStatusMap = ref<Record<number, { status: PublicKeyStatus; message: string }>>({})
 const filterTag = ref('')
 const filterKeyword = ref('')
@@ -1080,10 +1094,37 @@ async function deployPublicKeyByIds(targetIds: number[]) {
 }
 
 async function deployMissingPublicKeys() {
-  const ids = publicKeyRows.value
+  const targetRows = publicKeyRows.value
     .filter((row) => ['NOT_INSTALLED', 'NOT_DEPLOYED', 'DEPLOY_FAILED'].includes(row.status))
+  const pendingIdentityCount = targetRows.filter((row) => !row.server.ssh_host_fingerprint).length
+  const ids = targetRows
+    .filter((row) => !!row.server.ssh_host_fingerprint)
     .map((row) => row.server.id)
+  if (pendingIdentityCount > 0) {
+    ElMessage.warning(`有 ${pendingIdentityCount} 台服务器的主机指纹待确认，已跳过`)
+  }
+  if (ids.length === 0) return
   await deployPublicKeyByIds(ids)
+}
+
+async function confirmPublicKeyRowHostIdentity(row: PublicKeyRow) {
+  confirmingFingerprintServerId.value = row.server.id
+  try {
+    const identity = (await observeSshHostIdentity(row.server.id)).data
+    const prior = identity.trusted_fingerprint ? `\n已保存：${identity.trusted_fingerprint}` : ''
+    await ElMessageBox.confirm(
+      `当前：${identity.fingerprint}\n算法：${identity.algorithm}${prior}\n\n确认后，后续任务和公钥部署会校验该服务器身份。`,
+      identity.status === 'changed' ? '检测到主机身份变化' : '确认 SSH 主机指纹',
+      { confirmButtonText: '确认保存', cancelButtonText: '取消', type: identity.status === 'changed' ? 'warning' : 'info' },
+    )
+    await confirmSshHostIdentity(row.server.id, identity.fingerprint)
+    ElMessage.success(`${row.server.name} 的 SSH 主机指纹已确认`)
+    await loadServers()
+  } catch (error: unknown) {
+    if (error !== 'cancel' && error !== 'close') ElMessage.error(getApiErrorMessage(error))
+  } finally {
+    confirmingFingerprintServerId.value = null
+  }
 }
 
 async function checkPublicKeyRow(server: ServerRecord) {
@@ -1303,27 +1344,6 @@ async function refreshDetail() {
     // Also refresh server list to sync state
     servers.value = servers.value.map((s) => (s.id === resp.id ? resp : s))
     loadRecentTasks(currentServerId.value)
-  } finally {
-    detailActionsLoading.value = false
-  }
-}
-
-async function confirmActiveServerHostIdentity() {
-  if (!activeServer.value) return
-  detailActionsLoading.value = true
-  try {
-    const identity = (await observeSshHostIdentity(activeServer.value.id)).data
-    const prior = identity.trusted_fingerprint ? `\n已保存：${identity.trusted_fingerprint}` : ''
-    await ElMessageBox.confirm(
-      `当前：${identity.fingerprint}\n算法：${identity.algorithm}${prior}\n\n确认后，后续任务会校验该服务器身份。`,
-      identity.status === 'changed' ? '检测到主机身份变化' : '确认 SSH 主机指纹',
-      { confirmButtonText: '确认保存', cancelButtonText: '取消', type: identity.status === 'changed' ? 'warning' : 'info' },
-    )
-    await confirmSshHostIdentity(activeServer.value.id, identity.fingerprint)
-    ElMessage.success('SSH 主机指纹已确认')
-    await refreshDetail()
-  } catch (error: unknown) {
-    if (error !== 'cancel' && error !== 'close') ElMessage.error(getApiErrorMessage(error))
   } finally {
     detailActionsLoading.value = false
   }

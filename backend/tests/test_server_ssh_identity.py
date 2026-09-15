@@ -1,4 +1,5 @@
 import unittest
+import inspect
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -14,7 +15,8 @@ from app.api.tasks import run_task
 from app.api.tasks import _get_server_submission_lock
 from app.api.tasks import _audit_resource_conflict
 from app.core.task_runner import _connect_recovery_executor
-from app.api.servers import clear_saved_password
+from app.api.servers import clear_saved_password, confirm_ssh_host_identity
+from app.schemas.server import SSHHostIdentityConfirmRequest
 from app.schemas.task import ExtremePreflightResponse, ExtremePreflightCheck, TaskRunRequest
 from app.models.server import Server
 
@@ -33,6 +35,36 @@ class ServerSshIdentityModelTests(unittest.TestCase):
             _require_server_ssh_identity_confirmed(SimpleNamespace(ssh_host_fingerprint=None))
 
         self.assertEqual(raised.exception.status_code, 409)
+
+    @patch("app.api.servers.write_audit_log")
+    @patch("app.api.servers._read_server_ssh_host_identity")
+    @patch("app.api.servers._get_server_or_404")
+    def test_regular_operator_can_confirm_the_observed_ssh_identity(
+        self,
+        get_server: MagicMock,
+        read_identity: MagicMock,
+        audit: MagicMock,
+    ) -> None:
+        server = SimpleNamespace(
+            id=1,
+            name="测试246",
+            ssh_host_fingerprint=None,
+            ssh_host_key_algorithm=None,
+            ssh_host_key_confirmed_at=None,
+        )
+        get_server.return_value = server
+        read_identity.return_value = {"fingerprint": "SHA256:confirmed", "algorithm": "ssh-ed25519"}
+
+        result = confirm_ssh_host_identity(
+            1,
+            SSHHostIdentityConfirmRequest(fingerprint="SHA256:confirmed"),
+            MagicMock(),
+        )
+
+        self.assertEqual(result.status, "matched")
+        self.assertEqual(server.ssh_host_fingerprint, "SHA256:confirmed")
+        self.assertNotIn("_", inspect.signature(confirm_ssh_host_identity).parameters)
+        audit.assert_called_once()
 
     def test_extreme_preflight_blocks_an_unconfirmed_or_gpu_unready_server(self) -> None:
         db = MagicMock()

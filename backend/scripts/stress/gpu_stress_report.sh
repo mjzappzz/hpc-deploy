@@ -39,6 +39,14 @@ HPCDEPLOY_EXTREME_SYNC_DIR="${HPCDEPLOY_EXTREME_SYNC_DIR:-}"
 TIME_TAG="$(date +%F_%H%M%S)"
 
 WORKDIR="$(pwd)"
+DIAGNOSIS_FILE="${WORKDIR}/diagnosis.jsonl"
+: > "$DIAGNOSIS_FILE"
+emit_diagnosis_event() {
+  local phase="$1" result="$2" category="$3" message="$4"
+  printf '{"version":1,"phase":"%s","result":"%s","category":"%s","message":"%s"}\n' "$phase" "$result" "$category" "$message" >> "$DIAGNOSIS_FILE"
+}
+emit_diagnosis_event "startup" "START" "gpu_stress" "GPU 压测脚本启动"
+trap 'rc=$?; emit_diagnosis_event "script_exit" "$([ "$rc" -eq 0 ] && echo PASS || echo FAIL)" "gpu_stress" "GPU 压测脚本退出码 $rc"' EXIT
 GPU_BURN_ARCHIVE_URL="http://171.221.252.54:8573/chfs/shared/%E5%85%B6%E4%BB%96%E5%B8%B8%E7%94%A8%E8%BD%AF%E4%BB%B6%EF%BC%88%E5%90%AB%E5%8E%8B%E6%B5%8B%E8%84%9A%E6%9C%AC%E7%AD%89%EF%BC%89/Stress%E5%8E%8B%E6%B5%8B%E7%9B%B8%E5%85%B3%E8%84%9A%E6%9C%AC/gpu-burn-master.zip"
 GPU_BURN_DIR="/opt/software/gpu-burn"
 GPU_BURN_ARCHIVE_PATH="/opt/software/gpu-burn-master.zip"
@@ -596,8 +604,10 @@ run_gpu_burn_per_gpu() {
 
 main() {
     echo "[STAGE] dependency_check_start"
+    emit_diagnosis_event "dependency" "START" "dependency_check" "开始依赖检查"
     install_deps || exit 1
     echo "[STAGE] dependency_check_done"
+    emit_diagnosis_event "dependency" "PASS" "dependency_check" "依赖检查完成"
 
     echo "======================================"
     echo "GPU Stress Test Start"
@@ -655,6 +665,7 @@ main() {
         date +%s%N > "$HPCDEPLOY_EXTREME_SYNC_DIR/gpu.started"
     fi
     echo "[STAGE] stress_start"
+    emit_diagnosis_event "stress_execution" "START" "stress_start" "GPU 负载已启动"
     echo "[INFO] Start gpu-burn (${GPU_BURN_PRECISION^^}) with one process per GPU."
     run_gpu_burn_per_gpu || BURN_EXIT=1
 
@@ -665,6 +676,7 @@ main() {
     echo
     echo "======================================"
     echo "压测完成，开始生成 TXT/XLSX 报告"
+    emit_diagnosis_event "report_generation" "START" "report" "开始生成 GPU 报告"
     echo "请勿按 Ctrl+C"
     echo "======================================"
     echo
@@ -1223,8 +1235,10 @@ PYEOF
     XLSX_EXIT_CODE=$?
     if [ "$XLSX_EXIT_CODE" -ne 0 ] || [ ! -s "$XLSX_REPORT" ]; then
         echo "[ERROR] XLSX report generation failed or produced an empty file"
+        emit_diagnosis_event "report_generation" "FAIL" "report" "GPU 报告生成失败"
         return 1
     fi
+    emit_diagnosis_event "report_generation" "PASS" "report" "GPU 报告生成完成"
 
     echo
     echo "======================================"

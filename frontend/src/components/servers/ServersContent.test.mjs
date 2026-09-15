@@ -45,12 +45,22 @@ test('passes active task server ids to the managed server table', async () => {
   assert.equal((source.match(/:running-task-ids="runningTaskIds"/g) ?? []).length, 1)
 })
 
-test('keeps SSH identity confirmation and local-password clearing as separate guarded actions', async () => {
+test('shows SSH identity status in server details while keeping password clearing guarded', async () => {
   const source = await readFile(new URL('./ServersContent.vue', import.meta.url), 'utf8')
 
   assert.match(source, /activeServer\.ssh_host_fingerprint/)
-  assert.match(source, /@click="confirmActiveServerHostIdentity">读取并确认主机指纹/)
+  assert.doesNotMatch(source, /confirmActiveServerHostIdentity/)
   assert.match(source, /activeServer\.auth_type === 'key' && activeServer\.key_auth_verified_at/)
   assert.match(source, /@click="clearActiveServerPassword">清除平台保存的密码/)
   assert.match(source, /不会修改远端密码或已部署公钥/)
+})
+
+test('keeps host fingerprint confirmation inside public-key deployment for regular operators', async () => {
+  const source = await readFile(new URL('./ServersContent.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /label="主机指纹"/)
+  assert.match(source, /确认指纹/)
+  assert.match(source, /@click="confirmPublicKeyRowHostIdentity\(row\)"/)
+  assert.match(source, /const pendingIdentityCount = targetRows\.filter\(\(row\) => !row\.server\.ssh_host_fingerprint\)\.length/)
+  assert.match(source, /有 \$\{pendingIdentityCount\} 台服务器的主机指纹待确认，已跳过/)
 })

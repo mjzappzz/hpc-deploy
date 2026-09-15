@@ -30,12 +30,25 @@
             {{ levelLabel }}
           </el-tag>
           <span class="diag-category">{{ diagnosisData.title }}</span>
+          <el-tag v-if="diagnosisData.failure_phase" size="small" effect="plain">阶段：{{ diagnosisData.failure_phase }}</el-tag>
+          <el-tag v-if="diagnosisData.confidence === 'unknown'" type="warning" size="small" effect="plain">原因待核查</el-tag>
+          <el-tag v-else-if="diagnosisData.confidence" type="success" size="small" effect="plain">证据：{{ diagnosisData.confidence === 'confirmed' ? '已确认' : '推断' }}</el-tag>
         </div>
 
         <!-- Summary -->
         <div class="diag-section">
           <div class="diag-section-title">摘要</div>
           <p class="diag-text">{{ diagnosisData.summary }}</p>
+        </div>
+
+        <div v-if="diagnosisData.confirmed_facts?.length" class="diag-section">
+          <div class="diag-section-title">已确认事实</div>
+          <ul class="diag-list"><li v-for="(fact, i) in diagnosisData.confirmed_facts" :key="i">{{ fact }}</li></ul>
+        </div>
+
+        <div v-if="diagnosisData.confidence === 'unknown' || diagnosisData.investigation_hints?.length" class="diag-section">
+          <div class="diag-section-title">待核查</div>
+          <ul class="diag-list"><li v-for="(hint, i) in diagnosisData.investigation_hints" :key="i">{{ hint }}</li></ul>
         </div>
 
         <!-- Possible causes -->
@@ -50,7 +63,7 @@
         <div class="diag-section">
           <div class="diag-section-title">建议处理</div>
           <ul class="diag-list">
-            <li v-for="(s, i) in diagnosisData.suggestions" :key="i">{{ s }}</li>
+            <li v-for="(s, i) in (diagnosisData.next_actions?.length ? diagnosisData.next_actions : diagnosisData.suggestions)" :key="i">{{ s }}</li>
           </ul>
         </div>
 

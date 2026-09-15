@@ -16,7 +16,7 @@ from app.models.task_log import TaskLog
 from sqlalchemy.orm import Session
 
 REPORT_STATUS_VALUES = {"PASS", "FAIL", "UNKNOWN"}
-DIAGNOSIS_VERSION = 11
+DIAGNOSIS_VERSION = 12
 _REPORT_FAILURE_REASON_PATTERN = re.compile(r"^\s*(?:Reason|判定原因)\s*:\s*(.+?)\s*$", re.IGNORECASE)
 _CORRECTED_ECC_MCE_REASON = (
     "检测到可纠正 ECC 内存错误（MCE/CECC）；系统已纠正，但反复出现表示内存子系统存在风险。"
@@ -50,12 +50,25 @@ def extract_report_failure_reason(content: str) -> str | None:
 
 
 def _is_generic_report_reason(reason: str) -> bool:
-    return reason.strip().lower() in {
+    normalized = reason.strip().lower()
+    return normalized in {
         "critical kernel error detected.",
         "hardware or system event detected; inspect the event log for the matched evidence.",
         "stress-ng reported real critical error.",
         "observed normal monitor data.",
-    }
+        "gpu or cpu/memory stress failed.",
+    } or normalized.startswith("stress script exited before report generation")
+
+
+def _direct_task_error(error_message: str | None) -> str | None:
+    if not isinstance(error_message, str):
+        return None
+    value = error_message.strip()
+    if not value or _is_generic_report_reason(value):
+        if value.lower().startswith("stress script exited before report generation") and "dependency installation failed" in value.lower():
+            return value.split(":", 1)[-1].strip()
+        return None
+    return value
 
 
 def _last_logged_report_reason(log_messages: list[str] | None) -> str | None:
@@ -91,6 +104,9 @@ def resolve_failure_reason(
         conclusion = diagnosis.get("conclusion")
         if isinstance(conclusion, str) and conclusion.strip():
             return conclusion.strip()
+    direct_error = _direct_task_error(task_error_message)
+    if report_status == "UNKNOWN" and direct_error:
+        return direct_error
     conclusion = diagnosis.get("conclusion")
     if (
         isinstance(task_error_message, str)
@@ -141,6 +157,11 @@ def unknown_report_summary(task: Task, *, reason: str = "report summary not gene
             "risk_tips": [],
             "matched_patterns": [],
             "evidence": [],
+            "failure_phase": "report_generation",
+            "confidence": "unknown",
+            "confirmed_facts": [],
+            "investigation_hints": ["摘要尚未生成，暂不能确认失败根因。"],
+            "next_actions": ["稍后刷新诊断结果", "查看任务日志与结果文件"],
         },
     }
 
@@ -223,6 +244,18 @@ def _read_diagnosis_artifact_logs(task_id: str) -> list[str]:
     return (critical_evidence + gpu_evidence + other_evidence)[:100]
 
 
+def _read_diagnostic_event_logs(task_id: str) -> list[str]:
+    """Load structured event lines collected by a runner/script."""
+    path = ARTIFACTS_DIR / task_id / "diagnosis.jsonl"
+    if not path.is_file():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    return [f"[DIAG_EVENT] {line[:4096]}" for line in lines if line.strip()]
+
+
 def upsert_report_summary(
     db: Session,
     *,
@@ -270,6 +303,7 @@ def generate_report_summary(task_id: str) -> TaskReportSummary | None:
             .all()
         )
         log_messages = [row.message for row in log_rows] if log_rows else []
+        log_messages.extend(_read_diagnostic_event_logs(task_id))
         log_messages.extend(_read_diagnosis_artifact_logs(task_id))
         if not log_messages and task.error_message:
             log_messages = [task.error_message]
@@ -341,6 +375,12 @@ def generate_report_summary(task_id: str) -> TaskReportSummary | None:
             try:
                 summary_json["extreme"] = json.loads((ARTIFACTS_DIR / task_id / "extreme_stress_result.json").read_text(encoding="utf-8"))
                 summary_json["baseline_comparison"] = compare_with_baseline(summary_json["extreme"], baseline)
+                extreme = summary_json["extreme"]
+                summary_json["module_evidence"] = {
+                    "gpu": {"result": "PASS" if extreme.get("gpu_exit") == 0 else "FAIL", "exit_code": extreme.get("gpu_exit")},
+                    "cpu_memory": {"result": "PASS" if extreme.get("cpu_mem_exit") == 0 else "FAIL", "exit_code": extreme.get("cpu_mem_exit")},
+                    "orchestration": {"start_skew_ms": extreme.get("start_skew_ms"), "reason": extreme.get("reason")},
+                }
             except Exception:
                 summary_json["baseline_comparison"] = {"status": "insufficient_evidence"}
         return upsert_report_summary(

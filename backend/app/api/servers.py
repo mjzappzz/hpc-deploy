@@ -173,7 +173,7 @@ def _require_server_ready_for_public_key_deploy(server: Server) -> None:
 
 def _require_server_ssh_identity_confirmed(server: Server) -> None:
     if not server.ssh_host_fingerprint:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="SSH 主机指纹尚未确认，请先在服务器详情中确认")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="SSH 主机指纹尚未确认，请先在部署公钥弹窗中确认")
 
 
 def _read_server_ssh_host_identity(server: Server) -> dict[str, str]:
@@ -700,7 +700,6 @@ def confirm_ssh_host_identity(
     server_id: int,
     payload: SSHHostIdentityConfirmRequest,
     db: Session = Depends(get_db),
-    _: str = Depends(require_admin_token),
 ) -> SSHHostIdentityResponse:
     server = _get_server_or_404(db, server_id)
     _require_server_not_archived(server)
@@ -716,7 +715,7 @@ def confirm_ssh_host_identity(
     server.ssh_host_key_confirmed_at = datetime.utcnow()
     db.commit()
     write_audit_log(
-        db, action="server.ssh_host_identity.confirm", target_type="server", status="success", actor="admin",
+        db, action="server.ssh_host_identity.confirm", target_type="server", status="success", actor="operator",
         target_id=str(server.id), target_name=server.name, server_id=server.id, server_name=server.name,
         message="confirmed SSH host identity",
         detail={"previous_confirmed": bool(previous), "algorithm": identity["algorithm"]},
@@ -1110,7 +1109,7 @@ def deploy_public_key_all(
             if not server.ssh_host_fingerprint:
                 return DeployPublicKeyAllItem(
                     server_id=server.id, server_name=server.name, success=False,
-                    message="SSH 主机指纹尚未确认，请先在服务器详情中确认",
+                    message="SSH 主机指纹尚未确认，请先在部署公钥弹窗中确认",
                 )
             try:
                 _deploy_public_key_to_server(thread_db, server, private_key_file, public_key)
