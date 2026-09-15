@@ -87,6 +87,20 @@
       </el-col>
     </el-row>
 
+    <el-alert
+      v-if="summary.storage.capacity_status !== 'pass'"
+      :type="summary.storage.capacity_status === 'blocked' ? 'error' : 'warning'"
+      show-icon
+      :closable="false"
+      class="dashboard-storage-alert"
+      :title="summary.storage.capacity_status === 'blocked' ? '控制器空间不足：极限压测已阻断新提交' : '控制器空间偏低：建议清理历史产物或扩容'"
+    >
+      <template #default>
+        可用 {{ formatStorageBytes(summary.storage.free_bytes) }}；产物占用 {{ formatStorageBytes(summary.storage.artifacts_bytes) }}；SQLite 占用 {{ formatStorageBytes(summary.storage.database_bytes) }}。
+        最近清理：{{ summary.storage.cleanup_status || '暂无记录' }}。
+      </template>
+    </el-alert>
+
     <!-- active tasks -->
     <el-card shadow="never" class="section-card" data-soot-companion-host>
       <template #header>运行中任务</template>
@@ -259,6 +273,15 @@ function goToTask(row: { task_id: string; batch_id?: string | null }) {
     return
   }
   router.push({ path: '/history', query: { task_id: row.task_id } })
+}
+
+function formatStorageBytes(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '0 B'
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+  let size = value
+  let index = 0
+  while (size >= 1024 && index < units.length - 1) { size /= 1024; index += 1 }
+  return `${size.toFixed(index === 0 ? 0 : 1)} ${units[index]}`
 }
 
 async function loadDashboard(silent = false) {
