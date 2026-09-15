@@ -37,6 +37,7 @@ export interface TaskRecord {
   extreme_stop_evidence?: { state?: string, remote_unreachable?: boolean, remote_process_not_confirmed?: boolean, trigger?: string } | null
   extreme_result_manifest?: { gpu_pid?: number, cpu_mem_pid?: number, start_skew_ms?: number, temperature_monitor?: string, temperature_limit_c?: number, ssh_failure_threshold?: number, reason?: string } | null
   baseline?: { status?: string, task_id?: string, ended_at?: string, parameter_signature?: string } | null
+  baseline_comparison?: { status?: string, baseline_task_id?: string, metric?: string, baseline_value?: number, current_value?: number, change_percent?: number, threshold_percent?: number } | null
 }
 
 export interface TaskLogRecord {

@@ -686,6 +686,10 @@
                 <span>同机基线</span>
                 <strong>{{ drawerTask.baseline.status === 'first_baseline' ? '首个基线 / 证据不足' : drawerTask.baseline.task_id || '已匹配' }}</strong>
               </div>
+              <div v-if="drawerTask.baseline_comparison" class="task-drawer-overview__row">
+                <span>基线比较</span>
+                <strong>{{ drawerTask.baseline_comparison.status === 'degraded' ? '疑似退化' : drawerTask.baseline_comparison.status === 'stable' ? '未见明显退化' : '证据不足' }}</strong>
+              </div>
             </div>
           </template>
           <template v-else-if="drawerActivePanel === 'logs'">

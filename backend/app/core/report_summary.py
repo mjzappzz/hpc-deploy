@@ -173,8 +173,20 @@ def find_recent_success_baseline(db: Session, task: Task) -> dict[str, Any] | No
     for candidate, summary in rows:
         data = summary.summary_json if isinstance(summary.summary_json, dict) else {}
         if data.get("parameter_signature") == signature:
-            return {"task_id": candidate.task_id, "ended_at": candidate.end_time.isoformat() if candidate.end_time else None, "parameter_signature": signature}
+            return {"task_id": candidate.task_id, "ended_at": candidate.end_time.isoformat() if candidate.end_time else None, "parameter_signature": signature, "summary": data}
     return None
+
+
+def compare_with_baseline(current: dict[str, Any], baseline: dict[str, Any] | None, *, threshold_percent: float = 20.0) -> dict[str, Any]:
+    if not baseline or baseline.get("status") == "first_baseline":
+        return {"status": "first_baseline"}
+    previous = baseline.get("summary") if isinstance(baseline.get("summary"), dict) else {}
+    old_extreme = previous.get("extreme") if isinstance(previous.get("extreme"), dict) else {}
+    old_skew, new_skew = old_extreme.get("start_skew_ms"), current.get("start_skew_ms")
+    if not isinstance(old_skew, (int, float)) or not isinstance(new_skew, (int, float)) or old_skew <= 0:
+        return {"status": "insufficient_evidence", "baseline_task_id": baseline.get("task_id")}
+    change_percent = ((new_skew - old_skew) / old_skew) * 100
+    return {"status": "degraded" if change_percent > threshold_percent else "stable", "baseline_task_id": baseline.get("task_id"), "metric": "start_skew_ms", "baseline_value": old_skew, "current_value": new_skew, "change_percent": round(change_percent, 2), "threshold_percent": threshold_percent}
 
 
 def _read_diagnosis_artifact_logs(task_id: str) -> list[str]:
@@ -328,8 +340,9 @@ def generate_report_summary(task_id: str) -> TaskReportSummary | None:
         if task.file_name == "extreme_stress_report.sh":
             try:
                 summary_json["extreme"] = json.loads((ARTIFACTS_DIR / task_id / "extreme_stress_result.json").read_text(encoding="utf-8"))
+                summary_json["baseline_comparison"] = compare_with_baseline(summary_json["extreme"], baseline)
             except Exception:
-                pass
+                summary_json["baseline_comparison"] = {"status": "insufficient_evidence"}
         return upsert_report_summary(
             db,
             task=task,
