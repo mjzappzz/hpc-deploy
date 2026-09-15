@@ -6,12 +6,54 @@ set -o pipefail
 # controller into this work directory and retain their normal report formats.
 DURATION="${1:-43200}"
 INTERVAL="${2:-2}"
+GPU_TEMP_LIMIT_C="${HPCDEPLOY_EXTREME_GPU_TEMP_LIMIT_C:-90}"
+GPU_TEMP_CONSECUTIVE_SAMPLES="${HPCDEPLOY_EXTREME_GPU_TEMP_CONSECUTIVE_SAMPLES:-3}"
+SSH_FAILURE_THRESHOLD="${HPCDEPLOY_EXTREME_SSH_FAILURE_THRESHOLD:-3}"
 WORKDIR="$(pwd)"
 SYNC_DIR="${WORKDIR}/.extreme-sync"
 RESULT_FILE="${WORKDIR}/extreme_stress_result.json"
 GPU_DIR="${WORKDIR}/gpu"
 CPU_DIR="${WORKDIR}/cpu_mem"
 mkdir -p "$SYNC_DIR" "$GPU_DIR" "$CPU_DIR"
+
+validate_positive_integer() {
+  case "$1" in
+    ''|*[!0-9]*) return 1 ;;
+    0) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+if ! validate_positive_integer "$GPU_TEMP_LIMIT_C" || ! validate_positive_integer "$GPU_TEMP_CONSECUTIVE_SAMPLES" || ! validate_positive_integer "$SSH_FAILURE_THRESHOLD"; then
+  echo "[ERROR] invalid extreme safety configuration: temperature limit, consecutive samples and SSH failure threshold must be positive integers"
+  exit 2
+fi
+
+TEMPERATURE_MONITOR_STATUS="warning"
+TEMPERATURE_MONITOR_SOURCE="unavailable"
+GPU_TEMP_SAMPLE_C=""
+sample_gpu_temperature() {
+  local raw value
+  command -v nvidia-smi >/dev/null 2>&1 || return 1
+  raw="$(nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits 2>/dev/null)" || return 1
+  value="$(printf '%s\n' "$raw" | awk '
+    /^[[:space:]]*[0-9]+([.][0-9]+)?[[:space:]]*$/ { if ($1 > max || !seen) max=$1; seen=1 }
+    END { if (seen) print max }
+  ')"
+  [ -n "$value" ] || return 1
+  GPU_TEMP_SAMPLE_C="$value"
+  return 0
+}
+
+if sample_gpu_temperature; then
+  TEMPERATURE_MONITOR_STATUS="pass"
+  TEMPERATURE_MONITOR_SOURCE="nvidia-smi"
+  echo "[INFO] temperature monitor ready source=${TEMPERATURE_MONITOR_SOURCE} sample=${GPU_TEMP_SAMPLE_C}C limit=${GPU_TEMP_LIMIT_C}C consecutive=${GPU_TEMP_CONSECUTIVE_SAMPLES}"
+else
+  echo "[WARN] temperature monitor unavailable; no temperature protection conclusion will be reported"
+fi
+printf '{"gpu_temperature_limit_c":%s,"gpu_temperature_consecutive_samples":%s,"ssh_failure_threshold":%s,"temperature_monitor":"%s","temperature_source":"%s"}\n' \
+  "$GPU_TEMP_LIMIT_C" "$GPU_TEMP_CONSECUTIVE_SAMPLES" "$SSH_FAILURE_THRESHOLD" "$TEMPERATURE_MONITOR_STATUS" "$TEMPERATURE_MONITOR_SOURCE" > "$WORKDIR/extreme_stress_config.json"
 
 gpu_pid=""; cpu_pid=""
 collect_module_artifacts() {

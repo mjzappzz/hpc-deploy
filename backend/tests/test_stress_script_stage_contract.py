@@ -36,6 +36,19 @@ class StressScriptStageContractTests(unittest.TestCase):
                 for marker in EXTREME_SYNC_MARKERS:
                     self.assertIn(marker, source)
 
+    def test_extreme_script_uses_controlled_safety_thresholds_and_trusted_samples(self) -> None:
+        source = (STRESS_SCRIPTS_DIR / "extreme_stress_report.sh").read_text(encoding="utf-8")
+
+        for marker in (
+            'HPCDEPLOY_EXTREME_GPU_TEMP_LIMIT_C:-90',
+            'HPCDEPLOY_EXTREME_GPU_TEMP_CONSECUTIVE_SAMPLES:-3',
+            'HPCDEPLOY_EXTREME_SSH_FAILURE_THRESHOLD:-3',
+            'nvidia-smi --query-gpu=temperature.gpu',
+            'temperature monitor unavailable; no temperature protection conclusion will be reported',
+            'temperature_source',
+        ):
+            self.assertIn(marker, source)
+
 
 if __name__ == "__main__":
     unittest.main()
