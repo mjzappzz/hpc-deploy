@@ -34,6 +34,7 @@ export interface TaskRecord {
   outcome_message?: string | null
   outcome_title?: string | null
   extreme_summary?: { gpu_exit?: number, cpu_mem_exit?: number, start_skew_ms?: number, reason?: string } | null
+  extreme_stop_evidence?: { state?: string, remote_unreachable?: boolean, remote_process_not_confirmed?: boolean, trigger?: string } | null
 }
 
 export interface TaskLogRecord {

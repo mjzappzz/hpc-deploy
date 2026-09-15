@@ -2719,6 +2719,15 @@ def _cancel_running_task_for_batch(db: Session, task: Task) -> tuple[str, bool]:
                     cancel_error_detail = f"canceled by batch cancel, remote process not confirmed: {exc}"
                     _add_task_log(db, task_id, "WARN", f"batch cancel: remote process not confirmed: {exc}")
 
+        if task.file_name == "extreme_stress_report.sh":
+            task.params = {**(task.params or {}), "extreme_stop_evidence": {
+                "state": "remote_state_unconfirmed" if (remote_unreachable or remote_process_not_confirmed) else "stopped_confirmed",
+                "remote_unreachable": remote_unreachable,
+                "remote_process_not_confirmed": remote_process_not_confirmed,
+                "trigger": "batch_cancel",
+            }}
+            db.commit()
+
         db.refresh(task)
         if task.status == "CANCELING":
             _mark_task_canceled(
@@ -3320,6 +3329,15 @@ def cancel_task(
                 remote_process_not_confirmed = True
                 cancel_error_detail = f"canceled by user, remote process not confirmed: {exc}"
                 _add_task_log(db, task_id, "WARN", f"cancel: remote process not confirmed: {exc}")
+
+        if task.file_name == "extreme_stress_report.sh":
+            task.params = {**(task.params or {}), "extreme_stop_evidence": {
+                "state": "remote_state_unconfirmed" if (remote_unreachable or remote_process_not_confirmed) else "stopped_confirmed",
+                "remote_unreachable": remote_unreachable,
+                "remote_process_not_confirmed": remote_process_not_confirmed,
+                "trigger": "user_cancel",
+            }}
+            db.commit()
 
         # Phase 2: Mark canceled regardless of remote connectivity
         db.refresh(task)

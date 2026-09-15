@@ -667,6 +667,16 @@
                   <span>{{ check.key }}</span><strong>{{ check.status }} · {{ check.message }}</strong>
                 </div>
               </template>
+              <template v-if="drawerTask.extreme_stop_evidence">
+                <div class="task-drawer-overview__row">
+                  <span>异常收尾</span>
+                  <strong>{{ drawerTask.extreme_stop_evidence.state === 'stopped_confirmed' ? '已确认停止' : '远端状态未确认' }}</strong>
+                </div>
+                <div class="task-drawer-overview__row">
+                  <span>处置触发</span>
+                  <strong>{{ drawerTask.extreme_stop_evidence.trigger || '-' }}</strong>
+                </div>
+              </template>
             </div>
           </template>
           <template v-else-if="drawerActivePanel === 'logs'">
