@@ -47,6 +47,19 @@ class ServerSshIdentityModelTests(unittest.TestCase):
         ))
 
     @patch("app.api.tasks._read_remote_extreme_preflight_checks", return_value=[])
+    @patch("app.api.tasks.shutil.disk_usage")
+    def test_extreme_preflight_blocks_controller_low_space(self, disk_usage: MagicMock, _remote_checks: MagicMock) -> None:
+        disk_usage.return_value = SimpleNamespace(free=4 * 1024**3, total=100 * 1024**3, used=96 * 1024**3)
+        db = MagicMock()
+        db.query.return_value.filter.return_value.first.return_value = None
+        result = _extreme_preflight(
+            SimpleNamespace(id=1, ssh_host_fingerprint="SHA256:confirmed", status="online", gpu_status="driver_ok"), db,
+        )
+        by_key = {check.key: check for check in result.checks}
+        self.assertFalse(result.can_submit)
+        self.assertEqual(by_key["controller_storage"].status, "blocked")
+
+    @patch("app.api.tasks._read_remote_extreme_preflight_checks", return_value=[])
     def test_extreme_preflight_snapshot_is_json_safe_and_keeps_each_check(self, _remote_checks: MagicMock) -> None:
         db = MagicMock()
         db.query.return_value.filter.return_value.first.return_value = None
