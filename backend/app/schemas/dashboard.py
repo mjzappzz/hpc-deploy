@@ -44,6 +44,15 @@ class ArtifactStats(BaseModel):
     local_artifacts_size_bytes: int = 0
 
 
+class StorageStats(BaseModel):
+    total_bytes: int = 0
+    free_bytes: int = 0
+    used_bytes: int = 0
+    artifacts_bytes: int = 0
+    database_bytes: int = 0
+    cleanup_status: str = "unknown"
+
+
 class ArtifactTreeNode(BaseModel):
     name: str
     relative_path: str
@@ -67,3 +76,4 @@ class DashboardSummary(BaseModel):
     recent_tasks: list[RecentTaskItem] = []
     recent_completed_tasks: list[RecentTaskItem] = []
     artifacts: ArtifactStats = ArtifactStats()
+    storage: StorageStats = StorageStats()

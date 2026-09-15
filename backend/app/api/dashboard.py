@@ -1,8 +1,10 @@
 from pathlib import Path
+import shutil
 
 from app.core.artifact_collector import ARTIFACTS_DIR
 from app.core.task_serializer import serialize_task_record
-from app.db.database import get_db
+from app.db.database import get_db, sqlite_path
+from app.models.settings import SystemSetting
 from app.models.server import Server
 from app.models.task import Task
 from app.schemas.dashboard import (
@@ -12,6 +14,7 @@ from app.schemas.dashboard import (
     DashboardSummary,
     RecentTaskItem,
     ServerStats,
+    StorageStats,
     TaskStats,
 )
 from fastapi import APIRouter, Depends, Query
@@ -86,6 +89,17 @@ def get_dashboard_summary(db: Session = Depends(get_db)) -> DashboardSummary:
     except OSError:
         pass
 
+    storage = StorageStats()
+    try:
+        usage = shutil.disk_usage(ARTIFACTS_DIR)
+        db_bytes = sqlite_path.stat().st_size if sqlite_path and sqlite_path.exists() else 0
+        cleanup = db.query(SystemSetting).filter(SystemSetting.key == "auto_cleanup_last_status").first()
+        storage = StorageStats(total_bytes=usage.total, free_bytes=usage.free, used_bytes=usage.used,
+                               artifacts_bytes=artifacts_size, database_bytes=db_bytes,
+                               cleanup_status=cleanup.value if cleanup else "unknown")
+    except OSError:
+        pass
+
     return DashboardSummary(
         servers=ServerStats(
             total=total_servers,
@@ -107,6 +121,7 @@ def get_dashboard_summary(db: Session = Depends(get_db)) -> DashboardSummary:
             local_artifacts_count=artifacts_count,
             local_artifacts_size_bytes=artifacts_size,
         ),
+        storage=storage,
     )
 
 
