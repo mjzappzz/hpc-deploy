@@ -25,7 +25,7 @@ class OpsCommandRichEditorTests(unittest.TestCase):
         self.assertIn("StarFilled", view)
         self.assertIn("<Star v-else />", view)
         self.assertIn("is-starred", view)
-        self.assertIn("var(--el-color-warning-light-9)", view)
+        self.assertIn("var(--el-color-primary-light-9)", view)
         self.assertNotIn("requireAdminConfirm(actionLabel)", view)
 
 

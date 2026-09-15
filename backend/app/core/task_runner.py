@@ -1114,7 +1114,7 @@ def _stress_poll_loop(
                         host=_server.host, port=_server.port,
                         username=_server.username, key_path=_server.key_path,
                         password=_server.password,
-                        expected_host_fingerprint=_server.ssh_host_fingerprint,
+                        expected_host_fingerprint=getattr(_server, "ssh_host_fingerprint", None),
                     )
                     executor = _fresh_executor
                     try:
@@ -1170,7 +1170,7 @@ def _stress_recovery_monitor(task_id: str) -> None:
                     host=server.host, port=server.port,
                     username=server.username, key_path=server.key_path,
                     password=server.password,
-                    expected_host_fingerprint=server.ssh_host_fingerprint,
+                    expected_host_fingerprint=getattr(server, "ssh_host_fingerprint", None),
                 )
                 last_connect_error = None
                 break
@@ -1362,7 +1362,7 @@ def _command_recovery_monitor(task_id: str) -> None:
             username=server.username,
             key_path=server.key_path,
             password=server.password,
-            expected_host_fingerprint=server.ssh_host_fingerprint,
+            expected_host_fingerprint=getattr(server, "ssh_host_fingerprint", None),
         )
         _add_log(db, task_id, "SYSTEM", "startup recovery: reattached detached script monitor")
         _monitor_detached_command(
@@ -1538,7 +1538,7 @@ def _connect_recovery_executor(task: Task) -> SSHExecutor | None:
             username=server.username,
             key_path=server.key_path,
             password=server.password,
-            expected_host_fingerprint=server.ssh_host_fingerprint,
+            expected_host_fingerprint=getattr(server, "ssh_host_fingerprint", None),
         )
         return fresh
     except Exception:
