@@ -5,6 +5,7 @@ import json
 from datetime import datetime
 from threading import Lock, Thread
 from typing import Any
+import hashlib
 
 from app.core.artifact_collector import ARTIFACTS_DIR
 from app.core.task_diagnosis import diagnose_task_failure
@@ -146,6 +147,34 @@ def unknown_report_summary(task: Task, *, reason: str = "report summary not gene
 
 def get_cached_report_summary(db: Session, task_id: str) -> TaskReportSummary | None:
     return db.query(TaskReportSummary).filter(TaskReportSummary.task_id == task_id).first()
+
+
+def comparable_params_signature(task: Task) -> str:
+    """Create a stable signature for same-host, same-workload comparisons."""
+    params = task.params if isinstance(task.params, dict) else {}
+    comparable = {str(k): params[k] for k in sorted(params) if k not in {"extreme_preflight", "extreme_result_manifest", "extreme_stop_evidence"}}
+    encoded = json.dumps({"file_name": task.file_name, "task_type": task.task_type, "params": comparable}, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
+
+
+def find_recent_success_baseline(db: Session, task: Task) -> dict[str, Any] | None:
+    """Return the newest compatible SUCCESS summary on the same server."""
+    signature = comparable_params_signature(task)
+    rows = (
+        db.query(Task, TaskReportSummary)
+        .join(TaskReportSummary, TaskReportSummary.task_id == Task.task_id)
+        .filter(Task.server_id == task.server_id, Task.task_id != task.task_id)
+        .filter(Task.task_type == task.task_type, Task.file_name == task.file_name)
+        .filter(Task.status == "SUCCESS", TaskReportSummary.report_status == "PASS")
+        .order_by(Task.end_time.desc(), Task.id.desc())
+        .limit(50)
+        .all()
+    )
+    for candidate, summary in rows:
+        data = summary.summary_json if isinstance(summary.summary_json, dict) else {}
+        if data.get("parameter_signature") == signature:
+            return {"task_id": candidate.task_id, "ended_at": candidate.end_time.isoformat() if candidate.end_time else None, "parameter_signature": signature}
+    return None
 
 
 def _read_diagnosis_artifact_logs(task_id: str) -> list[str]:
@@ -292,7 +321,10 @@ def generate_report_summary(task_id: str) -> TaskReportSummary | None:
             "failure_reason": failure_reason,
             "artifacts_present": artifacts_present,
             "diagnosis": diagnosis,
+            "parameter_signature": comparable_params_signature(task),
         }
+        baseline = find_recent_success_baseline(db, task)
+        summary_json["baseline"] = baseline or {"status": "first_baseline"}
         if task.file_name == "extreme_stress_report.sh":
             try:
                 summary_json["extreme"] = json.loads((ARTIFACTS_DIR / task_id / "extreme_stress_result.json").read_text(encoding="utf-8"))

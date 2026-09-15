@@ -682,6 +682,10 @@
                 <div class="task-drawer-overview__row"><span>远端 PID</span><code>GPU {{ drawerTask.extreme_result_manifest.gpu_pid || '-' }} · CPU/内存 {{ drawerTask.extreme_result_manifest.cpu_mem_pid || '-' }}</code></div>
                 <div class="task-drawer-overview__row"><span>温度监控</span><strong>{{ drawerTask.extreme_result_manifest.temperature_monitor || '未记录' }}</strong></div>
               </template>
+              <div v-if="drawerTask.baseline" class="task-drawer-overview__row">
+                <span>同机基线</span>
+                <strong>{{ drawerTask.baseline.status === 'first_baseline' ? '首个基线 / 证据不足' : drawerTask.baseline.task_id || '已匹配' }}</strong>
+              </div>
             </div>
           </template>
           <template v-else-if="drawerActivePanel === 'logs'">

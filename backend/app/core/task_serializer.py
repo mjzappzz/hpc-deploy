@@ -192,6 +192,7 @@ def serialize_task_record(task: Task, db: Session) -> dict[str, object]:
     extreme_summary = None
     extreme_stop_evidence = None
     extreme_result_manifest = None
+    baseline = None
     if task.file_name == "extreme_stress_report.sh":
         if isinstance(task.params, dict) and isinstance(task.params.get("extreme_stop_evidence"), dict):
             extreme_stop_evidence = task.params["extreme_stop_evidence"]
@@ -199,6 +200,7 @@ def serialize_task_record(task: Task, db: Session) -> dict[str, object]:
             extreme_result_manifest = task.params["extreme_result_manifest"]
         cache = get_cached_report_summary(db, task.task_id)
         if cache and isinstance(cache.summary_json, dict):
+            baseline = cache.summary_json.get("baseline")
             value = cache.summary_json.get("extreme")
             if isinstance(value, dict):
                 extreme_summary = value
@@ -241,4 +243,5 @@ def serialize_task_record(task: Task, db: Session) -> dict[str, object]:
         "extreme_summary": extreme_summary,
         "extreme_stop_evidence": extreme_stop_evidence,
         "extreme_result_manifest": extreme_result_manifest,
+        "baseline": baseline,
     }
