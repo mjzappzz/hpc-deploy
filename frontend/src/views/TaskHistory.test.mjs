@@ -11,6 +11,15 @@ test('shows retained extreme preflight evidence without breaking legacy tasks', 
   assert.match(source, /提交前已通过/)
 })
 
+test('shows baseline and abnormal stop evidence while keeping missing fields optional', async () => {
+  const source = await readFile(new URL('./TaskHistory.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /drawerTask\.baseline_comparison/)
+  assert.match(source, /drawerTask\.extreme_stop_evidence\.state === 'cleanup_failed'/)
+  assert.match(source, /drawerTask\.extreme_result_manifest/)
+  assert.match(source, /v-if="drawerTask\.baseline"/)
+})
+
 test('labels stress preparation states distinctly from runtime', async () => {
   const source = await readFile(new URL('../composables/useTaskProgress.ts', import.meta.url), 'utf8')
 
