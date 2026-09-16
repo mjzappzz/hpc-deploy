@@ -224,12 +224,12 @@ const statusTagType = computed(() => {
 })
 
 const inlineOutcomeMessage = computed(() => {
-  if (props.task.outcome_title) return props.task.outcome_title
-  return getTaskOutcomeDisplayMessage(
+  const outcomeMessage = getTaskOutcomeDisplayMessage(
     props.task,
     displayStatus.value,
     '任务执行失败，请查看执行日志。',
   )
+  return outcomeMessage || props.task.outcome_title || ''
 })
 
 const inlineOutcomeClass = computed(() => {

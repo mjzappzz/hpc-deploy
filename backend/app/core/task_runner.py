@@ -66,6 +66,7 @@ COMMAND_LOG_FILE_NAME = "task.log"
 CANCELED_EXIT_CODE = -15
 STRESS_BOOT_ID_PARAM_KEY = "stress_boot_id"
 STRESS_REMOTE_STARTED_PARAM_KEY = "stress_remote_started"
+STRESS_CONTROL_PLANE_FAILURE_REASON_PARAM_KEY = "stress_control_plane_failure_reason"
 TASK_LEASE_SECONDS = 600
 STRESS_PREPARATION_TIMEOUT_SECONDS = 1800
 STRESS_RECOVERY_SSH_CONNECT_RETRIES = 3
@@ -249,8 +250,9 @@ def run_task_stage8b(task_id: str) -> None:
             #   返回时任务已到达终态或不用额外处理
             db.refresh(task)
             if task.status not in TERMINAL_TASK_STATUSES:
-                _add_log(db, task_id, "ERROR", f"stress runner returned before terminal status: {task.status}")
-                _fail_task(db, task_id, "stress runner returned before terminal status")
+                _failure_reason = _resolve_stress_runner_return_failure_reason(task)
+                _add_log(db, task_id, "ERROR", f"stress runner returned nonterminal ({task.status}): {_failure_reason}")
+                _fail_task(db, task_id, _failure_reason)
         elif task.task_type == "apptainer":
             _add_log(db, task_id, "SYSTEM", "apptainer distribution completed, file was uploaded but not executed")
             task.status = "SUCCESS"
@@ -1121,6 +1123,7 @@ def _stress_poll_loop(
             except Exception:
                 pass
             _fresh_executor = SSHExecutor()
+            _fresh_connect_error: Exception | None = None
             try:
                 _server = db.get(Server, task.server_id)
                 if _server is not None:
@@ -1137,7 +1140,8 @@ def _stress_poll_loop(
                     except Exception:
                         pass
                     continue
-            except Exception:
+            except Exception as _exc:
+                _fresh_connect_error = _exc
                 try:
                     _fresh_executor.close()
                 except Exception:
@@ -1154,7 +1158,10 @@ def _stress_poll_loop(
             except Exception:
                 pass
             if not _attempt_stress_recovery(db, task_id, task):
-                _defer_stress_task_after_control_plane_loss(db, task, task_id, _poll_msg)
+                _control_plane_reason = _poll_msg
+                if _fresh_connect_error is not None:
+                    _control_plane_reason += f"; fresh SSH connection failed: {_fresh_connect_error}"
+                _defer_stress_task_after_control_plane_loss(db, task, task_id, _control_plane_reason)
             return
 
 def _stress_recovery_monitor(task_id: str) -> None:
@@ -1288,6 +1295,13 @@ def _defer_stress_task_after_control_plane_loss(
     The remote workload is independent of the control-plane SSH channel. A
     failed reconnect is therefore insufficient evidence to mark it FAILED.
     """
+    persisted_reason = (
+        "stress async: SSH control-plane unavailable; remote task state unconfirmed: "
+        f"{reason}"
+    )[:500]
+    params = dict(task.params or {})
+    params[STRESS_CONTROL_PLANE_FAILURE_REASON_PARAM_KEY] = persisted_reason
+    task.params = params
     task.status = "RUNNING"
     task.end_time = None
     task.exit_code = None
@@ -1301,6 +1315,15 @@ def _defer_stress_task_after_control_plane_loss(
         f"stress async: SSH control-plane unavailable; remote task remains RUNNING and recovery will retry: {reason}",
     )
     _schedule_stress_recovery_retry(task_id)
+
+
+def _resolve_stress_runner_return_failure_reason(task: Task) -> str:
+    """Keep the concrete SSH failure when an async stress monitor returns nonterminal."""
+    params = task.params if isinstance(task.params, dict) else {}
+    persisted_reason = params.get(STRESS_CONTROL_PLANE_FAILURE_REASON_PARAM_KEY)
+    if isinstance(persisted_reason, str) and persisted_reason.strip():
+        return persisted_reason.strip()[:500]
+    return f"stress runner returned before terminal status: {task.status}"
 
 
 def resume_running_stress_tasks_after_startup() -> int:

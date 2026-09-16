@@ -117,7 +117,7 @@
     <el-card shadow="never" class="section-card" data-soot-companion-host>
       <template #header>运行中任务</template>
       <el-table
-        :data="summary.recent_tasks"
+        :data="visibleActiveTasks"
         border
         stripe
         v-loading="loading"
@@ -277,6 +277,8 @@ const summary = reactive<DashboardSummary>({
 })
 
 const visibleCompletedTasks = computed(() => summary.recent_completed_tasks.slice(0, completedTaskDisplayLimit.value))
+
+const visibleActiveTasks = computed(() => summary.recent_tasks)
 
 function goToTask(row: { task_id: string; batch_id?: string | null }) {
   if (window.getSelection()?.toString().trim()) return

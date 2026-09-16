@@ -33,6 +33,8 @@ export interface RecentTaskItem {
   params?: Record<string, unknown> | null
   duration_seconds?: number | null
   final_status?: string | null
+  /** Number of active children represented by this dashboard row. */
+  active_task_count?: number
 }
 
 export interface ArtifactStats {

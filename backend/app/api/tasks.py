@@ -628,6 +628,32 @@ def list_tasks(
     # --- pagination ---
     tasks = query.offset(offset).limit(limit).all()
 
+    # A history page can contain only the newest retry child of an older batch.
+    # Preserve that page's single-task entries while expanding each visible
+    # batch to its complete, non-hidden child context before serialization.
+    # Status and active filters already expand their matching batches above.
+    if include_batch_context is True and task_status is None and active_only is not True:
+        visible_batch_ids = list(dict.fromkeys(
+            task.batch_id for task in tasks if task.batch_id is not None
+        ))
+        if visible_batch_ids:
+            batch_context_tasks = (
+                db.query(Task)
+                .filter(Task.hidden_from_history == 0)
+                .filter(Task.batch_id.in_(visible_batch_ids))
+                .all()
+            )
+            visible_single_tasks = [task for task in tasks if task.batch_id is None]
+            tasks_by_id = {
+                task.task_id: task
+                for task in [*visible_single_tasks, *batch_context_tasks]
+            }
+            tasks = sorted(
+                tasks_by_id.values(),
+                key=lambda task: task.id,
+                reverse=order != "created_asc",
+            )
+
     # --- serialize ---
     items = [_serialize_task(task, db) for task in tasks]
     return TaskListResponse(items=items, total=total, limit=limit, offset=offset)

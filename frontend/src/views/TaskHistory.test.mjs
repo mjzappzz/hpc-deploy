@@ -37,6 +37,30 @@ test('keeps the task history page size at twenty after filters are reset', async
   assert.doesNotMatch(source, /function resetFilters\(\) \{[\s\S]*?filters\.limit = 50/)
 })
 
+test('keeps batch children in one history card while rendering every child row', async () => {
+  const taskHistory = await readFile(new URL('../utils/taskHistory.ts', import.meta.url), 'utf8')
+  const source = await readFile(new URL('./TaskHistory.vue', import.meta.url), 'utf8')
+
+  assert.match(taskHistory, /export function shouldGroupHistoryBatchTasks\([^)]*\): boolean \{\s*return true\s*\}/)
+  assert.match(source, /<el-card v-else shadow="never" class="task-card batch-history-card hpc-glow-row">[\s\S]*?v-for="task in item\.tasks"/)
+  assert.match(source, /<el-tag size="small" type="warning" effect="plain">\{\{ item\.tasks\.length \}\} 个子任务<\/el-tag>/)
+})
+
+test('expands a directly opened batch child into its complete batch history', async () => {
+  const source = await readFile(new URL('./TaskHistory.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /const trackedTaskId = typeof route\.query\.task_id === 'string' \? route\.query\.task_id : undefined/)
+  assert.match(source, /const trackedBatchId = trackedTaskId \? resp\.items\.find\(task => task\.task_id === trackedTaskId\)\?\.batch_id : null/)
+  assert.match(source, /keyword: trackedBatchId,[\s\S]*?include_batch_context: true/)
+})
+
+test('reloads the complete batch when running history contains one active batch', async () => {
+  const source = await readFile(new URL('./TaskHistory.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /const activeBatchIds = \[\.\.\.new Set\(resp\.items\.map\(task => task\.batch_id\)\.filter\(\(batchId\): batchId is string => Boolean\(batchId\)\)\)\]/)
+  assert.match(source, /if \(filters\.status === 'RUNNING' && activeBatchIds\.length === 1\) \{[\s\S]*?keyword: activeBatchIds\[0\],[\s\S]*?active_only: false/)
+})
+
 test('fixes the history filter and refresh bar below the topbar while task results scroll', async () => {
   const source = await readFile(new URL('./TaskHistory.vue', import.meta.url), 'utf8')
 
@@ -90,15 +114,14 @@ test('returns to task history after a report download is received', async () => 
   assert.match(source, /const resp = await downloadBatchReportZip\(row\.batch_id\)[\s\S]*?finishReportDownload\(resp\.data, filename\)/)
 })
 
-test('uses a compact outcome title on task cards while preserving detailed failure reasons', async () => {
+test('uses Chinese failure summaries on history cards and preserves raw evidence in task detail', async () => {
   const taskCard = await readFile(new URL('../components/TaskCard.vue', import.meta.url), 'utf8')
   const history = await readFile(new URL('./TaskHistory.vue', import.meta.url), 'utf8')
 
-  assert.match(taskCard, /if \(props\.task\.outcome_title\) return props\.task\.outcome_title/)
-  assert.match(history, /if \(task\.outcome_title\) return task\.outcome_title/)
-  assert.match(history, /formatTaskErrorMessage\(task\?\.failure_reason \|\| task\?\.error_message\)/)
-  assert.match(history, /const displayError = formatTaskErrorMessage\(rawError\)/)
-  assert.match(history, /if \(hasExplicitError\) return displayError/)
+  assert.match(taskCard, /const outcomeMessage = getTaskOutcomeDisplayMessage\([\s\S]*?return outcomeMessage \|\| props\.task\.outcome_title \|\| ''/)
+  assert.match(history, /const outcomeMessage = getTaskOutcomeDisplayMessage\(task, status, failedFallback\)[\s\S]*?return outcomeMessage \|\| task\.outcome_title \|\| ''/)
+  assert.match(history, /if \(hasExplicitError\) return rawError/)
+  assert.match(history, /return task\?\.failure_reason \|\| task\?\.error_message \|\| '-'/)
 })
 
 test('hides all realtime monitor tabs after single or batch tasks finish', async () => {

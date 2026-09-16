@@ -16,6 +16,30 @@ from app.core.task_runner import (
 
 
 class TaskRecoveryTests(unittest.TestCase):
+    def test_stress_runner_uses_persisted_control_plane_failure_as_terminal_reason(self) -> None:
+        task = SimpleNamespace(
+            status="RUNNING",
+            params={
+                "stress_control_plane_failure_reason": (
+                    "stress async: SSH control-plane unavailable; remote task state unconfirmed: "
+                    "fresh SSH connection failed: SSH connection timed out after 15s"
+                ),
+            },
+        )
+
+        reason = task_runner._resolve_stress_runner_return_failure_reason(task)
+
+        self.assertIn("SSH connection timed out after 15s", reason)
+        self.assertIn("remote task state unconfirmed", reason)
+        self.assertNotIn("returned before terminal status", reason)
+
+    def test_stress_runner_return_reason_has_safe_fallback_without_control_plane_diagnosis(self) -> None:
+        task = SimpleNamespace(status="RUNNING", params={})
+
+        reason = task_runner._resolve_stress_runner_return_failure_reason(task)
+
+        self.assertEqual(reason, "stress runner returned before terminal status: RUNNING")
+
     def test_boot_id_change_is_an_unexpected_reboot_for_stress_tasks(self) -> None:
         self.assertTrue(task_runner._has_unexpected_server_reboot("boot-before", "boot-after"))
         self.assertFalse(task_runner._has_unexpected_server_reboot("boot-before", "boot-before"))
@@ -227,6 +251,7 @@ class TaskRecoveryTests(unittest.TestCase):
             end_time=None,
             exit_code=None,
             error_message=None,
+            params={},
             worker_id="old-worker",
             lease_expire_time=datetime.utcnow() - timedelta(seconds=1),
             last_heartbeat=datetime.utcnow() - timedelta(seconds=1),
@@ -244,6 +269,10 @@ class TaskRecoveryTests(unittest.TestCase):
         self.assertIsNone(task.end_time)
         self.assertIsNone(task.exit_code)
         self.assertIsNone(task.error_message)
+        self.assertIn(
+            "SSH control-plane unavailable",
+            task.params[task_runner.STRESS_CONTROL_PLANE_FAILURE_REASON_PARAM_KEY],
+        )
         self.assertGreater(task.lease_expire_time, datetime.utcnow())
         db.commit.assert_called_once()
         schedule_retry.assert_called_once_with(task.task_id)

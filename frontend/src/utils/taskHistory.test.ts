@@ -18,7 +18,18 @@ test('running history includes the complete batch for each running child task', 
   )
 })
 
-test('running history keeps batch children grouped into complete batch cards', () => {
+test('ordinary history also requests complete context for visible batches', () => {
+  assert.deepEqual(
+    getTaskHistoryActivityQuery(undefined),
+    {
+      status: undefined,
+      active_only: false,
+      include_batch_context: true,
+    },
+  )
+})
+
+test('history keeps batch children in one card with their task rows visible', () => {
   assert.equal(shouldGroupHistoryBatchTasks('RUNNING'), true)
   assert.equal(shouldGroupHistoryBatchTasks(undefined), true)
   assert.equal(shouldGroupHistoryBatchTasks('FAILED'), true)

@@ -13,7 +13,7 @@ export function getTaskHistoryActivityQuery(status: string | undefined): {
   return {
     status,
     active_only: false,
-    include_batch_context: Boolean(status),
+    include_batch_context: true,
   }
 }
 

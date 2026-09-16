@@ -1182,6 +1182,7 @@ import {
 } from '@/utils/taskPresentation'
 import { requireAdminConfirm } from '@/composables/useAdminConfirm'
 import { dispatchTaskStateRefreshed, type TaskTerminalStatus } from '@/utils/trailingRefresh'
+import { dispatchCompanionContext } from '@/utils/companionContext'
 import { beginTaskSubmitting, endTaskSubmitting } from '@/utils/taskSubmitting'
 import { getServer, type ServerRecord } from '@/api/server'
 import StatusTag from '@/components/StatusTag.vue'
@@ -1590,12 +1591,11 @@ function batchDetailFailureReason(task: BatchTaskDetailItem): string {
   const reportStatus = (task.report_status || '').toUpperCase()
   const status = (task.status || '').toUpperCase()
   const rawError = task.failure_reason || task.error_summary || ''
-  const displayError = formatTaskErrorMessage(rawError)
   const hasExplicitError = Boolean(rawError)
   if (reportStatus === 'PASS') return ''
-  if (status === 'CANCELED') return displayError || '任务已被取消'
-  if (reportStatus === 'FAIL') return displayError || '报告结果为 FAIL，请查看结果文件确认失败指标。'
-  if (hasExplicitError) return displayError
+  if (status === 'CANCELED') return rawError || '任务已被取消'
+  if (reportStatus === 'FAIL') return rawError || '报告结果为 FAIL，请查看结果文件确认失败指标。'
+  if (hasExplicitError) return rawError
   if (!isBatchTaskTerminal(status)) return ''
   if (status === 'SUCCESS') {
     return task.has_artifacts ? '已有结果文件，但摘要缓存未解析出 PASS/FAIL；请打开结果文件查看。' : ''
@@ -1681,12 +1681,12 @@ function hasStressDuration(params: Record<string, unknown> | null | undefined): 
 }
 
 function batchTaskInlineReason(task: TaskRecord): string {
-  if (task.outcome_title) return task.outcome_title
   const status = taskDisplayStatus(task).toUpperCase()
   const failedFallback = task.task_type === 'stress'
     ? '报告检测到压测结果为 FAIL，请查看结果文件。'
     : '任务执行失败，请查看执行日志。'
-  return getTaskOutcomeDisplayMessage(task, status, failedFallback)
+  const outcomeMessage = getTaskOutcomeDisplayMessage(task, status, failedFallback)
+  return outcomeMessage || task.outcome_title || ''
 }
 
 function batchTaskInlineReasonClass(task: TaskRecord): string {
@@ -1928,7 +1928,7 @@ const drawerReportTagType = computed<'' | 'success' | 'danger' | 'info'>(() => {
 
 const drawerFailureReason = computed(() => {
   const task = drawerTask.value
-  return formatTaskErrorMessage(task?.failure_reason || task?.error_message) || '-'
+  return task?.failure_reason || task?.error_message || '-'
 })
 
 const drawerCanRetry = computed(() => {
@@ -2361,6 +2361,7 @@ async function fetchDrawerMonitorData() {
   try {
     const resp = await getTaskMonitor(drawerSelectedTaskId.value)
     drawerMonitorData.value = resp.data
+    dispatchCompanionMonitorContext(resp.data)
   } catch {
     // keep previous snapshot
   } finally {
@@ -2456,10 +2457,35 @@ async function loadTasks(silent = false) {
   try {
     const wasRunningFilter = filters.status === 'RUNNING'
     const activityQuery = getTaskHistoryActivityQuery(filters.status)
-    const resp = (await listTasks({
+    let resp = (await listTasks({
       ...filters,
       ...activityQuery,
     })).data
+    // Keep the running-history card complete even if the backend only returns
+    // the active retry child for a batch on its first response.
+    const activeBatchIds = [...new Set(resp.items.map(task => task.batch_id).filter((batchId): batchId is string => Boolean(batchId)))]
+    if (filters.status === 'RUNNING' && activeBatchIds.length === 1) {
+      resp = (await listTasks({
+        ...filters,
+        task_ids: undefined,
+        status: undefined,
+        keyword: activeBatchIds[0],
+        active_only: false,
+        include_batch_context: true,
+      })).data
+    }
+    // A direct task link can point at a retry child. Resolve its batch before
+    // rendering so history keeps the retry with its original batch siblings.
+    const trackedTaskId = typeof route.query.task_id === 'string' ? route.query.task_id : undefined
+    const trackedBatchId = trackedTaskId ? resp.items.find(task => task.task_id === trackedTaskId)?.batch_id : null
+    if (trackedBatchId) {
+      resp = (await listTasks({
+        ...filters,
+        task_ids: undefined,
+        keyword: trackedBatchId,
+        include_batch_context: true,
+      })).data
+    }
     for (const task of resp.items) {
       const status = task.status?.toUpperCase() ?? ''
       const previousStatus = knownTaskStatuses.get(task.task_id)
@@ -3106,11 +3132,21 @@ async function detailFetchMonitor() {
   try {
     const resp = await getTaskMonitor(taskId)
     detailMonitorData.value = resp.data
+    dispatchCompanionMonitorContext(resp.data)
   } catch {
     // keep previous snapshot
   } finally {
     detailMonitorLoading.value = false
   }
+}
+
+function dispatchCompanionMonitorContext(data: TaskMonitorStructuredResponse) {
+  const gpuBusy = data.gpu.items.some(item => Number(item.utilization_gpu) >= 85)
+  const diskBusy = data.disk.io_stats.some(item => Number(item.utilization_percent) >= 85)
+  const cpuBusy = Number(data.cpu_memory.cpu_usage_percent) >= 85
+  const signal = gpuBusy ? 'gpu' : diskBusy ? 'disk' : cpuBusy ? 'queue' : undefined
+  if (!signal) return
+  dispatchCompanionContext({ signal, intensity: 'high', status: data.status, source: 'task-monitor' })
 }
 
 function detailCancelTask() {

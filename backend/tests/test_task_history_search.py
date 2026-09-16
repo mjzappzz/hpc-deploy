@@ -210,3 +210,23 @@ class TaskHistorySearchTests(unittest.TestCase):
             {item.task_id for item in active.items},
             {"task-batch-running", "task-batch-success", "task-batch-pending"},
         )
+
+    def test_visible_history_page_expands_every_child_of_its_batch(self) -> None:
+        result = list_tasks(
+            db=self.session,
+            task_status=None,
+            task_type=None,
+            task_scope=None,
+            server_id=None,
+            keyword=None,
+            limit=1,
+            offset=0,
+            order="created_desc",
+            include_batch_context=True,
+        )
+
+        self.assertEqual(
+            {item.task_id for item in result.items},
+            {"task-batch-running", "task-batch-success", "task-batch-pending"},
+        )
+        self.assertEqual(result.total, 4)

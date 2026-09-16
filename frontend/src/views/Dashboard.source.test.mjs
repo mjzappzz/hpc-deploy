@@ -7,7 +7,14 @@ test('labels the dashboard table as all running tasks with a matching empty stat
 
   assert.match(source, /<template #header>运行中任务<\/template>/)
   assert.match(source, /empty-text="当前没有运行中的任务"/)
-  assert.match(source, /:data="summary\.recent_tasks"/)
+  assert.match(source, /:data="visibleActiveTasks"/)
+})
+
+test('renders every active child task instead of collapsing batches', async () => {
+  const source = await readFile(new URL('./Dashboard.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /const visibleActiveTasks = computed\(\(\) => summary\.recent_tasks\)/)
+  assert.doesNotMatch(source, /active_task_count > 1/)
 })
 
 test('shows the latest completed successful and failed tasks in a separate table', async () => {
