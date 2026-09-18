@@ -1475,6 +1475,21 @@ def diagnose_task_failure(
         summary, possible_causes, suggestions, risk_tips,
         matched_patterns, evidence.
     """
+    # The final report result is authoritative after recovery.  A transient
+    # SSH failure may be recorded in the same task's logs while the detached
+    # remote workload continues and later completes successfully; it must not
+    # override a final SUCCESS + PASS outcome in the diagnosis UI.
+    if task_status == "SUCCESS" and report_result == "PASS":
+        return _finalize_result(
+            _precheck_success(
+                task_status=task_status,
+                artifacts_present=artifacts_present,
+                file_name=file_name,
+                report_result=report_result,
+            ),
+            error_message=error_message,
+        )
+
     if not logs:
         return _finalize_result(_build_no_logs_result(), error_message=error_message)
 

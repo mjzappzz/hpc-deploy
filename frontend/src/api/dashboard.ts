@@ -4,6 +4,8 @@ export interface ServerStats {
   total: number
   online: number
   offline: number
+  unknown?: number
+  archived?: number
 }
 
 export interface TaskStats {
@@ -37,9 +39,48 @@ export interface RecentTaskItem {
   active_task_count?: number
 }
 
+export interface RecentCompletedBatchItem {
+  batch_id: string
+  task_type: string | null
+  file_name?: string | null
+  file_path?: string | null
+  params?: Record<string, unknown> | null
+  total: number
+  success: number
+  failed: number
+  canceled: number
+  status: string
+  server_count: number
+  servers: string[]
+  created_at: string | null
+  end_time: string | null
+  duration_seconds: number | null
+}
+
 export interface ArtifactStats {
   local_artifacts_count: number
   local_artifacts_size_bytes: number
+}
+
+export interface StoragePathStats {
+  key: string
+  label: string
+  path: string
+  size_bytes: number
+  file_count?: number
+  status: string
+  error?: string | null
+}
+
+export interface StorageBreakdownItem {
+  key: string
+  label: string
+  path?: string | null
+  size_bytes: number
+  file_count?: number
+  status: string
+  error?: string | null
+  percentage?: number | null
 }
 
 export interface StorageStats {
@@ -50,6 +91,14 @@ export interface StorageStats {
   database_bytes: number
   cleanup_status: string
   capacity_status: string
+  usage_percent?: number | null
+  project_total_bytes?: number | null
+  project_total_file_count?: number | null
+  project_status?: 'available' | 'partial' | 'unknown'
+  device?: string | null
+  mountpoint?: string | null
+  inspected_paths?: StoragePathStats[]
+  breakdown?: StorageBreakdownItem[]
 }
 
 export interface DashboardSummary {
@@ -57,6 +106,7 @@ export interface DashboardSummary {
   tasks: TaskStats
   recent_tasks: RecentTaskItem[]
   recent_completed_tasks: RecentTaskItem[]
+  recent_completed_batches?: RecentCompletedBatchItem[]
   artifacts: ArtifactStats
   storage: StorageStats
 }

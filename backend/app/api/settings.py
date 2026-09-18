@@ -5,6 +5,7 @@ from pathlib import Path
 from app.core.audit import write_audit_log
 from app.core.auth import require_admin_token
 from app.core.config import BACKEND_ROOT
+from app.core.runtime_paths import LOCAL_RUNTIME_PATHS, REMOTE_RUNTIME_PATHS
 from app.db.database import get_db
 from app.models.settings import SystemSetting
 from app.core.auth import verify_admin_password
@@ -87,6 +88,8 @@ def _runtime_path(
 
 
 def _build_runtime_paths() -> list[dict[str, object]]:
+    return [_runtime_path(**spec.__dict__) for spec in (*LOCAL_RUNTIME_PATHS, *REMOTE_RUNTIME_PATHS)]
+    # Legacy inline path definitions below are intentionally unreachable during migration.
     return [
         _runtime_path(
             key="database",

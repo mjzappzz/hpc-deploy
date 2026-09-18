@@ -4,6 +4,24 @@ from app.core.task_diagnosis import diagnose_task_failure, parse_diagnostic_even
 
 
 class TaskDiagnosisTests(unittest.TestCase):
+    def test_successful_recovery_with_pass_report_ignores_transient_ssh_failure_events(self) -> None:
+        diagnosis = diagnose_task_failure(
+            task_status="SUCCESS",
+            error_message=None,
+            logs=[
+                '[DIAG_EVENT] {"version":1,"phase":"connection","result":"FAIL","category":"ssh_connection_failed","message":"恢复连接失败，正在重试"}',
+                "stress recovery: completed with xlsx: disk_stress_report.xlsx report: PASS",
+            ],
+            task_type="stress",
+            file_name="disk_stress_report.sh",
+            artifacts_present=True,
+            report_result="PASS",
+        )
+
+        self.assertEqual(diagnosis["category"], "completed")
+        self.assertEqual(diagnosis["title"], "任务执行成功")
+        self.assertIn("PASS", diagnosis["summary"])
+
     def test_versioned_diagnostic_event_is_used_as_confirmed_fact(self) -> None:
         logs = ['[DIAG_EVENT] {"version":1,"phase":"dependency","result":"FAIL","category":"dependency_install_failed","message":"无法安装 stress-ng"}']
         self.assertEqual(parse_diagnostic_events(logs)[0]["phase"], "dependency")

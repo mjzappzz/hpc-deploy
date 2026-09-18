@@ -64,3 +64,12 @@ test('keeps host fingerprint confirmation inside public-key deployment for regul
   assert.match(source, /const pendingIdentityCount = targetRows\.filter\(\(row\) => !row\.server\.ssh_host_fingerprint\)\.length/)
   assert.match(source, /有 \$\{pendingIdentityCount\} 台服务器的主机指纹待确认，已跳过/)
 })
+
+test('allows regular operators to archive but keeps restore behind admin confirmation', async () => {
+  const source = await readFile(new URL('./ServersContent.vue', import.meta.url), 'utf8')
+  const archiveFunction = source.match(/async function archiveManagedServer\([\s\S]*?\n\}/)?.[0] ?? ''
+  const restoreFunction = source.match(/async function restoreServer\([\s\S]*?\n\}/)?.[0] ?? ''
+
+  assert.doesNotMatch(archiveFunction, /requireAdminConfirm/)
+  assert.match(restoreFunction, /requireAdminConfirm\('恢复服务器管理'\)/)
+})

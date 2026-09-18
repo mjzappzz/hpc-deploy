@@ -21,101 +21,18 @@
       style="margin-bottom: 16px"
     />
 
-    <!-- summary cards: 3 in a row -->
-    <el-row :gutter="16">
-      <!-- 服务器 -->
-      <el-col :xs="12" :sm="12" :lg="8" style="margin-bottom: 16px">
-        <el-card shadow="never" class="stat-card">
-          <div class="stat-title">服务器</div>
-          <div class="stat-body">
-            <div class="stat-line">
-              <span class="stat-label">总数</span>
-              <span class="stat-number">{{ summary.servers.total }}</span>
-            </div>
-            <div class="stat-line">
-              <span class="stat-label">在线</span>
-              <span class="stat-number stat-green">{{ summary.servers.online }}</span>
-            </div>
-            <div class="stat-line">
-              <span class="stat-label">离线</span>
-              <span class="stat-number stat-red">{{ summary.servers.offline }}</span>
-            </div>
-          </div>
-        </el-card>
-      </el-col>
-
-      <!-- 任务运行 -->
-      <el-col :xs="12" :sm="12" :lg="8" style="margin-bottom: 16px">
-        <el-card shadow="never" class="stat-card">
-          <div class="stat-title">任务运行</div>
-          <div class="stat-body">
-            <div class="stat-line">
-              <span class="stat-label">运行中</span>
-              <span class="stat-number stat-blue">{{ summary.tasks.running }}</span>
-            </div>
-            <div class="stat-line">
-              <span class="stat-label">等待中</span>
-              <span class="stat-number">{{ summary.tasks.pending }}</span>
-            </div>
-            <div class="stat-line">
-              <span class="stat-label">取消中</span>
-              <span class="stat-number">{{ summary.tasks.canceling }}</span>
-            </div>
-          </div>
-        </el-card>
-      </el-col>
-
-      <!-- 任务结果 -->
-      <el-col :xs="12" :sm="12" :lg="8" style="margin-bottom: 16px">
-        <el-card shadow="never" class="stat-card">
-          <div class="stat-title">任务结果</div>
-          <div class="stat-body">
-            <div class="stat-line">
-              <span class="stat-label">成功</span>
-              <span class="stat-number stat-green">{{ summary.tasks.success }}</span>
-            </div>
-            <div class="stat-line">
-              <span class="stat-label">失败</span>
-              <span class="stat-number stat-red">{{ summary.tasks.failed }}</span>
-            </div>
-            <div class="stat-line">
-              <span class="stat-label">已取消</span>
-              <span class="stat-number stat-orange">{{ summary.tasks.canceled }}</span>
-            </div>
-          </div>
-        </el-card>
-      </el-col>
-    </el-row>
-
-    <el-card v-if="summary.storage.capacity_status !== 'unknown'" shadow="never" class="dashboard-storage-card">
-      <template #header>控制器空间</template>
-      <div class="dashboard-storage-summary">
-        可用 {{ formatStorageBytes(summary.storage.free_bytes) }}；产物占用 {{ formatStorageBytes(summary.storage.artifacts_bytes) }}；SQLite 占用 {{ formatStorageBytes(summary.storage.database_bytes) }}。
-        最近清理：{{ summary.storage.cleanup_status || '暂无记录' }}。
-      </div>
-    </el-card>
-
-    <el-alert
-      v-if="summary.storage.capacity_status === 'warning' || summary.storage.capacity_status === 'blocked'"
-      :type="summary.storage.capacity_status === 'blocked' ? 'error' : 'warning'"
-      show-icon
-      :closable="false"
-      class="dashboard-storage-alert"
-      :title="summary.storage.capacity_status === 'blocked' ? '控制器空间不足：极限压测已阻断新提交' : '控制器空间偏低：建议清理历史产物或扩容'"
-    />
-
-    <el-alert
-      v-if="summary.storage.capacity_status === 'unknown'"
-      type="info"
-      show-icon
-      :closable="false"
-      class="dashboard-storage-alert"
-      title="控制器空间统计暂不可用"
-    />
+    <div class="dashboard-runtime-summary" role="status">
+      <span class="dashboard-runtime-title">运行状态</span>
+      <span>在管服务器：<b class="stat-green">在线 {{ summary.servers.online }}</b> · <b class="stat-red">离线 {{ summary.servers.offline }}</b> / 共 {{ summary.servers.total }}</span>
+      <span>已归档服务器：<b class="stat-gray">{{ summary.servers.archived ?? 0 }} 台</b></span>
+      <span>任务：<b class="stat-blue">运行中 {{ summary.tasks.running }}</b> · 等待 {{ summary.tasks.pending }} · 取消中 {{ summary.tasks.canceling }}</span>
+    </div>
 
     <!-- active tasks -->
     <el-card shadow="never" class="section-card" data-soot-companion-host>
-      <template #header>运行中任务</template>
+      <template #header>
+        <div class="active-tasks-header"><span>运行中任务</span><span class="active-tasks-count">{{ visibleActiveTasks.length }} 条</span></div>
+      </template>
       <el-table
         :data="visibleActiveTasks"
         border
@@ -202,11 +119,19 @@
         </el-table-column>
         <el-table-column label="任务名称" min-width="360" show-overflow-tooltip>
           <template #default="{ row }">
-            <div class="recent-task-name" :title="formatTaskDisplayName(row)">
+            <div v-if="row.kind === 'batch'" class="recent-task-name" :title="row.batch_id">
+              <span>{{ formatTaskDisplayName(getBatchDisplayTask(row)) }}</span>
+              <el-tag size="small" type="warning" effect="plain">批次</el-tag>
+              <el-tag v-for="tag in getTaskTypeTags(getBatchDisplayTask(row))" :key="tag" size="small" effect="plain">{{ tag }}</el-tag>
+              <TaskDurationTag
+                :task-type="row.task_type"
+                :params="row.params"
+                :duration-seconds="row.duration_seconds"
+              />
+            </div>
+            <div v-else class="recent-task-name" :title="formatTaskDisplayName(row)">
               <span>{{ formatTaskDisplayName(row) }}</span>
-              <el-tag size="small" :type="row.batch_id ? 'warning' : 'info'" effect="plain">
-                {{ row.batch_id ? '批次' : '单次' }}
-              </el-tag>
+              <el-tag size="small" type="info" effect="plain">单次</el-tag>
               <el-tag v-for="tag in getTaskTypeTags(row)" :key="tag" size="small" effect="plain">{{ tag }}</el-tag>
               <TaskDurationTag
                 :task-type="row.task_type"
@@ -214,24 +139,27 @@
                 :duration-seconds="row.duration_seconds"
               />
             </div>
-            <div v-if="row.batch_id" class="recent-task-id">
+            <div v-if="row.kind === 'batch'" class="recent-task-id">
+              <span class="recent-task-batch-id">成功 {{ row.success }} · 失败 {{ row.failed }} · 取消 {{ row.canceled }}</span>
+            </div>
+            <div v-else-if="row.batch_id" class="recent-task-id">
               <span class="recent-task-batch-id">{{ row.batch_id }}</span>
             </div>
           </template>
         </el-table-column>
         <el-table-column label="服务器" width="110" show-overflow-tooltip>
           <template #default="{ row }">
-            <span class="recent-task-server">{{ row.server_name }}</span>
+            <span class="recent-task-server">{{ row.kind === 'batch' ? (row.servers.join('、') || '-') : row.server_name }}</span>
           </template>
         </el-table-column>
         <el-table-column label="类型" width="130" show-overflow-tooltip>
           <template #default="{ row }">
-            <span class="recent-task-type">{{ getTaskCategoryLabel(row) }}</span>
+            <span class="recent-task-type">{{ row.kind === 'batch' ? getTaskCategoryLabel(getBatchDisplayTask(row)) : getTaskCategoryLabel(row) }}</span>
           </template>
         </el-table-column>
         <el-table-column label="状态" width="110" align="center">
           <template #default="{ row }">
-            <StatusTag :status="getTaskDisplayStatus(row)" />
+            <StatusTag :status="row.kind === 'batch' ? row.status : getTaskDisplayStatus(row)" />
           </template>
         </el-table-column>
         <el-table-column label="结束时间" width="170">
@@ -249,7 +177,7 @@ import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   getDashboardSummary,
-  type DashboardSummary,
+  type DashboardSummary, type RecentCompletedBatchItem, type RecentTaskItem,
 } from '@/api/dashboard'
 import StatusTag from '@/components/StatusTag.vue'
 import TaskDurationTag from '@/components/TaskDurationTag.vue'
@@ -264,21 +192,49 @@ const loading = ref(false)
 const loadError = ref(false)
 const isAutoRefreshing = ref(false)
 const completedTaskDisplayLimit = ref(10)
+const recentBatchAggregationAvailable = ref(false)
 let dashboardRefreshTimer: number | undefined
 let dashboardRequestInFlight = false
 
 const summary = reactive<DashboardSummary>({
-  servers: { total: 0, online: 0, offline: 0 },
+  servers: { total: 0, online: 0, offline: 0, unknown: 0, archived: 0 },
   tasks: { total: 0, running: 0, success: 0, failed: 0, canceled: 0, pending: 0, canceling: 0 },
   recent_tasks: [],
   recent_completed_tasks: [],
+  recent_completed_batches: [],
   artifacts: { local_artifacts_count: 0, local_artifacts_size_bytes: 0 },
-  storage: { total_bytes: 0, free_bytes: 0, used_bytes: 0, artifacts_bytes: 0, database_bytes: 0, cleanup_status: 'unknown', capacity_status: 'unknown' },
+  storage: { total_bytes: 0, free_bytes: 0, used_bytes: 0, artifacts_bytes: 0, database_bytes: 0, cleanup_status: 'unknown', capacity_status: 'unknown', usage_percent: null, project_total_bytes: null, project_total_file_count: null, project_status: 'unknown', device: null, mountpoint: null, inspected_paths: [], breakdown: [] },
 })
 
-const visibleCompletedTasks = computed(() => summary.recent_completed_tasks.slice(0, completedTaskDisplayLimit.value))
+type CompletedDashboardRow = (RecentTaskItem & { kind: 'single' }) | (RecentCompletedBatchItem & { kind: 'batch'; task_id: string })
+
+const completedRows = computed<CompletedDashboardRow[]>(() => {
+  const batches = (summary.recent_completed_batches || []).map(row => ({ ...row, kind: 'batch' as const, task_id: row.batch_id }))
+  const singles = summary.recent_completed_tasks
+    .filter(row => !recentBatchAggregationAvailable.value || !row.batch_id)
+    .map(row => ({ ...row, kind: 'single' as const }))
+  return [...batches, ...singles].sort((a, b) => {
+    const left = new Date(a.end_time || a.created_at || 0).getTime()
+    const right = new Date(b.end_time || b.created_at || 0).getTime()
+    return right - left
+  })
+})
+
+const visibleCompletedTasks = computed(() => completedRows.value.slice(0, completedTaskDisplayLimit.value))
 
 const visibleActiveTasks = computed(() => summary.recent_tasks)
+
+function getBatchDisplayTask(row: RecentCompletedBatchItem) {
+  return {
+    task_id: row.batch_id,
+    task_type: row.task_type,
+    file_name: row.file_name,
+    file_path: row.file_path,
+    params: row.params,
+    server_name: row.servers[0] || null,
+    created_at: row.created_at,
+  }
+}
 
 function goToTask(row: { task_id: string; batch_id?: string | null }) {
   if (window.getSelection()?.toString().trim()) return
@@ -287,15 +243,6 @@ function goToTask(row: { task_id: string; batch_id?: string | null }) {
     return
   }
   router.push({ path: '/history', query: { task_id: row.task_id } })
-}
-
-function formatStorageBytes(value: number): string {
-  if (!Number.isFinite(value) || value <= 0) return '0 B'
-  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
-  let size = value
-  let index = 0
-  while (size >= 1024 && index < units.length - 1) { size /= 1024; index += 1 }
-  return `${size.toFixed(index === 0 ? 0 : 1)} ${units[index]}`
 }
 
 async function loadDashboard(silent = false) {
@@ -312,6 +259,8 @@ async function loadDashboard(silent = false) {
     summary.tasks = resp.data.tasks
     summary.recent_tasks = resp.data.recent_tasks
     summary.recent_completed_tasks = resp.data.recent_completed_tasks
+    recentBatchAggregationAvailable.value = Object.prototype.hasOwnProperty.call(resp.data, 'recent_completed_batches')
+    summary.recent_completed_batches = resp.data.recent_completed_batches || []
     summary.storage = resp.data.storage
   } catch {
     if (!silent) loadError.value = true
@@ -401,6 +350,23 @@ onUnmounted(() => {
   from { transform: scaleX(0); }
   to { transform: scaleX(1); }
 }
+
+.dashboard-runtime-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+  background: #fff;
+  color: #606266;
+  font-size: 13px;
+}
+.dashboard-runtime-title { color: #303133; font-weight: 600; }
+.active-tasks-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.active-tasks-count { color: #909399; font-size: 12px; font-weight: 400; }
 
 .recent-task-name {
   display: flex;

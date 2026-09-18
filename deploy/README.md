@@ -114,6 +114,12 @@ systemctl list-timers hpcdeploy-sqlite-backup.timer
 journalctl -u hpcdeploy-sqlite-backup.service -n 50 --no-pager
 ```
 
+如维护窗口必须立即发布，可显式使用 `--force` 跳过活动任务检查。后端仍会重启，运行中的任务监控可能短暂中断；远端已 detach 的任务依靠启动恢复机制重新接管：
+
+```bash
+sudo deploy/scripts/redeploy_hpcdeploy.sh --force
+```
+
 发布开始及后端重启前会查询活动任务。存在 `CONNECTING`、`PREPARING`、`UPLOADING`、`RUNNING` 或 `CANCELING` 任务时，脚本拒绝重启并输出任务 ID；等待任务结束或取消后再执行发布。后端本身不可访问时允许继续发布，用于故障恢复。
 
 从旧版本首次升级到“生产安全配置”版本时，需要重新执行一次安装脚本，而不是只执行更新脚本：

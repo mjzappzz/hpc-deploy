@@ -756,8 +756,6 @@ async function updateServerTags(serverId: number, newTags: string[]) {
 }
 
 async function archiveManagedServer(server: ServerRecord) {
-  const ok = await requireAdminConfirm('归档服务器')
-  if (!ok) return
   try {
     await ElMessageBox.confirm(`归档后 ${server.name} 将停止探测，不能执行任务或远端操作；仅可恢复管理。确认归档？`, '归档确认', { type: 'warning' })
     await archiveServer(server.id)

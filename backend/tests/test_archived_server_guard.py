@@ -16,10 +16,11 @@ class _ServerSession:
 
 
 class ArchivedServerGuardTests(unittest.TestCase):
-    def test_archive_and_restore_routes_require_admin_token(self) -> None:
+    def test_only_restore_route_requires_admin_token(self) -> None:
         source = Path("backend/app/api/servers.py").read_text(encoding="utf-8")
 
-        self.assertIn('def archive_server(server_id: int, db: Session = Depends(get_db), _: str = Depends(require_admin_token))', source)
+        self.assertIn('def archive_server(server_id: int, db: Session = Depends(get_db))', source)
+        self.assertIn('action="server.archive", target_type="server", status="success", actor="visitor"', source)
         self.assertIn('def restore_server(server_id: int, db: Session = Depends(get_db), _: str = Depends(require_admin_token))', source)
 
     def test_archiving_resets_display_status_to_unknown(self) -> None:

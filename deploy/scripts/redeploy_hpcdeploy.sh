@@ -2,6 +2,7 @@
 set -euo pipefail
 
 SCRIPT_VERSION="1.2.0"
+FORCE_REDEPLOY=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common_runtime.sh"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -13,6 +14,13 @@ BACKUP_SERVICE_DEST="/etc/systemd/system/hpcdeploy-sqlite-backup.service"
 BACKUP_TIMER_DEST="/etc/systemd/system/hpcdeploy-sqlite-backup.timer"
 NGINX_SITE_DEST="/etc/nginx/conf.d/hpcdeploy.conf"
 WEB_ROOT="/var/www/hpcdeploy"
+
+if [[ "${1:-}" == "--force" ]]; then
+  FORCE_REDEPLOY=true
+elif [[ -n "${1:-}" ]]; then
+  echo "用法：sudo deploy/scripts/redeploy_hpcdeploy.sh [--force]" >&2
+  exit 2
+fi
 
 run_as_service_user() {
   if [[ "$SERVICE_USER" == "root" ]]; then
@@ -42,6 +50,10 @@ EOF
 }
 
 assert_no_active_tasks() {
+  if $FORCE_REDEPLOY; then
+    echo "警告：强制发布，跳过活动任务检查；后端重启可能短暂中断任务监控。" >&2
+    return
+  fi
   local payload
   local active_count
   local active_task_id

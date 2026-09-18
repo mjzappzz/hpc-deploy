@@ -80,6 +80,16 @@ class TaskOutcomeMessageTests(unittest.TestCase):
             ),
             "GPU 压测日志 OOM 且混合架构未全覆盖",
         )
+
+    def test_does_not_show_stale_failure_title_for_passed_report(self) -> None:
+        self.assertIsNone(
+            resolve_card_outcome_title(
+                task_type="stress",
+                report_status="PASS",
+                diagnosis={"title": "任务失败"},
+                fallback="恢复连接失败，正在重试",
+            )
+        )
         self.assertEqual(
             resolve_card_outcome_title(
                 task_type="stress",

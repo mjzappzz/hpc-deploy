@@ -59,6 +59,14 @@ def test_redeploy_refuses_to_restart_backend_with_active_tasks() -> None:
     assert script.count("assert_no_active_tasks") >= 3
 
 
+def test_redeploy_force_mode_explicitly_skips_only_active_task_guard() -> None:
+    script = REDEPLOY_SCRIPT.read_text(encoding="utf-8")
+
+    assert 'FORCE_REDEPLOY=false' in script
+    assert '[[ "${1:-}" == "--force" ]]' in script
+    assert '警告：强制发布，跳过活动任务检查' in script
+
+
 def test_frontend_only_redeploy_never_restarts_backend_and_keeps_a_rollback_target() -> None:
     script = FRONTEND_REDEPLOY_SCRIPT.read_text(encoding="utf-8")
 

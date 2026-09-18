@@ -5,7 +5,7 @@ import test from 'node:test'
 test('labels the dashboard table as all running tasks with a matching empty state', async () => {
   const source = await readFile(new URL('./Dashboard.vue', import.meta.url), 'utf8')
 
-  assert.match(source, /<template #header>运行中任务<\/template>/)
+  assert.match(source, /<span>运行中任务<\/span>/)
   assert.match(source, /empty-text="当前没有运行中的任务"/)
   assert.match(source, /:data="visibleActiveTasks"/)
 })
@@ -17,12 +17,20 @@ test('renders every active child task instead of collapsing batches', async () =
   assert.doesNotMatch(source, /active_task_count > 1/)
 })
 
-test('shows the latest completed successful and failed tasks in a separate table', async () => {
+test('shows recent completed singles and aggregate batches in a separate table', async () => {
   const source = await readFile(new URL('./Dashboard.vue', import.meta.url), 'utf8')
 
   assert.match(source, /<template #header>[\s\S]*?<span>近期已完成任务<\/span>/)
   assert.match(source, /empty-text="当前没有近期已完成的任务"/)
   assert.match(source, /:data="visibleCompletedTasks"/)
+  assert.match(source, /summary\.recent_completed_batches/)
+  assert.match(source, /row\.kind === 'batch'/)
+  assert.match(source, /formatTaskDisplayName\(getBatchDisplayTask\(row\)\)/)
+  assert.match(source, /getTaskTypeTags\(getBatchDisplayTask\(row\)\)/)
+  assert.match(source, /getTaskCategoryLabel\(getBatchDisplayTask\(row\)\)/)
+  assert.doesNotMatch(source, /'批次汇总'/)
+  assert.match(source, /<el-tag size="small" type="warning" effect="plain">批次<\/el-tag>/)
+  assert.match(source, /成功 \{\{ row\.success \}\} · 失败 \{\{ row\.failed \}\} · 取消 \{\{ row\.canceled \}\}/)
   assert.match(source, /label="结束时间"/)
   assert.match(source, /<TaskDurationTag\n\s*:task-type="row\.task_type"\n\s*:params="row\.params"\n\s*:duration-seconds="row\.duration_seconds"\n\s*\/>/)
 })
@@ -30,14 +38,17 @@ test('shows the latest completed successful and failed tasks in a separate table
 test('uses the shared stress duration tag in both running and completed task tables', async () => {
   const source = await readFile(new URL('./Dashboard.vue', import.meta.url), 'utf8')
 
-  assert.equal((source.match(/<TaskDurationTag/g) || []).length, 2)
+  assert.equal((source.match(/<TaskDurationTag/g) || []).length, 3)
 })
 
-test('defaults completed tasks to ten visible rows and lets operators choose ten, twenty, or fifty', async () => {
+test('defaults completed display rows to ten and counts aggregate batch rows', async () => {
   const source = await readFile(new URL('./Dashboard.vue', import.meta.url), 'utf8')
 
   assert.match(source, /const completedTaskDisplayLimit = ref\(10\)/)
-  assert.match(source, /const visibleCompletedTasks = computed\(\(\) => summary\.recent_completed_tasks\.slice\(0, completedTaskDisplayLimit\.value\)\)/)
+  assert.match(source, /const visibleCompletedTasks = computed\(\(\) => completedRows\.value\.slice\(0, completedTaskDisplayLimit\.value\)\)/)
+  assert.match(source, /const completedRows = computed/)
+  assert.match(source, /\.filter\(row => !recentBatchAggregationAvailable\.value \|\| !row\.batch_id\)/)
+  assert.match(source, /recentBatchAggregationAvailable/)
   assert.match(source, /:data="visibleCompletedTasks"/)
   assert.match(source, /<el-option :value="10" label="显示 10 条" \/>/)
   assert.match(source, /<el-option :value="20" label="显示 20 条" \/>/)
@@ -56,7 +67,7 @@ test('renders a completed task report failure as failed even when execution fini
 
   assert.match(source, /import TaskDurationTag from '@\/components\/TaskDurationTag\.vue'/)
   assert.match(source, /import \{ getTaskCategoryLabel, getTaskDisplayStatus \} from '@\/utils\/taskPresentation'/)
-  assert.match(source, /<StatusTag :status="getTaskDisplayStatus\(row\)" \/>/)
+  assert.match(source, /row\.kind === 'batch' \? row\.status : getTaskDisplayStatus\(row\)/)
   assert.doesNotMatch(source, /function getStressDuration/)
   assert.doesNotMatch(source, /function formatStressDuration/)
 })
@@ -71,20 +82,19 @@ test('silently refreshes the visible dashboard every five seconds', async () => 
   assert.match(source, /window\.setInterval\(\(\) => void loadDashboard\(true\), DASHBOARD_REFRESH_INTERVAL_MS\)/)
 })
 
-test('renders controller storage from the dashboard response and only alerts on explicit low-capacity states', async () => {
+test('keeps dashboard focused on runtime operations instead of controller storage', async () => {
   const source = await readFile(new URL('./Dashboard.vue', import.meta.url), 'utf8')
 
   assert.match(source, /summary\.storage = resp\.data\.storage/)
-  assert.match(source, /v-if="summary\.storage\.capacity_status === 'warning' \|\| summary\.storage\.capacity_status === 'blocked'"/)
-  assert.doesNotMatch(source, /v-if="summary\.storage\.capacity_status !== 'pass'"/)
-})
-
-test('keeps available storage visible and gives unknown storage a non-capacity placeholder', async () => {
-  const source = await readFile(new URL('./Dashboard.vue', import.meta.url), 'utf8')
-
-  assert.match(source, /<el-card v-if="summary\.storage\.capacity_status !== 'unknown'"[^>]*>\n\s*<template #header>控制器空间<\/template>/)
-  assert.match(source, /title="控制器空间统计暂不可用"/)
-  assert.match(source, /v-if="summary\.storage\.capacity_status === 'unknown'"/)
+  assert.match(source, /dashboard-runtime-summary/)
+  assert.match(source, /已归档服务器：<b class="stat-gray">\{\{ summary\.servers\.archived \?\? 0 \}\} 台<\/b>/)
+  assert.doesNotMatch(source, /控制器空间/)
+  assert.doesNotMatch(source, /dashboard-storage-card/)
+  assert.doesNotMatch(source, /storage-gauge/)
+  assert.doesNotMatch(source, /分区其他占用/)
+  assert.match(source, /dashboard-runtime-summary/)
+  assert.doesNotMatch(source, /<div class="stat-title">服务器<\/div>/)
+  assert.doesNotMatch(source, /<div class="stat-title">任务运行<\/div>/)
 })
 
 test('uses the same five-second fill progress tag as task history', async () => {

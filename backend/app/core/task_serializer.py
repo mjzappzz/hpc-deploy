@@ -62,6 +62,12 @@ def resolve_card_outcome_title(
     file_name: str | None = None,
 ) -> str | None:
     """Return a compact, evidence-backed card label without replacing details."""
+    # A recovered task may retain transient SSH failure evidence in its
+    # diagnosis cache.  PASS is the final report outcome, so never surface a
+    # stale failure title or fallback on a successful card.
+    if report_status.upper() == "PASS":
+        return None
+
     title = diagnosis.get("title") if isinstance(diagnosis, dict) else None
     if isinstance(diagnosis, dict) and diagnosis.get("confidence") == "unknown":
         return "原因待核查"

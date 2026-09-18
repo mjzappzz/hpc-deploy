@@ -770,7 +770,7 @@ def update_server(
 
 
 @router.post("/{server_id}/archive", response_model=ServerRead)
-def archive_server(server_id: int, db: Session = Depends(get_db), _: str = Depends(require_admin_token)) -> Server:
+def archive_server(server_id: int, db: Session = Depends(get_db)) -> Server:
     server = _get_server_or_404(db, server_id)
     if is_server_archived(server):
         return server
@@ -781,7 +781,7 @@ def archive_server(server_id: int, db: Session = Depends(get_db), _: str = Depen
     db.commit()
     db.refresh(server)
     write_audit_log(
-        db, action="server.archive", target_type="server", status="success", actor="admin",
+        db, action="server.archive", target_type="server", status="success", actor="visitor",
         target_id=str(server.id), target_name=server.name, server_id=server.id, server_name=server.name,
         message=f"archived server {server.name}", detail={"tags": [ARCHIVED_SERVER_TAG]},
     )
