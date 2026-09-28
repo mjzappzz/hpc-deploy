@@ -32,6 +32,22 @@ The system SHALL enforce supported duration and parameter bounds, retain filesys
 - **WHEN** a controlled GPU, CPU/memory, disk, or extreme-stress stage exits unsuccessfully
 - **THEN** its collected evidence identifies the failed phase and terminal outcome, and includes a specific failure fact when one is available
 
+### Requirement: openEuler CPU/内存与磁盘压测可完成依赖准备
+
+系统 SHALL 在 openEuler 24.03 LTS SP4 上为 CPU/内存和磁盘压测识别缺失的运行及报告依赖，并使用该系统已配置的软件源准备可用依赖。依赖准备 SHALL 不要求安装面向其他发行版的软件源；依赖不可用时 SHALL 在负载启动前失败，并提供具体的依赖或软件源错误，不将其报告为硬件压测失败。
+
+#### Scenario: 依赖已经齐备
+- **WHEN** openEuler 服务器已具备所选 CPU/内存或磁盘压测所需的可执行程序和报告依赖
+- **THEN** 任务跳过安装并进入相应的压测阶段
+
+#### Scenario: 缺失依赖但软件源可用
+- **WHEN** openEuler 服务器缺少所选压测的依赖，且已配置的软件源提供所需软件包
+- **THEN** 系统完成依赖安装与可用性复核，再启动压测并按既有规则生成报告
+
+#### Scenario: 依赖或软件源不可用
+- **WHEN** openEuler 服务器无法从已配置的软件源取得所需依赖，或安装后依赖仍不可用
+- **THEN** 任务在压测启动前失败，日志指出失败的依赖或软件源，并且不产生压测通过结论
+
 ### Requirement: 常规与极限压测相互隔离
 
 系统 SHALL 保持常规 GPU、CPU/内存和磁盘压测的独立报告与串行语义。极限压测 SHALL 作为独立的无磁盘原子验证，不得混入常规套件结果。
