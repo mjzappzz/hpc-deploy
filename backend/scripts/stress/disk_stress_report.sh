@@ -2,7 +2,7 @@
 
 set -e
 
-SCRIPT_VERSION="2026.09.11.1"
+SCRIPT_VERSION="2026.09.28.1"
 
 DNF_MINRATE="${HPCDEPLOY_DNF_MINRATE:-51200}"
 DNF_TIMEOUT="${HPCDEPLOY_DNF_TIMEOUT:-30}"
@@ -81,6 +81,14 @@ ensure_epel_repo() {
     fi
 }
 
+is_openeuler() {
+    [ -r /etc/os-release ] || return 1
+    local os_id
+    # shellcheck disable=SC1091
+    os_id="$(. /etc/os-release; printf '%s' "${ID:-}")"
+    [ "${os_id,,}" = "openeuler" ]
+}
+
 is_centos_linux_8() {
     [ -r /etc/os-release ] || return 1
     # shellcheck disable=SC1091
@@ -145,6 +153,9 @@ install_deps() {
 
     local -a rpm_packages=()
     local openpyxl_missing=0
+    local openeuler=0
+    local package
+    is_openeuler && openeuler=1
 
     if ! command -v fio >/dev/null 2>&1; then
         rpm_packages+=(fio)
@@ -154,7 +165,8 @@ install_deps() {
     fi
 
     if ! command -v python3 >/dev/null 2>&1; then
-        rpm_packages+=(python3 python3-pip)
+        rpm_packages+=(python3)
+        [ "$openeuler" -eq 1 ] || rpm_packages+=(python3-pip)
         openpyxl_missing=1
     else
         if ! python3 - << 'PYCHK' >/dev/null 2>&1
@@ -162,7 +174,7 @@ import openpyxl
 PYCHK
         then
             openpyxl_missing=1
-            if ! python3 -m pip --version >/dev/null 2>&1; then
+            if [ "$openeuler" -eq 0 ] && ! python3 -m pip --version >/dev/null 2>&1; then
                 rpm_packages+=(python3-pip)
             fi
         fi
@@ -175,7 +187,23 @@ PYCHK
 
     echo "[INFO] Missing dependencies detected, installing..."
 
-    if [ -f /etc/redhat-release ]; then
+    if [ "$openeuler" -eq 1 ]; then
+        echo "[INFO] Detected openEuler; using configured DNF repositories"
+        if [ "${#rpm_packages[@]}" -gt 0 ] && ! dnf_install_with_retry "${rpm_packages[@]}"; then
+            echo "[ERROR] Dependency installation failed on openEuler: ${rpm_packages[*]}"
+            return 1
+        fi
+        if [ "$openpyxl_missing" -eq 1 ] && ! dnf_install_with_retry python3-openpyxl; then
+            echo "[ERROR] Dependency installation failed on openEuler: python3-openpyxl"
+            return 1
+        fi
+        for package in fio iostat python3; do
+            if ! command -v "$package" >/dev/null 2>&1; then
+                echo "[ERROR] Dependency unavailable after install on openEuler: $package"
+                return 1
+            fi
+        done
+    elif [ -f /etc/redhat-release ]; then
         echo "[INFO] Detected RHEL/CentOS/Rocky/Alma"
         repair_centos_linux_8_repos || return 1
         ensure_epel_repo || return 1

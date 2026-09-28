@@ -1,7 +1,7 @@
 #!/bin/bash
 #set -e  # 不使用 set -e，手工控制每个关键步骤的退出处理
 
-SCRIPT_VERSION="2026.09.11.4"
+SCRIPT_VERSION="2026.09.28.1"
 
 DNF_MINRATE="${HPCDEPLOY_DNF_MINRATE:-51200}"
 DNF_TIMEOUT="${HPCDEPLOY_DNF_TIMEOUT:-30}"
@@ -78,6 +78,14 @@ ensure_epel_repo() {
             return 1
         fi
     fi
+}
+
+is_openeuler() {
+    [ -r /etc/os-release ] || return 1
+    local os_id
+    # shellcheck disable=SC1091
+    os_id="$(. /etc/os-release; printf '%s' "${ID:-}")"
+    [ "${os_id,,}" = "openeuler" ]
 }
 
 is_centos_linux_8() {
@@ -210,7 +218,25 @@ install_deps() {
 
     echo "[INFO] Missing dependencies detected, installing..."
 
-    if [ -f /etc/redhat-release ]; then
+    if is_openeuler; then
+        echo "[INFO] Detected openEuler; using configured DNF repositories"
+        if [ "${#rpm_packages[@]}" -gt 0 ] && ! dnf_install_with_retry "${rpm_packages[@]}"; then
+            echo "[ERROR] Dependency installation failed on openEuler: ${rpm_packages[*]}"
+            return 1
+        fi
+        if ! command -v stress-ng >/dev/null 2>&1; then
+            echo "[ERROR] Dependency unavailable after install on openEuler: stress-ng"
+            return 1
+        fi
+        if ! command -v python3 >/dev/null 2>&1; then
+            echo "[ERROR] Dependency unavailable after install on openEuler: python3"
+            return 1
+        fi
+        if ! python3 -c 'import openpyxl' >/dev/null 2>&1 && ! dnf_install_with_retry python3-openpyxl; then
+            echo "[ERROR] Dependency installation failed on openEuler: python3-openpyxl"
+            return 1
+        fi
+    elif [ -f /etc/redhat-release ]; then
         echo "[INFO] Detected RHEL/CentOS/Rocky/Alma"
 
         repair_centos_linux_8_repos || return 1
@@ -244,6 +270,10 @@ install_deps() {
     fi
 
     if ! python3 -c 'import openpyxl' >/dev/null 2>&1; then
+        if is_openeuler; then
+            echo "[ERROR] Dependency unavailable after install on openEuler: python3-openpyxl"
+            return 1
+        fi
         if [ -f /etc/redhat-release ]; then
             dnf_install_with_retry python3-openpyxl || true
         fi

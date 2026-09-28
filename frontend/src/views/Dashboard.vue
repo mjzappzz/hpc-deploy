@@ -43,12 +43,12 @@
         :row-style="{ cursor: 'pointer' }"
         @row-click="goToTask"
       >
-        <el-table-column prop="task_id" label="任务 ID" width="260" show-overflow-tooltip>
+        <el-table-column prop="task_id" label="任务 ID" :width="isNarrowLayout ? 96 : 260" show-overflow-tooltip>
           <template #default="{ row }">
             <span class="recent-task-column-id">{{ row.task_id }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="任务名称" min-width="360" show-overflow-tooltip>
+        <el-table-column label="任务名称" :min-width="isNarrowLayout ? 140 : 360" show-overflow-tooltip>
           <template #default="{ row }">
             <div class="recent-task-name" :title="formatTaskDisplayName(row)">
               <span>{{ formatTaskDisplayName(row) }}</span>
@@ -61,28 +61,29 @@
                 :params="row.params"
                 :duration-seconds="row.duration_seconds"
               />
+              <StatusTag v-if="isNarrowLayout" :status="row.status" />
             </div>
             <div v-if="row.batch_id" class="recent-task-id">
               <span v-if="row.batch_id" class="recent-task-batch-id">{{ row.batch_id }}</span>
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="服务器" width="110" show-overflow-tooltip>
+        <el-table-column v-if="!isNarrowLayout" label="服务器" width="110" show-overflow-tooltip>
           <template #default="{ row }">
             <span class="recent-task-server">{{ row.server_name }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="类型" width="130" show-overflow-tooltip>
+        <el-table-column v-if="!isNarrowLayout" label="类型" width="130" show-overflow-tooltip>
           <template #default="{ row }">
             <span class="recent-task-type">{{ getTaskCategoryLabel(row) }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="110" align="center">
+        <el-table-column v-if="!isNarrowLayout" label="状态" width="110" align="center">
           <template #default="{ row }">
             <StatusTag :status="row.status" />
           </template>
         </el-table-column>
-        <el-table-column label="创建时间" width="170">
+        <el-table-column v-if="!isNarrowLayout" label="创建时间" width="170">
           <template #default="{ row }">
             {{ formatDateTime(row.created_at) }}
           </template>
@@ -112,12 +113,12 @@
         :row-style="{ cursor: 'pointer' }"
         @row-click="goToTask"
       >
-        <el-table-column prop="task_id" label="任务 ID" width="260" show-overflow-tooltip>
+        <el-table-column prop="task_id" label="任务 ID" :width="isNarrowLayout ? 96 : 260" show-overflow-tooltip>
           <template #default="{ row }">
             <span class="recent-task-column-id">{{ row.task_id }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="任务名称" min-width="360" show-overflow-tooltip>
+        <el-table-column label="任务名称" :min-width="isNarrowLayout ? 140 : 360" show-overflow-tooltip>
           <template #default="{ row }">
             <div v-if="row.kind === 'batch'" class="recent-task-name" :title="row.batch_id">
               <span>{{ formatTaskDisplayName(getBatchDisplayTask(row)) }}</span>
@@ -128,6 +129,7 @@
                 :params="row.params"
                 :duration-seconds="row.duration_seconds"
               />
+              <StatusTag v-if="isNarrowLayout" :status="row.status" />
             </div>
             <div v-else class="recent-task-name" :title="formatTaskDisplayName(row)">
               <span>{{ formatTaskDisplayName(row) }}</span>
@@ -138,6 +140,7 @@
                 :params="row.params"
                 :duration-seconds="row.duration_seconds"
               />
+              <StatusTag v-if="isNarrowLayout" :status="getTaskDisplayStatus(row)" />
             </div>
             <div v-if="row.kind === 'batch'" class="recent-task-id">
               <span class="recent-task-batch-id">成功 {{ row.success }} · 失败 {{ row.failed }} · 取消 {{ row.canceled }}</span>
@@ -147,22 +150,22 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="服务器" width="110" show-overflow-tooltip>
+        <el-table-column v-if="!isNarrowLayout" label="服务器" width="110" show-overflow-tooltip>
           <template #default="{ row }">
             <span class="recent-task-server">{{ row.kind === 'batch' ? (row.servers.join('、') || '-') : row.server_name }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="类型" width="130" show-overflow-tooltip>
+        <el-table-column v-if="!isNarrowLayout" label="类型" width="130" show-overflow-tooltip>
           <template #default="{ row }">
             <span class="recent-task-type">{{ row.kind === 'batch' ? getTaskCategoryLabel(getBatchDisplayTask(row)) : getTaskCategoryLabel(row) }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="110" align="center">
+        <el-table-column v-if="!isNarrowLayout" label="状态" width="110" align="center">
           <template #default="{ row }">
             <StatusTag :status="row.kind === 'batch' ? row.status : getTaskDisplayStatus(row)" />
           </template>
         </el-table-column>
-        <el-table-column label="结束时间" width="170">
+        <el-table-column v-if="!isNarrowLayout" label="结束时间" width="170">
           <template #default="{ row }">
             {{ formatDateTime(row.end_time) }}
           </template>
@@ -193,8 +196,10 @@ const loadError = ref(false)
 const isAutoRefreshing = ref(false)
 const completedTaskDisplayLimit = ref(10)
 const recentBatchAggregationAvailable = ref(false)
+const isNarrowLayout = ref(false)
 let dashboardRefreshTimer: number | undefined
 let dashboardRequestInFlight = false
+let narrowLayoutQuery: MediaQueryList | undefined
 
 const summary = reactive<DashboardSummary>({
   servers: { total: 0, online: 0, offline: 0, unknown: 0, archived: 0 },
@@ -293,7 +298,14 @@ function handleVisibilityChange() {
   startDashboardAutoRefresh()
 }
 
+function syncNarrowLayout() {
+  isNarrowLayout.value = narrowLayoutQuery?.matches ?? false
+}
+
 onMounted(() => {
+  narrowLayoutQuery = window.matchMedia('(max-width: 768px)')
+  syncNarrowLayout()
+  narrowLayoutQuery.addEventListener('change', syncNarrowLayout)
   void loadDashboard()
   document.addEventListener('visibilitychange', handleVisibilityChange)
   if (!document.hidden) startDashboardAutoRefresh()
@@ -301,6 +313,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   stopDashboardAutoRefresh()
+  narrowLayoutQuery?.removeEventListener('change', syncNarrowLayout)
   document.removeEventListener('visibilitychange', handleVisibilityChange)
 })
 </script>
@@ -412,6 +425,31 @@ onUnmounted(() => {
   display: block;
   line-height: 20px;
   white-space: nowrap;
+}
+
+@media (max-width: 768px) {
+  .dashboard-toolbar,
+  .recent-completed-header {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .recent-task-name {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 4px 6px;
+    line-height: 1.35;
+  }
+
+  .recent-task-id {
+    flex-wrap: wrap;
+    line-height: 1.35;
+  }
+
+  :deep(.el-table .cell) {
+    padding-right: 6px;
+    padding-left: 6px;
+  }
 }
 
 /* stat cards */

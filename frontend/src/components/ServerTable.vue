@@ -76,7 +76,7 @@
         <el-tag v-else type="info" size="small">{{ row.tags?.[0] || '已归档服务器' }}</el-tag>
       </template>
     </el-table-column>
-    <el-table-column label="OS" width="130">
+    <el-table-column label="OS" width="130" class-name="server-os-column">
       <template #default="{ row }">
         <el-tag v-if="row.os_info" size="small" type="primary" class="table-os-tag">
           <OsLabel :value="row.os_info" compact />
@@ -367,8 +367,26 @@ function detectButtonTip(row: ServerRecord): string {
 /* ── OS tag column ── */
 .table-os-tag {
   max-width: 110px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  height: auto;
+  min-height: 24px;
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+
+.server-table :deep(.server-os-column .cell),
+.table-os-tag :deep(.el-tag__content),
+.table-os-tag :deep(.os-label__text) {
+  white-space: normal;
+}
+
+.table-os-tag :deep(.el-tag__content),
+.table-os-tag :deep(.os-label__text) {
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.table-os-tag :deep(.os-label__text) {
+  overflow-wrap: anywhere;
+  line-height: 1.25;
 }
 </style>

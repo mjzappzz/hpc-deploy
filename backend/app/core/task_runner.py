@@ -249,7 +249,7 @@ def run_task_stage8b(task_id: str) -> None:
             #   - 报告生成后自动 artifact collection + 状态更新
             #   返回时任务已到达终态或不用额外处理
             db.refresh(task)
-            if task.status not in TERMINAL_TASK_STATUSES:
+            if _should_fail_nonterminal_stress_runner(task):
                 _failure_reason = _resolve_stress_runner_return_failure_reason(task)
                 _add_log(db, task_id, "ERROR", f"stress runner returned nonterminal ({task.status}): {_failure_reason}")
                 _fail_task(db, task_id, _failure_reason)
@@ -1324,6 +1324,25 @@ def _resolve_stress_runner_return_failure_reason(task: Task) -> str:
     if isinstance(persisted_reason, str) and persisted_reason.strip():
         return persisted_reason.strip()[:500]
     return f"stress runner returned before terminal status: {task.status}"
+
+
+def _awaits_stress_control_plane_recovery(task: Task) -> bool:
+    """Return whether a started stress workload must remain RUNNING for SSH recovery."""
+    params = task.params if isinstance(task.params, dict) else {}
+    return (
+        task.task_type == "stress"
+        and task.status == "RUNNING"
+        and params.get(STRESS_REMOTE_STARTED_PARAM_KEY) is True
+        and bool(params.get(STRESS_CONTROL_PLANE_FAILURE_REASON_PARAM_KEY))
+    )
+
+
+def _should_fail_nonterminal_stress_runner(task: Task) -> bool:
+    """Return whether a returned async stress runner has a confirmed terminal failure."""
+    return (
+        task.status not in TERMINAL_TASK_STATUSES
+        and not _awaits_stress_control_plane_recovery(task)
+    )
 
 
 def resume_running_stress_tasks_after_startup() -> int:

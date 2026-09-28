@@ -6,7 +6,7 @@ from app.api.dashboard import _count_server_statuses
 
 
 class DashboardServerStatusTests(unittest.TestCase):
-    def test_unavailable_managed_servers_are_reported_as_offline(self) -> None:
+    def test_dashboard_uses_the_same_persisted_online_status_as_server_management(self) -> None:
         now = datetime.utcnow()
         stats = _count_server_statuses([
             SimpleNamespace(status="online", last_check_at=now),
@@ -16,7 +16,7 @@ class DashboardServerStatusTests(unittest.TestCase):
             SimpleNamespace(status="online", last_check_at=now - timedelta(hours=1, minutes=1)),
         ])
 
-        self.assertEqual(stats, {"total": 5, "online": 1, "offline": 4, "unknown": 0})
+        self.assertEqual(stats, {"total": 5, "online": 2, "offline": 3, "unknown": 0})
 
     def test_archived_servers_are_excluded_from_dashboard_statuses(self) -> None:
         stats = _count_server_statuses([

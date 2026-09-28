@@ -1027,7 +1027,56 @@ html, body, #app {
 /* === content === */
 .app-content {
   flex: 1;
+  min-width: 0;
   padding: 20px 24px;
+}
+
+@media (max-width: 768px) {
+  :root {
+    --sidebar-width: 64px;
+  }
+
+  .app-sidebar {
+    overflow-x: hidden;
+  }
+
+  .brand {
+    justify-content: center;
+    padding: 14px 8px;
+  }
+
+  .brand > div {
+    display: none;
+  }
+
+  .nav-menu .el-menu-item {
+    justify-content: center;
+    min-width: 0;
+    margin: 2px 8px;
+    padding: 0 !important;
+  }
+
+  .nav-menu .el-menu-item > span:not(.settings-gear-slot) {
+    display: none;
+  }
+
+  .nav-menu .el-menu-item .el-icon,
+  .settings-gear-slot {
+    margin-right: 0;
+  }
+
+  .app-main-area {
+    min-width: 0;
+    overflow-x: hidden;
+  }
+
+  .app-topbar {
+    padding: 0 12px;
+  }
+
+  .app-content {
+    padding: 12px;
+  }
 }
 
 

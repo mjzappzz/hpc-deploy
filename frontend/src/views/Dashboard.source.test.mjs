@@ -55,11 +55,14 @@ test('defaults completed display rows to ten and counts aggregate batch rows', a
   assert.match(source, /<el-option :value="50" label="显示 50 条" \/>/)
 })
 
-test('keeps server and type columns compact so task names receive the remaining table width', async () => {
+test('keeps server and type columns on desktop while omitting them on narrow Dashboard layouts', async () => {
   const source = await readFile(new URL('./Dashboard.vue', import.meta.url), 'utf8')
 
-  assert.match(source, /<el-table-column label="服务器" width="110" show-overflow-tooltip>/)
-  assert.match(source, /<el-table-column label="类型" width="130" show-overflow-tooltip>/)
+  assert.match(source, /<el-table-column v-if="!isNarrowLayout" label="服务器" width="110" show-overflow-tooltip>/)
+  assert.match(source, /<el-table-column v-if="!isNarrowLayout" label="类型" width="130" show-overflow-tooltip>/)
+  assert.match(source, /<StatusTag v-if="isNarrowLayout" :status="row\.status" \/>/)
+  assert.match(source, /<StatusTag v-if="isNarrowLayout" :status="getTaskDisplayStatus\(row\)" \/>/)
+  assert.match(source, /window\.matchMedia\('\(max-width: 768px\)'\)/)
 })
 
 test('renders a completed task report failure as failed even when execution finished successfully', async () => {

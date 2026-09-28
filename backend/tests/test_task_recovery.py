@@ -16,6 +16,21 @@ from app.core.task_runner import (
 
 
 class TaskRecoveryTests(unittest.TestCase):
+    def test_control_plane_loss_keeps_started_stress_task_out_of_generic_failure_finalization(self) -> None:
+        task = SimpleNamespace(
+            task_type="stress",
+            status="RUNNING",
+            params={
+                "stress_remote_started": True,
+                "stress_control_plane_failure_reason": (
+                    "stress async: SSH control-plane unavailable; remote task state unconfirmed"
+                ),
+            },
+        )
+
+        self.assertTrue(task_runner._awaits_stress_control_plane_recovery(task))
+        self.assertFalse(task_runner._should_fail_nonterminal_stress_runner(task))
+
     def test_stress_runner_uses_persisted_control_plane_failure_as_terminal_reason(self) -> None:
         task = SimpleNamespace(
             status="RUNNING",

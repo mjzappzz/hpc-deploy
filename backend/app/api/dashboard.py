@@ -1,4 +1,3 @@
-from datetime import datetime, timedelta
 from pathlib import Path
 import shutil
 
@@ -31,24 +30,13 @@ ACTIVE_TASK_STATUSES = (
 )
 COMPLETED_TASK_STATUSES = ("SUCCESS", "FAILED")
 BATCH_TERMINAL_TASK_STATUSES = ("SUCCESS", "FAILED", "CANCELED")
-ONLINE_STATUS_MAX_AGE = timedelta(hours=1)
-
-
 def _count_server_statuses(
     servers: list[Server],
-    *,
-    now: datetime | None = None,
 ) -> dict[str, int]:
-    checked_at = now or datetime.utcnow()
     managed_servers = [server for server in servers if not is_server_archived(server)]
     counts = {"total": len(managed_servers), "online": 0, "offline": 0, "unknown": 0}
     for server in managed_servers:
         status = (server.status or "unknown").lower()
-        if status == "online" and (
-            not server.last_check_at
-            or checked_at - server.last_check_at > ONLINE_STATUS_MAX_AGE
-        ):
-            status = "unknown"
         if status not in {"online", "offline"}:
             status = "offline"
         counts[status] += 1
