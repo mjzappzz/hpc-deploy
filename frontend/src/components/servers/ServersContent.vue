@@ -499,17 +499,50 @@
       v-model="diagnosisVisible"
       :task-id="diagnosisTaskId"
     />
+    <Teleport to="body">
+      <TransitionGroup name="server-notice" tag="div" class="server-detect-notices" appear>
+        <el-alert
+          v-for="notice in detectionNotices"
+          :key="notice.serverId"
+          :type="notice.type"
+          :closable="notice.type === 'error'"
+          :aria-busy="notice.type === 'info'"
+          @close="dismissDetectionNotice(notice.serverId)"
+        >
+          <template #title>
+            <span class="server-detect-notice__title" role="status" aria-live="polite">
+              <span class="server-detect-notice__icon">
+                <Transition name="server-stage" mode="out-in">
+                  <el-icon :key="notice.type">
+                    <Loading v-if="notice.type === 'info'" class="is-loading" />
+                    <CircleCheckFilled v-else-if="notice.type === 'success'" />
+                    <CircleCloseFilled v-else />
+                  </el-icon>
+                </Transition>
+              </span>
+              <span class="server-detect-notice__body">
+                <span class="server-detect-notice__name" :title="notice.serverName">{{ notice.serverName }}</span>
+                <span class="server-detect-notice__stage">
+                  <Transition name="server-stage" mode="out-in">
+                    <span :key="notice.message">{{ notice.message }}</span>
+                  </Transition>
+                </span>
+              </span>
+            </span>
+          </template>
+        </el-alert>
+      </TransitionGroup>
+    </Teleport>
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Refresh } from '@element-plus/icons-vue'
+import { CircleCheckFilled, CircleCloseFilled, Loading, Refresh } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
 import { formatDateTime } from '@/utils/time'
 import { getApiErrorMessage as readApiErrorMessage } from '@/utils/apiError'
-import { getDetectMessage } from '@/composables/useFunMessages'
 import { getTaskCategoryLabel, getTaskNameLabel } from '@/utils/taskPresentation'
 import {
   archiveServer,
@@ -1207,33 +1240,62 @@ async function removeServer(server: ServerRecord) {
   await loadServers()
 }
 
-/** 单台检测：SSH 测试 + 探测信息 */
+type DetectionNotice = { serverId: number; serverName: string; message: string; type: 'info' | 'success' | 'error' }
+const detectionNotices = ref<DetectionNotice[]>([])
+const detectionNoticeTimers = new Map<number, ReturnType<typeof setTimeout>>()
+
+function dismissDetectionNotice(serverId: number) {
+  clearTimeout(detectionNoticeTimers.get(serverId))
+  detectionNoticeTimers.delete(serverId)
+  detectionNotices.value = detectionNotices.value.filter((notice) => notice.serverId !== serverId)
+}
+
+onUnmounted(() => {
+  detectionNoticeTimers.forEach(clearTimeout)
+  detectionNoticeTimers.clear()
+})
+
+/** 单台检测：SSH 测试 + 探测信息，共用一条状态提示。 */
 async function detectOne(server: ServerRecord) {
   if (probingIds.value.includes(server.id)) return
   probingIds.value.push(server.id)
-  ElMessage.info(`${server.name}：${getDetectMessage()}`)
+  dismissDetectionNotice(server.id)
+  const notice = reactive<DetectionNotice>({
+    serverId: server.id,
+    serverName: server.name,
+    message: '正在测试 SSH 连接…',
+    type: 'info',
+  })
+  detectionNotices.value.push(notice)
   try {
     // 1. SSH 测试
     const sshResp = (await testServerSsh(server.id)).data
     if (!sshResp.success) {
-      ElMessage.error(`${server.name} 不理你：${sshResp.error ?? '连接被拒'}`)
+      notice.type = 'error'
+      notice.message = `SSH 连接失败，${sshResp.error ?? '连接被拒绝'}`
       await loadServers()
       return
     }
     // 2. 探测信息
-    ElMessage.info(`${server.name} SSH 通了，${getDetectMessage()}`)
+    notice.message = '正在采集服务器信息…'
     const detectResp = (await detectServer(server.id)).data
     await reloadAndSelectServer(server.id)
     if (detectResp.success) {
-      ElMessage.success(`${server.name} 被彻底拿捏了 ✅`)
+      notice.type = 'success'
+      notice.message = '检测完成，信息已更新'
       detailVisible.value = true
       await refreshDetail()
     } else {
-      ElMessage.error(`${server.name} 倔强不肯配合：${detectResp.last_error ?? detectResp.error ?? '未知错误'}`)
+      notice.type = 'error'
+      notice.message = `服务器信息采集失败，${detectResp.last_error ?? detectResp.error ?? '未知错误'}`
     }
   } catch (error) {
-    ElMessage.error(`${server.name} 傲娇中：${getApiErrorMessage(error)}`)
+    notice.type = 'error'
+    notice.message = `检测失败，${getApiErrorMessage(error)}`
   } finally {
+    if (notice.type === 'success' && detectionNotices.value.includes(notice)) {
+      detectionNoticeTimers.set(server.id, setTimeout(() => dismissDetectionNotice(server.id), 3000))
+    }
     probingIds.value = probingIds.value.filter((id) => id !== server.id)
     await loadServers()
   }
@@ -1478,6 +1540,121 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.server-detect-notices {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6000;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 400px;
+  max-width: calc(100vw - 32px);
+  pointer-events: none;
+}
+
+.server-detect-notices .el-alert {
+  pointer-events: auto;
+  min-height: 42px;
+  padding: 10px 32px 10px 14px;
+  background: var(--el-bg-color-overlay);
+  color: var(--el-text-color-regular);
+  border: 1px solid var(--el-border-color-light);
+  box-shadow: var(--el-box-shadow-light);
+}
+
+.server-detect-notices :deep(.el-alert__content) {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+}
+
+.server-detect-notice__title {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 400;
+  overflow-wrap: anywhere;
+}
+
+.server-detect-notice__icon {
+  display: flex;
+  font-size: 14px;
+  color: var(--el-text-color-secondary);
+  transition: color 200ms ease;
+}
+
+.server-detect-notices .el-alert--success .server-detect-notice__icon {
+  color: var(--el-color-success);
+}
+
+.server-detect-notices .el-alert--error .server-detect-notice__icon {
+  color: var(--el-color-danger);
+}
+
+.server-detect-notice__body {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.server-detect-notice__name {
+  flex-shrink: 0;
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 400;
+}
+
+.server-detect-notice__stage {
+  flex: 1;
+  min-width: 0;
+  display: block;
+  min-height: 20px;
+  font-weight: 400;
+}
+
+.server-stage-enter-active,
+.server-stage-leave-active {
+  transition: opacity 100ms ease;
+}
+
+.server-stage-enter-from,
+.server-stage-leave-to {
+  opacity: 0;
+}
+
+.server-notice-enter-active,
+.server-notice-leave-active {
+  transition: opacity 200ms ease, transform 200ms ease;
+}
+
+.server-notice-enter-from,
+.server-notice-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .server-detect-notice__icon,
+  .server-stage-enter-active,
+  .server-stage-leave-active,
+  .server-notice-enter-active,
+  .server-notice-leave-active {
+    transition: none;
+  }
+
+  .server-detect-notice__icon .is-loading {
+    animation: none;
+  }
+}
+
 .ssh-key-option {
   display: flex;
   flex-direction: column;
