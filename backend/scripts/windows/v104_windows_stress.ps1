@@ -1,8 +1,23 @@
 ﻿#requires -version 5.1
 <#
-NVIDIA GeForce / RTX FurMark2 + y-cruncher + DiskSpd Stability Report v100
+NVIDIA GeForce / RTX FurMark2 + y-cruncher + DiskSpd Stability Report v104
 Windows PowerShell 5.1+
 ASCII-safe script body. Chinese text in HTML is encoded as HTML entities where needed.
+
+V104 workflow output correction:
+- Replace four escaped newline tokens outside strings with actual statement newlines.
+- Restore start/report/completion/no-GPU log messages without CommandNotFoundException.
+- Preserve GPU lifecycle, completion timing and workload parameters.
+
+V103 completion boundary correction:
+- Use the FurMark process StartTime as the GPU timer origin.
+- Judge exited processes by actual ExitTime and ExitCode, never by polling time.
+- Record the planned deadline and successful timed completion.
+
+V102 GPU lifecycle correction:
+- Abort the workflow on premature FurMark exit, startup load timeout or sustained load loss.
+- Preserve GPU failure reason and skip later sequential stages in the report.
+- Check GPU health at most every 5 seconds independently of the CSV sampling interval.
 
 V100 distribution revision:
 - New filename forces Windows browsers and Downloads folders to use the fixed release.
@@ -31,6 +46,10 @@ param(
     [double]$AllHours = 0,
 
     [int]$IntervalSeconds = 5,
+    [ValidateRange(10,900)]
+    [int]$GpuPreparationTimeoutSeconds = 120,
+    [ValidateRange(10,900)]
+    [int]$GpuLoadLossSeconds = 120,
 
     # v90: protect long stress tests from Windows Update reboot interruption
     [bool]$PauseWindowsUpdate = $true,
@@ -259,8 +278,11 @@ $script:DiskThresholdProfile = "Per-drive dynamic disk threshold"
 $script:ToolInfo = @()
 $script:GpuTestStatus = "Not Tested"
 $script:GpuTestReason = ""
+$script:WorkflowGpuFailed = $false
 $script:GpuTestStart = $null
 $script:GpuTestEnd = $null
+$script:GpuPlannedEnd = $null
+$script:GpuProcessExitTime = $null
 $script:GpuActualSeconds = 0
 $script:GpuSkipImmediate = $false
 $script:GpuPowerLimitW = $null
@@ -1518,18 +1540,32 @@ function Get-LhmTelemetrySensors {
     } catch { Log "[LHM] sample failed: $($_.Exception.Message)" }
     return @($items)
 }
+# v101 temperature collector: recognize indexed IPMI names.
+function Get-IpmiCpuTemperatureSensors($Sensors, [string]$Kind) {
+    $pattern = '^(CPU[ _-]*\d*[ _-]*{0}|CPU[ _-]*{0}[ _-]*\d*)$' -f $Kind
+    return @($Sensors | Where-Object {
+        $_.SensorType -eq "Temperature" -and
+        ($_.HardwareType -eq "IPMI" -or $_.HardwareId -match '/ipmi(?:/|$)' -or $_.Hardware -match '(?:^| / )IPMI(?: / |$)') -and
+        $_.Name -match $pattern
+    })
+}
 function Select-CpuTemperatureFromSensors($Sensors) {
     if (!$Sensors -or $Sensors.Count -eq 0) { return $null }
 
-    $temps = @($Sensors | Where-Object { $_.SensorType -eq "Temperature" })
+    $ipmiDts = @(Get-IpmiCpuTemperatureSensors $Sensors "DTS")
+    $temps = @($Sensors | Where-Object { $_.SensorType -eq "Temperature" -and $_ -notin $ipmiDts })
     if ($temps.Count -eq 0) { return $null }
 
     $pick = @()
     if ($PreferIpmiCpuTemp) {
-        $pick = @($temps | Where-Object { $_.Name -match '^(CPU_TEMP_0?[12]|CPU[ _-]?TEMP[ _-]?0?[12]|CPU_AREA_TEMP)$' })
+        $pick = @(Get-IpmiCpuTemperatureSensors $temps "TEMP")
         if ($pick.Count -eq 0) {
-            $pick = @($temps | Where-Object { $_.Name -match 'CPU_TEMP|CPU AREA|CPU_AREA' })
+            $pick = @($temps | Where-Object {
+                ($_.HardwareType -eq "IPMI" -or $_.HardwareId -match '/ipmi(?:/|$)' -or $_.Hardware -match '(?:^| / )IPMI(?: / |$)') -and
+                $_.Name -match '^CPU[ _-]AREA[ _-]TEMP$'
+            })
         }
+        # DTS is retained separately; its vendor-specific meaning is not assumed.
     }
 
     if ($pick.Count -eq 0) {
@@ -1641,6 +1677,7 @@ function Get-CpuTelemetrySample {
     $script:CpuPowerLimitSensorName = ""
 
     $temp = $null
+    $temperatureSensors = @()
     $power = $null
     $powerLimitPercent = $null
 
@@ -1670,6 +1707,16 @@ function Get-CpuTelemetrySample {
             } catch {}
         }
         if ($null -ne $temp) { $script:CpuTempLast = $temp }
+        $ipmiSensors = @(Get-IpmiCpuTemperatureSensors $sensors "TEMP") + @(Get-IpmiCpuTemperatureSensors $sensors "DTS")
+        foreach ($sensor in $ipmiSensors) {
+            $temperatureSensors += [pscustomobject]@{
+                Sensor = "LHM:$($sensor.Hardware):$($sensor.Name)"
+                TempC = $sensor.Value
+            }
+        }
+        if ($null -ne $temp -and $script:CpuTempSensorName -notin @($temperatureSensors | ForEach-Object { $_.Sensor })) {
+            $temperatureSensors += [pscustomobject]@{ Sensor = $script:CpuTempSensorName; TempC = $temp }
+        }
     }
 
     if ($EnableCpuPower) {
@@ -1682,6 +1729,7 @@ function Get-CpuTelemetrySample {
     return [pscustomobject]@{
         TempC = $temp
         TempSensor = $script:CpuTempSensorName
+        TemperatureSensors = @($temperatureSensors)
         PowerW = $power
         PowerSensor = $script:CpuPowerSensorName
         PowerLimitPercent = $powerLimitPercent
@@ -1726,8 +1774,10 @@ function Write-MonitorSample([string]$Phase) {
     $temp = $cpuTelemetry.TempC
     $cpuPower = $cpuTelemetry.PowerW
     $cpuPowerLimitPercent = $cpuTelemetry.PowerLimitPercent
-    if ($null -ne $temp) {
-        Add-Content -Path $CpuSensorCsv -Value ("$ts,$($cpuTelemetry.TempSensor),$temp") -Encoding UTF8
+    foreach ($sensor in $cpuTelemetry.TemperatureSensors) {
+        $row = [pscustomobject]@{ Timestamp = $ts; Sensor = $sensor.Sensor; TempC = $sensor.TempC }
+        $csv = @($row | ConvertTo-Csv -NoTypeInformation)
+        Add-Content -Path $CpuSensorCsv -Value $csv[1] -Encoding UTF8
     }
 
     $gpuCount=0; $gpuUtil=$null; $gpuTemp=$null; $gpuFan=$null; $gpuPower=$null; $gpuMemUsed=0; $gpuMemTotal=0
@@ -1775,7 +1825,8 @@ function Start-FurMarkStress([int]$DurationSeconds) {
         $script:GpuTestEnd = Get-Date
         $script:GpuActualSeconds = 0
         $script:GpuSkipImmediate = $true
-        Stage-Message "[跳过] 未检测到 NVIDIA GPU，跳过GPU压力测试"`n    Log "[GPU] 未检测到 NVIDIA GPU，立即跳过 GPU 压测。"
+        Stage-Message "[跳过] 未检测到 NVIDIA GPU，跳过GPU压力测试"
+        Log "[GPU] 未检测到 NVIDIA GPU，立即跳过 GPU 压测。"
         return @()
     }
 
@@ -1788,7 +1839,7 @@ function Start-FurMarkStress([int]$DurationSeconds) {
     $gpuDir = Join-Path $ReportRoot "furmark_gpu_log"; New-Item -ItemType Directory -Force -Path $gpuDir | Out-Null
     if ([string]::IsNullOrWhiteSpace($FurMarkArgs)) { $args = "--demo furmark-gl --width 1920 --height 1080 --max-time $DurationSeconds --no-score-box --log-gpu-data --export-dir `"$gpuDir`"" } else { $args = $FurMarkArgs -replace '<seconds>',$DurationSeconds }
     Log "[START] FurMark2: `"$exe`" $args"
-    try { $p = Start-Process -FilePath $exe -ArgumentList $args -PassThru; Log "[PID] FurMark2 PID=$($p.Id)"; return @($p) } catch { $script:GpuTestStatus = "Not Tested"; $script:GpuTestReason = "FurMark2 start failed"; $script:GpuTestEnd = Get-Date; $script:GpuActualSeconds = 0; Log "[ERROR] FurMark2 start failed: $($_.Exception.Message)"; return @() }
+    try { $p = Start-Process -FilePath $exe -ArgumentList $args -PassThru; $script:GpuTestStart = $p.StartTime; Log "[PID] FurMark2 PID=$($p.Id)"; return @($p) } catch { $script:GpuTestStatus = "Not Tested"; $script:GpuTestReason = "FurMark2 start failed"; $script:GpuTestEnd = Get-Date; $script:GpuActualSeconds = 0; Log "[ERROR] FurMark2 start failed: $($_.Exception.Message)"; return @() }
 }
 function Write-WorkerScripts {
 @'
@@ -2239,6 +2290,72 @@ function Stop-Procs($Processes) {
 
     Start-Sleep -Seconds 2
 }
+function Get-GpuWorkloadUtilization {
+    try {
+        $raw = @(& nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>$null)
+        if ($LASTEXITCODE -ne 0 -or $raw.Count -eq 0) { return $null }
+        $values = @($raw | ForEach-Object { Num $_ })
+        if (@($values | Where-Object { $null -ne $_ }).Count -ne $raw.Count) { return $null }
+        return ($values | Measure-Object -Maximum).Maximum
+    } catch { return $null }
+}
+function Stop-GpuWorkflow([string]$Reason,$WorkloadEnd=$null) {
+    $script:WorkflowGpuFailed = $true
+    $script:GpuTestStatus = "FAIL"
+    $script:GpuTestEnd = if($null -ne $WorkloadEnd){$WorkloadEnd}else{Get-Date}
+    $script:GpuActualSeconds = [int][math]::Max(0, (New-TimeSpan -Start $script:GpuTestStart -End $script:GpuTestEnd).TotalSeconds)
+    $script:GpuTestReason = "GPU 压测失败：$Reason；失败时间=$($script:GpuTestEnd.ToString('yyyy-MM-dd HH:mm:ss'))；实际运行=$($script:GpuActualSeconds) 秒"
+    Log "[GPU FAIL] $($script:GpuTestReason)"
+    throw $script:GpuTestReason
+}
+function Assert-GpuWorkload($Processes,[bool]$AtPlannedEnd) {
+    $allExited = $true
+    foreach ($process in $Processes) {
+        try {
+            $process.Refresh()
+            $exited = $process.HasExited
+            if(!$exited -and $AtPlannedEnd){
+                $null = $process.WaitForExit(30000)
+                $process.Refresh()
+                $exited = $process.HasExited
+            }
+            $exitCode = if($exited){$process.ExitCode}else{$null}
+            $exitTime = if($exited){$process.ExitTime}else{$null}
+        } catch { Stop-GpuWorkflow "FurMark process inspection failed: $($_.Exception.Message)" }
+        if(!$exited){
+            if($AtPlannedEnd){Stop-GpuWorkflow "FurMark did not exit within 30s after configured duration; PID=$($process.Id); PlannedEnd=$($script:GpuPlannedEnd)"}
+            $allExited=$false;continue
+        }
+        if ($null -eq $exitTime -or $null -eq $script:GpuPlannedEnd -or
+            $exitTime -lt $script:GpuPlannedEnd -or !$script:GpuLoadEstablished -or
+            ($null -ne $script:GpuLowLoadSince -and ($exitTime-$script:GpuLowLoadSince).TotalSeconds -ge $GpuLoadLossSeconds) -or $exitCode -ne 0) {
+            Stop-GpuWorkflow "FurMark exited without successful completion; PID=$($process.Id); ExitCode=$exitCode; ExitTime=$exitTime; PlannedEnd=$($script:GpuPlannedEnd); 退出具体原因未确定" $exitTime
+        }
+        $script:GpuProcessExitTime=$exitTime
+        Log "[GPU COMPLETE] FurMark completed configured duration; PID=$($process.Id); ExitCode=$exitCode; ExitTime=$exitTime; PlannedEnd=$($script:GpuPlannedEnd)"
+    }
+    # Zero utilization after verified normal completion is expected, not load loss.
+    if($allExited -or $AtPlannedEnd){ return }
+    $now = Get-Date
+    $util = Get-GpuWorkloadUtilization
+    if($null -ne $util -and $util -ge 80){
+        $script:GpuLoadEstablished = $true
+        $script:GpuLowLoadSince = $null
+        return
+    }
+    $utilText = if($null -eq $util){"unavailable"}else{"$util%"}
+    if(!$script:GpuLoadEstablished){
+        if(($now - $script:GpuLoadCheckStartedAt).TotalSeconds -ge $GpuPreparationTimeoutSeconds){
+            Stop-GpuWorkflow "GPU load not established within ${GpuPreparationTimeoutSeconds}s; utilization=$utilText"
+        }
+    } else {
+        if($null -eq $script:GpuLowLoadSince){$script:GpuLowLoadSince=$now}
+        if(($now - $script:GpuLowLoadSince).TotalSeconds -ge $GpuLoadLossSeconds){
+            Stop-GpuWorkflow "GPU load lost for ${GpuLoadLossSeconds}s; utilization=$utilText; 持续低于80%或遥测不可用"
+        }
+    }
+}
+
 function Run-Phase([string]$Phase,[int]$DurationSeconds,[bool]$RunGpu,[bool]$RunCpu,[bool]$RunDisk) {
     if ($DurationSeconds -le 0) { Log "[SKIP] Phase=$Phase DurationSeconds=$DurationSeconds"; return }
     Log "============================================================"
@@ -2248,6 +2365,7 @@ function Run-Phase([string]$Phase,[int]$DurationSeconds,[bool]$RunGpu,[bool]$Run
     Log "[PHASE START] $Phase DurationSeconds=$DurationSeconds GPU=$RunGpu CPU=$RunCpu DISK=$RunDisk"
     Log "============================================================"
     $procs=@()
+    $gpuProcs=@()
     if ($RunGpu) {
         $gpuProcs = @(Start-FurMarkStress $DurationSeconds)
         if ($gpuProcs.Count -gt 0) {
@@ -2257,6 +2375,16 @@ function Run-Phase([string]$Phase,[int]$DurationSeconds,[bool]$RunGpu,[bool]$Run
             Log "[PHASE SKIP] $Phase only requested GPU, but no NVIDIA GPU was detected. Skip immediately."
             return
         }
+    }
+    if($RunGpu -and !$script:GpuSkipImmediate){
+        if($gpuProcs.Count -eq 0){ Stop-GpuWorkflow $script:GpuTestReason }
+        $script:GpuPlannedEnd=$script:GpuTestStart.AddSeconds($DurationSeconds)
+        $script:GpuProcessExitTime=$null
+        $script:GpuLoadEstablished=$false
+        $script:GpuLowLoadSince=$null
+        $script:GpuLoadCheckStartedAt=$script:GpuTestStart
+        Log ("[GPU PLAN] Start={0:o}; PlannedEnd={1:o}; DurationSeconds={2}" -f $script:GpuTestStart,$script:GpuPlannedEnd,$DurationSeconds)
+        try { Assert-GpuWorkload $gpuProcs $false } catch { Stop-Procs $procs; throw }
     }
     if ($RunCpu) {
         $script:CpuModuleAttempted = $true
@@ -2323,22 +2451,36 @@ function Run-Phase([string]$Phase,[int]$DurationSeconds,[bool]$RunGpu,[bool]$Run
         Log "[PHASE SKIP] $Phase has no runnable workload. Skip monitoring loop immediately."
         return
     }
-    $phaseStartedAt = Get-Date
+    $phaseStartedAt = if($RunGpu -and !$RunCpu -and !$RunDisk -and $gpuProcs.Count -gt 0){$script:GpuTestStart}else{Get-Date}
     $end=$phaseStartedAt.AddSeconds($DurationSeconds)
     $phaseProgressCheckpoints = @(25, 50, 75)
     $phaseProgressIndex = 0
     Log "[PHASE RUNNING] $Phase 0% elapsed=0s total=${DurationSeconds}s"
-    while((Get-Date) -lt $end) {
-        Write-MonitorSample $Phase
-        $elapsedSeconds = [int]((Get-Date) - $phaseStartedAt).TotalSeconds
-        while ($phaseProgressIndex -lt $phaseProgressCheckpoints.Count -and $elapsedSeconds -ge [int]($DurationSeconds * $phaseProgressCheckpoints[$phaseProgressIndex] / 100)) {
-            $checkpoint = $phaseProgressCheckpoints[$phaseProgressIndex]
-            Log "[PHASE RUNNING] $Phase ${checkpoint}% elapsed=${elapsedSeconds}s total=${DurationSeconds}s"
-            $phaseProgressIndex++
+    $nextSampleAt=$phaseStartedAt
+    try {
+        while((Get-Date) -lt $end) {
+            if($RunGpu -and $gpuProcs.Count -gt 0){ Assert-GpuWorkload $gpuProcs $false }
+            if((Get-Date) -ge $nextSampleAt){
+                Write-MonitorSample $Phase
+                $nextSampleAt=(Get-Date).AddSeconds($IntervalSeconds)
+            }
+            $elapsedSeconds = [int]((Get-Date) - $phaseStartedAt).TotalSeconds
+            while ($phaseProgressIndex -lt $phaseProgressCheckpoints.Count -and $elapsedSeconds -ge [int]($DurationSeconds * $phaseProgressCheckpoints[$phaseProgressIndex] / 100)) {
+                $checkpoint = $phaseProgressCheckpoints[$phaseProgressIndex]
+                Log "[PHASE RUNNING] $Phase ${checkpoint}% elapsed=${elapsedSeconds}s total=${DurationSeconds}s"
+                $phaseProgressIndex++
+            }
+            Start-Sleep -Seconds $(if($RunGpu){[math]::Min(5,$IntervalSeconds)}else{$IntervalSeconds})
         }
-        Start-Sleep -Seconds $IntervalSeconds
+        if($RunGpu -and $gpuProcs.Count -gt 0){
+            if(!$script:GpuLoadEstablished){Stop-GpuWorkflow "GPU load never reached 80% during the planned test"}
+            Assert-GpuWorkload $gpuProcs $true
+        }
+        Write-MonitorSample $Phase
+    } catch {
+        Stop-Procs $procs
+        throw
     }
-    Write-MonitorSample $Phase
     Log "[PHASE RUNNING] $Phase 100% elapsed=${DurationSeconds}s total=${DurationSeconds}s"
     Log "[PHASE STOP] $Phase"
     if ($RunDisk) { Wait-DiskSpdFlush $procs 180 }
@@ -2355,7 +2497,7 @@ function Run-Phase([string]$Phase,[int]$DurationSeconds,[bool]$RunGpu,[bool]$Run
     }
     if ($RunGpu -and $script:GpuTestStatus -eq "Running") {
         $script:GpuTestStatus = "PASS"
-        $script:GpuTestEnd = Get-Date
+        $script:GpuTestEnd = if($null -ne $script:GpuProcessExitTime){$script:GpuProcessExitTime}else{$script:GpuPlannedEnd}
         try { $script:GpuActualSeconds = [int][math]::Round((New-TimeSpan -Start $script:GpuTestStart -End $script:GpuTestEnd).TotalSeconds) } catch { $script:GpuActualSeconds = 0 }
         $script:GpuTestReason = ""
     }
@@ -3064,8 +3206,14 @@ function Build-Report {
     if($hasGpuEvidence){ $gpuEnabled = $true }
     if($hasCpuEvidence){ $cpuEnabled = $true }
     if($hasDiskEvidence){ $diskEnabled = $true }
+    $gpuWorkflowFailure = ($script:WorkflowGpuFailed -and !$script:OfflineRebuildMode)
+    $cpuBlockedByGpu = ($gpuWorkflowFailure -and !$script:CpuModuleAttempted -and !$hasCpuEvidence)
+    $diskBlockedByGpu = ($gpuWorkflowFailure -and !$script:DiskModuleAttempted -and !$hasDiskEvidence)
+    if($cpuBlockedByGpu){$cpuEnabled=$false}
+    if($diskBlockedByGpu){$diskEnabled=$false}
     $script:StatusItems = @()
-    if($gpuEnabled -and !$gpuDetected){ Add-Status $L.GpuPressure "NOT_TESTED" "未检测到 NVIDIA GPU，GPU 压测未执行" $false }
+    if($gpuWorkflowFailure){ Add-Status $L.GpuPressure "FAIL" $script:GpuTestReason $true }
+    elseif($gpuEnabled -and !$gpuDetected){ Add-Status $L.GpuPressure "NOT_TESTED" "未检测到 NVIDIA GPU，GPU 压测未执行" $false }
     elseif(!$gpuEnabled){ Add-Status $L.GpuPressure "NOT_TESTED" $L.GpuNotTestedText $false }
     elseif($gpuTemp -ne $null -and $gpuTemp -ge $GpuTempFailC){ Add-Status $L.GpuPressure "FAIL" ("GPU temp {0} C >= {1} C; critical thermal limit exceeded" -f $gpuTemp,$GpuTempFailC) $true }
     elseif($gpuThermalLimitAvailable -and $gpuTempAvg -ne $null -and $gpuTempAvg -ge $gpuThermalSlowdownC){ Add-Status $L.GpuPressure "FAIL" ("GPU average hottest temperature {0} C >= driver slowdown limit {1} C" -f $gpuTempAvg,$gpuThermalSlowdownC) $true }
@@ -3082,7 +3230,8 @@ function Build-Report {
         elseif($gpuTemp -ne $null -and $gpuTemp -ge $GpuTempFailC -and $gpuFan -lt 60){ Add-Status "Cooling / Fan" "FAIL" ("GPU temp {0} C but fan speed only {1}%; possible cooling control problem" -f $gpuTemp,$gpuFan) $true }
         else{ Add-Status "Cooling / Fan" "PASS" ("GPU fan max: {0}%; effective avg: {1}%; fan telemetry is reference only" -f $gpuFan,$gpuFanAvg) $false }
     }
-    if(!$cpuEnabled){ Add-Status $L.CpuPressure "NOT_TESTED" "CPU stage disabled" $false }
+    if($cpuBlockedByGpu){ Add-Status $L.CpuPressure "NOT_TESTED" "GPU 压测失败，流程停止，CPU/内存未测试" $false }
+    elseif(!$cpuEnabled){ Add-Status $L.CpuPressure "NOT_TESTED" "CPU stage disabled" $false }
     elseif(!$script:CpuModuleExecuted){ Add-Status $L.CpuPressure "FAIL" $script:CpuModuleReason $true }
     elseif($cpuTemp -ne $null -and $cpuTemp -ge $CpuTempFailC){ Add-Status $L.CpuPressure "FAIL" ("CPU temp {0} C >= {1} C; critical thermal limit exceeded" -f $cpuTemp,$CpuTempFailC) $true }
     elseif($cpuMax -ne $null -and $cpuMax -lt 80){ Add-Status $L.CpuPressure "FAIL" ("CPU max utilization {0}% < 80%; CPU stress load did not start correctly" -f $cpuMax) $true }
@@ -3119,8 +3268,9 @@ function Build-Report {
     $diskSpeedSummaryRows = @()
     $diskResultTableRows = ""
     if(!$diskEnabled){
-        Add-Status $L.DiskPressure "NOT_TESTED" $L.DiskLowSpace $false
-        $diskResultTableHtml = "<div class='disk-guide'>磁盘阶段未启用或没有满足空间条件的测试盘。</div>"
+        $diskNotTestedReason = if($diskBlockedByGpu){"GPU 压测失败，流程停止，磁盘未测试"}else{$L.DiskLowSpace}
+        Add-Status $L.DiskPressure "NOT_TESTED" $diskNotTestedReason $false
+        $diskResultTableHtml = if($diskBlockedByGpu){"<div class='disk-guide'>未测试：GPU 压测失败，流程已停止。</div>"}else{"<div class='disk-guide'>磁盘阶段未启用或没有满足空间条件的测试盘。</div>"}
     } else {
         $stabilityMap=@{}
         $throughputMap=@{}
@@ -3267,14 +3417,15 @@ $diskResultTableRows
     }
     $diskTargets = if($reportDiskDrives.Count -gt 0){ ($reportDiskDrives -join ', ') + ' / ' + $DiskFileSize } else { '-' }
     $gpuNotDetected = (!$hasGpuEvidence -and $script:GpuTestStatus -eq "Not Tested" -and $script:GpuTestReason -match "NVIDIA GPU|未检测到")
-    $gpuStatusDisplay = if($hasGpuEvidence){"已测试"} elseif($gpuNotDetected){"未测试（未检测到 NVIDIA GPU）"} elseif([string]::IsNullOrWhiteSpace($script:GpuTestStatus)){"-"} else {$script:GpuTestStatus}
-    $gpuPlanDisplay = if($gpuNotDetected){"未测试"} elseif($null -ne $gpuStageMinutes){"$gpuStageMinutes 分钟"} else {"$GpuMinutes 分钟"}
+    if($gpuWorkflowFailure){$overall="FAIL"; $note=Html $script:GpuTestReason}
+    $gpuStatusDisplay = if($gpuWorkflowFailure){"失败"} elseif($hasGpuEvidence){"已测试"} elseif($gpuNotDetected){"未测试（未检测到 NVIDIA GPU）"} elseif([string]::IsNullOrWhiteSpace($script:GpuTestStatus)){"-"} else {$script:GpuTestStatus}
+    $gpuPlanDisplay = if($null -ne $script:GpuPlannedEnd){"$([math]::Round(($script:GpuPlannedEnd-$script:GpuTestStart).TotalMinutes,2)) 分钟"} elseif($gpuNotDetected){"未测试"} elseif($null -ne $gpuStageMinutes){"$gpuStageMinutes 分钟"} else {"$GpuMinutes 分钟"}
     $cpuPlanDisplay = if($null -ne $cpuStageMinutes){"$cpuStageMinutes 分钟"} else {"$CpuMinutes 分钟"}
-    $gpuActualDisplay = if($hasGpuEvidence){
+    $gpuActualDisplay = if($script:GpuTestStatus -eq "PASS" -and $null -ne $script:GpuPlannedEnd){"$($script:GpuActualSeconds) 秒"} elseif($gpuWorkflowFailure){"$($script:GpuActualSeconds) 秒"} elseif($hasGpuEvidence){
         $gpuStart=Get-MinTime $gpuRows; $gpuEnd=Get-MaxTime $gpuRows
         if($gpuStart -ne $null -and $gpuEnd -ne $null){ "{0} 秒" -f [int][math]::Round((New-TimeSpan -Start $gpuStart -End $gpuEnd).TotalSeconds) } else { "已测试" }
     } elseif($gpuNotDetected){"0 秒"} elseif($script:GpuActualSeconds -gt 0){"$($script:GpuActualSeconds) 秒"} else {"-"}
-    $gpuReasonDisplay = if($hasGpuEvidence){"-"} elseif($gpuNotDetected){"未检测到 NVIDIA GPU"} elseif([string]::IsNullOrWhiteSpace($script:GpuTestReason)){"-"} else {$script:GpuTestReason}
+    $gpuReasonDisplay = if($gpuWorkflowFailure){$script:GpuTestReason} elseif($hasGpuEvidence){"-"} elseif($gpuNotDetected){"未检测到 NVIDIA GPU"} elseif([string]::IsNullOrWhiteSpace($script:GpuTestReason)){"-"} else {$script:GpuTestReason}
     $gpuBackendDisplay = if($hasGpuEvidence){$GpuBackend} elseif($gpuNotDetected){"未测试"} else {$GpuBackend}
     $gpuToolDisplay = if($hasGpuEvidence){"FurMark 2 / Auto GPU stress"} elseif($gpuNotDetected){"未测试"} else {"FurMark 2 / Auto GPU stress"}
     $testInfo=""
@@ -3314,7 +3465,9 @@ $diskResultTableRows
     $cpuTestEnabled = $cpuEnabled
     $diskTestEnabled = $diskEnabled
 
-    $gpuModuleStatus = if($hasGpuEvidence){
+    $gpuModuleStatus = if($gpuWorkflowFailure){
+        "失败：$($script:GpuTestReason)"
+    } elseif($hasGpuEvidence){
         "已测试"
     } elseif(!$gpuTestEnabled){
         "未测试（未启用）"
@@ -3329,7 +3482,9 @@ $diskResultTableRows
         "未测试（$reason）"
     }
 
-    $cpuModuleStatus = if($hasCpuEvidence){
+    $cpuModuleStatus = if($cpuBlockedByGpu){
+        "未测试（GPU 压测失败，流程停止）"
+    } elseif($hasCpuEvidence){
         "已测试"
     } elseif(!$cpuTestEnabled){
         "未测试（未启用）"
@@ -3340,7 +3495,9 @@ $diskResultTableRows
         "未测试（$reason）"
     }
 
-    $diskModuleStatus = if($hasDiskEvidence){
+    $diskModuleStatus = if($diskBlockedByGpu){
+        "未测试（GPU 压测失败，流程停止）"
+    } elseif($hasDiskEvidence){
         "已测试"
     } elseif(!$diskTestEnabled){
         $reason = if($script:SkipDiskPhase -and ![string]::IsNullOrWhiteSpace($script:DiskModuleReason)){$script:DiskModuleReason}else{"未启用"}
@@ -3777,7 +3934,8 @@ Write-MonitorHeader
 Initialize-CpuTemperatureCollector
 
 try {
-    Stage-Message "[运行] 开始执行选择的压力测试任务..."`n    Log "[RUN] Starting selected stress workload..."
+    Stage-Message "[运行] 开始执行选择的压力测试任务..."
+    Log "[RUN] Starting selected stress workload..."
 
     Stage-Message "[准备] 正在准备压测工具..."
     Initialize-StressToolPreparation
@@ -3811,11 +3969,18 @@ try {
         Run-Phase "all" ([int]($DurationHours*3600)) $true $true (!$script:SkipDiskPhase)
         Invoke-DiskThroughputProbeIfNeeded
     }
+} catch {
+    if(!$script:WorkflowGpuFailed){ throw }
+    Log "[WORKFLOW STOP] GPU failure; remaining stages will not run."
 } finally {
-    Stage-Message "[报告] 正在生成测试报告..."`n    Log "[压测完成] 所有测试阶段已结束，正在整理并生成最终报告..."
+    Stage-Message "[报告] 正在生成测试报告..."
+    Log "[报告] 正在整理已有数据并生成最终报告..."
     Merge-BaseReportNonDiskSamples
     Build-Report
     Write-Zip
-    Stage-Message "[完成] 所有测试完成"`n    Log "[完成] HTML报告位置: $HtmlReport"
+    if($script:WorkflowGpuFailed){Stage-Message "[失败] GPU 压测失败，流程已停止，报告已生成"} else {Stage-Message "[完成] 所有测试完成"}
+    Log "[完成] HTML报告位置: $HtmlReport"
     Log "[完成] 压测报告压缩包位置: $ZipPath"
 }
+
+if($script:WorkflowGpuFailed){exit 1}

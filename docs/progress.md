@@ -2,6 +2,9 @@
 
 > 维护流水与会话交接材料。它记录变化背景和待办，不替代 [architecture.md](architecture.md) 中的当前架构、安全边界或 [../deploy/README.md](../deploy/README.md) 中的可执行部署步骤。
 
+- 2026-09-30：Windows 压测脚本由 v100 升级为唯一的 `v101_windows_stress.ps1`（版本从文件名自动识别）。修复 IPMI 优先规则漏掉 `CPU0_TEMP` 的问题：按实际 IPMI 来源匹配 TEMP 索引前后两种命名，多 CPU TEMP 取最大值；DTS 分别存档，不假定其含义等同温度判定值。`cpu_sensors.csv` 保持原三列，改为每来源一行并进行 CSV 转义，保留补测/离线重建兼容；无 TEMP 时仍走已有 AREA/LHM/ThermalZone 回退，不减固定偏移、不修改旧报告结果。新增真实 PowerShell 5.1 隔离回归与 Python CSV 写入契约检查；原版真实命名用例复现选入 123.2°C，v101 PowerShell 5.1 全脚本语法解析及隔离回归通过，脚本资料库 26 项 unittest 和 `git diff --check` 通过；未执行真实机器温度对照。工作区修改，未提交、未构建或发布，未执行真实压测。
+
+
 - 2026-09-17：归档权限调整：普通操作员可将无未结束任务的服务器归档；归档后的服务器仍冻结探测、任务和远端操作；恢复管理继续要求管理员确认。已补充后端权限契约和前端交互回归测试，未发布。
 - 2026-09-17：归档权限调整已完成验证：普通操作员可归档，恢复仍需管理员；后端 306 项、前端源码 20 项测试及生产构建通过。发布待确认。
 
@@ -1093,3 +1096,33 @@ HPCDeploy 已形成完整闭环，端到端链路全部打通：
 - 2026-09-17：按确认发布 Dashboard 批次整体摘要整改；前端构建、Nginx 配置校验、后端重启完成，`hpcdeploy-backend` 与 `nginx` 均为 active。当前会话访问宿主机 `127.0.0.1:10086` 被环境网络隔离，无法独立复核线上 HTTP 响应；发布脚本本身已成功完成。
 - 2026-09-28：为 openEuler 24.03 LTS SP4 的 CPU/内存与磁盘压测补充独立依赖准备路径；`cpu_mem_stress_report.sh`、`disk_stress_report.sh` 升级至 `v2026.09.28.1`。仅使用目标机已配置的 DNF 源，不安装 EPEL 或改动仓库；缺包或安装后不可用时在负载启动前报具体错误。GPU 子任务因目标机无 NVIDIA GPU，不在本次范围。测试前只读检查确认 `ID=openEuler`，DNF 缓存列出 `stress-ng`、`python3-openpyxl`（`EPOL`）、`fio`（`everything`）、`sysstat`（`OS`），当时均未安装。`PYTHONPATH=backend:backend/tests backend/.deps/bin/python -m unittest -v test_openeuler_stress_dependencies test_stress_dependency_retry_policy test_stress_script_stage_contract test_cpu_mem_pressure_safety test_disk_stress_directory_contract test_epel_repo_idempotency` 共 27 项通过，两个脚本 `bash -n`、OpenSpec strict 校验和 `git diff --check` 通过。用户自行执行批次 `batch-20260928-104809-4ba2ca`；平台记录显示 60 秒 CPU/内存与 `/`、`/data` 两个磁盘子任务均为 `SUCCESS`，报告摘要均为 `PASS`，三份 XLSX 非空且 ZIP 结构有效。工作区实现，未发布。
 - 2026-09-28：Dashboard 近期任务表格新增窄屏布局（视口宽度不超过 768px）：收起次要列、在任务名称区保留状态并压缩 ID/名称宽度；应用侧栏和内容区同步收窄，桌面布局不变。新增窄屏回归用例；本次工作区修改尚未发布。
+
+### 2026-10-08 — Windows GPU 提前退出检测 v102
+
+- 内置 Windows 脚本从 v101 升级为唯一的 `v102_windows_stress.ps1`，同步资料库测试、温度测试默认路径、架构与版本引用；版本从文件名写入报告。
+- GPU 阶段检测 FurMark 提前退出及退出码、启动负载超时、持续失载/遥测缺失；失败清理本次负载并终止整个顺序流程，后续 CPU/内存与磁盘不启动。已有满载采样不得覆盖 GPU 失败原因，报告总体失败、后续未测试，脚本返回 1。
+- 独立 GPU 健康轮询按 5 秒执行（采样及命令调用耗时另计）；默认启动与失载容忍各 120 秒，保留原 CSV 采样间隔。缺少 NVIDIA GPU 的跳过行为和历史报告保留。隔离 PowerShell 回归不启动压测工具；工作区修改，未提交、构建或发布。
+
+- 验证：真实 Windows PowerShell 5.1 全脚本语法及隔离 GPU 生命周期、实际 HTML/summary 生成、无采样启动失败、运行中退出清理回归通过；现有 CPU 温度回归通过；脚本资料库 27 项 unittest、Windows 页面源码回归及 `git diff --check` 通过。未执行真实压测。
+
+- 发布验证（2026-10-08）：生产后端直接读取项目脚本目录，Nginx `10086` 的脚本库 API 已仅展示 v102；实际下载 HTTP 200、Content-Disposition 文件名为 `v102_windows_stress.ps1`，SHA256 与工作区逐字节一致。后端健康检查正常。此次脚本资料发布无需前端构建、Nginx 重载或服务重启；未提交 Git，未执行真实压测。
+
+### 2026-10-08 — Windows 正常到时退出误判修复 v103
+
+- 真实 v102 三分钟报告复现：FurMark 23:08:52 启动、23:11:53 检出 ExitCode=0，但脚本 23:08:55 才起算，错误中止后续阶段。v103 以进程 StartTime 计算 GPU 阶段终点，以实际 ExitTime/ExitCode 判定正常完成或提前退出，不增加秒数容差，不按轮询发现时间判断。
+- 三分钟与十二小时的完整隔离阶段均覆盖启动等待和慢采样，正常完成继续后续流程；晚发现的提前退出、运行时退出、非零退出、失载/恢复以及 GPU 失败报告回归保留。GPU 计划时长从配置终点计算，不再显示最后采样跨度作为计划时长；正常实际运行时长使用进程退出时间或计划结束时间。
+- 版本/文件名及测试默认路径升级到 v103；使用暂存目录准备发布，不改线上 v102，不重启服务，不执行真实压测。
+
+- 到时后最多等待 FurMark 正常收尾 30 秒并读取真实退出码；非零退出和收尾超时均失败，提前退出无容差。回归覆盖收尾正常/非零/超时及短暂低负载。验证：Windows PowerShell 5.1 全脚本解析与完整 GPU/报告隔离回归通过，CPU 温度回归通过，脚本资料库 27 项 unittest 通过；未执行真实压测，未发布。
+
+- v103 发布验证：用户单独确认后，将暂存且已测试的脚本切换为线上唯一 Windows 内置版本，保留 v102 回滚副本于暂存目录。生产 Nginx `10086` 的脚本库仅展示 v103；实际下载 HTTP 200、文件名 v103_windows_stress.ps1、SHA256 与验证版一致，后端健康正常。资料库 27 项测试和 `git diff --check` 通过。无需前端构建或服务重启，未提交 Git，未运行真实压测。
+
+### 2026-10-08 — Windows 输出换行错误修复 v104
+
+- 检查真实 v103 `20261008_232847` 报告：GPU 正常退出码 0 后依次完成 CPU/内存、磁盘，Overall=PASS 且 ZIP 完整；报告/ZIP 生成后结束提示执行字符串外的反引号+n，引发 CommandNotFoundException，不影响已完成压测和报告。
+- v104 只修正开始、报告生成、结束及无 GPU 跳过的四处错误换行，恢复独立 Stage-Message/Log 语句；合法字符串内转义、GPU 正常/提前退出判定、负载及报告标准保留。文件名、版本引用、测试默认路径同步升级 v104。
+- 新增真实主流程语句的隔离运行回归：正常顺序完成、GPU 失败停止及无 GPU 跳过均验证无输出命令异常，且 HTML/ZIP 日志和报告生成顺序正确。v103 原版复现 CommandNotFoundException；v104 暂存验证，不修改线上 v103，不运行真实压测。
+
+- 验证：Windows PowerShell 5.1 主流程输出隔离回归、GPU 生命周期/三分钟与十二小时结束边界/实际报告生成回归、全脚本解析及脚本资料库 27 项 unittest 均通过。仅暂存 v104，线上保持 v103；未提交、未构建或发布。
+
+- v104 发布验证：用户单独确认后切换线上唯一 Windows 内置脚本为 v104，保留 v103 回滚副本于暂存目录。Nginx `10086` 脚本库版本为 v104，实际下载 HTTP 200、文件名正确、SHA256 与测试版一致，服务健康正常；发布后 27 项资料库测试及 `git diff --check` 通过。无需前端构建、Nginx 重载或服务重启；未提交 Git，未执行真实压测。
