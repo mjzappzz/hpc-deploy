@@ -1,12 +1,16 @@
 param([string]$ScriptPath,[string]$SourceText)
 $ErrorActionPreference='Stop'
 if(!$SourceText){
- if(!$ScriptPath){$ScriptPath=Join-Path $PSScriptRoot '../scripts/windows/v104_windows_stress.ps1'}
+ if(!$ScriptPath){$ScriptPath=Join-Path $PSScriptRoot '../scripts/windows/v105_windows_stress.ps1'}
  $SourceText=[IO.File]::ReadAllText($ScriptPath)
 }
 $tokens=$null;$errors=$null
 $ast=[System.Management.Automation.Language.Parser]::ParseInput($SourceText,[ref]$tokens,[ref]$errors)
 if($errors.Count){throw ($errors | Out-String)}
+foreach($name in @('Write-GpuErrorDiagnostic','Set-GpuFailureRecord')){
+ $node=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true)
+ Invoke-Expression $node.Extent.Text
+}
 $workflow=@($ast.EndBlock.Statements | Where-Object {
  $_ -is [System.Management.Automation.Language.TryStatementAst] -and $_.Finally.Extent.Text -like '*Build-Report*'
 })

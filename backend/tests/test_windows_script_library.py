@@ -8,18 +8,19 @@ from app.core.task_runner import TaskRunnerError, _resolve_task_library_file
 
 
 class WindowsScriptLibraryTests(unittest.TestCase):
-    def test_latest_windows_stress_script_is_v104(self) -> None:
+    def test_latest_windows_stress_script_is_v105(self) -> None:
         windows_root = Path(__file__).resolve().parents[1] / "scripts" / "windows"
 
-        self.assertTrue((windows_root / "v104_windows_stress.ps1").is_file())
+        self.assertTrue((windows_root / "v105_windows_stress.ps1").is_file())
         self.assertFalse((windows_root / "v99_windows_stress.ps1").exists())
         self.assertFalse((windows_root / "v100_windows_stress.ps1").exists())
         self.assertFalse((windows_root / "v101_windows_stress.ps1").exists())
         self.assertFalse((windows_root / "v102_windows_stress.ps1").exists())
         self.assertFalse((windows_root / "v103_windows_stress.ps1").exists())
+        self.assertFalse((windows_root / "v104_windows_stress.ps1").exists())
 
-    def test_v104_gpu_failure_overrides_sampled_success_and_blocks_later_stages(self) -> None:
-        content = (Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v104_windows_stress.ps1").read_text(encoding="utf-8-sig")
+    def test_v105_gpu_failure_overrides_sampled_success_and_blocks_later_stages(self) -> None:
+        content = (Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v105_windows_stress.ps1").read_text(encoding="utf-8-sig")
         self.assertIn('if($gpuWorkflowFailure){ Add-Status $L.GpuPressure "FAIL" $script:GpuTestReason $true }', content)
         self.assertIn('if($cpuBlockedByGpu){$cpuEnabled=$false}', content)
         self.assertIn('if($diskBlockedByGpu){$diskEnabled=$false}', content)
@@ -28,8 +29,8 @@ class WindowsScriptLibraryTests(unittest.TestCase):
         self.assertIn('Stop-Procs $procs\n        throw', content)
         self.assertIn('未测试（GPU 压测失败，流程停止）', content)
 
-    def test_v104_windows_ipmi_temperature_keeps_sensor_csv_schema_and_records_each_source(self) -> None:
-        content = (Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v104_windows_stress.ps1").read_text(encoding="utf-8-sig")
+    def test_v105_windows_ipmi_temperature_keeps_sensor_csv_schema_and_records_each_source(self) -> None:
+        content = (Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v105_windows_stress.ps1").read_text(encoding="utf-8-sig")
         self.assertIn('"Timestamp,Sensor,TempC" | Out-File $CpuSensorCsv', content)
         self.assertIn('TemperatureSensors = @($temperatureSensors)', content)
         self.assertIn('foreach ($sensor in $cpuTelemetry.TemperatureSensors)', content)
@@ -37,8 +38,8 @@ class WindowsScriptLibraryTests(unittest.TestCase):
         self.assertIn('$csv = @($row | ConvertTo-Csv -NoTypeInformation)', content)
         self.assertIn('Add-Content -Path $CpuSensorCsv -Value $csv[1]', content)
 
-    def test_v104_windows_stress_repairs_outdated_vc_runtime_before_y_cruncher(self) -> None:
-        content = (Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v104_windows_stress.ps1").read_text(encoding="utf-8-sig")
+    def test_v105_windows_stress_repairs_outdated_vc_runtime_before_y_cruncher(self) -> None:
+        content = (Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v105_windows_stress.ps1").read_text(encoding="utf-8-sig")
 
         self.assertIn('$MinimumVCRedistVersion = [version]"14.51.36247.0"', content)
         self.assertIn('System32\\MSVCP140.dll', content)
@@ -49,8 +50,8 @@ class WindowsScriptLibraryTests(unittest.TestCase):
         self.assertIn('[VCREDIST] Verified MSVCP140.dll version:', content)
         self.assertIn('if (!(Ensure-VCRuntime))', content)
 
-    def test_v104_windows_stress_starts_cpu_duration_only_after_y_cruncher_is_ready(self) -> None:
-        content = (Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v104_windows_stress.ps1").read_text(encoding="utf-8-sig")
+    def test_v105_windows_stress_starts_cpu_duration_only_after_y_cruncher_is_ready(self) -> None:
+        content = (Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v105_windows_stress.ps1").read_text(encoding="utf-8-sig")
 
         self.assertIn('[int]$YCruncherPreparationTimeoutSeconds = 900', content)
         self.assertIn('function Wait-YCruncherReady', content)
@@ -69,22 +70,22 @@ class WindowsScriptLibraryTests(unittest.TestCase):
         self.assertIn('$argText = "pause:-2 skip-warnings stress -M:$targetBytes -D:60"', content)
         self.assertNotIn('-TL:$DurationSeconds"', content)
 
-    def test_v104_windows_stress_replaces_only_the_supplemented_phase_and_disk_letters(self) -> None:
-        content = (Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v104_windows_stress.ps1").read_text(encoding="utf-8-sig")
+    def test_v105_windows_stress_replaces_only_the_supplemented_phase_and_disk_letters(self) -> None:
+        content = (Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v105_windows_stress.ps1").read_text(encoding="utf-8-sig")
         self.assertIn("function Get-SupplementPhasePattern", content)
         self.assertIn("Copy-Item -LiteralPath $baseFile.FullName -Destination $currentFile", content)
         self.assertIn("$baseKeep = @($baseRows | Where-Object { $_.Phase -notmatch $phasePattern })", content)
 
-    def test_v104_windows_disk_supplement_renders_preserved_drives_in_html(self) -> None:
-        content = (Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v104_windows_stress.ps1").read_text(encoding="utf-8-sig")
+    def test_v105_windows_disk_supplement_renders_preserved_drives_in_html(self) -> None:
+        content = (Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v105_windows_stress.ps1").read_text(encoding="utf-8-sig")
 
         self.assertIn("function Get-ReportDiskDrives", content)
         self.assertIn("$reportDiskDrives = @(Get-ReportDiskDrives $diskSpd.Details)", content)
         self.assertIn("foreach($d0 in $reportDiskDrives)", content)
         self.assertIn("$diskThresholdHtml = Get-DiskThresholdSummaryHtml $reportDiskDrives", content)
 
-    def test_v104_windows_supplement_html_rebuilds_cpu_and_gpu_from_merged_data(self) -> None:
-        content = (Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v104_windows_stress.ps1").read_text(encoding="utf-8-sig")
+    def test_v105_windows_supplement_html_rebuilds_cpu_and_gpu_from_merged_data(self) -> None:
+        content = (Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v105_windows_stress.ps1").read_text(encoding="utf-8-sig")
 
         self.assertIn('Stage-Row "gpu" $gpuRows', content)
         self.assertIn('Stage-Row "cpu" $cpuRows', content)
@@ -94,8 +95,8 @@ class WindowsScriptLibraryTests(unittest.TestCase):
         self.assertIn('$cpuModuleStatus = if($cpuBlockedByGpu)', content)
         self.assertNotIn("已保留（原报告，未补测）", content)
 
-    def test_v104_windows_supplement_uses_merged_evidence_for_every_report_status(self) -> None:
-        content = (Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v104_windows_stress.ps1").read_text(encoding="utf-8-sig")
+    def test_v105_windows_supplement_uses_merged_evidence_for_every_report_status(self) -> None:
+        content = (Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v105_windows_stress.ps1").read_text(encoding="utf-8-sig")
 
         self.assertIn('$hasGpuEvidence = ($gpuRows.Count -gt 0)', content)
         self.assertIn('$hasCpuEvidence = ($cpuRows.Count -gt 0)', content)
@@ -107,14 +108,14 @@ class WindowsScriptLibraryTests(unittest.TestCase):
         self.assertIn('$cpuModuleReasonDisplay = if($hasCpuEvidence){"-"}', content)
         self.assertIn('$diskModuleReasonDisplay = if($hasDiskEvidence){"-"}', content)
 
-    def test_v104_windows_supplement_uses_configured_cpu_backend_when_merged_cpu_data_exists(self) -> None:
-        content = (Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v104_windows_stress.ps1").read_text(encoding="utf-8-sig")
+    def test_v105_windows_supplement_uses_configured_cpu_backend_when_merged_cpu_data_exists(self) -> None:
+        content = (Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v105_windows_stress.ps1").read_text(encoding="utf-8-sig")
 
         self.assertIn('$effectiveCpuMemBackend = if($hasCpuEvidence -and $script:CpuMemBackendUsed -in @("NotStarted","Unknown")){ $CpuMemBackend }', content)
         self.assertIn('$backendText = if($effectiveCpuMemBackend){$effectiveCpuMemBackend}else{"Unknown"}', content)
 
-    def test_v104_windows_disk_supplement_preserves_report_history_and_complete_tools(self) -> None:
-        content = (Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v104_windows_stress.ps1").read_text(encoding="utf-8-sig")
+    def test_v105_windows_disk_supplement_preserves_report_history_and_complete_tools(self) -> None:
+        content = (Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v105_windows_stress.ps1").read_text(encoding="utf-8-sig")
 
         self.assertIn('function Preserve-BaseDiskHistoryRows', content)
         self.assertIn('function Merge-BaseReportToolInfo', content)
@@ -125,8 +126,8 @@ class WindowsScriptLibraryTests(unittest.TestCase):
         self.assertIn('磁盘顺序读取速度（按盘）', content)
         self.assertIn('Merge-BaseReportToolInfo', content)
 
-    def test_v104_windows_disk_trends_are_collected_and_merged_per_drive(self) -> None:
-        content = (Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v104_windows_stress.ps1").read_text(encoding="utf-8-sig")
+    def test_v105_windows_disk_trends_are_collected_and_merged_per_drive(self) -> None:
+        content = (Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v105_windows_stress.ps1").read_text(encoding="utf-8-sig")
 
         self.assertIn('$DiskDriveIoCsv = Join-Path $LogDir "disk_io_by_drive.csv"', content)
         self.assertIn('function Write-DiskDriveIoSamples', content)
@@ -135,16 +136,16 @@ class WindowsScriptLibraryTests(unittest.TestCase):
         self.assertIn('disk_read_{0}.svg', content)
         self.assertIn('disk_write_{0}.svg', content)
 
-    def test_v104_windows_stress_can_rebuild_html_from_existing_report_data(self) -> None:
-        content = (Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v104_windows_stress.ps1").read_text(encoding="utf-8-sig")
+    def test_v105_windows_stress_can_rebuild_html_from_existing_report_data(self) -> None:
+        content = (Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v105_windows_stress.ps1").read_text(encoding="utf-8-sig")
 
         self.assertIn('[string]$RebuildReportDir = ""', content)
         self.assertIn("function Restore-RebuildReportSource", content)
         self.assertIn("[REBUILD] Rebuilt report from existing data", content)
         self.assertIn("if($script:OfflineRebuildMode)", content)
 
-    def test_v104_windows_stress_deduplicates_partitions_on_the_same_physical_disk(self) -> None:
-        script_path = Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v104_windows_stress.ps1"
+    def test_v105_windows_stress_deduplicates_partitions_on_the_same_physical_disk(self) -> None:
+        script_path = Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v105_windows_stress.ps1"
         content = script_path.read_text(encoding="utf-8-sig")
 
         self.assertIn("function Resolve-PhysicalTestDrives", content)
@@ -153,8 +154,8 @@ class WindowsScriptLibraryTests(unittest.TestCase):
         self.assertIn("[DISK DEDUPE]", content)
         self.assertIn("$script:ResolvedTestDrives = Resolve-PhysicalTestDrives (Resolve-TestDrives)", content)
 
-    def test_v104_windows_stress_skips_only_low_space_disks(self) -> None:
-        script_path = Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v104_windows_stress.ps1"
+    def test_v105_windows_stress_skips_only_low_space_disks(self) -> None:
+        script_path = Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v105_windows_stress.ps1"
         content = script_path.read_text(encoding="utf-8-sig")
 
         self.assertIn("function Assert-TestDrives", content)
@@ -163,8 +164,8 @@ class WindowsScriptLibraryTests(unittest.TestCase):
         self.assertIn("No test drive has enough free space", content)
         self.assertNotIn('free space is not enough for DiskFileSize=$DiskFileSize"; exit 2', content)
 
-    def test_v104_windows_stress_downloads_full_seven_zip_from_internal_mirror(self) -> None:
-        script_path = Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v104_windows_stress.ps1"
+    def test_v105_windows_stress_downloads_full_seven_zip_from_internal_mirror(self) -> None:
+        script_path = Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v105_windows_stress.ps1"
         content = script_path.read_text(encoding="utf-8-sig")
 
         self.assertIn(
@@ -173,8 +174,8 @@ class WindowsScriptLibraryTests(unittest.TestCase):
         )
         self.assertNotIn("https://www.7-zip.org/a/7z2409-x64.exe", content)
 
-    def test_v104_windows_stress_script_automatically_installs_signed_pawnio_when_elevated(self) -> None:
-        script_path = Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v104_windows_stress.ps1"
+    def test_v105_windows_stress_script_automatically_installs_signed_pawnio_when_elevated(self) -> None:
+        script_path = Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v105_windows_stress.ps1"
         content = script_path.read_text(encoding="utf-8-sig")
 
         self.assertIn("function Test-PawnIoSystemInstall", content)
@@ -189,15 +190,15 @@ class WindowsScriptLibraryTests(unittest.TestCase):
         self.assertIn("Test-IsAdministrator", content)
         self.assertIn("Wait-PawnIoInstallation", content)
 
-    def test_v104_windows_report_includes_average_cpu_temperature_in_both_summaries(self) -> None:
-        script_path = Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v104_windows_stress.ps1"
+    def test_v105_windows_report_includes_average_cpu_temperature_in_both_summaries(self) -> None:
+        script_path = Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v105_windows_stress.ps1"
         content = script_path.read_text(encoding="utf-8-sig")
 
         self.assertIn('KeyMetricRow "CPU &#x5E73;&#x5747;&#x6E29;&#x5EA6;" (FmtVal $cpuTempAvg \'C\') $cpuTempJudge', content)
         self.assertIn('MetricItem "CPU 平均温度" (FmtVal (Get-Avg $cpuRows \'CPU_Temperature_C\') \'C\')', content)
 
-    def test_v104_windows_cpu_temperature_marks_only_values_above_95c_as_attention(self) -> None:
-        script_path = Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v104_windows_stress.ps1"
+    def test_v105_windows_cpu_temperature_marks_only_values_above_95c_as_attention(self) -> None:
+        script_path = Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v105_windows_stress.ps1"
         content = script_path.read_text(encoding="utf-8-sig")
 
         self.assertIn("[int]$CpuTempWarnC = 95", content)
@@ -207,8 +208,8 @@ class WindowsScriptLibraryTests(unittest.TestCase):
         self.assertIn("CPU 温度 ≤ ${CpuTempWarnC} C", content)
         self.assertIn("CPU 温度 &gt; ${CpuTempWarnC} C 且 &lt; ${CpuTempFailC} C", content)
 
-    def test_v104_windows_report_includes_average_gpu_telemetry_in_both_summaries(self) -> None:
-        script_path = Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v104_windows_stress.ps1"
+    def test_v105_windows_report_includes_average_gpu_telemetry_in_both_summaries(self) -> None:
+        script_path = Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v105_windows_stress.ps1"
         content = script_path.read_text(encoding="utf-8-sig")
 
         self.assertIn('$gpuTempAvg=Get-Avg $gpuJudgeRows "GPU_Temp_Max_C"', content)
@@ -218,8 +219,8 @@ class WindowsScriptLibraryTests(unittest.TestCase):
         self.assertIn('MetricItem "GPU 平均最高温度" (FmtVal $gpuTempAvg \'C\')', content)
         self.assertIn('MetricItem "GPU 平均总功耗" (FmtVal $gpuPowerAvg \'W\')', content)
 
-    def test_v104_windows_report_uses_detected_power_and_thermal_limits_for_power_metrics(self) -> None:
-        script_path = Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v104_windows_stress.ps1"
+    def test_v105_windows_report_uses_detected_power_and_thermal_limits_for_power_metrics(self) -> None:
+        script_path = Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v105_windows_stress.ps1"
         content = script_path.read_text(encoding="utf-8-sig")
 
         self.assertIn("function Get-GpuHardwareLimits", content)
@@ -237,8 +238,8 @@ class WindowsScriptLibraryTests(unittest.TestCase):
         self.assertNotIn('KeyMetricRow "GPU &#x5E73;&#x5747;&#x6700;&#x9AD8;&#x6E29;&#x5EA6;" (FmtVal $gpuTempAvg \'C\') $judgeNote', content)
         self.assertNotIn('KeyMetricRow "GPU &#x5E73;&#x5747;&#x603B;&#x529F;&#x8017;" (FmtVal $gpuPowerAvg \'W\') $judgeNote', content)
 
-    def test_v104_windows_report_hides_unavailable_dynamic_limit_rows_from_customer_panel(self) -> None:
-        script_path = Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v104_windows_stress.ps1"
+    def test_v105_windows_report_hides_unavailable_dynamic_limit_rows_from_customer_panel(self) -> None:
+        script_path = Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v105_windows_stress.ps1"
         content = script_path.read_text(encoding="utf-8-sig")
 
         self.assertIn("$dynamicThresholdInfo=@()", content)
@@ -250,8 +251,8 @@ class WindowsScriptLibraryTests(unittest.TestCase):
         self.assertNotIn('CPU 动态功耗上限：</b>$(Html $cpuPowerLimitText)', content)
         self.assertNotIn('GPU 动态热降频点：</b>$(Html $gpuThermalLimitText)', content)
 
-    def test_v104_windows_report_falls_back_to_official_cpu_tdp_without_customer_facing_threshold(self) -> None:
-        script_path = Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v104_windows_stress.ps1"
+    def test_v105_windows_report_falls_back_to_official_cpu_tdp_without_customer_facing_threshold(self) -> None:
+        script_path = Path(__file__).resolve().parents[1] / "scripts" / "windows" / "v105_windows_stress.ps1"
         content = script_path.read_text(encoding="utf-8-sig")
 
         self.assertIn("function Get-CpuOfficialTdpW", content)
