@@ -1140,3 +1140,14 @@ HPCDeploy 已形成完整闭环，端到端链路全部打通：
 - v105 实机短测核验：桌面 `10.87.4.106_stress_report_20261009_124936.zip` 完整，Overall=PASS；GPU 配置 600 秒、实际 601 秒，FurMark ExitCode=0 后继续 CPU/内存和磁盘阶段。GPU 有效平均利用率 99.93%、最高 72°C、平均功耗 447.95W；CPU 稳定平均 96.53%、最高 72°C，内存 81.5%；C:/F: 两盘随机和顺序测试完整结束，错误日志为空。每模块配置 10 分钟，CPU 准备时间约 4 分钟另计。此次验证正常结束与阶段衔接，不代表已定位此前约十一小时后的中止原因。
 
 - 2026-10-09 全部强制更新：用户确认同时发布 Windows v105 与 Rocky CUDA 任务缓存修复，执行 `sudo deploy/scripts/redeploy_hpcdeploy.sh --force` 成功。前端 TypeScript 检查与生产构建、Nginx 配置校验通过，后端重启及 Nginx 重载完成；两个服务 active，8000/10086 `/api/health` 均为 ok，线上 v105 下载 SHA256 与已验证版一致。相关 38 项 unittest、Windows 页面源码回归与 `git diff --check` 通过；未执行真实 CUDA 安装或新压测。npm 提示 4 项高危依赖漏洞，本次未修改依赖版本；构建存在大 chunk 提示，不影响此次构建成功。
+
+### 2026-10-09 — 前端高危依赖修复
+
+- npm 审计中的 4 个高危包为 axios、vue、@vue/server-renderer、source-map-js；Vue 两项来自同一 SSR 属性名校验漏洞。Axios 由 1.18.0 升级至 1.20.0，Vue 及配套包由 3.5.38 升级至 3.5.43，source-map-js 由 1.2.1 升级至 1.2.2；同步依赖树中的 PostCSS 8.5.29、nanoid 3.3.20 及编译辅助包，均保持原主版本。package.json 的 Axios/Vue 最低约束同步提高，锁文件更新。
+- npm 安装初步结果与实际包文件版本不一致，重新执行 npm ci 后逐个核验实际版本；只采用重新安装后的验证结果。npm 审计及 npm ci 输出为 0 vulnerabilities，TypeScript 与 Vite 生产构建、33 项前端源码/逻辑回归、git diff --check 通过。生产构建仍有原有大 chunk 与 VueUse 注释提示。
+- 新版依赖下 Playwright 桌面/触屏窄屏共 20 项：18 项通过，2 项旧冒烟断言失败（e2e/smoke.spec.ts:16、40）。两项均要求窄屏下 HPCDeploy 标题可见，而现有 App.vue 在 <=768px 明确隐藏 .brand > div；旧版依赖运行时也复现该断言失败。本次未修改页面或这两项过期测试，保留失败证据于 frontend/test-results/ 与 playwright-report/。
+- 发布状态：工作区依赖与文档修改，frontend/dist 已重新构建；未提交、未推送、未同步 /var/www 线上文件、未重载 Nginx 或重启服务，线上仍为升级前的构建。
+
+- 前端依赖修复发布验证（2026-10-09）：用户单独确认后执行 `sudo ./deploy/scripts/redeploy_frontend_only.sh` 成功，npm ci 审计为 0 vulnerabilities，TypeScript/Vite 构建与 Nginx 配置校验通过；原子发布版本 `20261009-141224`。实际依赖为 Axios 1.20.0、Vue/@vue/server-renderer 3.5.43、source-map-js 1.2.2；线上首页及主 JS 的 SHA256 与 frontend/dist 一致，10086 `/api/health` 返回 ok。后端未重启、Nginx 未重载；历史发布保留供回滚。本次依赖修复已上线，Git 修改尚未提交或推送；两个既有窄屏测试断言仍未改动。
+
+- 前端依赖修复全量强制发布（2026-10-09）：用户确认后执行 `sudo deploy/scripts/redeploy_hpcdeploy.sh --force` 成功，npm ci 审计仍为 0 vulnerabilities，TypeScript/Vite 构建与 Nginx 校验通过；后端重启、Nginx 重载完成，两服务 active，8000/10086 健康检查均 ok，/var/www 线上首页与主 JS 哈希匹配本次构建。保留此前记录的 33 项回归通过、浏览器 18/20 通过和两项既有窄屏断言失败的验证边界。
