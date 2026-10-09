@@ -171,6 +171,7 @@ backend/keys/              # SSH 私钥和同名 .pub 公钥
 - `gpu_driver_runner.py` 管理驱动库、临时上传驱动和安装任务。驱动文件名限制为 `NVIDIA-Linux-x86_64-*.run`，类型为 GeForce / Data Center（RTX Enterprise）；临时文件默认保留 7 天，引用中的文件不会清理。
 - 驱动安装根据探测 OS 选择 Rocky 9 或 Ubuntu 自动化脚本。若已存在可用 `nvidia-smi`，默认跳过；勾选强制安装时才覆盖执行。Rocky 预检不执行全量 `yum update`：当前内核缺少精确 `kernel-devel`/`kernel-headers` 时，默认只给出维护窗口指引；操作员显式启用内核维护后，才在已锁定的同一 Rocky 小版本仓库中安装精确候选内核包、校验根存储 initramfs、重启验证并重新锁定内核。强制路径从 `.run` 安装包探测并固定 NVIDIA 推荐的 `open` 或 `proprietary` 内核模块类型，并使用 `--allow-installation-with-running-driver`，避免非交互任务因模块类型和运行中驱动确认而默认中止。驱动安装器成功但模块尚未激活，或强制替换运行中驱动时，任务进入 `WAITING_REBOOT`，自动重启、重连并以 `nvidia-smi` 实际版本收尾，避免旧内核模块与新用户态库短暂不匹配而误报失败。需要时自动完成 Nouveau 禁用、重启与恢复执行；Ubuntu `.run` 安装器显式使用 `--no-questions --accept-license --ui=none`，避免无终端 SSH 环境因交互 UI 初始化失败。
 - `cuda_toolkit_runner.py` 使用 NVIDIA 官方软件源安装指定 Toolkit；写入 `/etc/profile.d/cuda-<version>.sh` 并维护 `/usr/local/cuda` 软链接。成功后仅以 `nvcc --version` 验证，并在任务日志输出可复制的环境变量。
+- Rocky 9 CUDA 安装器的依赖安装、软件源配置和 Toolkit 安装/强制重装均通过 `--setopt=cachedir=...` 使用安装脚本所在任务目录的 `dnf-cache/`；Toolkit 阶段用 `--refresh` 刷新索引，不执行全局 `dnf clean all`。单次、多服务器、GPU 软件套件和重跑共用此生成器。此隔离用于防止终端或其他任务清理默认 `/var/cache/dnf` 时删除正在校验的 RPM；它不阻止其他进程修改软件源/RPM 数据库，也不保护被直接删除的任务目录。失败缓存留在任务目录，仍需留意任务目录的磁盘占用；已下发的旧安装脚本不会随控制端代码更新自动改变。Ubuntu 安装流程保持原有行为。
 
 ### task runner
 - 基于 `setsid --wait` 启动进程组

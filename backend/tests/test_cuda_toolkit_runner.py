@@ -1,3 +1,7 @@
+import json
+import os
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -10,6 +14,86 @@ from app.core.cuda_toolkit_runner import (
 
 
 class CudaToolkitRunnerTests(unittest.TestCase):
+    def test_rocky_download_survives_external_default_cache_cleanup(self) -> None:
+        for force_install in (False, True):
+            with self.subTest(force_install=force_install), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                task_dir = root / "task with spaces"
+                task_dir.mkdir()
+                bin_dir = root / "bin"
+                bin_dir.mkdir()
+                global_cache = root / "global-cache"
+                global_cache.mkdir()
+                sentinel = global_cache / "unrelated.rpm"
+                sentinel.write_text("other task's package")
+                command_log = root / "dnf-commands.jsonl"
+                # Run the actual generated preparation/install phases with harmless
+                # executables; no root access, network or system packages are used.
+                for name, source in {
+                    "sudo": '#!/bin/bash\nif [[ "${1:-}" == -n ]]; then shift; fi\nexec "$@"\n',
+                    "nvidia-smi": "#!/bin/bash\nexit 0\n",
+                    "dnf": '''#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+default_cache = Path(os.environ["TEST_DEFAULT_CACHE"])
+cache = default_cache
+for arg in args:
+    if arg.startswith("--setopt=cachedir="):
+        cache = Path(arg.split("=", 2)[2])
+with open(os.environ["TEST_COMMAND_LOG"], "a") as log:
+    log.write(json.dumps({"args": args, "cache": str(cache)}) + "\\n")
+if "clean" in args:
+    for package in cache.glob("*.rpm"):
+        package.unlink()
+if "cuda-toolkit-12-8" in args:
+    cache.mkdir(parents=True, exist_ok=True)
+    package = cache / "cuda-cccl.rpm"
+    package.write_text("downloaded")
+    # Model a concurrent plain `dnf clean all` after the download lock
+    # is released, immediately before signature verification.
+    for cached_package in default_cache.glob("*.rpm"):
+        cached_package.unlink()
+    if not package.exists():
+        sys.exit("downloaded RPM disappeared before signature verification")
+''',
+                }.items():
+                    executable = bin_dir / name
+                    executable.write_text(source)
+                    executable.chmod(0o755)
+                script = build_cuda_toolkit_install_script(
+                    "rocky9", "12.8", force_install=force_install
+                ).split("echo '========== [4/4]")[0]
+                installer = task_dir / "cuda-toolkit-install.sh"
+                installer.write_text(script)
+                result = subprocess.run(
+                    ["bash", str(installer)],
+                    cwd=root,  # Cache must follow the installer, not the caller's cwd.
+                    env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                         "TEST_DEFAULT_CACHE": str(global_cache),
+                         "TEST_COMMAND_LOG": str(command_log)},
+                    capture_output=True, text=True, timeout=10,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse(sentinel.exists(), "external cleanup must actually run")
+                self.assertTrue((task_dir / "dnf-cache" / "cuda-cccl.rpm").exists())
+                commands = [json.loads(line) for line in command_log.read_text().splitlines()]
+                self.assertTrue(all(c["cache"] == str(task_dir / "dnf-cache") for c in commands))
+                self.assertFalse(any("clean" in c["args"] for c in commands))
+                self.assertIn("reinstall" if force_install else "install", commands[-1]["args"])
+                self.assertIn("--refresh", commands[-1]["args"])
+
+    def test_generated_installers_have_valid_shell_syntax(self) -> None:
+        for profile in ("rocky9", "ubuntu2204", "ubuntu2404"):
+            for force_install in (False, True):
+                with self.subTest(profile=profile, force_install=force_install):
+                    result = subprocess.run(
+                        ["bash", "-n"], input=build_cuda_toolkit_install_script(
+                            profile, "12.8", force_install=force_install
+                        ), capture_output=True, text=True, timeout=10,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_supported_os_profiles_are_rocky9_ubuntu22_and_ubuntu24(self) -> None:
         self.assertEqual(resolve_cuda_toolkit_os_profile("Rocky Linux 9.4 (Blue Onyx)"), "rocky9")
         self.assertEqual(resolve_cuda_toolkit_os_profile("Ubuntu 22.04.5 LTS"), "ubuntu2204")

@@ -193,13 +193,16 @@ def build_cuda_toolkit_install_script(os_profile: str, version: str, *, force_in
     package_suffix = version.replace(".", "-")
     package_name = f"cuda-toolkit-{package_suffix}"
     if os_profile == "rocky9":
-        repository_steps = """sudo dnf -y install dnf-plugins-core ca-certificates curl
-sudo dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel9/x86_64/cuda-rhel9.repo
-sudo dnf clean all"""
+        # DNF releases its download lock before signature verification. Keep
+        # packages outside the default cache so a default-cache clean cannot remove them.
+        repository_steps = """CUDA_DNF_CACHE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/dnf-cache"
+sudo dnf --setopt="cachedir=$CUDA_DNF_CACHE_DIR" -y install dnf-plugins-core ca-certificates curl
+sudo dnf --setopt="cachedir=$CUDA_DNF_CACHE_DIR" config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel9/x86_64/cuda-rhel9.repo"""
+        dnf_command = 'sudo dnf --setopt="cachedir=$CUDA_DNF_CACHE_DIR" --refresh -y'
         install_command = (
-            f"sudo dnf -y reinstall {package_name}"
+            f"{dnf_command} reinstall {package_name}"
             if force_install
-            else f"sudo dnf -y install {package_name}"
+            else f"{dnf_command} install {package_name}"
         )
     elif os_profile in {"ubuntu2204", "ubuntu2404"}:
         distro = os_profile
