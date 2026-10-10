@@ -1,13 +1,13 @@
 param([string]$ScriptPath, [string]$SourceText)
 $ErrorActionPreference = 'Stop'
 if(!$SourceText){
- if(!$ScriptPath){$ScriptPath=Join-Path $PSScriptRoot '../scripts/windows/v105_windows_stress.ps1'}
+ if(!$ScriptPath){$ScriptPath=Join-Path $PSScriptRoot '../scripts/windows/v104_windows_stress.ps1'}
  $SourceText=[IO.File]::ReadAllText($ScriptPath)
 }
 $tokens=$null; $errors=$null
 $ast=[System.Management.Automation.Language.Parser]::ParseInput($SourceText,[ref]$tokens,[ref]$errors)
 if($errors.Count){throw ($errors | Out-String)}
-foreach($name in @('Write-GpuErrorDiagnostic','Set-GpuFailureRecord','Assert-GpuWorkload','Stop-GpuWorkflow','Run-Phase')){
+foreach($name in @('Assert-GpuWorkload','Stop-GpuWorkflow','Run-Phase')){
  $node=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true)
  if(!$node){throw "Missing function: $name"}
  Invoke-Expression $node.Extent.Text
@@ -201,7 +201,7 @@ function Out-File {
 $LogDir='C:\mock';$ChartDir='C:\mock';$ReportRoot='C:\mock'
 $MonitorCsv='C:\mock\monitor.csv';$DiskDriveIoCsv='C:\mock\disk.csv'
 $HtmlReport='C:\mock\report.html';$SummaryTxt='C:\mock\summary.txt';$ZipPath='C:\mock\report.zip'
-$StartTime=Get-Date;$ScriptBuild='v105'
+$StartTime=Get-Date;$ScriptBuild='v104'
 $script:ResolvedTestDrives=@();$script:DiskDriveProfiles=@{};$script:ToolInfo=@()
 $script:GpuPowerLimitW=450;$script:WorkflowGpuFailed=$true;$script:OfflineRebuildMode=$false
 $script:GpuTestReason='FurMark exited; ExitCode=7; reason unknown'
@@ -213,14 +213,6 @@ if($script:Outputs[$HtmlReport] -notlike '*ExitCode=7*'){throw 'Failure reason a
 $gpu=@($script:StatusItems | Where-Object { $_.Status -eq 'FAIL' -and $_.Participate })
 if($gpu.Count -ne 1){throw 'Unexecuted stages incorrectly failed'}
 if(@($script:StatusItems | Where-Object { $_.Status -eq 'NOT_TESTED' }).Count -lt 3){throw 'Later stages not marked untested'}
-# The recovered record must also survive the actual customer HTML/summary builder.
-$script:GpuTestStart=[datetime]'2026-10-09T00:04:41.0062579'
-Set-GpuFailureRecord 'original handler error' ([datetime]'2026-10-09T11:17:32')
-$script:Outputs=@{}
-Build-Report
-if($script:Outputs[$HtmlReport] -notlike '*original handler error*' -or $script:Outputs[$HtmlReport] -notlike '*40371*'){throw 'Recovered reason/duration absent from real HTML'}
-if($script:Outputs[$SummaryTxt] -notlike 'Overall=FAIL*'){throw 'Recovered GPU failure changed overall status'}
-$script:GpuTestReason='FurMark exited; ExitCode=7; reason unknown'
 'PASS: real report builder preserves GPU failure and excludes unexecuted stages'
 
 # Failed launch has no samples but still must fail the GPU and overall report.

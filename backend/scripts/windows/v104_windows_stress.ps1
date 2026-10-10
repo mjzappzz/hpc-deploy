@@ -1,14 +1,8 @@
 ﻿#requires -version 5.1
 <#
-NVIDIA GeForce / RTX FurMark2 + y-cruncher + DiskSpd Stability Report v105
+NVIDIA GeForce / RTX FurMark2 + y-cruncher + DiskSpd Stability Report v104
 Windows PowerShell 5.1+
 ASCII-safe script body. Chinese text in HTML is encoded as HTML entities where needed.
-
-V105 GPU failure diagnostics:
-- Preserve the failure reason before calculating timestamps and elapsed duration.
-- Log original workflow exception type, message, error ID, position and script stack.
-- Recover partially written failure records before generating the report.
-- Keep workload deadlines, failure criteria and sequential abort behavior unchanged.
 
 V104 workflow output correction:
 - Replace four escaped newline tokens outside strings with actual statement newlines.
@@ -2305,35 +2299,12 @@ function Get-GpuWorkloadUtilization {
         return ($values | Measure-Object -Maximum).Maximum
     } catch { return $null }
 }
-function Write-GpuErrorDiagnostic($ErrorRecord) {
-    Log ("[GPU ERROR] Type={0}; Message={1}; ErrorId={2}; Position={3}; Stack={4}; Exception={5}" -f `
-        $ErrorRecord.Exception.GetType().FullName, $ErrorRecord.Exception.Message, `
-        $ErrorRecord.FullyQualifiedErrorId, $ErrorRecord.InvocationInfo.PositionMessage, `
-        $ErrorRecord.ScriptStackTrace, $ErrorRecord.Exception.ToString())
-}
-function Set-GpuFailureRecord([string]$Reason,$WorkloadEnd=$null) {
+function Stop-GpuWorkflow([string]$Reason,$WorkloadEnd=$null) {
     $script:WorkflowGpuFailed = $true
     $script:GpuTestStatus = "FAIL"
-    if([string]::IsNullOrWhiteSpace($Reason)){ $Reason = "GPU workflow exception; trigger unknown" }
-    # Preserve the primary reason before any timestamp or duration calculation.
-    $script:GpuTestReason = "GPU 压测失败：$Reason"
-    $script:GpuActualSeconds = $null
-    try {
-        $script:GpuTestEnd = if($null -ne $WorkloadEnd){[datetime]$WorkloadEnd}else{Get-Date}
-        if($null -ne $script:GpuTestStart){
-            $elapsed = ($script:GpuTestEnd - [datetime]$script:GpuTestStart).TotalSeconds
-            $script:GpuActualSeconds = [int][math]::Round([math]::Max([double]0, [double]$elapsed))
-        } else {
-            $script:GpuActualSeconds = 0
-        }
-        $script:GpuTestReason += "；失败时间=$($script:GpuTestEnd.ToString('yyyy-MM-dd HH:mm:ss'))；实际运行=$($script:GpuActualSeconds) 秒"
-    } catch {
-        $script:GpuTestReason += "；时间记录异常=$($_.Exception.Message)；实际时长无法计算"
-        Write-GpuErrorDiagnostic $_
-    }
-}
-function Stop-GpuWorkflow([string]$Reason,$WorkloadEnd=$null) {
-    Set-GpuFailureRecord $Reason $WorkloadEnd
+    $script:GpuTestEnd = if($null -ne $WorkloadEnd){$WorkloadEnd}else{Get-Date}
+    $script:GpuActualSeconds = [int][math]::Max(0, (New-TimeSpan -Start $script:GpuTestStart -End $script:GpuTestEnd).TotalSeconds)
+    $script:GpuTestReason = "GPU 压测失败：$Reason；失败时间=$($script:GpuTestEnd.ToString('yyyy-MM-dd HH:mm:ss'))；实际运行=$($script:GpuActualSeconds) 秒"
     Log "[GPU FAIL] $($script:GpuTestReason)"
     throw $script:GpuTestReason
 }
@@ -2350,11 +2321,7 @@ function Assert-GpuWorkload($Processes,[bool]$AtPlannedEnd) {
             }
             $exitCode = if($exited){$process.ExitCode}else{$null}
             $exitTime = if($exited){$process.ExitTime}else{$null}
-        } catch {
-            $inspectionError = $_
-            Write-GpuErrorDiagnostic $inspectionError
-            Stop-GpuWorkflow "FurMark process inspection failed: $($inspectionError.Exception.Message)"
-        }
+        } catch { Stop-GpuWorkflow "FurMark process inspection failed: $($_.Exception.Message)" }
         if(!$exited){
             if($AtPlannedEnd){Stop-GpuWorkflow "FurMark did not exit within 30s after configured duration; PID=$($process.Id); PlannedEnd=$($script:GpuPlannedEnd)"}
             $allExited=$false;continue
@@ -3454,7 +3421,7 @@ $diskResultTableRows
     $gpuStatusDisplay = if($gpuWorkflowFailure){"失败"} elseif($hasGpuEvidence){"已测试"} elseif($gpuNotDetected){"未测试（未检测到 NVIDIA GPU）"} elseif([string]::IsNullOrWhiteSpace($script:GpuTestStatus)){"-"} else {$script:GpuTestStatus}
     $gpuPlanDisplay = if($null -ne $script:GpuPlannedEnd){"$([math]::Round(($script:GpuPlannedEnd-$script:GpuTestStart).TotalMinutes,2)) 分钟"} elseif($gpuNotDetected){"未测试"} elseif($null -ne $gpuStageMinutes){"$gpuStageMinutes 分钟"} else {"$GpuMinutes 分钟"}
     $cpuPlanDisplay = if($null -ne $cpuStageMinutes){"$cpuStageMinutes 分钟"} else {"$CpuMinutes 分钟"}
-    $gpuActualDisplay = if($script:GpuTestStatus -eq "PASS" -and $null -ne $script:GpuPlannedEnd){"$($script:GpuActualSeconds) 秒"} elseif($gpuWorkflowFailure){if($null -eq $script:GpuActualSeconds){"无法计算（详见失败原因）"}else{"$($script:GpuActualSeconds) 秒"}} elseif($hasGpuEvidence){
+    $gpuActualDisplay = if($script:GpuTestStatus -eq "PASS" -and $null -ne $script:GpuPlannedEnd){"$($script:GpuActualSeconds) 秒"} elseif($gpuWorkflowFailure){"$($script:GpuActualSeconds) 秒"} elseif($hasGpuEvidence){
         $gpuStart=Get-MinTime $gpuRows; $gpuEnd=Get-MaxTime $gpuRows
         if($gpuStart -ne $null -and $gpuEnd -ne $null){ "{0} 秒" -f [int][math]::Round((New-TimeSpan -Start $gpuStart -End $gpuEnd).TotalSeconds) } else { "已测试" }
     } elseif($gpuNotDetected){"0 秒"} elseif($script:GpuActualSeconds -gt 0){"$($script:GpuActualSeconds) 秒"} else {"-"}
@@ -4003,12 +3970,7 @@ try {
         Invoke-DiskThroughputProbeIfNeeded
     }
 } catch {
-    $gpuWorkflowError = $_
     if(!$script:WorkflowGpuFailed){ throw }
-    if([string]::IsNullOrWhiteSpace($script:GpuTestReason)){
-        Set-GpuFailureRecord "GPU failure handler exception: $($gpuWorkflowError.Exception.Message)" $script:GpuTestEnd
-    }
-    Write-GpuErrorDiagnostic $gpuWorkflowError
     Log "[WORKFLOW STOP] GPU failure; remaining stages will not run."
 } finally {
     Stage-Message "[报告] 正在生成测试报告..."

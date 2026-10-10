@@ -1,4 +1,4 @@
-param([string]$ScriptPath = (Join-Path $PSScriptRoot '../scripts/windows/v105_windows_stress.ps1'), [string]$SourceText)
+param([string]$ScriptPath = (Join-Path $PSScriptRoot '../scripts/windows/v104_windows_stress.ps1'), [string]$SourceText)
 $ErrorActionPreference = 'Stop'
 $tokens = $null; $parseErrors = $null
 if (!$SourceText) { $SourceText = [IO.File]::ReadAllText($ScriptPath) }

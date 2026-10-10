@@ -1,9 +1,9 @@
-param([string]$SourceText)
+﻿param([string]$SourceText)
 $ErrorActionPreference='Stop'
 $tokens=$null;$errors=$null
 $ast=[System.Management.Automation.Language.Parser]::ParseInput($SourceText,[ref]$tokens,[ref]$errors)
 if($errors.Count){throw ($errors | Out-String)}
-foreach($name in @('Write-GpuErrorDiagnostic','Set-GpuFailureRecord','Stop-GpuWorkflow','Assert-GpuWorkload')){
+foreach($name in @('Resolve-FurMarkVulkanDevice','Get-FurMarkFailureDetail','Get-FurMarkLaunchText','Get-FurMarkGlEnvironment','Copy-FurMarkDiagnosticLogs','Confirm-FurMarkWorkloadRenderer','Write-GpuErrorDiagnostic','Set-GpuFailureRecord','Stop-GpuWorkflow','Assert-GpuWorkload')){
  $node=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true)
  if($node){Invoke-Expression $node.Extent.Text}
 }
@@ -50,6 +50,7 @@ function Merge-BaseReportNonDiskSamples {}
 function Build-Report {
  if($script:GpuTestReason -notlike '*original inspection exception*' -or $script:GpuActualSeconds -ne 40371){throw 'Partial failure state reached report without repair'}
 }
+function Copy-FurMarkDiagnosticLogs {}
 function Write-Zip {}
 $Mode='staged';$AllHours=0;$FastScanOnly=$false;$GpuMinutes=723
 $HtmlReport='mock.html';$ZipPath='mock.zip'
