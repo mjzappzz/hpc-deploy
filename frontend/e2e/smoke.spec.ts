@@ -3,6 +3,20 @@ import { expect, test } from '@playwright/test'
 const ordinaryRoutes = ['/', '/servers', '/task-runner', '/history', '/windows-stress', '/scripts', '/ops-commands', '/settings']
 
 test.describe('运维控制台浏览器冒烟验证', () => {
+  test('煤球在线上方对齐 Windows 压测图标', async ({ page }) => {
+    await page.goto('/windows-stress', { waitUntil: 'domcontentloaded' })
+    const soot = page.locator('.soot-companion')
+    await expect(soot).toHaveClass(/is-sidebar/)
+    await expect.poll(async () => {
+      const box = (await soot.boundingBox())!
+      const line = (await page.locator('.nav-menu-admin').boundingBox())!
+      return line.y - box.y - box.height
+    }).toBeCloseTo(18)
+    const box = (await soot.boundingBox())!
+    const icon = (await page.locator('.nav-menu-admin .el-menu-item .el-icon').first().boundingBox())!
+    expect(box.x + box.width / 2).toBeCloseTo(icon.x + icon.width / 2)
+  })
+
   test('桌面与触屏窄视口均能加载导航，并保留截图证据', async ({ page }, testInfo) => {
     const consoleErrors: string[] = []
     const uncaughtErrors: string[] = []

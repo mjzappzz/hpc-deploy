@@ -1,6 +1,28 @@
 # HPCDeploy 项目进度记录
 
+- 2026-10-12：用户要求全量强制更新并推送远端，执行 `sudo deploy/scripts/redeploy_hpcdeploy.sh --force` 成功。npm ci 审计 0 vulnerabilities，TypeScript/Vite 构建及 Nginx 配置校验通过；后端已重启（PID 138733）、Nginx 已重载，两服务 active，8000/10086 健康接口均 ok。线上首页、主 JS、主 CSS 与本次构建 SHA256 一致；煤球源码及 diff 检查通过，保留此前桌面/窄屏浏览器回归通过的验证结果。本次煤球行为、定位、文字间距及配套回归/文档整理为 Git 提交，按用户授权推送 `origin/main`。
+
+- 2026-10-12：用户单独回复 1 后，执行 `sudo ./deploy/scripts/redeploy_frontend_only.sh` 发布煤球上方文字上移 8px 的间距调整，版本 `20261012-092952`。npm ci 审计 0 vulnerabilities，TypeScript/Vite 构建及 Nginx 配置校验通过；线上首页、主 JS、主 CSS 与构建 SHA256 一致，健康接口 ok。后端 PID 92233、Nginx PID 396 保持不变且 active；未重载 Nginx、未重启服务。保留 `20261012-091413` 可回滚，未提交、未推送 Git。
+
+- 2026-10-12：按用户反馈，侧栏煤球上方的对话气泡/状态文字上移 8px，增加与头部的空隙；窄屏仍沿用向右展开布局。桌面/窄屏位置及气泡可读性 4 项浏览器回归、TypeScript/生产构建通过。仅更新工作区与构建产物，未提交、未推送、未发布；线上仍为 `20261012-091413`。
+
+- 2026-10-12：用户单独回复 1 后，执行 `sudo ./deploy/scripts/redeploy_frontend_only.sh` 发布煤球对齐 Windows 压测图标的位置调整，版本 `20261012-091413`。npm ci 审计 0 vulnerabilities，TypeScript/Vite 构建与 Nginx 配置校验通过；线上首页、主 JS、主 CSS 与构建 SHA256 一致，10086 健康接口 ok。后端 PID 92233、Nginx PID 396 保持不变且 active；未重载 Nginx、未重启服务。旧版本 `20261012-090010` 保留可回滚，未提交、未推送 Git。
+
+- 2026-10-12：用户澄清煤球应在左下分隔线上方对齐 Windows 压测图标；横向定位改为读取该菜单图标中心，保留两侧安全边距和距线 18px 的高度，不再按侧栏中心左移固定距离。桌面/窄屏实际页面及组件对齐、气泡可读性 4 项浏览器回归通过。此次调整仅工作区及构建产物，未提交、未推送、未发布；线上仍为 `20261012-090010`。
+
+- 2026-10-12：用户单独回复 1 确认后，执行 `sudo ./deploy/scripts/redeploy_frontend_only.sh` 发布煤球左移 32px 的调整，原子发布版本 `20261012-090010`。npm ci 审计 0 vulnerabilities，TypeScript/Vite 构建及 Nginx 配置校验通过；10086 线上首页、主 JS 与主 CSS 的 SHA256 均与构建一致，健康接口 ok。后端 PID 92233、Nginx PID 396 均保持不变且 active；未重载 Nginx、未重启服务。保留 `20261010-175815` 供回滚；未提交、未推送 Git。
+
 > 维护流水与会话交接材料。它记录变化背景和待办，不替代 [architecture.md](architecture.md) 中的当前架构、安全边界或 [../deploy/README.md](../deploy/README.md) 中的可执行部署步骤。
+
+- 2026-10-10：按用户要求，将分隔线上方的煤球从中央向左移动 32px，脚底仍距线 18px；窄屏保留至少 12px 左边距，桌面气泡继续在侧栏居中以保持可读。桌面/触屏组件与实际页面位置回归 4 项、煤球源码检查、TypeScript/生产构建及 diff 检查通过。工作区与 `frontend/dist` 已更新，未提交、未推送、未发布；线上仍为 `20261010-175815`。
+
+- 2026-10-10：按用户要求，将煤球默认位置移至侧栏 Windows 压测菜单上方分隔线中央，脚底距线 18px；依据实际侧栏与菜单边界定位，侧栏宽度、菜单高度或窗口尺寸变化时同步回位。自主移动限制在侧栏范围并避让菜单项，桌面气泡保持侧栏居中、窄屏气泡向右展开；菜单间无足够空间或不存在侧栏时保留原安全位置。桌面/触屏 22 项组件及实际应用浏览器回归、8 项煤球源码检查、TypeScript/生产构建和 diff 检查通过。此次位置调整已更新工作区与 `frontend/dist`，未提交、未推送、未发布，线上仍为 `20261010-174643`。
+
+- 2026-10-10：用户单独确认后，执行 `sudo ./deploy/scripts/redeploy_frontend_only.sh` 发布煤球侧栏位置，版本 `20261010-175815`。npm ci 审计 0 vulnerabilities、TypeScript/Vite 构建与 Nginx 配置校验通过；10086 线上首页、主 JS 和主 CSS 与构建哈希一致，健康接口 ok，后端 PID 92233 保持不变，Nginx 与后端均 active。保留 `20261010-174643` 可回滚，未重载 Nginx、未重启后端，未提交或推送 Git。
+
+- 2026-10-10：用户确认煤球方案 2，增强眼神与边缘活动。全局 `AppCritters.vue` 增加鼠标瞳孔跟随、眨眼、递进四连击台词、斜眼/躲闪/装死偷睁眼与恢复、成功蓄力跳；空闲时随机探头、伸懒腰、追脚及右侧/底部短距离溜达后回位，夜间降低动作频率，气泡不随身体旋转。活动路径检查按钮、输入、链接、表格与视口边界，动态遮挡/视口变化回位；弹窗、失败/取消、后台标签页和减少动效清理动作与定时器，动作样式按既有优先级互斥。实际组件隔离 Playwright 桌面/触屏 12 项、实际应用全部普通路由及成功/失败/危险 UI 集成 4 项、前端源码回归 20 个文件、TypeScript/生产构建与 diff 检查通过；构建保留既有大 chunk/第三方注释提示。工作区及 `frontend/dist` 已更新，未提交、未推送、未同步 `/var/www`，未重载 Nginx 或重启服务，发布待单独确认。
+
+- 2026-10-10：煤球优化经用户单独确认后，执行 `sudo ./deploy/scripts/redeploy_frontend_only.sh`，前端原子发布版本 `20261010-174643`。npm ci 审计 0 vulnerabilities，TypeScript/Vite 构建与 Nginx 配置校验通过；10086 线上首页及主 JS 的 SHA256 与本次构建一致，健康接口返回 ok，后端 PID 仍为 92233，Nginx 与后端均 active。旧前端 `20261009-141224` 保留可回滚；未重载 Nginx、未重启后端，未提交或推送 Git。
 
 - 2026-09-30：Windows 压测脚本由 v100 升级为唯一的 `v101_windows_stress.ps1`（版本从文件名自动识别）。修复 IPMI 优先规则漏掉 `CPU0_TEMP` 的问题：按实际 IPMI 来源匹配 TEMP 索引前后两种命名，多 CPU TEMP 取最大值；DTS 分别存档，不假定其含义等同温度判定值。`cpu_sensors.csv` 保持原三列，改为每来源一行并进行 CSV 转义，保留补测/离线重建兼容；无 TEMP 时仍走已有 AREA/LHM/ThermalZone 回退，不减固定偏移、不修改旧报告结果。新增真实 PowerShell 5.1 隔离回归与 Python CSV 写入契约检查；原版真实命名用例复现选入 123.2°C，v101 PowerShell 5.1 全脚本语法解析及隔离回归通过，脚本资料库 26 项 unittest 和 `git diff --check` 通过；未执行真实机器温度对照。工作区修改，未提交、未构建或发布，未执行真实压测。
 

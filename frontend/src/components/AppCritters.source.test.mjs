@@ -66,8 +66,8 @@ test('keeps roast output pointed at systems and silent for failure or danger', (
 })
 
 test('separates hover jelly feedback from spoken interaction', () => {
-  assert.match(source, /@mouseenter="playJelly"/)
-  assert.match(source, /@focus="playJelly"/)
+  assert.match(source, /@mouseenter="handleHover"/)
+  assert.match(source, /@focus="handleFocus"/)
   assert.match(source, /@click="respond\('manual'\)"/)
   assert.match(source, /is-manual-action/)
   assert.match(source, /manualToken/)
