@@ -40,7 +40,7 @@ class EnvironmentMaintenanceScriptTests(unittest.TestCase):
     def test_aocc_openmpi_installer_is_idempotent(self) -> None:
         content = _script("install_openmpi_4.1.6_aocc_aocl.sh")
 
-        self.assertIn('SCRIPT_VERSION="1.1.0"', content)
+        self.assertIn('SCRIPT_VERSION="1.1.1"', content)
         self.assertIn("aocc_is_ready", content)
         self.assertIn("aocl_is_ready", content)
         self.assertIn("openmpi_is_ready", content)
@@ -48,6 +48,12 @@ class EnvironmentMaintenanceScriptTests(unittest.TestCase):
         self.assertIn("AOCL 已安装，跳过安装", content)
         self.assertIn("OpenMPI 4.1.6 已安装，跳过编译", content)
         self.assertIn("verify_amd_installation", content)
+        self.assertIn('OPENMPI_BUILD_LOG="${DOWNLOAD_DIR}/openmpi-build.log"', content)
+        self.assertIn('OPENMPI_INSTALL_LOG="${DOWNLOAD_DIR}/openmpi-install.log"', content)
+        self.assertIn('make -j"$(nproc)" >"${OPENMPI_BUILD_LOG}" 2>&1', content)
+        self.assertIn('make install >"${OPENMPI_INSTALL_LOG}" 2>&1', content)
+        self.assertIn('tail -n 80 "${OPENMPI_BUILD_LOG}"', content)
+        self.assertIn('tail -n 80 "${OPENMPI_INSTALL_LOG}"', content)
 
     def test_lock_linux_release_has_safe_scope(self) -> None:
         content = _script("lock_linux_release.sh")

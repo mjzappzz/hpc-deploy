@@ -1913,6 +1913,9 @@ def _monitor_detached_command(
         )
         exit_code = _read_remote_exit_code(executor, exit_file)
         if exit_code is not None:
+            offset = _drain_detached_command_log(
+                db, executor, task_id, log_file, offset, skip_existing=existing
+            )
             _add_log(db, task_id, "SYSTEM", f"command exited with code {exit_code}")
             if finalize:
                 _finalize_detached_command(db, task, task_id, exit_code)
@@ -1920,6 +1923,9 @@ def _monitor_detached_command(
         if _is_remote_pid_alive(executor, pid_file) is False:
             sleep(1)
             exit_code = _read_remote_exit_code(executor, exit_file)
+            offset = _drain_detached_command_log(
+                db, executor, task_id, log_file, offset, skip_existing=existing
+            )
             if finalize:
                 _finalize_detached_command(db, task, task_id, exit_code)
             return exit_code

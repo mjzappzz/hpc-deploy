@@ -226,6 +226,39 @@ class TaskRecoveryTests(unittest.TestCase):
                 (Path(temp_dir) / "task.log").read_text(encoding="utf-8"),
             )
 
+    @patch("app.core.task_runner._finalize_detached_command")
+    @patch("app.core.task_runner._add_log")
+    @patch("app.core.task_runner._read_remote_exit_code", return_value=0)
+    @patch("app.core.task_runner._drain_detached_command_log", side_effect=[100, 160])
+    def test_detached_monitor_drains_log_once_more_before_success_finalization(
+        self,
+        drain_log: Mock,
+        read_exit_code: Mock,
+        add_log: Mock,
+        finalize: Mock,
+    ) -> None:
+        task = SimpleNamespace(
+            task_id="task-detached-tail",
+            status="RUNNING",
+            remote_work_dir="/tmp/task-detached-tail",
+        )
+        db = Mock()
+
+        result = task_runner._monitor_detached_command(
+            db,
+            Mock(),
+            task,
+            task.task_id,
+            timeout_seconds=60,
+        )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(drain_log.call_count, 2)
+        self.assertEqual(drain_log.call_args_list[1].args[4], 100)
+        read_exit_code.assert_called_once()
+        finalize.assert_called_once_with(db, task, task.task_id, 0)
+        self.assertTrue(any(call.args[3] == "command exited with code 0" for call in add_log.call_args_list))
+
     @patch("app.core.task_runner._schedule_stress_recovery_retry")
     @patch("app.core.task_runner._fail_running_stress_task")
     @patch("app.core.task_runner._add_log")

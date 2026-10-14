@@ -399,6 +399,8 @@
 - 修正多服务器任务模型：普通脚本、MPI 环境、单项压测、Apptainer、GPU 驱动和 CUDA Toolkit 均按服务器创建独立单次任务，返回 `task_ids` 且 `batch_id` 为空；只有同服务器包含多个有序步骤的基础环境、GPU 软件和压测套件才创建批次。多服务器单动作提交后进入历史任务视图并按本次 `task_ids` 精确展示。
 - `install_oneapi_2022.sh` 升级至 v1.1.0：重复执行时分别检测已安装的 MKL、编译器和 Intel MPI，完整组件跳过下载/安装并进入严格验证，修复安装器以 “already installed” 返回 1 导致任务误报失败。批次详情中的 MPI 子任务名称复用单次任务规则，显示“Intel oneAPI 2022”或“AMD OpenMPI 4.1.6”，模块仍显示“MPI 编译环境配置”。
 - 横向修复 `install_openmpi_4.1.6_aocc_aocl.sh` 同类幂等问题并升级至 v1.1.0：AOCC、AOCL、OpenMPI 分组件探测，目标环境完整时不再重复下载、安装或编译；最终验证由宽松 `which ... || true` 提升为必需命令、AOCL 库和 OpenMPI wrapper 严格校验。
+- `install_openmpi_4.1.6_aocc_aocl.sh` 升级至 v1.1.1：OpenMPI 的 `make` 与 `make install` 详细输出分别写入下载目录的构建/安装日志，正常任务仅记录阶段摘要；失败时保留对应日志最后 80 行，避免编译明细写入数万条任务日志，同时保留可定位的错误证据。
+- 修复 detached 普通脚本在检测到远端结束后未再次读取 `task.log` 而漏失日志尾部的问题；终态前按偏移补读，环境变量和验证命令等结束阶段输出会完整进入任务日志。历史任务 `task-20261012-171225-bcc246` 已补回经远端日志核验的命令块。
 - 修复后端重启后普通脚本和 CUDA Toolkit 恢复监控遇到一次 SSH/channel 超时便误判 FAILED：临时连接失败保持 RUNNING，60 秒后重新附着并继续读取远端 PID、日志和退出码；GPU 驱动与压测已有重试路径并经横向核查保留。
 - 修复多服务器任务创建后跳转历史页展示范围错误：单动作创建结果将本次全部 `task_ids` 带入路由并由任务列表接口精确过滤；多步骤套件继续携带全部 `batch_ids` 并由批次列表精确过滤。即使某台服务器瞬间完成，也仍保留在本次结果中。
 - 批次列表与详情的 MPI 展示复用单次任务业务分类：oneAPI 模块显示“Intel oneAPI 2022”、AMD 模块显示“AMD OpenMPI 4.1.6”，类型/主题统一显示“MPI 编译环境配置”，不再因底层 `task_type=script` 误显示“基础环境配置”。

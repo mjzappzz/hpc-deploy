@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-SCRIPT_VERSION="1.1.0"
+SCRIPT_VERSION="1.1.1"
 
 # ============================================================
 # OpenMPI 4.1.6 + AOCC 4.1.0 + AOCL 4.1.0 Auto Installer
@@ -50,6 +50,8 @@ AOCL_UBUNTU_FILE="aocl-linux-aocc-4.1.0_1_amd64.deb"
 
 OPENMPI_FILE="openmpi-4.1.6.tar.gz"
 OPENMPI_SRC_DIR="openmpi-4.1.6"
+OPENMPI_BUILD_LOG="${DOWNLOAD_DIR}/openmpi-build.log"
+OPENMPI_INSTALL_LOG="${DOWNLOAD_DIR}/openmpi-install.log"
 
 # ============================================================
 # 内网下载地址
@@ -520,12 +522,22 @@ else
         --enable-mpi-fortran=all
 
     echo
-    echo "[INFO] make -j$(nproc)"
-    make -j"$(nproc)"
+    echo "[INFO] 编译 OpenMPI（完整输出写入 ${OPENMPI_BUILD_LOG}）"
+    if ! make -j"$(nproc)" >"${OPENMPI_BUILD_LOG}" 2>&1; then
+        echo "[ERROR] OpenMPI 编译失败，以下为 ${OPENMPI_BUILD_LOG} 最后 80 行："
+        tail -n 80 "${OPENMPI_BUILD_LOG}"
+        exit 1
+    fi
+    echo "[INFO] OpenMPI 编译完成（$(wc -l < "${OPENMPI_BUILD_LOG}") 行详细输出已写入构建日志）"
 
     echo
-    echo "[INFO] make install"
-    make install
+    echo "[INFO] 安装 OpenMPI（完整输出写入 ${OPENMPI_INSTALL_LOG}）"
+    if ! make install >"${OPENMPI_INSTALL_LOG}" 2>&1; then
+        echo "[ERROR] OpenMPI 安装失败，以下为 ${OPENMPI_INSTALL_LOG} 最后 80 行："
+        tail -n 80 "${OPENMPI_INSTALL_LOG}"
+        exit 1
+    fi
+    echo "[INFO] OpenMPI 安装完成（$(wc -l < "${OPENMPI_INSTALL_LOG}") 行详细输出已写入安装日志）"
 fi
 
 echo
