@@ -1,7 +1,14 @@
+from pathlib import Path
+import subprocess
+import tempfile
+
 from types import SimpleNamespace
 import unittest
+from unittest.mock import Mock, patch
 
 from app.api.tasks import MANAGED_SUITE_ACTIONS, _build_managed_suite_batch_ids, _managed_suite_effective_tasks
+from app.core import task_runner
+from app.core.task_runner import _script_command
 from app.schemas.task import GpuDriverBatchRunRequest, GpuDriverRunRequest, ManagedSuiteCreateRequest
 
 
@@ -80,6 +87,76 @@ class ManagedSuiteContractTests(unittest.TestCase):
         effective = _managed_suite_effective_tasks(tasks)
 
         self.assertEqual([task.task_id for task in effective], ["task-first", "task-retry"])
+
+
+    def test_base_system_batch_uses_sudo_stdin_without_logging_password(self) -> None:
+        for name in ("disable_linux_lock_sleep.sh", "lock_linux_release.sh"):
+            task = SimpleNamespace(
+                file_name=name, file_path=f"scripts/mpi/{name}", task_type="script", server_id=132,
+                batch_id="batch-base-system", params={"__managed_suite_kind": "base_system"},
+                remote_work_dir="/tmp/managed-suite", status="RUNNING", start_time=None,
+            )
+            db = Mock()
+            db.get.return_value = SimpleNamespace(password="private-sudo-password")
+            executor = Mock()
+            executor.exec_simple.return_value = "1000"
+            executor.exec_sudo.return_value = (0, "", "")
+            with (
+                patch.object(task_runner, "_ensure_task_not_canceled"),
+                patch.object(task_runner, "_set_status"),
+                patch.object(task_runner, "_add_log") as add_log,
+                patch.object(task_runner, "_monitor_detached_command") as monitor,
+            ):
+                task_runner._execute_command_task(db, executor, task, "task-one", _script_command(task))
+            command = executor.exec_sudo.call_args.args[0]
+            self.assertIn(f"bash ./{name}", command)
+            self.assertIn("nohup setsid -f", command)
+            self.assertEqual(executor.exec_sudo.call_args.kwargs["password"], "private-sudo-password")
+            self.assertNotIn("private-sudo-password", command)
+            self.assertNotIn("private-sudo-password", str(add_log.call_args_list))
+            monitor.assert_called_once()
+
+            executor.exec_sudo.return_value = (1, "", "Sorry, try again.")
+            with (
+                patch.object(task_runner, "_ensure_task_not_canceled"),
+                patch.object(task_runner, "_set_status"),
+                patch.object(task_runner, "_add_log"),
+                patch.object(task_runner, "_monitor_detached_command") as monitor,
+                self.assertRaises(task_runner.TaskRunnerError),
+            ):
+                task_runner._execute_command_task(db, executor, task, "task-one", _script_command(task))
+            monitor.assert_not_called()
+
+            executor.exec_simple.return_value = "0"
+            executor.exec_sudo.reset_mock()
+            with (
+                patch.object(task_runner, "_ensure_task_not_canceled"),
+                patch.object(task_runner, "_set_status"),
+                patch.object(task_runner, "_add_log"),
+                patch.object(task_runner, "_monitor_detached_command"),
+            ):
+                task_runner._execute_command_task(db, executor, task, "task-one", _script_command(task))
+            executor.exec_sudo.assert_not_called()
+
+    def test_single_script_and_other_managed_scripts_keep_unprivileged_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            (directory / "lock_linux_release.sh").write_text("printf 'ran-as-ssh-user\\n'\n", encoding="utf-8")
+            (directory / "other.sh").write_text("printf 'other-script\\n'\n", encoding="utf-8")
+            for name, batch_id, params in (
+                ("lock_linux_release.sh", None, {}),
+                ("other.sh", "batch-other", {"__managed_suite_kind": "base_system"}),
+            ):
+                task = SimpleNamespace(
+                    file_name=name, file_path=f"scripts/mpi/{name}",
+                    batch_id=batch_id, params=params,
+                )
+                result = subprocess.run(
+                    ["bash", "-c", _script_command(task)], cwd=directory,
+                    text=True, capture_output=True, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("ran-as-ssh-user" if batch_id is None else "other-script", result.stdout)
 
 
 if __name__ == "__main__":

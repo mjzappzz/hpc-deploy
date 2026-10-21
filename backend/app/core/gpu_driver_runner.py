@@ -410,29 +410,54 @@ def _connect(executor: SSHExecutor, server: Server) -> None:
                      key_path=server.key_path, password=server.password)
 
 
-def _run_script(executor: SSHExecutor, remote_dir: str, script: str, timeout_seconds: int, log_line) -> int:
+def _run_script(executor: SSHExecutor, remote_dir: str, script: str, timeout_seconds: int, log_line, *, password: str | None) -> int:
     encoded = base64.b64encode(script.encode("utf-8")).decode("ascii")
-    command = f"printf %s {shell_quote(encoded)} | base64 -d | bash"
-    return executor.exec_command_in_dir(command, remote_dir, timeout_seconds=timeout_seconds,
-                                        on_stdout_line=log_line, on_stderr_line=log_line)
+    command = f"umask 022 && printf %s {shell_quote(encoded)} | base64 -d | bash"
+    return executor.exec_sudo_in_dir(command, remote_dir, password=password, timeout_seconds=timeout_seconds,
+                                     on_stdout_line=log_line, on_stderr_line=log_line)
 
 
-def _schedule_reboot(executor: SSHExecutor) -> None:
+def _schedule_reboot(executor: SSHExecutor, *, password: str | None) -> None:
     # The background shell lets this SSH command return successfully before the
     # host goes away.  The following disconnect is therefore expected.
-    executor.exec_simple("sudo bash -c '( sleep 3; systemctl reboot ) >/dev/null 2>&1 &'")
+    code, output, error = executor.exec_sudo(
+        "( sleep 3; systemctl reboot ) </dev/null >/dev/null 2>&1 &",
+        password=password, timeout_seconds=15,
+    )
+    if code != 0:
+        raise RuntimeError(f"could not schedule NVIDIA driver reboot with sudo: {error or output or f'exit code {code}'}")
+
+def _restore_default_kernel(executor: SSHExecutor, previous_default: str, *, password: str | None) -> None:
+    code, output, error = executor.exec_sudo(
+        f"grubby --set-default {shell_quote(previous_default)}",
+        password=password, timeout_seconds=30,
+    )
+    if code != 0:
+        raise RuntimeError(f"could not restore previous Rocky boot kernel with sudo: {error or output or f'exit code {code}'}")
 
 
-def _start_remote_install(executor: SSHExecutor, remote_dir: str, install_script: str | None = None) -> None:
+def _start_remote_install(
+    executor: SSHExecutor, remote_dir: str, install_script: str | None = None, *, password: str | None
+) -> None:
     encoded = base64.b64encode((install_script or build_rocky9_install_script()).encode("utf-8")).decode("ascii")
-    command = (
+    upload_command = (
         f"cd {shell_quote(remote_dir)} && "
         f"printf %s {shell_quote(encoded)} | base64 -d > gpu-driver-install.sh && "
-        "chmod 700 gpu-driver-install.sh && "
-        "{ nohup bash -c 'bash ./gpu-driver-install.sh; rc=$?; printf \"%s\\n\" \"$rc\" > .gpu-driver.exit; exit \"$rc\"' "
-        "</dev/null > gpu-driver-install.log 2>&1 & echo $! > .gpu-driver.pid; }"
+        "chmod 700 gpu-driver-install.sh"
     )
-    executor.exec_simple(command)
+    code, output, error = executor.exec_capture(upload_command, timeout_seconds=30)
+    if code != 0:
+        raise RuntimeError(f"could not upload NVIDIA installer script: {error or output or f'exit code {code}'}")
+    launch_command = (
+        f"cd {shell_quote(remote_dir)} && umask 022 && command -v setsid >/dev/null && "
+        "command -v nohup >/dev/null && rm -f .gpu-driver.exit .gpu-driver.activation-reboot-required && "
+        "{ nohup setsid bash -c 'bash ./gpu-driver-install.sh; rc=$?; printf \"%s\\n\" \"$rc\" > .gpu-driver.exit; exit \"$rc\"' "
+        "</dev/null > gpu-driver-install.log 2>&1 & pid=$!; "
+        "printf '%s\\n' \"$pid\" > .gpu-driver.pid; printf '%s\\n' \"$pid\" > .hpcdeploy.pid; }"
+    )
+    code, output, error = executor.exec_sudo(launch_command, password=password, timeout_seconds=30)
+    if code != 0:
+        raise RuntimeError(f"could not launch NVIDIA installer with sudo: {error or output or f'exit code {code}'}")
 
 
 def _read_boot_id(executor: SSHExecutor) -> str:
@@ -447,29 +472,32 @@ def _read_remote_required_file(executor: SSHExecutor, path: str) -> str:
     return value
 
 
-def _run_rocky_release_lock(executor: SSHExecutor, remote_dir: str, task_id: str, db) -> None:
+def _run_rocky_release_lock(executor: SSHExecutor, remote_dir: str, task_id: str, db, *, password: str | None) -> None:
     if not GPU_DRIVER_RELEASE_LOCK_SCRIPT.is_file():
         raise RuntimeError("Rocky release lock script is unavailable")
     script = GPU_DRIVER_RELEASE_LOCK_SCRIPT.read_text(encoding="utf-8")
     _log(db, task_id, "SYSTEM", "relocking Rocky release and the verified running kernel")
     encoded = base64.b64encode(script.encode("utf-8")).decode("ascii")
-    command = f"printf %s {shell_quote(encoded)} | base64 -d | sudo -n bash"
-    result = executor.exec_command_in_dir(
+    command = f"umask 022 && printf %s {shell_quote(encoded)} | base64 -d | bash"
+    result = executor.exec_sudo_in_dir(
         command,
         remote_dir,
+        password=password,
         timeout_seconds=1800,
         on_stdout_line=lambda line: _log(db, task_id, "INFO", line),
         on_stderr_line=lambda line: _log(db, task_id, "INFO", line),
     )
     if result != 0:
-        raise RuntimeError(f"Rocky release lock exited with code {result}")
+        raise RuntimeError(f"Rocky release lock (sudo) exited with code {result}")
 
 
 def kernel_maintenance_boot_matches(*, candidate: str, running_kernel: str) -> bool:
     return bool(candidate) and candidate == running_kernel
 
 
-def _prepare_rocky_kernel_maintenance_reboot(db, task: Task, executor: SSHExecutor) -> tuple[str, str]:
+def _prepare_rocky_kernel_maintenance_reboot(
+    db, task: Task, executor: SSHExecutor, *, password: str | None
+) -> tuple[str, str]:
     if not task.remote_work_dir:
         raise RuntimeError("remote work directory is missing")
     result = _run_script(
@@ -478,9 +506,10 @@ def _prepare_rocky_kernel_maintenance_reboot(db, task: Task, executor: SSHExecut
         build_rocky9_kernel_maintenance_script(),
         7200,
         lambda line: _log(db, task.task_id, "INFO", line),
+        password=password,
     )
     if result != 0:
-        raise RuntimeError(f"Rocky kernel maintenance exited with code {result}")
+        raise RuntimeError(f"Rocky kernel maintenance (sudo) exited with code {result}")
     candidate = _read_remote_required_file(executor, f"{task.remote_work_dir.rstrip('/')}/.gpu-driver.kernel-candidate")
     previous_default = _read_remote_required_file(executor, f"{task.remote_work_dir.rstrip('/')}/.gpu-driver.kernel-default-before")
     boot_id = _read_boot_id(executor)
@@ -496,7 +525,7 @@ def _prepare_rocky_kernel_maintenance_reboot(db, task: Task, executor: SSHExecut
     )
     _set_status(db, task, "WAITING_REBOOT")
     _log(db, task.task_id, "SYSTEM", f"boot-safe Rocky kernel {candidate} prepared; rebooting to verify it")
-    _schedule_reboot(executor)
+    _schedule_reboot(executor, password=password)
     return candidate, previous_default
 
 
@@ -521,7 +550,7 @@ def _wait_for_reboot(db, task: Task, server: Server, executor: SSHExecutor) -> b
     return False
 
 
-def _monitor_remote_install(db, task: Task, executor: SSHExecutor) -> bool:
+def _monitor_remote_install(db, task: Task, executor: SSHExecutor, *, password: str | None) -> bool:
     if not task.remote_work_dir:
         raise RuntimeError("remote work directory is missing")
     exit_file = f"{task.remote_work_dir.rstrip('/')}/.gpu-driver.exit"
@@ -534,7 +563,10 @@ def _monitor_remote_install(db, task: Task, executor: SSHExecutor) -> bool:
             return False
         code, output, _err = executor.exec_capture(
             f"if test -f {shell_quote(exit_file)}; then cat {shell_quote(exit_file)}; "
-            f"elif test -f {shell_quote(pid_file)} && kill -0 \"$(cat {shell_quote(pid_file)})\" 2>/dev/null; then echo RUNNING; "
+            f"elif test -f {shell_quote(pid_file)}; then "
+            f"pid=$(cat {shell_quote(pid_file)}); "
+            "case \"$pid\" in ''|*[!0-9]*) echo MISSING ;; "
+            "*) if test -d \"/proc/$pid\"; then echo RUNNING; else echo MISSING; fi ;; esac; "
             "else echo MISSING; fi",
             timeout_seconds=15,
         )
@@ -571,7 +603,7 @@ def _monitor_remote_install(db, task: Task, executor: SSHExecutor) -> bool:
                 _set_status(db, task, "WAITING_REBOOT")
                 reason = "NVIDIA driver module is not active" if activation_reboot_required else "NVIDIA driver is replacing a running driver"
                 _log(db, task.task_id, "SYSTEM", f"{reason}; rebooting before final NVIDIA verification")
-                _schedule_reboot(executor)
+                _schedule_reboot(executor, password=password)
                 return True
             task.status = "SUCCESS"
             task.exit_code = 0
@@ -677,7 +709,7 @@ def run_rocky9_gpu_driver_task(task_id: str) -> None:
                 raise RuntimeError("kernel maintenance is only supported on Rocky Linux 9")
             _set_status(db, task, "PREPARING")
             _log(db, task_id, "SYSTEM", "current kernel development packages are unavailable; starting authorized same-minor kernel maintenance")
-            _prepare_rocky_kernel_maintenance_reboot(db, task, executor)
+            _prepare_rocky_kernel_maintenance_reboot(db, task, executor, password=server.password)
             phase = GPU_DRIVER_PHASE_WAITING_KERNEL_MAINTENANCE_REBOOT
 
         if phase == GPU_DRIVER_PHASE_WAITING_KERNEL_MAINTENANCE_REBOOT:
@@ -692,9 +724,9 @@ def run_rocky9_gpu_driver_task(task_id: str) -> None:
             running_kernel = executor.exec_simple("uname -r").strip()
             if not kernel_maintenance_boot_matches(candidate=candidate, running_kernel=running_kernel):
                 if previous_default:
-                    executor.exec_simple(f"sudo grubby --set-default {shell_quote(previous_default)}")
+                    _restore_default_kernel(executor, previous_default, password=server.password)
                 raise RuntimeError(f"Rocky kernel maintenance boot verification failed: expected {candidate or 'candidate'}, got {running_kernel or 'unknown'}")
-            _run_rocky_release_lock(executor, task.remote_work_dir, task_id, db)
+            _run_rocky_release_lock(executor, task.remote_work_dir, task_id, db, password=server.password)
             _update_params(db, task, **{GPU_DRIVER_PHASE_KEY: GPU_DRIVER_PHASE_INITIAL})
             _log(db, task_id, "SYSTEM", f"Rocky kernel maintenance verified: {running_kernel}; resuming NVIDIA driver installation")
             phase = GPU_DRIVER_PHASE_INITIAL
@@ -738,7 +770,7 @@ def run_rocky9_gpu_driver_task(task_id: str) -> None:
                     _log(db, task_id, "SYSTEM", "matching current-kernel development packages are unavailable; kernel maintenance is authorized")
                     phase = GPU_DRIVER_PHASE_KERNEL_MAINTENANCE
                     _set_status(db, task, "PREPARING")
-                    candidate, previous_default = _prepare_rocky_kernel_maintenance_reboot(db, task, executor)
+                    candidate, previous_default = _prepare_rocky_kernel_maintenance_reboot(db, task, executor, password=server.password)
                     phase = GPU_DRIVER_PHASE_WAITING_KERNEL_MAINTENANCE_REBOOT
                     if not _wait_for_reboot(db, task, server, executor):
                         db.refresh(task)
@@ -748,9 +780,9 @@ def run_rocky9_gpu_driver_task(task_id: str) -> None:
                     running_kernel = executor.exec_simple("uname -r").strip()
                     if not kernel_maintenance_boot_matches(candidate=candidate, running_kernel=running_kernel):
                         if previous_default:
-                            executor.exec_simple(f"sudo grubby --set-default {shell_quote(previous_default)}")
+                            _restore_default_kernel(executor, previous_default, password=server.password)
                         raise RuntimeError(f"Rocky kernel maintenance boot verification failed: expected {candidate}, got {running_kernel or 'unknown'}")
-                    _run_rocky_release_lock(executor, task.remote_work_dir, task_id, db)
+                    _run_rocky_release_lock(executor, task.remote_work_dir, task_id, db, password=server.password)
                     _update_params(db, task, **{GPU_DRIVER_PHASE_KEY: GPU_DRIVER_PHASE_INITIAL})
                     _log(db, task_id, "SYSTEM", f"Rocky kernel maintenance verified: {running_kernel}; resuming NVIDIA driver installation")
             if nvidia_smi_code == 0 and force_install:
@@ -765,9 +797,9 @@ def run_rocky9_gpu_driver_task(task_id: str) -> None:
             db.commit()
             _set_status(db, task, "RUNNING")
             result = _run_script(executor, task.remote_work_dir, preparation_script, 7200,
-                                 lambda line: _log(db, task_id, "INFO", line))
+                                 lambda line: _log(db, task_id, "INFO", line), password=server.password)
             if result != 0:
-                raise RuntimeError(f"pre-reboot preparation exited with code {result}")
+                raise RuntimeError(f"pre-reboot preparation (sudo) exited with code {result}")
             kernel_reboot_required = False
             if os_profile == "rocky9":
                 _kernel_code, kernel_check, _kernel_error = executor.exec_capture(
@@ -781,14 +813,14 @@ def run_rocky9_gpu_driver_task(task_id: str) -> None:
                 _set_status(db, task, "WAITING_REBOOT")
                 reason = "Nouveau is loaded" if nouveau_loaded else "a new default kernel is pending"
                 _log(db, task_id, "SYSTEM", f"{reason}; preparation complete, rebooting server automatically")
-                _schedule_reboot(executor)
+                _schedule_reboot(executor, password=server.password)
                 phase = GPU_DRIVER_PHASE_WAITING_REBOOT
             else:
                 _log(db, task_id, "SYSTEM", "Nouveau is not loaded; skipping disable/reboot and continuing installation")
                 if uploaded_driver is not None:
                     executor.upload_file(str(uploaded_driver), f"{task.remote_work_dir.rstrip('/')}/{GPU_DRIVER_FILE_NAME}")
                     _log(db, task_id, "SYSTEM", "local NVIDIA driver file uploaded")
-                _start_remote_install(executor, task.remote_work_dir, install_script)
+                _start_remote_install(executor, task.remote_work_dir, install_script, password=server.password)
                 _update_params(db, task, **{GPU_DRIVER_PHASE_KEY: GPU_DRIVER_PHASE_INSTALLING})
                 task.start_time = task.start_time or datetime.utcnow()
                 _set_status(db, task, "RUNNING")
@@ -808,7 +840,7 @@ def run_rocky9_gpu_driver_task(task_id: str) -> None:
             if uploaded_driver is not None:
                 executor.upload_file(str(uploaded_driver), f"{task.remote_work_dir.rstrip('/')}/{GPU_DRIVER_FILE_NAME}")
                 _log(db, task_id, "SYSTEM", "local NVIDIA driver file uploaded")
-            _start_remote_install(executor, task.remote_work_dir, install_script)
+            _start_remote_install(executor, task.remote_work_dir, install_script, password=server.password)
             _update_params(db, task, **{GPU_DRIVER_PHASE_KEY: GPU_DRIVER_PHASE_INSTALLING})
             task.start_time = task.start_time or datetime.utcnow()
             _set_status(db, task, "RUNNING")
@@ -824,7 +856,7 @@ def run_rocky9_gpu_driver_task(task_id: str) -> None:
             _verify_driver_after_reboot(db, task, executor, target_version)
             return
 
-        post_install_reboot_scheduled = _monitor_remote_install(db, task, executor)
+        post_install_reboot_scheduled = _monitor_remote_install(db, task, executor, password=server.password)
         if post_install_reboot_scheduled:
             db.refresh(task)
             if not _wait_for_reboot(db, task, server, executor):

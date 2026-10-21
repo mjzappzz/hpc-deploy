@@ -34,6 +34,7 @@ from app.core.task_runner import (
     TERMINAL_TASK_STATUSES,
     UNFINISHED_TASK_STATUSES,
     _build_remote_pid_file_path,
+    _is_base_system_sudo_task,
     resume_running_stress_tasks_after_startup,
     run_task_stage8b,
 )
@@ -2741,6 +2742,8 @@ def _cancel_running_task_for_batch(db: Session, task: Task) -> tuple[str, bool]:
                     port=server.port,
                     username=server.username,
                     key_path=server.key_path,
+                    password=server.password,
+                    expected_host_fingerprint=server.ssh_host_fingerprint,
                 )
             except SSHExecutorError as exc:
                 remote_unreachable = True
@@ -2804,6 +2807,8 @@ def _best_effort_cancel_remote_process(db: Session, task: Task) -> None:
                 port=server.port,
                 username=server.username,
                 key_path=server.key_path,
+                password=server.password,
+                expected_host_fingerprint=server.ssh_host_fingerprint,
             )
         except SSHExecutorError:
             _add_task_log(db, task_id, "WARN", "batch cancel: remote cleanup skipped (SSH unreachable)")
@@ -3351,6 +3356,8 @@ def cancel_task(
                 port=server.port,
                 username=server.username,
                 key_path=server.key_path,
+                password=server.password,
+                expected_host_fingerprint=server.ssh_host_fingerprint,
             )
         except SSHExecutorError as exc:
             remote_unreachable = True
@@ -4350,7 +4357,9 @@ def _get_remote_process_pgid(executor: SSHExecutor, pid_value: str) -> str | Non
     return pgid
 
 
-def _kill_remote_process_group(executor: SSHExecutor, pgid: str) -> tuple[bool, str]:
+def _kill_remote_process_group(
+    executor: SSHExecutor, pgid: str, *, sudo: bool = False, sudo_password: str | None = None
+) -> tuple[bool, str]:
     """Kill process group by PGID. Returns (success, log_message). Never raises."""
     command = (
         f"kill -TERM -{shell_quote(pgid)} 2>/dev/null || true; "
@@ -4360,7 +4369,12 @@ def _kill_remote_process_group(executor: SSHExecutor, pgid: str) -> tuple[bool, 
         "  sleep 1; "
         f"fi"
     )
-    exit_code, _output, error = executor.exec_capture(command, timeout_seconds=10)
+    if sudo:
+        exit_code, _output, error = executor.exec_sudo(
+            command, password=sudo_password, timeout_seconds=10
+        )
+    else:
+        exit_code, _output, error = executor.exec_capture(command, timeout_seconds=10)
     if exit_code != 0:
         return False, error or f"failed to terminate process group {pgid}"
     return True, "remote process group terminated"
@@ -4396,18 +4410,29 @@ def _cancel_remote_process(executor: SSHExecutor, task: Task, db: Session) -> No
     if not remote_work_dir:
         _add_task_log(db, task_id, "SYSTEM", "no remote work dir, skip process termination")
         return
+    server = db.get(Server, task.server_id) if (
+        _is_base_system_sudo_task(task) or task.task_type in {GPU_DRIVER_TASK_TYPE, CUDA_TOOLKIT_TASK_TYPE}
+    ) else None
+    sudo = server is not None and executor.exec_simple("id -u").strip() != "0"
+    sudo_password = server.password if server is not None else None
 
     # Primary path: read PID file → get PGID → kill process group
     pid_file_path = _build_remote_pid_file_path(remote_work_dir)
     pid_value = _read_remote_pid_file(executor, pid_file_path)
+    if pid_value is None and task.task_type == GPU_DRIVER_TASK_TYPE:
+        pid_value = _read_remote_pid_file(executor, f"{remote_work_dir.rstrip('/')}/.gpu-driver.pid")
 
     if pid_value is not None:
         pgid = _get_remote_process_pgid(executor, pid_value)
         if pgid is not None:
-            success, log_msg = _kill_remote_process_group(executor, pgid)
+            success, log_msg = _kill_remote_process_group(
+                executor, pgid, sudo=sudo, sudo_password=sudo_password
+            )
             _add_task_log(db, task_id, "SYSTEM", log_msg)
             if not success:
                 _add_task_log(db, task_id, "WARN", f"process group {pgid} may have residual processes")
+            if not success and sudo:
+                raise SSHExecutorError(log_msg)
             return
         # PID file exists but process already exited
         _add_task_log(db, task_id, "SYSTEM", "remote process already exited, skipping termination")
@@ -4419,11 +4444,18 @@ def _cancel_remote_process(executor: SSHExecutor, task: Task, db: Session) -> No
     if matched_pid is not None:
         pgid = _get_remote_process_pgid(executor, matched_pid)
         if pgid is not None:
-            success, log_msg = _kill_remote_process_group(executor, pgid)
+            success, log_msg = _kill_remote_process_group(
+                executor, pgid, sudo=sudo, sudo_password=sudo_password
+            )
             _add_task_log(db, task_id, "SYSTEM", f"fallback: {log_msg}")
             if not success:
                 _add_task_log(db, task_id, "WARN", f"fallback: process group {pgid} may have residual processes")
+            if not success and sudo:
+                raise SSHExecutorError(log_msg)
             return
+
+    if sudo:
+        raise SSHExecutorError("privileged remote process not confirmed; no PID available")
 
     # No process found at all — still OK, proceed to cleanup
     _add_task_log(db, task_id, "SYSTEM", "no matching remote process found, skipping termination")

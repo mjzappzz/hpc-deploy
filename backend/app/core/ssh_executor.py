@@ -219,17 +219,22 @@ class SSHExecutor:
         on_stdout_line: Callable[[str], None] | None = None,
         on_stderr_line: Callable[[str], None] | None = None,
         on_tick: Callable[[], bool] | None = None,
+        stdin_text: str | None = None,
     ) -> int:
         if self.client is None:
             raise SSHExecutorError("SSH client is not connected")
 
         wrapped = f"cd {shell_quote(cwd)} && {command}"
         try:
-            _stdin, stdout, stderr = self.client.exec_command(wrapped, timeout=self.timeout)
+            stdin, stdout, stderr = self.client.exec_command(wrapped, timeout=self.timeout)
         except (SocketTimeout, TimeoutError) as exc:
             raise SSHExecutorError(f"remote command failed to start: {command}") from exc
         except paramiko.SSHException as exc:
             raise SSHExecutorError(f"remote command failed to start: {exc}") from exc
+        if stdin_text is not None:
+            stdin.write(stdin_text)
+            stdin.flush()
+        stdin.channel.shutdown_write()
 
         channel = stdout.channel
         deadline = monotonic() + timeout_seconds
@@ -320,6 +325,48 @@ class SSHExecutor:
         except paramiko.SSHException as exc:
             raise SSHExecutorError(f"remote command failed to start: {exc}") from exc
         return exit_code, _extract_command_output(output), error
+
+    def exec_sudo(
+        self, command: str, *, password: str | None, timeout_seconds: int
+    ) -> tuple[int, str, str]:
+        """Run sudo without exposing the password in the command or remote files."""
+        if self.client is None:
+            raise SSHExecutorError("SSH client is not connected")
+        sudo_command = f"sudo {'-S -p ' + shell_quote('') if password else '-n'} bash -lc {shell_quote(command)}"
+        try:
+            stdin, stdout, stderr = self.client.exec_command(
+                _wrap_command(sudo_command), timeout=timeout_seconds
+            )
+            if password:
+                stdin.write(password + "\n")
+                stdin.flush()
+            stdin.channel.shutdown_write()
+            exit_code = stdout.channel.recv_exit_status()
+            output = stdout.read().decode("utf-8", errors="replace").strip()
+            error = stderr.read().decode("utf-8", errors="replace").strip()
+        except (SocketTimeout, TimeoutError) as exc:
+            raise SSHCommandTimeoutError(sudo_command, timeout_seconds) from exc
+        except paramiko.SSHException as exc:
+            raise SSHExecutorError("sudo command failed to start") from exc
+        return exit_code, _extract_command_output(output), error
+
+    def exec_sudo_in_dir(
+        self,
+        command: str,
+        cwd: str,
+        *,
+        password: str | None,
+        timeout_seconds: int,
+        on_stdout_line: Callable[[str], None] | None = None,
+        on_stderr_line: Callable[[str], None] | None = None,
+    ) -> int:
+        """Stream a root command while keeping sudo credentials off the command line."""
+        sudo_command = f"sudo {'-S -p ' + shell_quote('') if password else '-n'} bash -lc {shell_quote(command)}"
+        return self.exec_command_in_dir(
+            sudo_command, cwd, timeout_seconds=timeout_seconds,
+            on_stdout_line=on_stdout_line, on_stderr_line=on_stderr_line,
+            stdin_text=f"{password}\n" if password else None,
+        )
 
     def close(self) -> None:
         if self.sftp is not None:

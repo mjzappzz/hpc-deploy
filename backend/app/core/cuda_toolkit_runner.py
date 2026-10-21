@@ -244,6 +244,14 @@ export CUDA_PATH=/usr/local/cuda-{version}
 EOF
 sudo chmod 644 /etc/profile.d/cuda-{version}.sh
 sudo ln -sfn /usr/local/cuda-{version} /usr/local/cuda
+if [ -e /usr/local/bin/nvcc ] || [ -L /usr/local/bin/nvcc ]; then
+    if [ "$(readlink /usr/local/bin/nvcc)" != /usr/local/cuda/bin/nvcc ]; then
+        echo '已有 /usr/local/bin/nvcc，拒绝覆盖；请检查现有 CUDA 命令入口' >&2
+        exit 1
+    fi
+else
+    sudo ln -s /usr/local/cuda/bin/nvcc /usr/local/bin/nvcc
+fi
 echo '========== 验证 CUDA Toolkit =========='
 /usr/local/cuda-{version}/bin/nvcc --version
 """
@@ -323,11 +331,21 @@ def run_cuda_toolkit_task(task_id: str) -> None:
             )
             task.start_time = datetime.utcnow()
             _set_status(db, task, "RUNNING")
-            executor.exec_simple(
-                _build_detached_remote_execution_command(
-                    "bash ./cuda-toolkit-install.sh", task.remote_work_dir
-                )
+            launch_command = (
+                f"umask 022; "
+                f"{_build_detached_remote_execution_command('bash ./cuda-toolkit-install.sh', task.remote_work_dir)}"
             )
+            if executor.exec_simple("id -u").strip() == "0":
+                executor.exec_simple(launch_command)
+            else:
+                launch_code, _launch_output, launch_error = executor.exec_sudo(
+                    launch_command, password=server.password, timeout_seconds=15
+                )
+                if launch_code != 0:
+                    raise RuntimeError(
+                        "sudo authentication or CUDA Toolkit launch failed: "
+                        f"{launch_error[:300] or 'check SSH account sudo access'}"
+                    )
             exit_code = _monitor_detached_command(
                 db,
                 executor,

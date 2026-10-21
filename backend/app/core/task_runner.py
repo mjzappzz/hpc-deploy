@@ -240,7 +240,7 @@ def run_task_stage8b(task_id: str) -> None:
             _add_log(db, task_id, "SYSTEM", "chmod +x completed")
 
         if task.task_type == "script":
-            _execute_command_task(db, executor, task, task_id, f"bash ./{Path(task.file_name or 'script').name}")
+            _execute_command_task(db, executor, task, task_id, _script_command(task))
         elif task.task_type == "stress":
             _execute_stress_async(db, executor, task, task_id, _build_stress_command(task))
             # _execute_stress_async 内部包含：
@@ -397,6 +397,21 @@ def build_remote_work_dir_name(task_type: str, file_name: str | None, timestamp:
     return f"{prefix}_{timestamp}"
 
 
+def _is_base_system_sudo_task(task: Task) -> bool:
+    return bool(
+        task.batch_id
+        and (task.params or {}).get("__managed_suite_kind") == "base_system"
+        and task.file_path in {
+            "scripts/mpi/disable_linux_lock_sleep.sh",
+            "scripts/mpi/lock_linux_release.sh",
+        }
+    )
+
+
+def _script_command(task: Task) -> str:
+    return f"bash ./{Path(task.file_name or 'script').name}"
+
+
 def _execute_command_task(db, executor: SSHExecutor, task: Task, task_id: str, command: str) -> None:
     """Run a script detached from SSH and monitor its durable remote state."""
     if not task.file_name:
@@ -412,8 +427,20 @@ def _execute_command_task(db, executor: SSHExecutor, task: Task, task_id: str, c
     pid_file = _build_remote_pid_file_path(task.remote_work_dir)
     _add_log(db, task_id, "SYSTEM", f"command timeout seconds: {timeout_seconds}")
     _add_log(db, task_id, "SYSTEM", f"remote pid file: {pid_file}")
-    _add_log(db, task_id, "SYSTEM", f"executing detached command: {command}")
-    executor.exec_simple(_build_detached_remote_execution_command(command, task.remote_work_dir))
+    command_to_launch = _build_detached_remote_execution_command(command, task.remote_work_dir)
+    if _is_base_system_sudo_task(task) and executor.exec_simple("id -u").strip() != "0":
+        server = db.get(Server, task.server_id)
+        if server is None:
+            raise TaskRunnerError("server not found")
+        _add_log(db, task_id, "SYSTEM", "executing detached base system command via sudo")
+        code, _output, error = executor.exec_sudo(
+            f"umask 022; {command_to_launch}", password=server.password, timeout_seconds=15
+        )
+        if code != 0:
+            raise TaskRunnerError(f"sudo authentication or remote launch failed: {error[:300] or 'check SSH account sudo access'}")
+    else:
+        _add_log(db, task_id, "SYSTEM", f"executing detached command: {command}")
+        executor.exec_simple(command_to_launch)
     _monitor_detached_command(db, executor, task, task_id, timeout_seconds=timeout_seconds)
 
 
@@ -767,7 +794,9 @@ def _cancel_following_stress_batch_tasks(db, task: Task, reason: str) -> None:
         _broadcast_done_safe(follower.task_id, "CANCELED")
 
 
-def _terminate_remote_pid_group(executor: SSHExecutor, pid_file: str) -> None:
+def _terminate_remote_pid_group(
+    executor: SSHExecutor, pid_file: str, *, sudo: bool = False, sudo_password: str | None = None
+) -> None:
     command = (
         f"pid=$(cat {shell_quote(pid_file)} 2>/dev/null || true); "
         "case \"$pid\" in ''|*[!0-9]*) exit 0;; esac; "
@@ -780,7 +809,12 @@ def _terminate_remote_pid_group(executor: SSHExecutor, pid_file: str) -> None:
         "  kill -KILL -\"$pgid\" 2>/dev/null || true; "
         "fi"
     )
-    _exec_with_reconnect(executor, command)
+    if sudo:
+        code, _output, error = executor.exec_sudo(command, password=sudo_password, timeout_seconds=10)
+        if code != 0:
+            raise SSHExecutorError(f"sudo remote termination failed: {error[:300]}")
+    else:
+        _exec_with_reconnect(executor, command)
 
 
 def _fail_running_stress_task(
@@ -1930,7 +1964,18 @@ def _monitor_detached_command(
                 _finalize_detached_command(db, task, task_id, exit_code)
             return exit_code
         if monotonic() - started >= timeout_seconds:
-            _terminate_remote_pid_group(executor, pid_file)
+            try:
+                if _is_base_system_sudo_task(task) or task.task_type == "cuda_toolkit":
+                    server = db.get(Server, task.server_id)
+                    if server is None:
+                        raise SSHExecutorError("server not found during sudo task timeout")
+                    _terminate_remote_pid_group(executor, pid_file, sudo=True, sudo_password=server.password)
+                else:
+                    _terminate_remote_pid_group(executor, pid_file)
+            except SSHExecutorError as exc:
+                _add_log(db, task_id, "WARNING", f"timeout stop unconfirmed; remote task remains RUNNING: {exc}")
+                sleep(60)
+                continue
             _add_log(db, task_id, "ERROR", f"command timed out after {timeout_seconds} seconds")
             if finalize:
                 _finalize_detached_command(db, task, task_id, None)

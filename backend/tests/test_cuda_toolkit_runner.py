@@ -4,6 +4,8 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 from app.core.cuda_toolkit_runner import (
     build_cuda_toolkit_install_script,
@@ -159,3 +161,121 @@ if "cuda-toolkit-12-8" in args:
         self.assertIn("startup recovery: reattached detached CUDA Toolkit monitor", source)
         self.assertIn("CUDA Toolkit recovery SSH unavailable; task remains RUNNING", source)
         self.assertIn("_schedule_cuda_recovery_retry(task_id)", source)
+
+    @staticmethod
+    def _run_task_case(
+        *, password: str | None, installed: bool = False,
+        recovering: bool = False, user_id: str = "1000",
+        sudo_result: tuple[int, str, str] = (0, "", ""),
+    ) -> SimpleNamespace:
+        task = SimpleNamespace(
+            task_id="cuda-task", task_type="cuda_toolkit",
+            server_id=1, status="RUNNING" if recovering else "PENDING",
+            params={"cuda_version": "12.8", "os_profile": "rocky9"},
+            remote_work_dir="/home/test/hpcdeploy/tasks/cuda-toolkit/cuda-task" if recovering else None,
+            exit_code=None, error_message=None,
+        )
+        server = SimpleNamespace(password=password, os_info="Rocky Linux 9.4")
+        db = MagicMock()
+        db.get.return_value = server
+        db.query.return_value.filter.return_value.first.return_value = task
+        executor = MagicMock()
+        executor.get_remote_home.return_value = "/home/test"
+        executor.exec_capture.side_effect = (
+            [(0, "driver ready", ""), (0, "nvcc ready", "")]
+            if installed else
+            [(0, "driver ready", ""), (127, "", "not installed"), (0, "nvcc ready", "")]
+        )
+        executor.exec_simple.side_effect = lambda command: user_id if command == "id -u" else ""
+        executor.exec_sudo.return_value = sudo_result
+
+        def set_status(_db, current_task, status):
+            current_task.status = status
+
+        with (
+            patch("app.core.cuda_toolkit_runner.SessionLocal", return_value=db),
+            patch("app.core.cuda_toolkit_runner.SSHExecutor", return_value=executor),
+            patch("app.core.cuda_toolkit_runner._connect"),
+            patch("app.core.cuda_toolkit_runner._set_status", side_effect=set_status),
+            patch("app.core.cuda_toolkit_runner._log") as log,
+            patch("app.core.cuda_toolkit_runner._monitor_detached_command", return_value=0) as monitor,
+            patch("app.core.cuda_toolkit_runner.ws_manager") as websocket,
+        ):
+            from app.core.cuda_toolkit_runner import run_cuda_toolkit_task
+            run_cuda_toolkit_task(task.task_id)
+            return SimpleNamespace(
+                task=task, db=db, executor=executor, log=log,
+                monitor=monitor, websocket=websocket,
+            )
+
+    def test_non_root_password_launches_detached_installer_as_root_and_monitors_it(self) -> None:
+        password = "secret-not-for-command-or-logs"
+        result = self._run_task_case(password=password)
+
+        result.executor.exec_sudo.assert_called_once()
+        command = result.executor.exec_sudo.call_args.args[0]
+        self.assertEqual(
+            result.executor.exec_sudo.call_args.kwargs,
+            {"password": password, "timeout_seconds": 15},
+        )
+        self.assertIn("umask 022; cd ", command)
+        self.assertIn("nohup setsid -f bash -lc ", command)
+        self.assertIn("bash ./cuda-toolkit-install.sh", command)
+        self.assertIn(".hpcdeploy.pid", command)
+        self.assertNotIn(password, command)
+        self.assertNotIn(password, str(result.executor.exec_simple.call_args_list))
+        self.assertNotIn(password, str(result.log.call_args_list))
+        result.monitor.assert_called_once()
+        self.assertEqual(result.monitor.call_args.kwargs, {"timeout_seconds": 7200, "finalize": False})
+        self.assertIs(result.monitor.call_args.args[2], result.task)
+        self.assertEqual(result.task.status, "SUCCESS")
+        result.websocket.broadcast_done_sync.assert_called_once_with("cuda-task", "SUCCESS")
+
+    def test_non_root_without_password_uses_noninteractive_sudo(self) -> None:
+        result = self._run_task_case(password=None)
+
+        result.executor.exec_sudo.assert_called_once()
+        self.assertIsNone(result.executor.exec_sudo.call_args.kwargs["password"])
+        self.assertEqual(result.task.status, "SUCCESS")
+
+    def test_root_ssh_account_launches_without_sudo(self) -> None:
+        result = self._run_task_case(password=None, user_id="0")
+
+        result.executor.exec_sudo.assert_not_called()
+        self.assertTrue(any(
+            call.args[0].startswith("umask 022; cd ")
+            for call in result.executor.exec_simple.call_args_list
+        ))
+        self.assertEqual(result.task.status, "SUCCESS")
+
+    def test_existing_toolkit_skips_without_sudo(self) -> None:
+        result = self._run_task_case(password=None, installed=True)
+
+        result.executor.exec_sudo.assert_not_called()
+        self.assertFalse(any(
+            call.args[0] == "id -u" for call in result.executor.exec_simple.call_args_list
+        ))
+        result.monitor.assert_not_called()
+        self.assertEqual(result.task.status, "SUCCESS")
+
+    def test_sudo_failure_fails_clearly_without_starting_monitor(self) -> None:
+        result = self._run_task_case(
+            password="wrong-secret", sudo_result=(1, "", "sudo: incorrect password"),
+        )
+
+        self.assertEqual(result.task.status, "FAILED")
+        self.assertIn("sudo authentication or CUDA Toolkit launch failed", result.task.error_message)
+        self.assertIn("incorrect password", result.task.error_message)
+        self.assertNotIn("wrong-secret", str(result.log.call_args_list))
+        result.monitor.assert_not_called()
+        result.websocket.broadcast_done_sync.assert_called_once_with("cuda-task", "FAILED")
+
+    def test_recovery_reattaches_without_relaunching_or_reauthenticating(self) -> None:
+        result = self._run_task_case(password="secret", recovering=True)
+
+        result.executor.exec_sudo.assert_not_called()
+        result.executor.exec_simple.assert_not_called()
+        result.monitor.assert_called_once()
+        self.assertTrue(result.monitor.call_args.kwargs["recovery"])
+        self.assertFalse(result.monitor.call_args.kwargs["finalize"])
+        self.assertEqual(result.task.status, "SUCCESS")

@@ -1,13 +1,20 @@
+import base64
+import os
+import subprocess
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 from app.core.gpu_driver_runner import (
+    _monitor_remote_install,
     _optional_param_text,
     _prepare_rocky_kernel_maintenance_reboot,
+    _restore_default_kernel,
     _run_rocky_release_lock,
+    _run_script,
+    _schedule_reboot,
     _start_remote_install,
     build_rocky9_kernel_maintenance_script,
     build_rocky9_install_script,
@@ -16,6 +23,7 @@ from app.core.gpu_driver_runner import (
     kernel_maintenance_boot_matches,
     list_library_drivers,
     driver_version_from_filename,
+    run_rocky9_gpu_driver_task,
     should_reboot_for_gpu_driver,
     should_reboot_after_driver_install,
     should_run_kernel_maintenance,
@@ -52,13 +60,211 @@ class GpuDriverRunnerTests(unittest.TestCase):
         self.assertNotIn("curl --fail", script)
         self.assertIn("检查 NVIDIA 驱动文件", script)
 
-    def test_background_installer_detaches_stdin_and_records_pid_in_task_dir(self) -> None:
+    def test_background_installer_uploads_as_user_before_root_launch(self) -> None:
         executor = Mock()
-        _start_remote_install(executor, "/root/hpcdeploy/tasks/gpu-driver/task-1")
-        command = executor.exec_simple.call_args.args[0]
-        self.assertIn("cd '/root/hpcdeploy/tasks/gpu-driver/task-1'", command)
-        self.assertIn("</dev/null > gpu-driver-install.log 2>&1", command)
-        self.assertIn("echo $! > .gpu-driver.pid", command)
+        events: list[str] = []
+
+        def upload(*_args, **_kwargs):
+            events.append("upload")
+            return 0, "", ""
+
+        def launch(*_args, **_kwargs):
+            events.append("launch")
+            return 0, "", ""
+
+        executor.exec_capture.side_effect = upload
+        executor.exec_sudo.side_effect = launch
+
+        _start_remote_install(executor, "/home/deploy/gpu task", "echo installer", password="saved-secret")
+
+        self.assertEqual(events, ["upload", "launch"])
+        upload = executor.exec_capture.call_args.args[0]
+        launch = executor.exec_sudo.call_args.args[0]
+        self.assertIn("gpu-driver-install.sh", upload)
+        self.assertIn(base64.b64encode(b"echo installer").decode("ascii"), upload)
+        self.assertNotIn("sudo", upload)
+        self.assertIn("umask 022", launch)
+        self.assertIn("nohup setsid bash -c", launch)
+        self.assertIn("</dev/null > gpu-driver-install.log 2>&1", launch)
+        self.assertIn('"$pid" > .gpu-driver.pid', launch)
+        self.assertIn('"$pid" > .hpcdeploy.pid', launch)
+        self.assertNotIn("saved-secret", upload + launch)
+        self.assertEqual(executor.exec_sudo.call_args.kwargs["password"], "saved-secret")
+
+    def test_installer_upload_and_root_launch_report_distinct_failures(self) -> None:
+        executor = Mock()
+        executor.exec_capture.return_value = (1, "", "upload denied")
+        with self.assertRaisesRegex(RuntimeError, "upload NVIDIA installer script: upload denied"):
+            _start_remote_install(executor, "/home/deploy/task", "echo installer", password="secret")
+        executor.exec_sudo.assert_not_called()
+
+        executor.exec_capture.return_value = (0, "", "")
+        executor.exec_sudo.return_value = (1, "", "sudo: authentication failed")
+        with self.assertRaisesRegex(RuntimeError, "launch NVIDIA installer with sudo: sudo: authentication failed"):
+            _start_remote_install(executor, "/home/deploy/task", "echo installer", password="secret")
+
+    def test_streamed_preparation_uses_root_with_stdin_password(self) -> None:
+        executor = Mock()
+        executor.exec_sudo_in_dir.return_value = 0
+        logger = Mock()
+        script = "echo preparation"
+
+        self.assertEqual(_run_script(executor, "/home/deploy/task", script, 7200, logger, password="secret"), 0)
+
+        executor.exec_sudo_in_dir.assert_called_once()
+        command, cwd = executor.exec_sudo_in_dir.call_args.args
+        self.assertEqual(cwd, "/home/deploy/task")
+        self.assertIn(base64.b64encode(script.encode()).decode("ascii"), command)
+        self.assertIn("umask 022", command)
+        self.assertNotIn("secret", command)
+        self.assertEqual(executor.exec_sudo_in_dir.call_args.kwargs["password"], "secret")
+        self.assertIs(executor.exec_sudo_in_dir.call_args.kwargs["on_stderr_line"], logger)
+
+    def test_reboot_uses_saved_sudo_credential_and_reports_denial(self) -> None:
+        executor = Mock()
+        executor.exec_sudo.return_value = (0, "", "")
+        _schedule_reboot(executor, password="secret")
+        command = executor.exec_sudo.call_args.args[0]
+        self.assertIn("systemctl reboot", command)
+        self.assertIn("</dev/null >/dev/null 2>&1 &", command)
+        self.assertNotIn("secret", command)
+        self.assertEqual(executor.exec_sudo.call_args.kwargs["password"], "secret")
+
+        executor.exec_sudo.return_value = (1, "", "sudo: a password is required")
+        with self.assertRaisesRegex(RuntimeError, "schedule NVIDIA driver reboot with sudo"):
+            _schedule_reboot(executor, password="wrong")
+
+    def test_monitor_observes_detached_installer_then_marks_success(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            task = Mock(task_id="task-root", remote_work_dir=temp_dir, params={}, status="RUNNING")
+            work_dir = Path(temp_dir)
+            (work_dir / ".gpu-driver.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+            (work_dir / "gpu-driver-install.log").write_text("driver installed\n", encoding="utf-8")
+            executor = Mock()
+
+            def capture(command, *, timeout_seconds):
+                completed = subprocess.run(
+                    ["sh", "-c", command], capture_output=True, text=True, timeout=timeout_seconds,
+                    check=False,
+                )
+                return completed.returncode, completed.stdout.strip(), completed.stderr.strip()
+
+            executor.exec_capture.side_effect = capture
+            db = Mock()
+            with (
+                patch("app.core.gpu_driver_runner.sleep", side_effect=lambda _seconds: (
+                    work_dir / ".gpu-driver.exit"
+                ).write_text("0\n", encoding="utf-8")) as sleep,
+                patch("app.core.gpu_driver_runner._log") as log,
+                patch("app.core.gpu_driver_runner.ws_manager"),
+            ):
+                self.assertFalse(_monitor_remote_install(db, task, executor, password="secret"))
+
+        self.assertEqual(task.status, "SUCCESS")
+        self.assertEqual(task.exit_code, 0)
+        sleep.assert_called_once_with(5)
+        status_command = executor.exec_capture.call_args_list[0].args[0]
+        self.assertNotIn("kill -0", status_command)
+        self.assertNotIn("secret", status_command)
+        log.assert_called_once_with(db, "task-root", "INFO", "driver installed")
+
+    def test_monitor_recovery_schedules_activation_reboot_with_saved_password(self) -> None:
+        task = Mock(task_id="task-reboot", remote_work_dir="/home/deploy/task-reboot", status="RUNNING")
+        task.params = {}
+        executor = Mock()
+        executor.exec_capture.side_effect = [(0, "9", ""), (0, "", ""), (0, "driver awaiting reboot", "")]
+        executor.exec_sudo.return_value = (0, "", "")
+        db = Mock()
+        with (
+            patch("app.core.gpu_driver_runner._read_boot_id", return_value="boot-before"),
+            patch("app.core.gpu_driver_runner._log"),
+            patch("app.core.gpu_driver_runner.ws_manager"),
+        ):
+            self.assertTrue(_monitor_remote_install(db, task, executor, password="secret"))
+
+        self.assertEqual(task.params["gpu_driver_phase"], "waiting_post_install_reboot")
+        self.assertEqual(task.params["gpu_driver_boot_id"], "boot-before")
+        self.assertEqual(task.status, "WAITING_REBOOT")
+        self.assertIn("systemctl reboot", executor.exec_sudo.call_args.args[0])
+        self.assertEqual(executor.exec_sudo.call_args.kwargs["password"], "secret")
+
+    def test_resume_after_preparation_reboot_uploads_and_launches_with_saved_password(self) -> None:
+        task = Mock(
+            task_id="task-recovery", task_type="gpu_driver", status="WAITING_REBOOT",
+            server_id=7, remote_work_dir="/home/deploy/task-recovery", start_time=None,
+        )
+        task.params = {
+            "driver_upload_id": "a" * 24,
+            "gpu_driver_phase": "waiting_reboot",
+            "os_profile": "ubuntu22",
+        }
+        server = Mock(password="saved-secret", os_info="Ubuntu 22.04")
+        db = Mock()
+        db.query.return_value.filter.return_value.first.return_value = task
+        db.get.return_value = server
+        executor = Mock()
+        executor.get_remote_home.return_value = "/home/deploy"
+        executor.exec_capture.return_value = (0, "", "")
+        executor.exec_sudo.return_value = (0, "", "")
+        with (
+            patch("app.core.gpu_driver_runner.SessionLocal", return_value=db),
+            patch("app.core.gpu_driver_runner.SSHExecutor", return_value=executor),
+            patch("app.core.gpu_driver_runner.resolve_uploaded_driver", return_value=Path("/tmp/driver.run")),
+            patch("app.core.gpu_driver_runner._wait_for_reboot", return_value=True),
+            patch("app.core.gpu_driver_runner._monitor_remote_install", return_value=False) as monitor,
+            patch("app.core.gpu_driver_runner._log"),
+            patch("app.core.gpu_driver_runner.ws_manager"),
+        ):
+            run_rocky9_gpu_driver_task("task-recovery")
+
+        self.assertEqual(executor.connect.call_args.kwargs["password"], "saved-secret")
+        executor.upload_file.assert_called_once_with(
+            "/tmp/driver.run", "/home/deploy/task-recovery/nvidia-rocky9-driver.run"
+        )
+        self.assertEqual(executor.exec_sudo.call_args.kwargs["password"], "saved-secret")
+        self.assertNotIn("saved-secret", executor.exec_sudo.call_args.args[0])
+        self.assertEqual(task.params["gpu_driver_phase"], "installing")
+        self.assertEqual(monitor.call_args.kwargs["password"], "saved-secret")
+
+    def test_initial_install_prepares_as_root_without_passwordless_sudo(self) -> None:
+        task = Mock(
+            task_id="task-initial", task_type="gpu_driver", status="PENDING",
+            server_id=7, remote_work_dir="/home/deploy/task-initial", start_time=None,
+        )
+        task.params = {"driver_upload_id": "a" * 24, "os_profile": "ubuntu22"}
+        server = Mock(password="saved-secret", os_info="Ubuntu 22.04")
+        db = Mock()
+        db.query.return_value.filter.return_value.first.return_value = task
+        db.get.return_value = server
+        executor = Mock()
+        executor.get_remote_home.return_value = "/home/deploy"
+        executor.exec_sudo_in_dir.return_value = 0
+        executor.exec_sudo.return_value = (0, "", "")
+
+        def capture(command, *, timeout_seconds):
+            if command.startswith("nvidia-smi") or command.startswith("lsmod"):
+                return 1, "", ""
+            return 0, "", ""
+
+        executor.exec_capture.side_effect = capture
+        with (
+            patch("app.core.gpu_driver_runner.SessionLocal", return_value=db),
+            patch("app.core.gpu_driver_runner.SSHExecutor", return_value=executor),
+            patch("app.core.gpu_driver_runner.resolve_uploaded_driver", return_value=Path("/tmp/driver.run")),
+            patch("app.core.gpu_driver_runner._monitor_remote_install", return_value=False) as monitor,
+            patch("app.core.gpu_driver_runner._log"),
+            patch("app.core.gpu_driver_runner.ws_manager"),
+        ):
+            run_rocky9_gpu_driver_task("task-initial")
+
+        streamed = executor.exec_sudo_in_dir.call_args
+        self.assertEqual(streamed.kwargs["password"], "saved-secret")
+        encoded_script = streamed.args[0].split("printf %s '", 1)[1].split("'", 1)[0]
+        self.assertIn("sudo -n true", base64.b64decode(encoded_script).decode("utf-8"))
+        self.assertNotIn("saved-secret", streamed.args[0])
+        self.assertEqual(executor.exec_sudo.call_args.kwargs["password"], "saved-secret")
+        self.assertEqual(task.params["gpu_driver_phase"], "installing")
+        self.assertEqual(monitor.call_args.kwargs["password"], "saved-secret")
 
     def test_pre_reboot_script_does_not_mutate_missing_kernel_dependencies(self) -> None:
         script = build_rocky9_pre_reboot_script()
@@ -126,7 +332,7 @@ class GpuDriverRunnerTests(unittest.TestCase):
         params_updates: list[dict[str, object]] = []
 
         with (
-            patch("app.core.gpu_driver_runner._run_script", return_value=0),
+            patch("app.core.gpu_driver_runner._run_script", return_value=0) as run_script,
             patch("app.core.gpu_driver_runner._read_remote_required_file", side_effect=[
                 "5.14.0-427.42.1.el9_4.x86_64",
                 "/boot/vmlinuz-5.14.0-427.13.1.el9_4.x86_64",
@@ -137,17 +343,18 @@ class GpuDriverRunnerTests(unittest.TestCase):
             patch("app.core.gpu_driver_runner._schedule_reboot") as schedule_reboot,
             patch("app.core.gpu_driver_runner._log"),
         ):
-            candidate, previous_default = _prepare_rocky_kernel_maintenance_reboot(Mock(), task, Mock())
+            candidate, previous_default = _prepare_rocky_kernel_maintenance_reboot(Mock(), task, Mock(), password="secret")
 
         self.assertEqual(candidate, "5.14.0-427.42.1.el9_4.x86_64")
         self.assertEqual(previous_default, "/boot/vmlinuz-5.14.0-427.13.1.el9_4.x86_64")
         self.assertEqual(params_updates[0]["gpu_driver_phase"], "waiting_kernel_maintenance_reboot")
         self.assertEqual(params_updates[0]["gpu_driver_kernel_candidate"], candidate)
-        schedule_reboot.assert_called_once()
+        schedule_reboot.assert_called_once_with(ANY, password="secret")
+        self.assertEqual(run_script.call_args.kwargs["password"], "secret")
 
     def test_kernel_maintenance_relocks_the_verified_kernel_with_sudo(self) -> None:
         executor = Mock()
-        executor.exec_command_in_dir.return_value = 0
+        executor.exec_sudo_in_dir.return_value = 0
         with TemporaryDirectory() as temp_dir:
             release_lock = Path(temp_dir) / "lock_linux_release.sh"
             release_lock.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
@@ -155,10 +362,24 @@ class GpuDriverRunnerTests(unittest.TestCase):
                 patch("app.core.gpu_driver_runner.GPU_DRIVER_RELEASE_LOCK_SCRIPT", release_lock),
                 patch("app.core.gpu_driver_runner._log"),
             ):
-                _run_rocky_release_lock(executor, "/tmp/task-kernel", "task-kernel", Mock())
+                _run_rocky_release_lock(executor, "/tmp/task-kernel", "task-kernel", Mock(), password="secret")
 
-        command = executor.exec_command_in_dir.call_args.args[0]
-        self.assertIn("sudo -n bash", command)
+        command = executor.exec_sudo_in_dir.call_args.args[0]
+        self.assertIn("umask 022", command)
+        self.assertNotIn("sudo -n bash", command)
+        self.assertNotIn("secret", command)
+        self.assertEqual(executor.exec_sudo_in_dir.call_args.kwargs["password"], "secret")
+
+    def test_failed_rocky_boot_restores_default_using_saved_sudo_credential(self) -> None:
+        executor = Mock()
+        executor.exec_sudo.return_value = (0, "", "")
+        _restore_default_kernel(
+            executor, "/boot/vmlinuz-5.14.0-427.13.1.el9_4.x86_64", password="secret",
+        )
+        command = executor.exec_sudo.call_args.args[0]
+        self.assertIn("grubby --set-default", command)
+        self.assertNotIn("secret", command)
+        self.assertEqual(executor.exec_sudo.call_args.kwargs["password"], "secret")
 
     def test_preparation_skips_reboot_steps_when_nouveau_is_absent(self) -> None:
         script = build_rocky9_pre_reboot_script(disable_nouveau=False)

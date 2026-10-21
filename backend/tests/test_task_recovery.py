@@ -259,6 +259,38 @@ class TaskRecoveryTests(unittest.TestCase):
         finalize.assert_called_once_with(db, task, task.task_id, 0)
         self.assertTrue(any(call.args[3] == "command exited with code 0" for call in add_log.call_args_list))
 
+    def test_failed_sudo_timeout_stop_does_not_claim_root_task_ended(self) -> None:
+        for task_type, file_path, params in (
+            ("script", "scripts/mpi/disable_linux_lock_sleep.sh", {"__managed_suite_kind": "base_system"}),
+            ("cuda_toolkit", "cuda-toolkit/auto", {}),
+        ):
+            task = SimpleNamespace(
+                task_id="task-sudo-timeout", task_type=task_type, server_id=132, status="RUNNING",
+                batch_id="batch-base", params=params, file_path=file_path,
+                remote_work_dir="/tmp/task-sudo-timeout", exit_code=None,
+            )
+            db = Mock()
+            db.get.return_value = SimpleNamespace(password="sudo-secret")
+            with (
+                patch.object(task_runner, "_read_remote_exit_code", side_effect=[None, 0]),
+                patch.object(task_runner, "_drain_detached_command_log", return_value=0),
+                patch.object(task_runner, "_is_remote_pid_alive", return_value=True),
+                patch.object(task_runner, "_terminate_remote_pid_group", side_effect=task_runner.SSHExecutorError("sudo refused")) as terminate,
+                patch.object(task_runner, "_finalize_detached_command") as finalize,
+                patch.object(task_runner, "_add_log") as add_log,
+                patch.object(task_runner, "monotonic", side_effect=[0, 2]),
+                patch.object(task_runner, "sleep"),
+            ):
+                result = task_runner._monitor_detached_command(
+                    db, Mock(), task, task.task_id, timeout_seconds=1
+                )
+            self.assertEqual(result, 0)
+            self.assertEqual(task.status, "RUNNING")
+            self.assertTrue(terminate.call_args.kwargs["sudo"])
+            self.assertEqual(terminate.call_args.kwargs["sudo_password"], "sudo-secret")
+            finalize.assert_called_once_with(db, task, task.task_id, 0)
+            self.assertTrue(any("stop unconfirmed" in call.args[3] for call in add_log.call_args_list))
+
     @patch("app.core.task_runner._schedule_stress_recovery_retry")
     @patch("app.core.task_runner._fail_running_stress_task")
     @patch("app.core.task_runner._add_log")
