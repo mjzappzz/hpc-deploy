@@ -683,8 +683,14 @@ def _precheck_timeout_no_report(
 ) -> dict[str, Any] | None:
     """Rule 4: Command timed out AND no report was generated.
 
-    Triggers when: log contains timeout patterns AND artifacts dir has no reports.
+    Triggers when: the task actually failed, log contains timeout patterns, and
+    artifacts dir has no reports.  A successful task can log transient SSH
+    timeouts while a server reboots (for example during GPU driver setup), so
+    task status must gate this rule; otherwise a recovered SUCCESS task is
+    misreported as a timeout failure.
     """
+    if task_status != "FAILED":
+        return None
     if artifacts_present:
         return None
 

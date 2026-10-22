@@ -22,6 +22,39 @@ class TaskDiagnosisTests(unittest.TestCase):
         self.assertEqual(diagnosis["title"], "任务执行成功")
         self.assertIn("PASS", diagnosis["summary"])
 
+    def test_successful_reboot_with_transient_ssh_timeout_is_not_reported_as_timeout_failure(self) -> None:
+        diagnosis = diagnose_task_failure(
+            task_status="SUCCESS",
+            error_message=None,
+            logs=[
+                "Nouveau is loaded; preparation complete, rebooting server automatically",
+                "waiting for server reboot to complete",
+                "server is rebooting / SSH unavailable, retrying: SSH connection timed out after 15s",
+                "server reboot confirmed; continuing NVIDIA driver installation",
+                "post-reboot verification passed; starting detached NVIDIA driver installer",
+            ],
+            exit_code=0,
+            task_type="gpu_driver",
+            file_name="nvidia-linux-driver.run",
+            artifacts_present=False,
+        )
+
+        self.assertEqual(diagnosis["category"], "completed")
+        self.assertEqual(diagnosis["title"], "任务执行成功")
+
+    def test_failed_task_with_timeout_log_and_no_report_is_still_timeout_no_report(self) -> None:
+        diagnosis = diagnose_task_failure(
+            task_status="FAILED",
+            error_message="command timed out after 1800 seconds",
+            logs=["command timed out after 1800 seconds"],
+            exit_code=None,
+            task_type="script",
+            file_name="custom.sh",
+            artifacts_present=False,
+        )
+
+        self.assertEqual(diagnosis["category"], "timeout_no_report")
+
     def test_versioned_diagnostic_event_is_used_as_confirmed_fact(self) -> None:
         logs = ['[DIAG_EVENT] {"version":1,"phase":"dependency","result":"FAIL","category":"dependency_install_failed","message":"无法安装 stress-ng"}']
         self.assertEqual(parse_diagnostic_events(logs)[0]["phase"], "dependency")
