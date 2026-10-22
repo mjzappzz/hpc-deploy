@@ -96,11 +96,6 @@ def should_schedule_post_install_reboot(*, force_install: bool, activation_reboo
     return force_install or activation_reboot_required
 
 
-def should_run_kernel_maintenance(*, exact_development_packages_available: bool, allowed: bool) -> bool:
-    """Only an explicit operator authorization may turn a missing package into maintenance."""
-    return not exact_development_packages_available and allowed
-
-
 def resolve_gpu_driver_os_profile(os_info: str | None) -> str:
     normalized = (os_info or "").lower()
     if "rocky" in normalized and re.search(r"(?:^|[^0-9])9(?:\.[0-9]+)?(?:[^0-9]|$)", normalized):
@@ -217,11 +212,24 @@ lock_file="/etc/dnf/plugins/versionlock.list"
 lock_backup=".gpu-driver.versionlock.before"
 candidate_file=".gpu-driver.kernel-candidate"
 previous_default_file=".gpu-driver.kernel-default-before"
+sync_uefi_saved_entry() {
+  local entry dir
+  entry="$(sudo grub2-editenv /boot/grub2/grubenv list 2>/dev/null | sed -n 's/^saved_entry=//p')"
+  [ -n "$entry" ] || return 0
+  [ -d /boot/efi/EFI ] || return 0
+  for dir in /boot/efi/EFI/*; do
+    if [ -f "$dir/grub.cfg" ] && [ -f "$dir/grubx64.efi" ]; then
+      sudo grub2-editenv "$dir/grubenv" set saved_entry="$entry" || return 1
+      echo "synced UEFI saved_entry to $dir/grubenv"
+    fi
+  done
+}
 restore_before_boot() {
   local status="$?"
   if [ "$status" -ne 0 ]; then
     if [ -s "$lock_backup" ]; then sudo cp -f "$lock_backup" "$lock_file"; fi
     sudo grubby --set-default "$previous_default" >/dev/null 2>&1 || true
+    sync_uefi_saved_entry >/dev/null 2>&1 || true
   fi
   exit "$status"
 }
@@ -231,7 +239,8 @@ echo '========== Rocky 同小版本内核维护：解析候选内核 =========='
 candidate_full="$(sudo dnf -q repoquery --latest-limit=1 --qf '%{VERSION}-%{RELEASE}.%{ARCH}' kernel-core | sort -V | tail -n1)"
 test -n "$candidate_full"
 case "$candidate_full" in *".${minor_tag}."*) ;; *) echo "ERROR: candidate is outside Rocky ${VERSION_ID}: $candidate_full"; exit 42;; esac
-candidate="${candidate_full%.*}"
+candidate="$candidate_full"
+candidate_pkg="${candidate_full%.*}"
 printf '%s\\n' "$candidate" > "$candidate_file"
 printf '%s\\n' "$previous_default" > "$previous_default_file"
 
@@ -239,11 +248,11 @@ echo '========== 暂时解除内核 versionlock 并安装精确包 =========='
 if [ -e "$lock_file" ]; then sudo cp -a "$lock_file" "$lock_backup"; fi
 sudo dnf versionlock delete 'kernel*' || true
 sudo dnf install -y \\
-  "kernel-${candidate}" \\
-  "kernel-core-${candidate}" \\
-  "kernel-modules-${candidate}" \\
-  "kernel-devel-${candidate}" \\
-  "kernel-headers-${candidate}"
+  "kernel-${candidate_pkg}" \\
+  "kernel-core-${candidate_pkg}" \\
+  "kernel-modules-${candidate_pkg}" \\
+  "kernel-devel-${candidate_pkg}" \\
+  "kernel-headers-${candidate_pkg}"
 
 echo '========== 构建候选 initramfs =========='
 sudo dracut --force --kver "$candidate"
@@ -252,22 +261,26 @@ test -s "$image" || { echo "ERROR: candidate initramfs is missing: $image"; exit
 required_modules=()
 root_source="$(findmnt -n -o SOURCE /)"
 root_fstype="$(findmnt -n -o FSTYPE /)"
-if [[ "$root_source" == /dev/mapper/* ]] || lsblk -s -n -o TYPE "$root_source" 2>/dev/null | grep -qx 'lvm'; then
+root_types="$(lsblk -s -n -o TYPE "$root_source" 2>/dev/null || true)"
+root_transports="$(lsblk -s -n -o TRAN "$root_source" 2>/dev/null || true)"
+if [[ "$root_source" == /dev/mapper/* ]] || grep -qx 'lvm' <<< "$root_types"; then
   required_modules+=(dm-mod lvm)
 fi
-if lsblk -s -n -o TRAN "$root_source" 2>/dev/null | grep -qx 'nvme'; then required_modules+=(nvme); fi
+if grep -qx 'nvme' <<< "$root_transports"; then required_modules+=(nvme); fi
 case "$root_fstype" in xfs|ext4) required_modules+=("$root_fstype");; esac
+initramfs_listing="$(sudo lsinitrd "$image")"
 for required in "${required_modules[@]}"; do
   if [[ "$required" == lvm ]]; then
-    sudo lsinitrd "$image" | grep -Eq '(/lvm|lvm2)' || { echo "ERROR: initramfs missing root-storage component: lvm"; exit 44; }
+    grep -Eq '(/lvm|lvm2)' <<< "$initramfs_listing" || { echo "ERROR: initramfs missing root-storage component: lvm"; exit 44; }
   else
-    sudo lsinitrd "$image" | grep -Eq "/${required}(\\.ko|\\.xz|\\.zst)?" || { echo "ERROR: initramfs missing root-storage module: $required"; exit 44; }
+    grep -Eq "/${required}(\\.ko|\\.xz|\\.zst)?" <<< "$initramfs_listing" || { echo "ERROR: initramfs missing root-storage module: $required"; exit 44; }
   fi
 done
 
 echo '========== 验证后切换默认启动项 =========='
 sudo grubby --set-default "/boot/vmlinuz-${candidate}"
 [[ "$(sudo grubby --default-kernel)" == "/boot/vmlinuz-${candidate}" ]] || { echo "ERROR: failed to set candidate as default"; exit 45; }
+sync_uefi_saved_entry || { echo "ERROR: failed to sync UEFI saved_entry"; exit 46; }
 if [ -s "$lock_backup" ]; then sudo cp -f "$lock_backup" "$lock_file"; fi
 trap - EXIT
 echo "Kernel candidate is boot-safe: $candidate"
@@ -427,9 +440,21 @@ def _schedule_reboot(executor: SSHExecutor, *, password: str | None) -> None:
     if code != 0:
         raise RuntimeError(f"could not schedule NVIDIA driver reboot with sudo: {error or output or f'exit code {code}'}")
 
+
+_UEFI_SAVED_ENTRY_SYNC = """entry="$(grub2-editenv /boot/grub2/grubenv list 2>/dev/null | sed -n 's/^saved_entry=//p')"
+[ -n "$entry" ] || exit 0
+[ -d /boot/efi/EFI ] || exit 0
+for dir in /boot/efi/EFI/*; do
+  if [ -f "$dir/grub.cfg" ] && [ -f "$dir/grubx64.efi" ]; then
+    grub2-editenv "$dir/grubenv" set saved_entry="$entry" || exit 1
+  fi
+done
+"""
+
+
 def _restore_default_kernel(executor: SSHExecutor, previous_default: str, *, password: str | None) -> None:
     code, output, error = executor.exec_sudo(
-        f"grubby --set-default {shell_quote(previous_default)}",
+        f"grubby --set-default {shell_quote(previous_default)} && bash -c {shell_quote(_UEFI_SAVED_ENTRY_SYNC)}",
         password=password, timeout_seconds=30,
     )
     if code != 0:
@@ -678,7 +703,6 @@ def run_rocky9_gpu_driver_task(task_id: str) -> None:
         driver_id = _optional_param_text(params.get("driver_id"))
         upload_id = _optional_param_text(params.get("driver_upload_id"))
         force_install = bool(params.get("force_install_if_driver_exists", False))
-        allow_kernel_maintenance = bool(params.get("allow_kernel_maintenance", False))
         os_profile = str(params.get("os_profile", "")) or resolve_gpu_driver_os_profile(server.os_info)
         install_script = build_rocky9_install_script() if os_profile == "rocky9" else build_ubuntu_install_script()
         target_version: str | None = None
@@ -708,7 +732,7 @@ def run_rocky9_gpu_driver_task(task_id: str) -> None:
             if os_profile != "rocky9":
                 raise RuntimeError("kernel maintenance is only supported on Rocky Linux 9")
             _set_status(db, task, "PREPARING")
-            _log(db, task_id, "SYSTEM", "current kernel development packages are unavailable; starting authorized same-minor kernel maintenance")
+            _log(db, task_id, "SYSTEM", "current kernel development packages are unavailable; starting same-minor kernel maintenance")
             _prepare_rocky_kernel_maintenance_reboot(db, task, executor, password=server.password)
             phase = GPU_DRIVER_PHASE_WAITING_KERNEL_MAINTENANCE_REBOOT
 
@@ -755,19 +779,9 @@ def run_rocky9_gpu_driver_task(task_id: str) -> None:
                     'rpm -q "kernel-devel-$(uname -r)" "kernel-headers-$(uname -r)"',
                     timeout_seconds=15,
                 )
-                exact_kernel_packages_available = exact_kernel_packages_code == 0
-                if not exact_kernel_packages_available:
-                    if not should_run_kernel_maintenance(
-                        exact_development_packages_available=exact_kernel_packages_available,
-                        allowed=allow_kernel_maintenance,
-                    ):
-                        _update_params(db, task, **{GPU_DRIVER_PHASE_KEY: GPU_DRIVER_PHASE_KERNEL_MAINTENANCE})
-                        raise RuntimeError(
-                            "current Rocky kernel lacks matching kernel-devel/kernel-headers; "
-                            "enable kernel maintenance in an approved maintenance window to recover without a full system update"
-                        )
+                if exact_kernel_packages_code != 0:
                     _update_params(db, task, **{GPU_DRIVER_PHASE_KEY: GPU_DRIVER_PHASE_KERNEL_MAINTENANCE})
-                    _log(db, task_id, "SYSTEM", "matching current-kernel development packages are unavailable; kernel maintenance is authorized")
+                    _log(db, task_id, "SYSTEM", "matching current-kernel development packages are unavailable; starting same-minor kernel maintenance automatically")
                     phase = GPU_DRIVER_PHASE_KERNEL_MAINTENANCE
                     _set_status(db, task, "PREPARING")
                     candidate, previous_default = _prepare_rocky_kernel_maintenance_reboot(db, task, executor, password=server.password)

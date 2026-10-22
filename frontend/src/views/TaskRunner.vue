@@ -304,7 +304,7 @@
               <template v-if="isGpuDriverSelected">
                 <div class="card-title">Linux NVIDIA 驱动</div>
                 <el-alert :title="gpuDriverOsLabel" :type="isSupportedGpuDriverOs ? 'info' : 'error'" :closable="false" show-icon />
-                <el-alert title="Nouveau、Rocky 默认内核变更，或强制覆盖正在运行的驱动时会自动重启；重连后以 nvidia-smi 的实际版本完成验证。" type="warning" :closable="false" show-icon />
+                <el-alert title="Rocky 9 当前内核缺少匹配开发包时会自动升级同小版本内核；Nouveau、内核或驱动安装变更会自动重启，重连后以 nvidia-smi 的实际版本完成验证。" type="warning" :closable="false" show-icon />
                 <el-form label-position="top" class="gpu-driver-form">
                   <el-form-item label="驱动来源" class="driver-primary-item">
                     <el-radio-group v-model="gpuDriverSource" :disabled="isFormDisabled || uploadingGpuDriver">
@@ -341,19 +341,6 @@
                       <el-checkbox v-model="forceInstallIfDriverExists" :disabled="isFormDisabled">强制安装所选版本</el-checkbox>
                       <span class="install-policy-hint">{{ forceInstallIfDriverExists ? '将覆盖安装所选版本' : '默认检测到 nvidia-smi 后跳过安装。' }}</span>
                     </div>
-                  </el-form-item>
-                  <el-form-item label="Rocky 9 内核维护" class="install-policy-item">
-                    <div class="install-policy-row">
-                      <el-checkbox v-model="allowKernelMaintenance" :disabled="isFormDisabled">允许 Rocky 9 内核维护（同小版本）</el-checkbox>
-                      <span class="install-policy-hint">默认关闭；仅在当前内核缺少匹配开发包时生效。</span>
-                    </div>
-                    <el-alert
-                      v-if="allowKernelMaintenance"
-                      title="会安装同一 Rocky 小版本内可用的新内核，并自动重启。仅应在已确认维护窗口和控制台回退条件可用时启用。"
-                      type="warning"
-                      :closable="false"
-                      show-icon
-                    />
                   </el-form-item>
                 </el-form>
               </template>
@@ -858,7 +845,6 @@ const gpuDriverId = ref('')
 const gpuDriverUploadId = ref('')
 const gpuDriverUploadName = ref('')
 const forceInstallIfDriverExists = ref(false)
-const allowKernelMaintenance = ref(false)
 const cudaToolkitVersions: CudaToolkitVersion[] = ['13.0', '12.9', '12.8', '12.6', '12.5', '12.4', '12.3', '12.2', '12.1', '12.0', '11.8']
 const cudaToolkitVersion = ref<CudaToolkitVersion>('12.8')
 const forceInstallCudaToolkit = ref(false)
@@ -1914,7 +1900,6 @@ async function createTask() {
       const driverPayload = {
         driver_type: gpuDriverType.value,
         force_install_if_driver_exists: forceInstallIfDriverExists.value,
-        ...(allowKernelMaintenance.value ? { allow_kernel_maintenance: true } : {}),
         ...(gpuDriverSource.value === 'library' ? { driver_id: gpuDriverId.value } : { driver_upload_id: gpuDriverUploadId.value }),
       }
       if (selectedServerIds.value.length >= 2) {
@@ -2141,7 +2126,6 @@ async function createManagedSuiteTask() {
         driver_type: gpuDriverType.value,
         ...(gpuDriverSource.value === 'library' ? { driver_id: gpuDriverId.value } : { driver_upload_id: gpuDriverUploadId.value }),
         force_install_if_driver_exists: forceInstallIfDriverExists.value,
-        ...(allowKernelMaintenance.value ? { allow_kernel_maintenance: true } : {}),
         cuda_version: cudaToolkitVersion.value,
         force_install_cuda: forceInstallCudaToolkit.value,
       } : {}),

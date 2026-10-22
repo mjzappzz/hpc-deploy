@@ -55,7 +55,7 @@ class CudaToolkitRetryTests(unittest.TestCase):
         self.assertEqual(retry_task.params["__retry_of_task_id"], "task-original")
         self.assertEqual(background_tasks.tasks[0].func, tasks.run_cuda_toolkit_task)
 
-    def test_gpu_retry_preserves_kernel_maintenance_authorization(self) -> None:
+    def test_gpu_retry_starts_a_fresh_driver_attempt(self) -> None:
         original = SimpleNamespace(
             task_id="task-original",
             server_id=7,
@@ -67,7 +67,6 @@ class CudaToolkitRetryTests(unittest.TestCase):
             params={
                 "driver_type": "geforce",
                 "driver_id": "a" * 24,
-                "allow_kernel_maintenance": True,
             },
             command_preview="old preview",
         )
@@ -86,7 +85,8 @@ class CudaToolkitRetryTests(unittest.TestCase):
 
         self.assertEqual(result.retry_task_id, "task-retry")
         retry_task = next(task for task in db.added if getattr(task, "task_id", None) == "task-retry")
-        self.assertTrue(retry_task.params["allow_kernel_maintenance"])
+        self.assertEqual(retry_task.params["gpu_driver_phase"], "initial")
+        self.assertNotIn("allow_kernel_maintenance", retry_task.params)
         self.assertEqual(background_tasks.tasks[0].func, tasks.run_rocky9_gpu_driver_task)
 
 

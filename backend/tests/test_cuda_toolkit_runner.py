@@ -85,6 +85,86 @@ if "cuda-toolkit-12-8" in args:
                 self.assertIn("reinstall" if force_install else "install", commands[-1]["args"])
                 self.assertIn("--refresh", commands[-1]["args"])
 
+    def test_rocky_download_falls_back_to_http1_curl_for_failed_packages(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            task_dir = root / "task"
+            task_dir.mkdir()
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            repo_file = root / "cuda-rhel9.repo"
+            repo_file.write_text(
+                "[cuda-rhel9-x86_64]\n"
+                "baseurl=https://developer.download.nvidia.com/compute/cuda/repos/rhel9/x86_64\n"
+                "gpgkey=https://example.invalid/D42D0685.pub\n"
+            )
+            state = root / "dnf-attempts"
+            command_log = root / "commands.jsonl"
+            for name, source in {
+                "sudo": '#!/bin/bash\nif [[ "${1:-}" == -n ]]; then shift; fi\nexec "$@"\n',
+                "nvidia-smi": "#!/bin/bash\nexit 0\n",
+                "rpm": "#!/bin/bash\nexit 0\n",
+                "curl": '''#!/usr/bin/env python3
+import json, os, sys
+args = sys.argv[1:]
+out = args[args.index("-o") + 1]
+open(out, "wb").write(b"rpm")
+with open(os.environ["TEST_COMMAND_LOG"], "a") as log:
+    log.write(json.dumps({"tool": "curl", "args": args}) + "\\n")
+''',
+                "dnf": '''#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+if "config-manager" in args or "cuda-toolkit-12-8" not in args:
+    sys.exit(0)
+with open(os.environ["TEST_COMMAND_LOG"], "a") as log:
+    log.write(json.dumps({"tool": "dnf", "args": args}) + "\\n")
+if any(arg.endswith(".rpm") for arg in args):
+    sys.exit(0)
+state = Path(os.environ["TEST_STATE"])
+attempt = int(state.read_text()) if state.exists() else 0
+state.write_text(str(attempt + 1))
+print("[FAILED] libnvjitlink-12-8-12.8.93-1.x86_64.rpm: No more mirrors to try - All mirrors were already tried without success")
+sys.exit(1)
+''',
+            }.items():
+                executable = bin_dir / name
+                executable.write_text(source)
+                executable.chmod(0o755)
+            script = build_cuda_toolkit_install_script("rocky9", "12.8", force_install=False)
+            script = script.split("echo '========== [4/4]")[0].replace(
+                "/etc/yum.repos.d/cuda-rhel9.repo", str(repo_file)
+            )
+            installer = task_dir / "cuda-install.sh"
+            installer.write_text(script)
+            result = subprocess.run(
+                ["bash", str(installer)],
+                cwd=root,
+                env={
+                    **os.environ,
+                    "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                    "TEST_STATE": str(state),
+                    "TEST_COMMAND_LOG": str(command_log),
+                },
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            commands = [json.loads(line) for line in command_log.read_text().splitlines()]
+            dnf_calls = [command for command in commands if command["tool"] == "dnf"]
+            curl_calls = [command for command in commands if command["tool"] == "curl"]
+            self.assertEqual(len(dnf_calls), 3)
+            self.assertEqual(len(curl_calls), 1)
+            self.assertIn("--http1.1", curl_calls[0]["args"])
+            self.assertIn(
+                "http://developer.download.nvidia.com",
+                repo_file.read_text(),
+            )
+            self.assertTrue(any(
+                arg.endswith("libnvjitlink-12-8-12.8.93-1.x86_64.rpm")
+                for arg in dnf_calls[-1]["args"]
+            ))
+
     def test_generated_installers_have_valid_shell_syntax(self) -> None:
         for profile in ("rocky9", "ubuntu2204", "ubuntu2404"):
             for force_install in (False, True):
@@ -110,6 +190,12 @@ if "cuda-toolkit-12-8" in args:
         self.assertNotIn("dnf -y install cuda\n", script)
         self.assertIn("/etc/profile.d/cuda-12.8.sh", script)
         self.assertIn("/usr/local/cuda-12.8/bin/nvcc --version", script)
+        self.assertIn("install_cuda_toolkit", script)
+        self.assertIn("--setopt=max_parallel_downloads=1", script)
+        self.assertIn(
+            "s#^baseurl=https://developer.download.nvidia.com#baseurl=http://developer.download.nvidia.com#",
+            script,
+        )
 
     def test_ubuntu22_uses_its_own_repository_and_versioned_package(self) -> None:
         script = build_cuda_toolkit_install_script("ubuntu2204", "12.8", force_install=True)

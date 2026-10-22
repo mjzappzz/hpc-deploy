@@ -198,11 +198,36 @@ def build_cuda_toolkit_install_script(os_profile: str, version: str, *, force_in
         repository_steps = """CUDA_DNF_CACHE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/dnf-cache"
 sudo dnf --setopt="cachedir=$CUDA_DNF_CACHE_DIR" -y install dnf-plugins-core ca-certificates curl
 sudo dnf --setopt="cachedir=$CUDA_DNF_CACHE_DIR" config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel9/x86_64/cuda-rhel9.repo"""
-        dnf_command = 'sudo dnf --setopt="cachedir=$CUDA_DNF_CACHE_DIR" --refresh -y'
+        dnf_options = (
+            '--setopt="cachedir=$CUDA_DNF_CACHE_DIR" --setopt=max_parallel_downloads=1 '
+            '--setopt=localpkg_gpgcheck=1 --refresh -y'
+        )
+        install_verb = "reinstall" if force_install else "install"
         install_command = (
-            f"{dnf_command} reinstall {package_name}"
-            if force_install
-            else f"{dnf_command} install {package_name}"
+            'CUDA_REPO_FILE="/etc/yum.repos.d/cuda-rhel9.repo"\n'
+            'CUDA_INSTALL_LOG="$CUDA_DNF_CACHE_DIR/cuda-install.log"\n'
+            'CUDA_LOCAL_RPMS="$CUDA_DNF_CACHE_DIR/local-rpms"\n'
+            'mkdir -p "$CUDA_DNF_CACHE_DIR"\n'
+            'install_cuda_toolkit() {\n'
+            f'  sudo dnf {dnf_options} {install_verb} {package_name} "$@" 2>&1 | tee "$CUDA_INSTALL_LOG"\n'
+            '}\n'
+            'if ! install_cuda_toolkit; then\n'
+            "  echo 'CUDA 软件源 HTTPS 下载失败，切换到 HTTP 传输后重试；软件包仍由 GPG 校验'\n"
+            "  sudo sed -i 's#^baseurl=https://developer.download.nvidia.com#baseurl=http://developer.download.nvidia.com#' \"$CUDA_REPO_FILE\"\n"
+            '  if ! install_cuda_toolkit; then\n'
+            "    echo 'CUDA 软件源下载仍失败，改用 HTTP/1.1 直连下载失败包后本地安装'\n"
+            "    cuda_baseurl=\"$(sed -n 's/^baseurl=//p' \"$CUDA_REPO_FILE\" | head -1)\"\n"
+            '    mkdir -p "$CUDA_LOCAL_RPMS"\n'
+            "    failed_rpms=\"$(sed -n 's/^\\[FAILED\\] \\(.*\\.rpm\\): No more mirrors.*/\\1/p' \"$CUDA_INSTALL_LOG\" | sort -u)\"\n"
+            '    test -n "$failed_rpms"\n'
+            '    for rpm in $failed_rpms; do\n'
+            '      curl --http1.1 --fail --show-error --location --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 20 -o "$CUDA_LOCAL_RPMS/$rpm" "$cuda_baseurl/$rpm"\n'
+            '    done\n'
+            "    cuda_gpgkey=\"$(sed -n 's/^gpgkey=//p' \"$CUDA_REPO_FILE\" | head -1)\"\n"
+            '    if [ -n "$cuda_gpgkey" ]; then sudo rpm --import "$cuda_gpgkey"; fi\n'
+            '    install_cuda_toolkit "$CUDA_LOCAL_RPMS"/*.rpm\n'
+            '  fi\n'
+            'fi'
         )
     elif os_profile in {"ubuntu2204", "ubuntu2404"}:
         distro = os_profile

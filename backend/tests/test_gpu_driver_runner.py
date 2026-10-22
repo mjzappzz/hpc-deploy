@@ -26,7 +26,6 @@ from app.core.gpu_driver_runner import (
     run_rocky9_gpu_driver_task,
     should_reboot_for_gpu_driver,
     should_reboot_after_driver_install,
-    should_run_kernel_maintenance,
     should_schedule_post_install_reboot,
     should_skip_existing_driver,
     resolve_gpu_driver_os_profile,
@@ -275,42 +274,83 @@ class GpuDriverRunnerTests(unittest.TestCase):
         self.assertIn('blacklist nouveau', script)
         self.assertIn('sudo dracut --force', script)
 
-    def test_kernel_maintenance_requires_explicit_authorization(self) -> None:
-        self.assertFalse(should_run_kernel_maintenance(
-            exact_development_packages_available=False,
-            allowed=False,
-        ))
-        self.assertTrue(should_run_kernel_maintenance(
-            exact_development_packages_available=False,
-            allowed=True,
-        ))
-        self.assertFalse(should_run_kernel_maintenance(
-            exact_development_packages_available=True,
-            allowed=True,
-        ))
+    def test_missing_kernel_packages_start_maintenance_without_opt_in(self) -> None:
+        task = Mock(
+            task_id="task-rocky", task_type="gpu_driver", status="PENDING",
+            server_id=7, remote_work_dir="/home/deploy/task-rocky", start_time=None,
+        )
+        task.params = {"driver_upload_id": "a" * 24, "os_profile": "rocky9"}
+        server = Mock(password=None, os_info="Rocky Linux 9.4")
+        db = Mock()
+        db.query.return_value.filter.return_value.first.return_value = task
+        db.get.return_value = server
+        executor = Mock()
+        executor.get_remote_home.return_value = "/home/deploy"
+        executor.exec_simple.return_value = "5.14.0-427.42.1.el9_4.x86_64"
+
+        def capture(command, *, timeout_seconds):
+            if command.startswith("nvidia-smi"):
+                return 1, "", ""
+            if command.startswith("rpm -q"):
+                return 1, "", ""
+            if command.startswith("lsmod"):
+                return 1, "", ""
+            return 0, "", ""
+
+        executor.exec_capture.side_effect = capture
+        with (
+            patch("app.core.gpu_driver_runner.SessionLocal", return_value=db),
+            patch("app.core.gpu_driver_runner.SSHExecutor", return_value=executor),
+            patch("app.core.gpu_driver_runner.resolve_uploaded_driver", return_value=Path("/tmp/driver.run")),
+            patch(
+                "app.core.gpu_driver_runner._prepare_rocky_kernel_maintenance_reboot",
+                return_value=("5.14.0-427.42.1.el9_4.x86_64", "/boot/vmlinuz-5.14.0-427.13.1.el9_4.x86_64"),
+            ) as prepare,
+            patch("app.core.gpu_driver_runner._wait_for_reboot", return_value=True),
+            patch("app.core.gpu_driver_runner._run_rocky_release_lock"),
+            patch("app.core.gpu_driver_runner._run_script", return_value=0),
+            patch("app.core.gpu_driver_runner._start_remote_install") as start_install,
+            patch("app.core.gpu_driver_runner._monitor_remote_install", return_value=False),
+            patch("app.core.gpu_driver_runner._update_params"),
+            patch("app.core.gpu_driver_runner._set_status"),
+            patch("app.core.gpu_driver_runner._log"),
+            patch("app.core.gpu_driver_runner.ws_manager"),
+        ):
+            run_rocky9_gpu_driver_task("task-rocky")
+
+        prepare.assert_called_once()
+        start_install.assert_called_once()
 
     def test_kernel_maintenance_uses_exact_packages_without_a_full_update(self) -> None:
         script = build_rocky9_kernel_maintenance_script()
         self.assertIn("dnf -q repoquery --latest-limit=1", script)
-        self.assertIn('"kernel-${candidate}"', script)
-        self.assertIn('"kernel-core-${candidate}"', script)
-        self.assertIn('"kernel-modules-${candidate}"', script)
-        self.assertIn('"kernel-devel-${candidate}"', script)
-        self.assertIn('"kernel-headers-${candidate}"', script)
+        self.assertIn('candidate="$candidate_full"', script)
+        self.assertIn('candidate_pkg="${candidate_full%.*}"', script)
+        self.assertIn('"kernel-${candidate_pkg}"', script)
+        self.assertIn('"kernel-core-${candidate_pkg}"', script)
+        self.assertIn('"kernel-modules-${candidate_pkg}"', script)
+        self.assertIn('"kernel-devel-${candidate_pkg}"', script)
+        self.assertIn('"kernel-headers-${candidate_pkg}"', script)
         self.assertIn("dnf versionlock delete 'kernel*'", script)
         self.assertNotIn("yum update", script)
         self.assertNotIn("dnf update", script)
 
     def test_kernel_maintenance_validates_initramfs_before_changing_default_boot(self) -> None:
         script = build_rocky9_kernel_maintenance_script()
+        self.assertIn('candidate="$candidate_full"', script)
+        self.assertIn('candidate_pkg="${candidate_full%.*}"', script)
         self.assertIn('sudo dracut --force --kver "$candidate"', script)
         self.assertIn('test -s "$image"', script)
         self.assertIn('root_source="$(findmnt -n -o SOURCE /)"', script)
         self.assertIn('required_modules+=(dm-mod lvm)', script)
         self.assertIn('required_modules+=(nvme)', script)
-        self.assertIn('sudo lsinitrd "$image"', script)
+        self.assertIn('initramfs_listing="$(sudo lsinitrd "$image")"', script)
+        self.assertNotIn('sudo lsinitrd "$image" | grep', script)
+        self.assertIn('<<< "$initramfs_listing"', script)
         self.assertIn('restore_before_boot', script)
         self.assertIn('sudo grubby --set-default "/boot/vmlinuz-${candidate}"', script)
+        self.assertIn('sync_uefi_saved_entry', script)
+        self.assertIn('sudo grub2-editenv "$dir/grubenv" set saved_entry="$entry"', script)
         self.assertLess(
             script.index('test -s "$image"'),
             script.index('sudo grubby --set-default "/boot/vmlinuz-${candidate}"'),
@@ -378,6 +418,7 @@ class GpuDriverRunnerTests(unittest.TestCase):
         )
         command = executor.exec_sudo.call_args.args[0]
         self.assertIn("grubby --set-default", command)
+        self.assertIn("grub2-editenv \"$dir/grubenv\" set saved_entry=", command)
         self.assertNotIn("secret", command)
         self.assertEqual(executor.exec_sudo.call_args.kwargs["password"], "secret")
 
